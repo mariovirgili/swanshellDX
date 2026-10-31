@@ -676,6 +676,8 @@ rescan_directory:
     else
         ui_file_selector_close_list(strbuf);
     config.style = settings.file_view;
+    // the listing (and SWANSHELL.IDX loading) uses SRAM, not PSRAM
+    outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_DISABLE);
 
     if (reinit_ui) {
         ui_layout_bars();

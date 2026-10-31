@@ -49,6 +49,8 @@ static inline bool ui_file_selector_fno_direct_same_bank(uint16_t a, uint16_t b)
 
 __attribute__((always_inline))
 static inline file_selector_entry_t __far *ui_file_selector_open_fno_direct(uint16_t offset) {
+    // the listing lives in SRAM: make sure the RAM window is not mapped to PSRAM
+    outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_DISABLE);
     outportw(WS_CART_EXTBANK_RAM_PORT, FILE_SELECTOR_RAM_BANK_OFFSET + (offset >> FILE_SELECTOR_ENTRY_SHIFT));
     return MK_FP(0x1000, offset << FILE_SELECTOR_ENTRY_SHIFT);
 }
@@ -60,6 +62,7 @@ static inline file_selector_entry_t __far *ui_file_selector_open_fno_direct_noba
 
 __attribute__((always_inline))
 static inline file_selector_entry_t __far *ui_file_selector_open_fno(uint16_t offset) {
+    outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_DISABLE);
     outportw(WS_CART_EXTBANK_RAM_PORT, FILE_SELECTOR_INDEX_BANK);
     return ui_file_selector_open_fno_direct(FILE_SELECTOR_INDEXES[offset]);
 }
