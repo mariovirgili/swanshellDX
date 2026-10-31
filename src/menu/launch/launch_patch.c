@@ -309,6 +309,15 @@ static int16_t apply_bps(patch_reader_t *r, const bps_header_t *hdr, uint32_t so
 static char rom_path[FF_LFN_BUF + 8];
 static char save_path[FF_LFN_BUF + 8];
 
+// Last '.' in a near string (strrchr() returns a far pointer here).
+static char *last_dot(char *s) {
+    char *dot = NULL;
+    for (; *s; s++)
+        if (*s == '.')
+            dot = s;
+    return dot;
+}
+
 static bool file_exists(const char *path) {
     FILINFO fno;
     return f_stat(path, &fno) == FR_OK && !(fno.fattrib & AM_DIR);
@@ -318,12 +327,12 @@ static bool file_exists(const char *path) {
 static bool find_rom_for_patch(const char *patch_path) {
     strncpy(rom_path, patch_path, sizeof(rom_path) - 5);
     rom_path[sizeof(rom_path) - 5] = 0;
-    char *dot = strrchr(rom_path, '.');
+    char *dot = last_dot(rom_path);
     if (dot == NULL)
         return false;
     *dot = 0;
 
-    const char *inner = strrchr(rom_path, '.');
+    const char *inner = last_dot(rom_path);
     if (inner != NULL && (!strcasecmp(inner, s_file_ext_wsc) || !strcasecmp(inner, s_file_ext_ws)
         || !strcasecmp(inner, s_file_ext_pc2)) && file_exists(rom_path))
         return true;
@@ -370,7 +379,12 @@ int16_t launch_patched_rom(const char *patch_path) {
     uint32_t patch_id = reader.fp.obj.sclust; // save ID, distinct from the plain ROM
     uint32_t patch_size = f_size(&reader.fp);
     uint32_t max_size = (uint32_t) asset_heap_get_free_first_banks() << 16;
-    bool is_bps = !strcasecmp(strrchr(patch_path, '.'), s_file_ext_bps);
+    // rom_path holds a copy of patch_path's directory/name; reuse save_path
+    // as scratch to look at the patch extension without strrchr()
+    strncpy(save_path, patch_path, sizeof(save_path) - 1);
+    save_path[sizeof(save_path) - 1] = 0;
+    const char *patch_ext = last_dot(save_path);
+    bool is_bps = patch_ext != NULL && !strcasecmp(patch_ext, s_file_ext_bps);
 
     ui_draw_statusbar(lang_keys[LK_UI_STATUS_PATCHING]);
 
