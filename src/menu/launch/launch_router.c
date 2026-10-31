@@ -9,6 +9,7 @@
 #include "../errors.h"
 #include "../strings.h"
 #include "launch/launch_athena.h"
+#include "launch/launch_patch.h"
 #include "plugin/plugin.h"
 #include "shell/shell.h"
 #include "menu_music.h"
@@ -60,6 +61,10 @@ int16_t launch_router_file(char *path, const char *ext, uint16_t flags) {
 exit_no_launch:
             mcu_reset_if_not_native();
             return result;
+        } else if (!strcasecmp(ext, s_file_ext_ips) || !strcasecmp(ext, s_file_ext_bps)) {
+            // ROM patch: launch the matching ROM with the patch applied in PSRAM
+            if (flags & LAUNCH_ROUTER_USE_SERIAL_OUT) return ERR_FILE_NOT_EXECUTABLE;
+            return launch_patched_rom(path);
         } else if (!strcasecmp(ext, s_file_ext_fx) || !strcasecmp(ext, s_file_ext_bin)) {
             // TODO: Do some checks on the .bin file
             return launch_athena_boot_curdir_as_rom_wip(path);

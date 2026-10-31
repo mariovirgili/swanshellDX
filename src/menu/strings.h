@@ -51,6 +51,8 @@ DEFINE_STRING(s_file_ext_vgm, ".vgm");
 DEFINE_STRING(s_file_ext_vgz, ".vgz");
 DEFINE_STRING(s_file_ext_wav, ".wav");
 DEFINE_STRING(s_file_ext_ws, ".ws");
+DEFINE_STRING(s_file_ext_ips, ".ips");
+DEFINE_STRING(s_file_ext_bps, ".bps");
 DEFINE_STRING(s_file_ext_wsc, ".wsc");
 DEFINE_STRING(s_file_ext_wsr, ".wsr");
 DEFINE_STRING(s_file_ext_zip, ".zip");

@@ -13,6 +13,9 @@ msgstr "Scraping..."
 msgid "UI_FILE_SELECTOR_INDEX_TAG"
 msgstr "Idx"
 
+msgid "UI_STATUS_PATCHING"
+msgstr "Applying patch..."
+
 msgid "UI_VGMPLAY_CONTROLS"
 msgstr "Left/Right = Prev./Next"
 
