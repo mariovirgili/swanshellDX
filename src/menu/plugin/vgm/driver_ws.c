@@ -46,7 +46,12 @@ uint16_t vgm_cmd_driver_ws(vgm_state_t *state, uint8_t cmd) {
             case 0x11: // skip output control
                 break;
             case 0x08: case 0x09: case 0x0A: case 0x0B: // channel volume
-                outportb(0x80 + addr, vgm_ws_scale_volume(data));
+                // Scale only for menu background music: the full-screen
+                // player must stay as fast as possible (some tracks stream
+                // samples through these registers thousands of times/sec).
+                if (state->flags & VGM_FLAG_NO_PCM)
+                    data = vgm_ws_scale_volume(data);
+                outportb(0x80 + addr, data);
                 break;
             case 0x10: // special handling for Ch2 DMA
                 if (state->flags & VGM_FLAG_NO_PCM)
