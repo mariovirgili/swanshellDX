@@ -49,6 +49,8 @@ uint16_t vgm_cmd_driver_ws(vgm_state_t *state, uint8_t cmd) {
                 outportb(0x80 + addr, vgm_ws_scale_volume(data));
                 break;
             case 0x10: // special handling for Ch2 DMA
+                if (state->flags & VGM_FLAG_NO_PCM)
+                    data &= ~0x20; // keep Ch2 as a wavetable channel
                 if (!(data & 0x20))
                     outportb(WS_SDMA_CTRL_PORT, 0);
                 outportb(0x80 + addr, data);

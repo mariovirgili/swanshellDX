@@ -35,6 +35,11 @@
 #define VGM_DAC_FREQ_MASK  0x03
 
 #define VGM_USE_PCM
+
+// vgm_state_t.flags: skip PCM data blocks/streams and the Ch2 voice mode.
+// Used for menu background music: PCM blocks are copied to IRAM 0x8000+,
+// which is where the menu keeps its tiles.
+#define VGM_FLAG_NO_PCM 0x01
 #define VGM_MAX_STREAMS 1
 #define VGM_MAX_DATA_BLOCKS 16
 

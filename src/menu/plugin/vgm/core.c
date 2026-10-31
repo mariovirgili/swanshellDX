@@ -234,6 +234,10 @@ uint16_t vgm_play(vgm_state_t *state) {
             state->ptr++; // 0x66
             state->ptr++; // type - TODO: handle that?
             uint32_t len = *((uint32_t __far*) state->ptr); state->ptr += 4;
+            if (state->flags & VGM_FLAG_NO_PCM) {
+                state->ptr += len;
+                break;
+            }
 try_copy_pcm:
             if (ws_system_is_color_active()) {
                 if (state->pcm_data_block_count >= VGM_MAX_DATA_BLOCKS) {
@@ -307,7 +311,7 @@ try_copy_pcm:
             uint8_t flags = *(state->ptr++);
             uint32_t length = *((uint32_t __far*) state->ptr); state->ptr += 4;
 
-            if (!ws_system_is_color_active()) break;
+            if (!ws_system_is_color_active() || (state->flags & VGM_FLAG_NO_PCM)) break;
 
             uint32_t location = 0x8000;
             if (offset != 0xFFFFFFFF) location += offset;
@@ -345,7 +349,7 @@ try_copy_pcm:
             uint8_t block_id = *(state->ptr); state->ptr += 2;
             uint8_t flags = *(state->ptr++);
 
-            if (!ws_system_is_color_active()) break;
+            if (!ws_system_is_color_active() || (state->flags & VGM_FLAG_NO_PCM)) break;
             outportb(WS_SDMA_CTRL_PORT, 0);
             outportw(WS_SDMA_SOURCE_L_PORT, state->pcm_data_block_offset[block_id]);
             outportb(WS_SDMA_SOURCE_H_PORT, 0);

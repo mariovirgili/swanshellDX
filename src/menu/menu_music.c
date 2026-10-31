@@ -207,6 +207,8 @@ void menu_music_start(void) {
         if (!vgm_init(&menu_music_state, menu_music_bank, 0))
             goto start_failed;
     }
+    // vgm_init() clears the state: set background mode afterwards.
+    menu_music_state.flags |= VGM_FLAG_NO_PCM;
 
     outportb(WS_SOUND_OUT_CTRL_PORT, WS_SOUND_OUT_CTRL_SPEAKER_ENABLE | WS_SOUND_OUT_CTRL_HEADPHONE_ENABLE | WS_SOUND_OUT_CTRL_SPEAKER_VOLUME_100);
 
