@@ -37,6 +37,10 @@ typedef struct ui_selector_config {
     /// stayed on it for a moment (e.g. file details). Return false to keep
     /// the default text (page number).
     bool (*status_text)(struct ui_selector_config *config, uint16_t idx, char *buf, uint16_t buf_len);
+    /// Optional: if non-zero, the screen still shows the list as drawn with
+    /// the selection on entry (redraw_from - 1); ui_selector() then only
+    /// redraws what changed instead of the whole list. Reset to 0 on entry.
+    uint16_t redraw_from;
 } ui_selector_config_t;
 
 #define UI_SELECTOR_RELOAD_REQUESTED 0x4001

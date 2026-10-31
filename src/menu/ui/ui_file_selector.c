@@ -635,7 +635,9 @@ rescan_directory:
             }
         }
         if ((keys_pressed & (KEY_ALEFT | KEY_ARIGHT)) && config.count) {
-            // Y2/Y4: next/previous initial letter
+            // Y2/Y4: next/previous initial letter; the list on screen is
+            // unchanged, so only redraw what the jump changes
+            config.redraw_from = config.offset + 1;
             config.offset = ui_file_selector_letter_jump(config.offset, config.count,
                 (keys_pressed & KEY_ARIGHT) != 0);
             if (path_depth_pos < CONFIG_FILESELECT_PATH_MEMORY_DEPTH)
