@@ -243,6 +243,7 @@ int16_t favorites_load(uint8_t list, uint16_t *count) {
 
     // keep the order of the file (no sorting)
     outportw(WS_CART_EXTBANK_RAM_PORT, FILE_SELECTOR_INDEX_BANK);
+    FILE_SELECTOR_MEMORY_BARRIER();
     for (uint16_t i = 0; i < n; i++)
         FILE_SELECTOR_INDEXES[i] = i;
 

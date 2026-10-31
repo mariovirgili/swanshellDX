@@ -97,6 +97,7 @@ bool ui_file_selector_default_predicate(const FILINFO __far *fno, const char __f
 
 static void ui_file_selector_sort_entries(uint16_t file_count) {
     outportw(WS_CART_EXTBANK_RAM_PORT, FILE_SELECTOR_INDEX_BANK);
+    FILE_SELECTOR_MEMORY_BARRIER();
     for (int i = 0; i < file_count; i++)
         FILE_SELECTOR_INDEXES[i] = i;
     ui_file_selector_qsort(file_count, compare_filenames, (void*) settings.file_sort);
@@ -550,6 +551,7 @@ static void ui_file_selector_add_special_entries(uint16_t *count) {
     }
 
     outportw(WS_CART_EXTBANK_RAM_PORT, FILE_SELECTOR_INDEX_BANK);
+    FILE_SELECTOR_MEMORY_BARRIER();
     for (uint16_t j = n; j > 0; j--)
         FILE_SELECTOR_INDEXES[j + 1] = FILE_SELECTOR_INDEXES[j - 1];
     FILE_SELECTOR_INDEXES[0] = n;
@@ -564,6 +566,7 @@ static uint8_t ui_file_selector_special_list(uint16_t offset) {
     if (listing_special_slot == 0xFFFF || listing_list != FAVORITES_LIST_NONE)
         return FAVORITES_LIST_NONE;
     outportw(WS_CART_EXTBANK_RAM_PORT, FILE_SELECTOR_INDEX_BANK);
+    FILE_SELECTOR_MEMORY_BARRIER();
     uint16_t slot = FILE_SELECTOR_INDEXES[offset];
     if (slot == listing_special_slot)
         return FAVORITES_LIST_FAVORITES;

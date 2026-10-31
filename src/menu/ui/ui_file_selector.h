@@ -32,7 +32,13 @@
 #define FILE_SELECTOR_SCRATCH_SLOT 1523
 #define FILE_SELECTOR_RAM_BANK_OFFSET 1
 #define FILE_SELECTOR_INDEX_BANK 6
-#define FILE_SELECTOR_INDEXES ((uint16_t __far*) MK_FP(0x1000, 0xF410))
+// volatile: these reads must stay after the bank switch that maps them
+#define FILE_SELECTOR_INDEXES ((volatile uint16_t __far*) MK_FP(0x1000, 0xF410))
+
+// The bank port writes are asm statements the compiler may move memory
+// accesses across: without this barrier an entry could be read from the
+// previously mapped bank (wrong file opened).
+#define FILE_SELECTOR_MEMORY_BARRIER() __asm__ volatile ("" ::: "memory")
 
 typedef struct {
     FILINFO fno;
@@ -49,9 +55,11 @@ static inline bool ui_file_selector_fno_direct_same_bank(uint16_t a, uint16_t b)
 
 __attribute__((always_inline))
 static inline file_selector_entry_t __far *ui_file_selector_open_fno_direct(uint16_t offset) {
+    FILE_SELECTOR_MEMORY_BARRIER();
     // the listing lives in SRAM: make sure the RAM window is not mapped to PSRAM
     outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_DISABLE);
     outportw(WS_CART_EXTBANK_RAM_PORT, FILE_SELECTOR_RAM_BANK_OFFSET + (offset >> FILE_SELECTOR_ENTRY_SHIFT));
+    FILE_SELECTOR_MEMORY_BARRIER();
     return MK_FP(0x1000, offset << FILE_SELECTOR_ENTRY_SHIFT);
 }
 
@@ -62,9 +70,12 @@ static inline file_selector_entry_t __far *ui_file_selector_open_fno_direct_noba
 
 __attribute__((always_inline))
 static inline file_selector_entry_t __far *ui_file_selector_open_fno(uint16_t offset) {
+    FILE_SELECTOR_MEMORY_BARRIER();
     outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_DISABLE);
     outportw(WS_CART_EXTBANK_RAM_PORT, FILE_SELECTOR_INDEX_BANK);
-    return ui_file_selector_open_fno_direct(FILE_SELECTOR_INDEXES[offset]);
+    FILE_SELECTOR_MEMORY_BARRIER();
+    uint16_t slot = FILE_SELECTOR_INDEXES[offset];
+    return ui_file_selector_open_fno_direct(slot);
 }
 
 int ui_file_selector_get_file_icon_idx(const char __far *ext);
