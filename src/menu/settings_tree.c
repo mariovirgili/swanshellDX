@@ -39,6 +39,7 @@ DEFINE_STRING_LOCAL(s_file_show_save_key, "FileShowSave");
 DEFINE_STRING_LOCAL(s_file_sort_order_key, "FileSortOrder");
 DEFINE_STRING_LOCAL(s_file_initial_path_key, "FileInitialPath");
 DEFINE_STRING_LOCAL(s_file_view_key, "FileView");
+DEFINE_STRING_LOCAL(s_file_show_ext_key, "FileShowExt");
 DEFINE_STRING_LOCAL(s_file_hide_icons_key, "FileHideIcons");
 DEFINE_STRING_LOCAL(s_program_fast_sram_key, "ProgFastSRAM");
 DEFINE_STRING_LOCAL(s_program_verify_saves_key, "ProgVerifySave");
@@ -165,6 +166,32 @@ static const setting_t __far setting_file_view = {
     }
 };
 
+static const uint16_t __wf_rom settings_file_show_ext_name_table[] = {
+    LK_SETTINGS_FILE_SHOW_EXT_ALL,
+    LK_SETTINGS_FILE_SHOW_EXT_EXCEPT_ROMS,
+    LK_SETTINGS_FILE_SHOW_EXT_NONE
+};
+
+static void settings_file_show_ext_name(uint16_t value, char *buf, int buf_len) {
+    if (value > SETTING_FILE_SHOW_EXT_NONE) value = SETTING_FILE_SHOW_EXT_ALL;
+    strncpy(buf, lang_keys[settings_file_show_ext_name_table[value]], buf_len);
+}
+
+static const setting_t __far setting_file_show_ext = {
+    s_file_show_ext_key,
+    LK_SETTINGS_FILE_SHOW_EXT_KEY,
+    LK_SETTINGS_FILE_SHOW_EXT_HELP,
+    SETTING_TYPE_CHOICE_BYTE,
+    0,
+    NULL,
+    .choice = {
+        &settings.file_show_ext,
+        SETTING_FILE_SHOW_EXT_ALL, SETTING_FILE_SHOW_EXT_NONE,
+        NULL,
+        settings_file_show_ext_name
+    }
+};
+
 static const setting_t __far setting_scroll_long_names = {
     s_text_reader_font_key,
     LK_SETTINGS_SCROLL_LONG_NAMES_KEY,
@@ -184,9 +211,10 @@ static const setting_category_t __far settings_file = {
     LK_SETTINGS_FILE_KEY,
     0,
     &settings_interface,
-    7,
+    8,
     {
         &setting_file_view,
+        &setting_file_show_ext,
         &setting_file_sort_order,
         &setting_file_initial_path,
         &setting_scroll_long_names,

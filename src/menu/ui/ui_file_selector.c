@@ -184,6 +184,28 @@ void ui_file_selector_draw_icon(uint16_t x, uint16_t y, uint16_t icon_idx, uint1
     }
 }
 
+static char display_name[FF_LFN_BUF + 1];
+
+// Name as shown in the list: without the extension when the "Show
+// extensions" setting asks for it. Directories always keep their name.
+static const char __far *ui_file_selector_display_name(file_selector_entry_t __far *fno) {
+    uint8_t mode = settings.file_show_ext;
+    if (mode == SETTING_FILE_SHOW_EXT_ALL || mode > SETTING_FILE_SHOW_EXT_NONE
+        || (fno->fno.fattrib & AM_DIR) || !FILE_SELECTOR_ENTRY_HAS_EXTENSION(fno)
+        || fno->extension_loc == 0)
+        return fno->fno.fname;
+    if (mode == SETTING_FILE_SHOW_EXT_EXCEPT_ROMS) {
+        const char __far *ext = FILE_SELECTOR_ENTRY_GET_EXTENSION(fno);
+        if (strcasecmp(ext, s_file_ext_ws) && strcasecmp(ext, s_file_ext_wsc) && strcasecmp(ext, s_file_ext_pc2))
+            return fno->fno.fname;
+    }
+    uint8_t len = fno->extension_loc;
+    for (uint8_t i = 0; i < len; i++)
+        display_name[i] = fno->fno.fname[i];
+    display_name[len] = 0;
+    return display_name;
+}
+
 static void ui_file_selector_draw(struct ui_selector_config *config, uint16_t offset, uint16_t y, uint16_t scroll_tick) {
     int x_offset;
     if (settings.file_flags & SETTING_FILE_HIDE_ICONS)
@@ -193,7 +215,8 @@ static void ui_file_selector_draw(struct ui_selector_config *config, uint16_t of
 
     file_selector_entry_t __far *fno = ui_file_selector_open_fno(offset);
 
-    const char __far *s = fno->fno.fname;
+    const char __far *name = ui_file_selector_display_name(fno);
+    const char __far *s = name;
     int max_width = screen_width - x_offset;
     if (scroll_tick) {
         int width = bitmapfont_get_string_width(s, 65535);
@@ -204,12 +227,12 @@ static void ui_file_selector_draw(struct ui_selector_config *config, uint16_t of
             while (width_cropped > max_width) {
                 width_cropped -= bitmapfont_get_char_width(wsx_utf8_decode_next(&s)) + CONFIG_FONT_CHAR_GAP;
             }
-            int tick_count = (s - fno->fno.fname) + 2;
+            int tick_count = (s - name) + 2;
             // pause at the end of the name before restarting (in scroll steps)
             scroll_tick %= (tick_count + 12);
             if (scroll_tick > tick_count) scroll_tick = 0;
 
-            s = fno->fno.fname;
+            s = name;
             while (scroll_tick--)
                 wsx_utf8_decode_next(&s);
 

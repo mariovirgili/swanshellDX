@@ -65,6 +65,10 @@
 #define SETTING_FILE_SORT_SIZE_ASC   5
 #define SETTING_FILE_SORT_SIZE_DESC  6
 
+#define SETTING_FILE_SHOW_EXT_ALL         0
+#define SETTING_FILE_SHOW_EXT_EXCEPT_ROMS 1
+#define SETTING_FILE_SHOW_EXT_NONE        2
+
 #define SETTING_FILE_VIEW_LARGE 0
 #define SETTING_FILE_VIEW_SMALL 1
 
@@ -161,6 +165,7 @@ typedef struct __attribute__((packed)) {
         uint16_t accent_color;
     };
     uint8_t menu_music_volume; // 1 (10%) .. 10 (100%)
+    uint8_t file_show_ext; // SETTING_FILE_SHOW_EXT_*
 } settings_t;
 
 #define SETTING_MENU_MUSIC_VOLUME_MIN 1

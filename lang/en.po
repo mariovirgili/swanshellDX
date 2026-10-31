@@ -146,6 +146,21 @@ msgstr "Small list"
 msgid "SETTINGS_FILE_VIEW_HELP"
 msgstr "Selects the method of listing files in the file browser."
 
+msgid "SETTINGS_FILE_SHOW_EXT_KEY"
+msgstr "Show extensions"
+
+msgid "SETTINGS_FILE_SHOW_EXT_HELP"
+msgstr "Show file extensions in the file list.\n\n\"Except ROMs\" hides only .ws, .wsc and .pc2, so ROMs and their patches (.ips, .bps) can still be told apart."
+
+msgid "SETTINGS_FILE_SHOW_EXT_ALL"
+msgstr "Yes"
+
+msgid "SETTINGS_FILE_SHOW_EXT_EXCEPT_ROMS"
+msgstr "Except ROMs"
+
+msgid "SETTINGS_FILE_SHOW_EXT_NONE"
+msgstr "No"
+
 msgid "SETTINGS_FILE_HIDE_ICONS_KEY"
 msgstr "Hide icons"
 
