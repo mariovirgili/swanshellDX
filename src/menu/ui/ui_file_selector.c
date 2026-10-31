@@ -38,6 +38,7 @@
 #include "ui/ui_file_selector.h"
 #include "ui_dialog.h"
 #include "ui_selector.h"
+#include "util/input.h"
 #include "plugin/plugin.h"
 #include "../../../build/menu/assets/menu/icons.h"
 #include "lang.h"
@@ -458,6 +459,41 @@ int16_t ui_file_selector_remove_index(void) {
     return result == FR_NO_FILE ? FR_OK : result;
 }
 
+/* === Jump by initial letter (Y2 / Y4) ===
+ * Works on groups of consecutive entries with the same initial, in the
+ * current sort order. */
+
+static uint8_t ui_file_selector_initial(uint16_t idx) {
+    file_selector_entry_t __far *fno = ui_file_selector_open_fno(idx);
+    uint8_t c = fno->fno.fname[0];
+    if (c >= 'a' && c <= 'z')
+        c -= 'a' - 'A';
+    return c;
+}
+
+static uint16_t ui_file_selector_group_start(uint16_t idx) {
+    uint8_t c = ui_file_selector_initial(idx);
+    while (idx > 0 && ui_file_selector_initial(idx - 1) == c)
+        idx--;
+    return idx;
+}
+
+static uint16_t ui_file_selector_letter_jump(uint16_t offset, uint16_t count, bool forward) {
+    if (forward) {
+        // first entry with a different initial; past the last group, wrap
+        uint8_t c = ui_file_selector_initial(offset);
+        for (uint16_t i = offset + 1; i < count; i++)
+            if (ui_file_selector_initial(i) != c)
+                return i;
+        return 0;
+    }
+    // start of the current group first, then start of the previous one
+    uint16_t start = ui_file_selector_group_start(offset);
+    if (start != offset)
+        return start;
+    return ui_file_selector_group_start(start > 0 ? start - 1 : count - 1);
+}
+
 // Width of "...", in pixels.
 #define DOT3_WIDTH 6
 
@@ -474,7 +510,7 @@ void ui_file_selector(void) {
 rescan_directory:
     config.draw = ui_file_selector_draw;
     config.status_text = ui_file_selector_status_text;
-    config.key_mask = WS_KEY_A | WS_KEY_B | WS_KEY_START;
+    config.key_mask = WS_KEY_A | WS_KEY_B | WS_KEY_START | KEY_ALEFT | KEY_ARIGHT;
     config.style = settings.file_view;
 
     if (reinit_ui) {
@@ -597,6 +633,14 @@ rescan_directory:
                     goto rescan_directory;
                 }
             }
+        }
+        if ((keys_pressed & (KEY_ALEFT | KEY_ARIGHT)) && config.count) {
+            // Y2/Y4: next/previous initial letter
+            config.offset = ui_file_selector_letter_jump(config.offset, config.count,
+                (keys_pressed & KEY_ARIGHT) != 0);
+            if (path_depth_pos < CONFIG_FILESELECT_PATH_MEMORY_DEPTH)
+                path_depth[path_depth_pos] = config.offset;
+            continue;
         }
         if (keys_pressed & WS_KEY_B) {
             strcpy(strbuf, s_dotdot);
