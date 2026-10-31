@@ -21,6 +21,11 @@
 int ui_bmpview(const char *path);
 int ui_hidctrl(void);
 int ui_txtview(const char *path);
+// ui_vgmplay() return values (besides 0 and error codes): the user asked
+// for the next/previous track in the same directory.
+#define PLUGIN_RESULT_NEXT_FILE 0x7FFD
+#define PLUGIN_RESULT_PREV_FILE 0x7FFE
+
 int ui_vgmplay(const char *path);
 int ui_wavplay(const char *path);
 

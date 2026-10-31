@@ -159,9 +159,15 @@ int ui_vgmplay(const char *path) {
     ws_int_set_handler(WS_INT_HBL_TIMER, (ia16_int_handler_t) vgm_interrupt_handler);
     ws_int_enable(WS_INT_ENABLE_HBL_TIMER);
 
+    int exit_code = 0;
     while (vgm_state->bank != 0xFF) {
         input_update();
         if (input_pressed) {
+            // Right/left: next/previous track in the same directory
+            if (input_pressed & KEY_RIGHT)
+                exit_code = PLUGIN_RESULT_NEXT_FILE;
+            else if (input_pressed & KEY_LEFT)
+                exit_code = PLUGIN_RESULT_PREV_FILE;
             break;
         }
     }
@@ -178,5 +184,5 @@ int ui_vgmplay(const char *path) {
     ui_init();
     settings_load();
 
-    return 0;
+    return exit_code;
 }

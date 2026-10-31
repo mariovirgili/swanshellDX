@@ -31,6 +31,7 @@
 #include "launch/launch.h"
 #include "launch/launch_athena.h"
 #include "launch/launch_router.h"
+#include "plugin/plugin.h"
 #include "settings.h"
 #include "strings.h"
 #include "ui.h"
@@ -230,6 +231,24 @@ static void ui_file_selector_draw(struct ui_selector_config *config, uint16_t of
     }
 }
 
+static bool ui_file_selector_is_track(file_selector_entry_t __far *fno) {
+    if ((fno->fno.fattrib & AM_DIR) || !FILE_SELECTOR_ENTRY_HAS_EXTENSION(fno))
+        return false;
+    const char __far *ext = FILE_SELECTOR_ENTRY_GET_EXTENSION(fno);
+    return !strcasecmp(ext, s_file_ext_vgm) || !strcasecmp(ext, s_file_ext_vgz);
+}
+
+// Next/previous VGM track in the current listing (wrapping around), or
+// 0xFFFF if there is no other track.
+static uint16_t ui_file_selector_find_track(uint16_t offset, uint16_t count, bool forward) {
+    for (uint16_t i = 1; i < count; i++) {
+        uint16_t candidate = forward ? (offset + i) % count : (offset + count - i) % count;
+        if (ui_file_selector_is_track(ui_file_selector_open_fno(candidate)))
+            return candidate;
+    }
+    return 0xFFFF;
+}
+
 // Width of "...", in pixels.
 #define DOT3_WIDTH 6
 
@@ -338,6 +357,21 @@ rescan_directory:
                     goto rescan_directory;
                 } else {
                     int16_t result = launch_router_file(strbuf, ext, 0);
+                    // VGM player: right/left skips to the next/previous track
+                    while (result == PLUGIN_RESULT_NEXT_FILE || result == PLUGIN_RESULT_PREV_FILE) {
+                        uint16_t track = ui_file_selector_find_track(config.offset, config.count,
+                            result == PLUGIN_RESULT_NEXT_FILE);
+                        if (track == 0xFFFF) {
+                            result = LAUNCH_ROUTER_OK_SRAM_UNCHANGED;
+                            break;
+                        }
+                        config.offset = track;
+                        path_depth[path_depth_pos] = track;
+                        fno = ui_file_selector_open_fno(track);
+                        strncpy(strbuf, fno->fno.fname, sizeof(fno->fno.fname));
+                        ext = strbuf + fno->extension_loc;
+                        result = launch_router_file(strbuf, ext, 0);
+                    }
                     if (result && result != LAUNCH_ROUTER_OK_SRAM_UNCHANGED) {
                         ui_dialog_error_check(result, NULL, 0);
                     }

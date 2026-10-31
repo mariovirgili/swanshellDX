@@ -115,6 +115,68 @@ static bool menu_music_gunzip(uint8_t src_bank, uint32_t size, uint8_t dest_bank
     return ok;
 }
 
+static inline uint8_t menu_music_peek(uint32_t pos) {
+    // ROM0 and ROM1 are contiguous (0x20000-0x3FFFF), so up to 128 KiB can
+    // be addressed linearly once ROM1 = ROM0 + 1.
+    return *((const uint8_t __far*) MK_FP(WS_ROM0_SEGMENT + (uint16_t) (pos >> 4), (uint16_t) pos & 0xF));
+}
+
+static inline uint32_t menu_music_peek32(uint16_t pos) {
+    return *((const uint32_t __far*) MK_FP(WS_ROM0_SEGMENT, pos));
+}
+
+// Check a VGM loaded at bank before using it as background music:
+// only commands of the chips the player supports, WonderSwan writes limited
+// to the sound registers, and no PCM data blocks/streams (PCM would be
+// copied over the menu's tile memory). A command the player does not know
+// would make it lose its place in the file and write to arbitrary ports.
+static bool menu_music_validate(uint8_t bank, uint32_t size) {
+    bool ok = false;
+    uint16_t prev_rom0 = inportw(WS_CART_EXTBANK_ROM0_PORT);
+    uint16_t prev_rom1 = inportw(WS_CART_EXTBANK_ROM1_PORT);
+    outportw(WS_CART_EXTBANK_ROM0_PORT, bank);
+    outportw(WS_CART_EXTBANK_ROM1_PORT, bank + 1);
+
+    uint32_t end = menu_music_peek32(0x04) + 4;
+    uint32_t version = menu_music_peek32(0x08);
+    uint32_t pos = 0x40;
+    if (version >= 0x150 && menu_music_peek32(0x34) != 0)
+        pos = menu_music_peek32(0x34) + 0x34;
+    if (end > size)
+        end = size;
+
+    while (pos < end) {
+        uint8_t cmd = menu_music_peek(pos);
+        if (cmd == 0x66) {             // end of data
+            ok = true;
+            break;
+        }
+        if (cmd >= 0x70 && cmd <= 0x7F) { // short wait
+            pos += 1;
+            continue;
+        }
+        switch (cmd) {
+        case 0x62: case 0x63: pos += 1; break; // waits
+        case 0x61: pos += 3; break;            // wait n samples
+        case 0x4F: case 0x50: pos += 2; break; // SN76489
+        case 0xB3: pos += 3; break;            // Game Boy DMG
+        case 0xBC:                             // WonderSwan register write
+            if (menu_music_peek(pos + 1) >= 0x20)
+                goto done;
+            pos += 3;
+            break;
+        case 0xC6: pos += 4; break;            // WonderSwan wavetable write
+        default:                               // PCM (0x67, 0x68, 0x80-0x8F,
+            goto done;                         // 0x90-0x95) or unsupported
+        }
+    }
+
+done:
+    outportw(WS_CART_EXTBANK_ROM1_PORT, prev_rom1);
+    outportw(WS_CART_EXTBANK_ROM0_PORT, prev_rom0);
+    return ok;
+}
+
 // Load a .vgm or gzip-compressed .vgz (detected by content, not extension).
 static bool menu_music_load_file(const char __far *path) {
     FIL fp;
@@ -141,12 +203,15 @@ static bool menu_music_load_file(const char __far *path) {
             ok = menu_music_gunzip(src_bank, size, dest_bank);
         asset_heap_free_last_banks(src_banks);
         if (ok)
+            ok = menu_music_validate(dest_bank, (uint32_t) MENU_MUSIC_MAX_BANKS << 16);
+        if (ok)
             menu_music_bank = dest_bank;
         else
             asset_heap_free_last_banks(MENU_MUSIC_MAX_BANKS);
     } else {
         uint8_t bank = asset_heap_alloc_banks(src_banks);
-        if (f_read_rom_banked(&fp, bank, size, NULL, NULL) == FR_OK) {
+        if (f_read_rom_banked(&fp, bank, size, NULL, NULL) == FR_OK
+            && menu_music_validate(bank, size)) {
             menu_music_bank = bank;
             ok = true;
         } else {
