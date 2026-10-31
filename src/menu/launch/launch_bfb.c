@@ -26,6 +26,7 @@
 #include "launch.h"
 #include "settings.h"
 #include "ui/ui.h"
+#include "menu_music.h"
 
 extern FATFS fs;
 
@@ -35,6 +36,8 @@ int16_t launch_bfb(const char *path) {
     FIL fp;
     uint32_t br;
     uint16_t header[2];
+
+    menu_music_stop();
 
     if (!ws_system_is_color_active()) {
         return FR_INT_ERR;

@@ -23,6 +23,7 @@
 #include "cart/status.h"
 #include "lang_gen.h"
 #include "main.h"
+#include "menu_music.h"
 #include "settings.h"
 #include "lang.h"
 #include "strings.h"
@@ -48,6 +49,7 @@ DEFINE_STRING_LOCAL(s_language, "Language");
 DEFINE_STRING_LOCAL(s_theme_accent_color_key, "ThemeAccentColor");
 DEFINE_STRING_LOCAL(s_theme_dark_mode_key, "ThemeDarkMode");
 DEFINE_STRING_LOCAL(s_text_reader_font_key, "TextReaderFont");
+DEFINE_STRING_LOCAL(s_theme_menu_music_key, "ThemeMenuMusic");
 DEFINE_STRING_LOCAL(s_joy_repeat_first, "JoyRepeatFirst");
 DEFINE_STRING_LOCAL(s_joy_repeat_next, "JoyRepeatNext");
 
@@ -501,15 +503,38 @@ static const setting_t __far setting_txtview_font_size = {
     }
 };
 
+static void settings_theme_menu_music_on_change(const struct setting *set) {
+    if (settings.file_flags & SETTING_FILE_MENU_MUSIC)
+        menu_music_start();
+    else
+        menu_music_stop();
+}
+
+static const setting_t __far setting_theme_menu_music = {
+    s_theme_menu_music_key,
+    LK_SETTINGS_MENU_MUSIC_KEY,
+    LK_SETTINGS_MENU_MUSIC_HELP,
+    SETTING_TYPE_FLAG,
+    0,
+    settings_theme_menu_music_on_change,
+    .flag = {
+        &settings.file_flags,
+        SETTING_FILE_MENU_MUSIC_SHIFT,
+        LK_NO,
+        LK_YES
+    }
+};
+
 static const setting_category_t __far settings_theme = {
     LK_SETTINGS_THEME_KEY,
     0,
     &settings_interface,
-    3,
+    4,
     {
         &setting_theme_dark_mode,
         &setting_theme_accent_color,
-        &setting_txtview_font_size
+        &setting_txtview_font_size,
+        &setting_theme_menu_music
     }
 };
 

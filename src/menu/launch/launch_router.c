@@ -11,9 +11,13 @@
 #include "launch/launch_athena.h"
 #include "plugin/plugin.h"
 #include "shell/shell.h"
+#include "menu_music.h"
 
 int16_t launch_router_file(char *path, const char *ext, uint16_t flags) {
     int16_t code = FR_OK;
+
+    // Programs and players take over the sound hardware, HBL timer and PSRAM.
+    menu_music_stop();
 
     if (ext != NULL) {
         if (!strcasecmp(ext, s_file_ext_ws) || !strcasecmp(ext, s_file_ext_wsc) || !strcasecmp(ext, s_file_ext_pc2)) {

@@ -39,6 +39,7 @@
 #include "ui/ui_popup_dialog.h"
 #include "util/file.h"
 #include "util/ini.h"
+#include "menu_music.h"
 
 __attribute__((section(".iramCx_c000")))
 uint8_t sector_buffer[CONFIG_MEMLAYOUT_SECTOR_BUFFER_SIZE];
@@ -940,6 +941,8 @@ int16_t launch_rom_via_bootstub(const launch_rom_metadata_t *meta) {
 int16_t launch_in_psram(uint32_t size) {
     int16_t result;
     launch_rom_metadata_t meta;
+
+    menu_music_stop();
 
     bootstub_data->prog.size = size;
 

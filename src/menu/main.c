@@ -40,6 +40,7 @@
 #include "ui/ui_settings.h"
 #include "util/input.h"
 #include "shell/shell.h"
+#include "menu_music.h"
 #include "strings.h"
 
 volatile uint16_t vbl_ticks;
@@ -175,6 +176,7 @@ void main(void) {
 	ui_dialog_error_check(launch_backup_save_data(), lang_keys[LK_ERROR_TITLE_SAVE_STORE], 0);
 
 	shell_init();
+	menu_music_init();
 
 	// Run ui_show() again to intiialize wallpaper
 	ui_layout_bars();

@@ -141,6 +141,12 @@ msgstr "Scroll long file names"
 msgid "SETTINGS_SCROLL_LONG_NAMES_HELP"
 msgstr "Enable automatically scrolling long names, such as file names, in the list view."
 
+msgid "SETTINGS_MENU_MUSIC_KEY"
+msgstr "Menu music"
+
+msgid "SETTINGS_MENU_MUSIC_HELP"
+msgstr "Play background music while browsing files.\n\nTo use your own track, place an uncompressed WonderSwan .vgm file (up to 128 KB) at /NILESWAN/MENU.VGM."
+
 
 msgid "SETTINGS_PROG_SRAM_OVERCLOCK"
 msgstr "Force fast SRAM"
