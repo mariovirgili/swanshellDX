@@ -28,6 +28,7 @@
 #include "ui/ui.h"
 #include "ui_about.h"
 #include "ui_dialog.h"
+#include "ui_file_selector.h"
 #include "ui_fileops.h"
 #include "ui_popup_list.h"
 #include "ui_settings.h"
@@ -101,6 +102,8 @@ static enum tristate ui_file_selector_tools(ui_popup_list_config_t *lst, const c
         lst->option[0] = lang_keys[LK_SUBMENU_OPTION_TOOLS_LAUNCH_VIA_XMODEM];
         lst->option[1] = lang_keys[LK_SUBMENU_OPTION_WITCH];
         lst->option[2] = lang_keys[LK_SUBMENU_OPTION_CONTROLLER_MODE];
+        lst->option[3] = lang_keys[LK_SUBMENU_OPTION_TOOLS_SCRAPE_ROMS];
+        lst->option[4] = lang_keys[LK_SUBMENU_OPTION_TOOLS_REMOVE_INDEX];
 
         switch (ui_popup_list(lst)) {
         case UI_POPUP_ACTION_START:
@@ -126,6 +129,14 @@ static enum tristate ui_file_selector_tools(ui_popup_list_config_t *lst, const c
         }
         case 2:
             ui_hidctrl();
+            return TRISTATE_TRUE;
+        case 3:
+            ui_popup_list_clear(lst);
+            ui_draw_statusbar(lang_keys[LK_UI_STATUS_SCRAPING]);
+            ui_dialog_error_check(ui_file_selector_scrape_directory(), lang_keys[LK_SUBMENU_OPTION_TOOLS_SCRAPE_ROMS], 0);
+            return TRISTATE_TRUE;
+        case 4:
+            ui_dialog_error_check(ui_file_selector_remove_index(), lang_keys[LK_SUBMENU_OPTION_TOOLS_REMOVE_INDEX], 0);
             return TRISTATE_TRUE;
         }
     }
@@ -155,6 +166,9 @@ static enum tristate ui_file_selector_file(ui_popup_list_config_t *lst, const ch
             return TRISTATE_NONE;
         case 0: {
             int16_t result = ui_fileops_check_file_delete_by_user(filename);
+            // the ROM index would still list the deleted file: drop it
+            if (result == FR_OK)
+                ui_file_selector_remove_index();
             ui_dialog_error_check(result, lang_keys[LK_SUBMENU_OPTION_FILE_DELETE], 0);
             return TRISTATE_TRUE;
         }

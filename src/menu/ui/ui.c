@@ -57,6 +57,14 @@ void ui_draw_titlebar(const char __far* text) {
     }
 }
 
+void ui_draw_titlebar_right(const char __far* text) {
+    bitmapfont_set_active_font(font8_bitmap);
+    uint16_t width = bitmapfont_get_string_width(text, screen_width);
+    // clear behind the text, in case a long path runs underneath
+    bitmap_rect_fill(&ui_bitmap, screen_width - width - 6, 0, width + 6, 8, BITMAP_COLOR_2BPP(2));
+    bitmapfont_draw_string(&ui_bitmap, screen_width - 2 - width, 0, text, screen_width);
+}
+
 static void ui_draw_icon(int x, int idx) {
     const uint8_t __far* src;
     uint8_t *dest;

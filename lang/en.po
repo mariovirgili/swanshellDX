@@ -7,6 +7,12 @@ msgstr "Empty"
 msgid "UI_STATUS_LOADING"
 msgstr "Loading..."
 
+msgid "UI_STATUS_SCRAPING"
+msgstr "Scraping..."
+
+msgid "UI_FILE_SELECTOR_INDEX_TAG"
+msgstr "Idx"
+
 msgid "UI_VGMPLAY_CONTROLS"
 msgstr "Left/Right = Prev./Next"
 
@@ -352,6 +358,12 @@ msgstr "Settings"
 
 msgid "SUBMENU_OPTION_TOOLS"
 msgstr "Tools"
+
+msgid "SUBMENU_OPTION_TOOLS_SCRAPE_ROMS"
+msgstr "Scrape ROMs"
+
+msgid "SUBMENU_OPTION_TOOLS_REMOVE_INDEX"
+msgstr "Remove ROM index"
 
 msgid "SUBMENU_OPTION_TOOLS_LAUNCH_VIA_XMODEM"
 msgstr "Launch via XMODEM"

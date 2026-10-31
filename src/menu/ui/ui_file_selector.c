@@ -71,6 +71,10 @@ static int compare_filenames(const file_selector_entry_t __far* a, const file_se
 }
 
 bool ui_file_selector_default_predicate(const FILINFO __far *fno, const char __far* ext) {
+    // the ROM index file is never listed
+    if (!strcasecmp(fno->fname, s_file_index_name))
+        return false;
+
     if (!(settings.file_flags & SETTING_FILE_SHOW_HIDDEN)) {
         if (fno->fattrib & AM_HID)
             return false;
@@ -86,6 +90,13 @@ bool ui_file_selector_default_predicate(const FILINFO __far *fno, const char __f
     }
 
     return true;
+}
+
+static void ui_file_selector_sort_entries(uint16_t file_count) {
+    outportw(WS_CART_EXTBANK_RAM_PORT, FILE_SELECTOR_INDEX_BANK);
+    for (int i = 0; i < file_count; i++)
+        FILE_SELECTOR_INDEXES[i] = i;
+    ui_file_selector_qsort(file_count, compare_filenames, (void*) settings.file_sort);
 }
 
 int16_t ui_file_selector_scan_directory(const char *path, filinfo_predicate_t predicate, uint16_t *count) {
@@ -121,10 +132,7 @@ int16_t ui_file_selector_scan_directory(const char *path, filinfo_predicate_t pr
 	}
 	f_closedir(&dir);
 
-    outportw(WS_CART_EXTBANK_RAM_PORT, FILE_SELECTOR_INDEX_BANK);
-    for (int i = 0; i < file_count; i++)
-        FILE_SELECTOR_INDEXES[i] = i;
-    ui_file_selector_qsort(file_count, compare_filenames, (void*) settings.file_sort);
+    ui_file_selector_sort_entries(file_count);
 
     *count = file_count;
     return FR_OK;
@@ -249,6 +257,112 @@ static uint16_t ui_file_selector_find_track(uint16_t offset, uint16_t count, boo
     return 0xFFFF;
 }
 
+/* === ROM index (SWANSHELL.IDX) ===
+ *
+ * Header, then the entries exactly as stored in SRAM by the directory scan
+ * (one slot of 1 << FILE_SELECTOR_ENTRY_SHIFT bytes each, unsorted), so that
+ * loading is a single sequential read. Sorting is applied after loading.
+ */
+
+#define FILE_INDEX_VERSION 1
+#define FILE_INDEX_FILTER_FLAGS (SETTING_FILE_SHOW_HIDDEN | SETTING_FILE_SHOW_SAVES)
+
+typedef struct __attribute__((packed)) {
+    char magic[4];         // "SSIX"
+    uint16_t version;
+    uint16_t entry_size;   // sizeof(file_selector_entry_t)
+    uint16_t entry_stride; // 1 << FILE_SELECTOR_ENTRY_SHIFT
+    uint16_t count;
+    uint8_t filter_flags;  // settings.file_flags & FILE_INDEX_FILTER_FLAGS
+    uint8_t reserved[5];
+} file_index_header_t;
+
+static bool listing_from_index = false;
+
+static void ui_file_selector_index_header(file_index_header_t *hdr, uint16_t count) {
+    memset(hdr, 0, sizeof(file_index_header_t));
+    hdr->magic[0] = 'S'; hdr->magic[1] = 'S'; hdr->magic[2] = 'I'; hdr->magic[3] = 'X';
+    hdr->version = FILE_INDEX_VERSION;
+    hdr->entry_size = sizeof(file_selector_entry_t);
+    hdr->entry_stride = 1 << FILE_SELECTOR_ENTRY_SHIFT;
+    hdr->count = count;
+    hdr->filter_flags = settings.file_flags & FILE_INDEX_FILTER_FLAGS;
+}
+
+// Load the listing from SWANSHELL.IDX in the current directory.
+// Returns FR_OK only if the index exists, is valid and matches the settings.
+static int16_t ui_file_selector_load_index(uint16_t *count) {
+    FIL fp;
+    file_index_header_t hdr, expected;
+    unsigned int br;
+
+    *count = 0;
+    int16_t result = f_open_far(&fp, s_file_index_name, FA_READ | FA_OPEN_EXISTING);
+    if (result != FR_OK)
+        return result;
+
+    result = f_read(&fp, &hdr, sizeof(hdr), &br);
+    if (result == FR_OK) {
+        ui_file_selector_index_header(&expected, hdr.count);
+        if (br != sizeof(hdr) || memcmp(&hdr, &expected, sizeof(hdr))
+            || hdr.count > FILE_SELECTOR_MAX_FILES
+            || f_size(&fp) != sizeof(hdr) + ((uint32_t) hdr.count << FILE_SELECTOR_ENTRY_SHIFT))
+            result = FR_NO_FILE; // stale or foreign: fall back to scanning
+    }
+    if (result == FR_OK && hdr.count > 0) {
+        result = f_read_sram_banked(&fp, FILE_SELECTOR_RAM_BANK_OFFSET,
+            (uint32_t) hdr.count << FILE_SELECTOR_ENTRY_SHIFT, NULL, NULL);
+    }
+    f_close(&fp);
+
+    if (result != FR_OK)
+        return result;
+
+    ui_file_selector_sort_entries(hdr.count);
+    *count = hdr.count;
+    return FR_OK;
+}
+
+int16_t ui_file_selector_scrape_directory(void) {
+    FIL fp;
+    file_index_header_t hdr;
+    unsigned int bw;
+    uint16_t count;
+    char path[4];
+
+    strcpy(path, s_dot);
+    int16_t result = ui_file_selector_scan_directory(path, ui_file_selector_default_predicate, &count);
+    if (result != FR_OK)
+        return result;
+
+    result = f_open_far(&fp, s_file_index_name, FA_WRITE | FA_CREATE_ALWAYS);
+    if (result != FR_OK)
+        return result;
+
+    ui_file_selector_index_header(&hdr, count);
+    result = f_write(&fp, &hdr, sizeof(hdr), &bw);
+    if (result == FR_OK && bw != sizeof(hdr))
+        result = FR_DISK_ERR;
+    if (result == FR_OK && count > 0) {
+        result = f_write_sram_banked(&fp, FILE_SELECTOR_RAM_BANK_OFFSET,
+            (uint32_t) count << FILE_SELECTOR_ENTRY_SHIFT, NULL, NULL, false);
+    }
+    int16_t close_result = f_close(&fp);
+    if (result == FR_OK)
+        result = close_result;
+
+    if (result != FR_OK)
+        ui_file_selector_remove_index(); // never leave a half-written index
+    return result;
+}
+
+int16_t ui_file_selector_remove_index(void) {
+    char name[16];
+    strcpy(name, s_file_index_name);
+    int16_t result = f_unlink(name);
+    return result == FR_NO_FILE ? FR_OK : result;
+}
+
 // Width of "...", in pixels.
 #define DOT3_WIDTH 6
 
@@ -312,8 +426,13 @@ rescan_directory:
     }
     if (reinit_dirs) {
         config.offset = path_depth_pos >= CONFIG_FILESELECT_PATH_MEMORY_DEPTH ? 0 : path_depth[path_depth_pos];
-        strcpy(strbuf, s_dot);
-        int16_t result = ui_file_selector_scan_directory(strbuf, ui_file_selector_default_predicate, &config.count);
+        int16_t result = FR_OK;
+        // Use the ROM index (Tools > Scrape ROMs) if present, else scan.
+        listing_from_index = ui_file_selector_load_index(&config.count) == FR_OK;
+        if (!listing_from_index) {
+            strcpy(strbuf, s_dot);
+            result = ui_file_selector_scan_directory(strbuf, ui_file_selector_default_predicate, &config.count);
+        }
         if (ui_dialog_error_check(result, NULL, 0)) {
             strcpy(strbuf, s_dotdot);
             f_chdir(strbuf);
@@ -321,6 +440,8 @@ rescan_directory:
             goto rescan_directory;
         }
     }
+    if (listing_from_index)
+        ui_draw_titlebar_right(lang_keys[LK_UI_FILE_SELECTOR_INDEX_TAG]);
     reinit_ui = false;
     reinit_dirs = false;
 
