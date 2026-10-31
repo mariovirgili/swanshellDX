@@ -13,8 +13,17 @@ msgstr "Scraping..."
 msgid "UI_FILE_SELECTOR_INDEX_TAG"
 msgstr "Idx"
 
-msgid "UI_STATUS_PATCHING"
-msgstr "Applying patch..."
+msgid "UI_STATUS_PATCH_LOADING"
+msgstr "Loading ROM... %d%%"
+
+msgid "UI_STATUS_PATCH_EXPANDING"
+msgstr "Expanding ROM... %d%%"
+
+msgid "UI_STATUS_PATCH_APPLYING"
+msgstr "Applying patch... %d%%"
+
+msgid "UI_STATUS_PATCH_STARTING"
+msgstr "Starting game..."
 
 msgid "UI_VGMPLAY_CONTROLS"
 msgstr "Left/Right = Prev./Next"

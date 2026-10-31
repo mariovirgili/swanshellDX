@@ -43,12 +43,43 @@
 #include "lang.h"
 #include "launch.h"
 #include "launch_patch.h"
+#include "plugin/plugin.h"
 #include "strings.h"
 #include "ui/ui.h"
 #include "util/asset_heap.h"
 #include "util/file.h"
+#include <stdio.h>
 
 #define PSRAM_BANK_SIZE 0x10000UL
+
+/* === Progress in the status bar ===
+ * Redrawn only when the percentage or the stage changes. The bank registers
+ * are saved around drawing, since this runs in the middle of PSRAM work. */
+
+static uint16_t progress_lk = 0xFFFF;
+static uint8_t progress_pct = 0xFF;
+static char progress_text[48];
+
+static void progress_show(uint16_t lk, uint32_t step, uint32_t max) {
+    uint8_t pct = (max == 0 || step >= max) ? 100 : (uint8_t) ((step * 100) / max);
+    if (lk == progress_lk && pct == progress_pct)
+        return;
+    progress_lk = lk;
+    progress_pct = pct;
+
+    uint16_t ram = inportw(WS_CART_EXTBANK_RAM_PORT);
+    uint16_t rom0 = inportw(WS_CART_EXTBANK_ROM0_PORT);
+    uint16_t rom1 = inportw(WS_CART_EXTBANK_ROM1_PORT);
+    snprintf(progress_text, sizeof(progress_text), lang_keys[lk], pct);
+    ui_draw_statusbar(progress_text);
+    outportw(WS_CART_EXTBANK_ROM1_PORT, rom1);
+    outportw(WS_CART_EXTBANK_ROM0_PORT, rom0);
+    outportw(WS_CART_EXTBANK_RAM_PORT, ram);
+}
+
+static void progress_load_cb(void *userdata, uint32_t step, uint32_t max) {
+    progress_show(LK_UI_STATUS_PATCH_LOADING, step, max);
+}
 
 /* === PSRAM access ===
  * Callers enable flash mode (WS_CART_BANK_FLASH_ENABLE) for writes; the
@@ -68,7 +99,11 @@ static void psram_write(uint32_t addr, const uint8_t *src, uint16_t len) {
 }
 
 static void psram_fill(uint32_t addr, uint8_t value, uint32_t len) {
+    uint32_t total = len;
+    bool report = len >= 0x40000;
     while (len) {
+        if (report)
+            progress_show(LK_UI_STATUS_PATCH_EXPANDING, total - len, total);
         uint16_t ofs = addr & 0xFFFF;
         uint32_t n = PSRAM_BANK_SIZE - ofs;
         if (n > len) n = len;
@@ -191,12 +226,13 @@ static uint32_t reader_bps_number(patch_reader_t *r) {
 
 /* === IPS === */
 
-static int16_t apply_ips(patch_reader_t *r, uint32_t *size, uint32_t max_size) {
+static int16_t apply_ips(patch_reader_t *r, uint32_t *size, uint32_t max_size, uint32_t patch_size) {
     if (!reader_magic(r, "PATCH"))
         return ERR_FILE_FORMAT_INVALID;
 
     uint32_t end = *size;
     while (true) {
+        progress_show(LK_UI_STATUS_PATCH_APPLYING, reader_tell(r), patch_size);
         uint32_t ofs = reader_be(r, 3);
         if (r->error)
             return ERR_FILE_FORMAT_INVALID;
@@ -264,6 +300,7 @@ static int16_t apply_bps(patch_reader_t *r, const bps_header_t *hdr, uint32_t so
     int32_t source_rel = 0, target_rel = 0;
 
     while (reader_tell(r) < actions_end) {
+        progress_show(LK_UI_STATUS_PATCH_APPLYING, out, hdr->target_size);
         uint32_t data = reader_bps_number(r);
         uint8_t command = data & 3;
         uint32_t len = (data >> 2) + 1;
@@ -352,7 +389,7 @@ static int16_t load_rom_to_psram(const char *path, uint16_t bank, uint32_t *size
     if (result != FR_OK)
         return result;
     *size = f_size(&fp);
-    result = f_read_rom_banked(&fp, bank, *size, NULL, NULL);
+    result = f_read_rom_banked(&fp, bank, *size, progress_load_cb, NULL);
     f_close(&fp);
     return result;
 }
@@ -386,7 +423,9 @@ int16_t launch_patched_rom(const char *patch_path) {
     const char *patch_ext = last_dot(save_path);
     bool is_bps = patch_ext != NULL && !strcasecmp(patch_ext, s_file_ext_bps);
 
-    ui_draw_statusbar(lang_keys[LK_UI_STATUS_PATCHING]);
+    ui_draw_titlebar_filename(patch_path);
+    progress_lk = 0xFFFF;
+    progress_show(LK_UI_STATUS_PATCH_LOADING, 0, 1);
 
     uint16_t prev_ram = inportw(WS_CART_EXTBANK_RAM_PORT);
     uint16_t prev_rom0 = inportw(WS_CART_EXTBANK_ROM0_PORT);
@@ -416,7 +455,7 @@ int16_t launch_patched_rom(const char *patch_path) {
         if (result == FR_OK) {
             size = rom_size;
             outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_ENABLE);
-            result = apply_ips(&reader, &size, max_size);
+            result = apply_ips(&reader, &size, max_size, patch_size);
         }
     }
 
@@ -426,6 +465,8 @@ int16_t launch_patched_rom(const char *patch_path) {
     f_close(&reader.fp);
     if (result != FR_OK)
         return result;
+
+    ui_draw_statusbar(lang_keys[LK_UI_STATUS_PATCH_STARTING]);
 
     // Metadata of the patched image (the patch may change size or save type)
     bootstub_data->prog.size = size;
