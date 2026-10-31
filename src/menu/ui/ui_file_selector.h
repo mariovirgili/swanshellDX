@@ -25,7 +25,11 @@
 #include "../util/file.h"
 
 #define FILE_SELECTOR_ENTRY_SHIFT 8
-#define FILE_SELECTOR_MAX_FILES 1524
+// The last 256-byte slot before the indexes (bank 6, 0xF300) is not used for
+// entries: it keeps the folder to return to from Favorites/Recent, outside
+// of the (nearly full) internal RAM.
+#define FILE_SELECTOR_MAX_FILES 1523
+#define FILE_SELECTOR_SCRATCH_SLOT 1523
 #define FILE_SELECTOR_RAM_BANK_OFFSET 1
 #define FILE_SELECTOR_INDEX_BANK 6
 #define FILE_SELECTOR_INDEXES ((uint16_t __far*) MK_FP(0x1000, 0xF410))

@@ -195,7 +195,7 @@ void ui_file_selector_draw_icon(uint16_t x, uint16_t y, uint16_t icon_idx, uint1
 
 static uint8_t listing_list = FAVORITES_LIST_NONE;
 static uint16_t listing_list_offset = 0;
-static char listing_return_dir[FF_LFN_BUF + 1];
+// (the folder to return to is kept in FILE_SELECTOR_SCRATCH_SLOT)
 // "File list" mode: slot of the "Favorites" entry added to the root folder
 // ("Recent" is the next one), or 0xFFFF
 static uint16_t listing_special_slot = 0xFFFF;
@@ -572,17 +572,33 @@ static uint8_t ui_file_selector_special_list(uint16_t offset) {
     return FAVORITES_LIST_NONE;
 }
 
-static void ui_file_selector_open_list(uint8_t list) {
-    if (listing_list == FAVORITES_LIST_NONE)
-        f_getcwd(listing_return_dir, sizeof(listing_return_dir));
+// buf: a FF_LFN_BUF + 1 bytes work buffer
+static void ui_file_selector_open_list(uint8_t list, char *buf) {
+    if (listing_list == FAVORITES_LIST_NONE) {
+        if (f_getcwd(buf, FF_LFN_BUF + 1) != FR_OK) {
+            buf[0] = '/';
+            buf[1] = 0;
+        }
+        char __far *dst = (char __far*) ui_file_selector_open_fno_direct(FILE_SELECTOR_SCRATCH_SLOT);
+        uint16_t i = 0;
+        do {
+            dst[i] = buf[i];
+        } while (buf[i++]);
+    }
     listing_list = list;
     listing_list_offset = 0;
 }
 
-static void ui_file_selector_close_list(void) {
+static void ui_file_selector_close_list(char *buf) {
     if (listing_list != FAVORITES_LIST_NONE) {
         listing_list = FAVORITES_LIST_NONE;
-        f_chdir(listing_return_dir);
+        const char __far *src = (const char __far*) ui_file_selector_open_fno_direct(FILE_SELECTOR_SCRATCH_SLOT);
+        uint16_t i = 0;
+        do {
+            buf[i] = src[i];
+        } while (src[i++] && i < FF_LFN_BUF);
+        buf[FF_LFN_BUF] = 0;
+        f_chdir(buf);
     }
 }
 
@@ -658,7 +674,7 @@ rescan_directory:
     if (settings.favorites_mode != SETTING_FAVORITES_OFF)
         config.key_mask |= KEY_AUP;
     else
-        ui_file_selector_close_list();
+        ui_file_selector_close_list(strbuf);
     config.style = settings.file_view;
 
     if (reinit_ui) {
@@ -711,7 +727,7 @@ rescan_directory:
         listing_special_slot = 0xFFFF;
         int16_t result = favorites_load(listing_list, &config.count);
         if (ui_dialog_error_check(result, NULL, 0)) {
-            ui_file_selector_close_list();
+            ui_file_selector_close_list(strbuf);
             reinit_ui = true;
             goto rescan_directory;
         }
@@ -757,7 +773,7 @@ rescan_directory:
 
             uint8_t special = ui_file_selector_special_list(config.offset);
             if (special != FAVORITES_LIST_NONE) {
-                ui_file_selector_open_list(special);
+                ui_file_selector_open_list(special, strbuf);
                 reinit_ui = true;
                 reinit_dirs = true;
                 goto rescan_directory;
@@ -848,7 +864,7 @@ rescan_directory:
             continue;
         }
         if ((keys_pressed & WS_KEY_B) && listing_list != FAVORITES_LIST_NONE) {
-            ui_file_selector_close_list();
+            ui_file_selector_close_list(strbuf);
             reinit_ui = true;
             reinit_dirs = true;
             goto rescan_directory;
@@ -877,9 +893,9 @@ rescan_directory:
             }
             if (open_list != FAVORITES_LIST_NONE) {
                 if (listing_list != FAVORITES_LIST_NONE && open_list != listing_list)
-                    ui_file_selector_close_list(); // switch lists: back to where we came from first
+                    ui_file_selector_close_list(strbuf); // switch lists: back to where we came from first
                 if (listing_list != open_list)
-                    ui_file_selector_open_list(open_list);
+                    ui_file_selector_open_list(open_list, strbuf);
                 reinit_dirs = true;
             }
             reinit_ui = true;
