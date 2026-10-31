@@ -236,6 +236,17 @@ static const char __far *ui_file_selector_display_name(file_selector_entry_t __f
     return display_name;
 }
 
+/* Long name scrolling, pixel by pixel. scroll_tick from ui_selector() is
+ * the number of frames since scrolling started: one pixel per frame. */
+// extra pixels scrolled past the end of the name
+#define SCROLL_END_MARGIN 4
+// frames to hold at the end, then at the start, before scrolling again
+#define SCROLL_HOLD_END   60
+#define SCROLL_HOLD_START 30
+
+static uint16_t scroll_last_px = 0xFFFF;
+static uint16_t scroll_last_offset;
+
 static void ui_file_selector_draw(struct ui_selector_config *config, uint16_t offset, uint16_t y, uint16_t scroll_tick) {
     int x_offset;
     if (settings.file_flags & SETTING_FILE_HIDE_ICONS)
@@ -248,41 +259,78 @@ static void ui_file_selector_draw(struct ui_selector_config *config, uint16_t of
     const char __far *name = ui_file_selector_display_name(fno);
     const char __far *s = name;
     int max_width = screen_width - x_offset;
-    if (scroll_tick) {
+    int x_start = x_offset;
+    uint16_t clear_height = 0;
+    if (!scroll_tick) {
+        scroll_last_px = 0xFFFF;
+    } else {
+        // scroll_tick: frames since scrolling started = pixels scrolled
         int width = bitmapfont_get_string_width(s, 65535);
         if (width <= max_width)
-            scroll_tick = 0;
-        else {
-            int width_cropped = width;
-            while (width_cropped > max_width) {
-                width_cropped -= bitmapfont_get_char_width(wsx_utf8_decode_next(&s)) + CONFIG_FONT_CHAR_GAP;
+            return; // fits: already drawn in full, nothing to scroll
+
+        // scroll until the end of the name is visible, hold, jump back to
+        // the start, hold, repeat
+        uint16_t travel = width - max_width + SCROLL_END_MARGIN;
+        uint16_t px = scroll_tick % (travel + SCROLL_HOLD_END + SCROLL_HOLD_START);
+        if (px >= travel)
+            px = px < travel + SCROLL_HOLD_END ? travel : 0;
+        if (px == scroll_last_px && offset == scroll_last_offset)
+            return; // holding: nothing changed on screen
+        scroll_last_px = px;
+        scroll_last_offset = offset;
+
+        // skip the characters scrolled out entirely; the next one starts
+        // left of the text area by `skip` pixels
+        uint16_t skip = px;
+        while (true) {
+            const char __far *prev = s;
+            uint32_t ch = wsx_utf8_decode_next(&s);
+            if (!ch) {
+                s = prev;
+                skip = 0;
+                break;
             }
-            int tick_count = (s - name) + 2;
-            // pause at the end of the name before restarting (in scroll steps)
-            scroll_tick %= (tick_count + 12);
-            if (scroll_tick > tick_count) scroll_tick = 0;
-
-            s = name;
-            while (scroll_tick--)
-                wsx_utf8_decode_next(&s);
-
-            // The text starts a few pixels below the top of the row, so a
-            // font-height rectangle can reach past the row: on the last row it
-            // would overwrite the top line of the status bar. Clip it there.
-            uint16_t clear_height = bitmapfont_get_font_height();
-            if (y + clear_height > screen_height - 8)
-                clear_height = screen_height - 8 - y;
-            while (inportb(WS_DISPLAY_LINE_PORT) != (y + clear_height - 1));
-            // Only the selected row scrolls: clear it with the selection
-            // colour. With a wallpaper the bitmap is 4bpp, so all four planes
-            // must be written (colour 0 would be transparent and the white
-            // selection text would vanish over the wallpaper).
-            bitmap_rect_fill(&ui_bitmap, x_offset & ~7, y, screen_width - (x_offset & ~7), clear_height,
-                ui_has_wallpaper() ? BITMAP_COLOR_4BPP(2) : BITMAP_COLOR_2BPP(2));
+            uint16_t cw = bitmapfont_get_char_width(ch) + CONFIG_FONT_CHAR_GAP;
+            if (skip < cw) {
+                if (skip > x_offset) {
+                    // no room left of the text to draw it partially (icons
+                    // hidden): start with the next character instead
+                    x_start = x_offset - skip + cw;
+                } else {
+                    s = prev;
+                    x_start = x_offset - skip;
+                }
+                break;
+            }
+            skip -= cw;
         }
+        max_width = screen_width - x_start;
+
+        // The text starts a few pixels below the top of the row, so a
+        // font-height rectangle can reach past the row: on the last row it
+        // would overwrite the top line of the status bar. Clip it there.
+        clear_height = bitmapfont_get_font_height();
+        if (y + clear_height > screen_height - 8)
+            clear_height = screen_height - 8 - y;
+        // redraw right after the LCD has displayed the row, so it changes
+        // between two frames
+        while (inportb(WS_DISPLAY_LINE_PORT) != (y + clear_height - 1));
+        // Only the selected row scrolls: clear it with the selection
+        // colour. With a wallpaper the bitmap is 4bpp, so all four planes
+        // must be written (colour 0 would be transparent and the white
+        // selection text would vanish over the wallpaper).
+        bitmap_rect_fill(&ui_bitmap, x_offset & ~7, y, screen_width - (x_offset & ~7), clear_height,
+            ui_has_wallpaper() ? BITMAP_COLOR_4BPP(2) : BITMAP_COLOR_2BPP(2));
     }
 
-    uint16_t x = x_offset + bitmapfont_draw_string(&ui_bitmap, x_offset, y, s, max_width);
+    uint16_t x = x_start + bitmapfont_draw_string(&ui_bitmap, x_start, y, s, max_width);
+    // a character partially scrolled out was drawn left of the text area:
+    // clear the gap between icon and text (the icon is redrawn below)
+    if (x_start < x_offset && (x_offset & 7)) {
+        bitmap_rect_fill(&ui_bitmap, x_offset & ~7, y, x_offset & 7, clear_height,
+            ui_has_wallpaper() ? BITMAP_COLOR_4BPP(2) : BITMAP_COLOR_2BPP(2));
+    }
     uint8_t icon_idx = 1;
     if (fno->fno.fattrib & AM_DIR) {
         icon_idx = 0;
