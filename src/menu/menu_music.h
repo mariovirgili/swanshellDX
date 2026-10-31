@@ -26,7 +26,8 @@ extern const uint16_t menu_music_default_vgm_size;
 
 /**
  * Load the menu music into the PSRAM asset heap.
- * Uses /NILESWAN/MENU.VGM if present and valid, otherwise the built-in track.
+ * Uses /NILESWAN/MENU.VGM or MENU.VGZ if present and valid, otherwise the
+ * built-in track.
  * Safe to call more than once.
  */
 void menu_music_init(void);

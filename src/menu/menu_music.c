@@ -23,9 +23,10 @@
 #include "strings.h"
 #include "util/asset_heap.h"
 #include "util/file.h"
+#include "util/puff/puff.h"
 #include "plugin/vgm/vgm.h"
 
-// Largest MENU.VGM accepted, in 64 KiB banks (uncompressed .vgm only).
+// Largest MENU.VGM/VGZ accepted, in 64 KiB banks (uncompressed size).
 #define MENU_MUSIC_MAX_BANKS 2
 // Wavetable RAM: last row of the screen 1 map (unused, 18 visible rows).
 #define MENU_MUSIC_WAVE_BASE 0x3FC0
@@ -33,6 +34,7 @@
 #define MENU_MUSIC_NOT_LOADED 0xFF
 
 DEFINE_STRING_LOCAL(s_path_menu_vgm, "/NILESWAN/MENU.VGM");
+DEFINE_STRING_LOCAL(s_path_menu_vgz, "/NILESWAN/MENU.VGZ");
 
 static vgm_state_t menu_music_state;
 static uint8_t menu_music_bank = MENU_MUSIC_NOT_LOADED;
@@ -77,32 +79,94 @@ static void menu_music_load_default(void) {
     menu_music_is_default = true;
 }
 
-static void menu_music_load_file(void) {
-    FIL fp;
+// Decompress a gzip file already in PSRAM (src_bank) into dest_bank.
+static bool menu_music_gunzip(uint8_t src_bank, uint32_t size, uint8_t dest_bank) {
+    bool ok = false;
+    uint16_t prev_rom0 = inportw(WS_CART_EXTBANK_ROM0_PORT);
+    uint16_t prev_rom1 = inportw(WS_CART_EXTBANK_ROM1_PORT);
+    uint16_t prev_ram = inportw(WS_CART_EXTBANK_RAM_PORT);
 
-    if (f_open_far(&fp, s_path_menu_vgm, FA_READ | FA_OPEN_EXISTING) != FR_OK)
-        return;
+    outportw(WS_CART_EXTBANK_ROM0_PORT, src_bank);
+    outportw(WS_CART_EXTBANK_ROM1_PORT, src_bank + 1);
+    const uint8_t __far *h = MK_FP(WS_ROM0_SEGMENT, 0x0000);
 
-    uint32_t size = f_size(&fp);
-    uint16_t banks = (size + 65535L) >> 16;
-    if (size >= 0x100 && banks <= MENU_MUSIC_MAX_BANKS) {
-        uint8_t bank = asset_heap_alloc_banks(banks);
-        if (f_read_rom_banked(&fp, bank, size, NULL, NULL) == FR_OK) {
-            menu_music_bank = bank;
-            menu_music_is_default = false;
-        } else {
-            asset_heap_free_last_banks(banks);
+    // gzip header: DEFLATE only, no reserved flags
+    if (h[2] == 8 && !(h[3] & 0xE0)) {
+        uint16_t offset = 10;
+        if (h[3] & 0x04) offset += *((const uint16_t __far*) (h + offset)) + 2; // FEXTRA
+        if (h[3] & 0x08) { while (h[offset++]); }                                 // FNAME
+        if (h[3] & 0x10) { while (h[offset++]); }                                 // FCOMMENT
+        if (h[3] & 0x02) offset += 2;                                            // FHCRC
+
+        if (offset < size) {
+            ws_bank_with_flash(WS_CART_BANK_FLASH_ENABLE, {
+                outportw(WS_CART_EXTBANK_RAM_PORT, dest_bank);
+                ok = puff((unsigned char __far*) MK_FP(0x1000, 0x0000),
+                    (uint32_t) MENU_MUSIC_MAX_BANKS << 16,
+                    (const unsigned char __far*) MK_FP(WS_ROM0_SEGMENT, offset),
+                    size - offset) == 0;
+            });
         }
     }
 
+    outportw(WS_CART_EXTBANK_RAM_PORT, prev_ram);
+    outportw(WS_CART_EXTBANK_ROM1_PORT, prev_rom1);
+    outportw(WS_CART_EXTBANK_ROM0_PORT, prev_rom0);
+    return ok;
+}
+
+// Load a .vgm or gzip-compressed .vgz (detected by content, not extension).
+static bool menu_music_load_file(const char __far *path) {
+    FIL fp;
+    uint8_t magic[2];
+    unsigned int br;
+    bool ok = false;
+
+    if (f_open_far(&fp, path, FA_READ | FA_OPEN_EXISTING) != FR_OK)
+        return false;
+
+    uint32_t size = f_size(&fp);
+    uint16_t src_banks = (size + 65535L) >> 16;
+    if (size < 0x20 || src_banks > MENU_MUSIC_MAX_BANKS)
+        goto end;
+    if (f_read(&fp, magic, 2, &br) != FR_OK || br != 2 || f_lseek(&fp, 0) != FR_OK)
+        goto end;
+
+    if (magic[0] == 0x1F && magic[1] == 0x8B) {
+        // asset heap grows downwards: destination first, so it stays
+        // allocated after the temporary source banks are freed
+        uint8_t dest_bank = asset_heap_alloc_banks(MENU_MUSIC_MAX_BANKS);
+        uint8_t src_bank = asset_heap_alloc_banks(src_banks);
+        if (f_read_rom_banked(&fp, src_bank, size, NULL, NULL) == FR_OK)
+            ok = menu_music_gunzip(src_bank, size, dest_bank);
+        asset_heap_free_last_banks(src_banks);
+        if (ok)
+            menu_music_bank = dest_bank;
+        else
+            asset_heap_free_last_banks(MENU_MUSIC_MAX_BANKS);
+    } else {
+        uint8_t bank = asset_heap_alloc_banks(src_banks);
+        if (f_read_rom_banked(&fp, bank, size, NULL, NULL) == FR_OK) {
+            menu_music_bank = bank;
+            ok = true;
+        } else {
+            asset_heap_free_last_banks(src_banks);
+        }
+    }
+
+end:
     f_close(&fp);
+    if (ok)
+        menu_music_is_default = false;
+    return ok;
 }
 
 void menu_music_init(void) {
     if (menu_music_bank != MENU_MUSIC_NOT_LOADED)
         return;
 
-    menu_music_load_file();
+    if (!menu_music_load_file(s_path_menu_vgm))
+        menu_music_load_file(s_path_menu_vgz);
     if (menu_music_bank == MENU_MUSIC_NOT_LOADED)
         menu_music_load_default();
 }
