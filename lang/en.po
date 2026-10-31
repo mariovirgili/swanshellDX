@@ -7,6 +7,9 @@ msgstr "Empty"
 msgid "UI_STATUS_LOADING"
 msgstr "Loading..."
 
+msgid "UI_VGMPLAY_CONTROLS"
+msgstr "Left / Right  Prev. / Next"
+
 
 msgid "YES"
 msgstr "Yes"
