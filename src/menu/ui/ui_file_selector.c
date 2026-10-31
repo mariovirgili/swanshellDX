@@ -36,12 +36,14 @@
 #include "strings.h"
 #include "ui.h"
 #include "ui/ui_file_selector.h"
+#include "ui_favorites.h"
 #include "ui_dialog.h"
 #include "ui_selector.h"
 #include "util/input.h"
 #include "plugin/plugin.h"
 #include "../../../build/menu/assets/menu/icons.h"
 #include "lang.h"
+#include "main.h"
 
 #define COMPARE(a, b) (((a) == (b)) ? 0 : (((a) < (b)) ? -1 : 1))
 
@@ -185,24 +187,50 @@ void ui_file_selector_draw_icon(uint16_t x, uint16_t y, uint16_t icon_idx, uint1
     }
 }
 
+/* === Favorites / Recent ===
+ * listing_list != FAVORITES_LIST_NONE: the listing is one of the two lists;
+ * each entry's fname is then a whole path and the current directory is
+ * changed to the entry's own directory before it is opened. The directory
+ * the list was opened from is restored when leaving it with B. */
+
+static uint8_t listing_list = FAVORITES_LIST_NONE;
+static uint16_t listing_list_offset = 0;
+static char listing_return_dir[FF_LFN_BUF + 1];
+// "File list" mode: slot of the "Favorites" entry added to the root folder
+// ("Recent" is the next one), or 0xFFFF
+static uint16_t listing_special_slot = 0xFFFF;
+
+// Name of an entry without its directory (lists store whole paths).
+static const char __far *ui_file_selector_entry_name(file_selector_entry_t __far *fno) {
+    const char __far *name = fno->fno.fname;
+    if (listing_list != FAVORITES_LIST_NONE) {
+        for (const char __far *p = name; *p; p++)
+            if (*p == '/')
+                name = p + 1;
+    }
+    return name;
+}
+
 static char display_name[FF_LFN_BUF + 1];
 
 // Name as shown in the list: without the extension when the "Show
 // extensions" setting asks for it. Directories always keep their name.
 static const char __far *ui_file_selector_display_name(file_selector_entry_t __far *fno) {
     uint8_t mode = settings.file_show_ext;
+    const char __far *name = ui_file_selector_entry_name(fno);
+    uint8_t base = name - fno->fno.fname;
     if (mode == SETTING_FILE_SHOW_EXT_ALL || mode > SETTING_FILE_SHOW_EXT_NONE
         || (fno->fno.fattrib & AM_DIR) || !FILE_SELECTOR_ENTRY_HAS_EXTENSION(fno)
-        || fno->extension_loc == 0)
-        return fno->fno.fname;
+        || fno->extension_loc <= base)
+        return name;
     if (mode == SETTING_FILE_SHOW_EXT_EXCEPT_ROMS) {
         const char __far *ext = FILE_SELECTOR_ENTRY_GET_EXTENSION(fno);
         if (strcasecmp(ext, s_file_ext_ws) && strcasecmp(ext, s_file_ext_wsc) && strcasecmp(ext, s_file_ext_pc2))
-            return fno->fno.fname;
+            return name;
     }
-    uint8_t len = fno->extension_loc;
+    uint8_t len = fno->extension_loc - base;
     for (uint8_t i = 0; i < len; i++)
-        display_name[i] = fno->fno.fname[i];
+        display_name[i] = name[i];
     display_name[len] = 0;
     return display_name;
 }
@@ -465,7 +493,7 @@ int16_t ui_file_selector_remove_index(void) {
 
 static uint8_t ui_file_selector_initial(uint16_t idx) {
     file_selector_entry_t __far *fno = ui_file_selector_open_fno(idx);
-    uint8_t c = fno->fno.fname[0];
+    uint8_t c = ui_file_selector_entry_name(fno)[0];
     if (c >= 'a' && c <= 'z')
         c -= 'a' - 'A';
     return c;
@@ -494,6 +522,115 @@ static uint16_t ui_file_selector_letter_jump(uint16_t offset, uint16_t count, bo
     return ui_file_selector_group_start(start > 0 ? start - 1 : count - 1);
 }
 
+/* === Favorites / Recent: listing helpers === */
+
+// "File list" mode: add "Favorites" and "Recent" as the first two entries
+// of the root folder's listing.
+static void ui_file_selector_add_special_entries(uint16_t *count) {
+    listing_special_slot = 0xFFFF;
+    uint16_t n = *count;
+    if (n + 2 > FILE_SELECTOR_MAX_FILES)
+        return;
+
+    for (uint8_t i = 0; i < 2; i++) {
+        file_selector_entry_t __far *fno = ui_file_selector_open_fno_direct(n + i);
+        const char __far *src = lang_keys[i ? LK_UI_FILE_SELECTOR_RECENT : LK_UI_FILE_SELECTOR_FAVORITES];
+        uint8_t j = 0;
+        while (src[j] && j < sizeof(fno->fno.fname) - 1) {
+            fno->fno.fname[j] = src[j];
+            j++;
+        }
+        fno->fno.fname[j] = 0;
+        fno->fno.altname[0] = 0;
+        fno->fno.fattrib = AM_DIR;
+        fno->fno.fsize = 0;
+        fno->fno.fdate = 0;
+        fno->fno.ftime = 0;
+        fno->extension_loc = 255;
+    }
+
+    outportw(WS_CART_EXTBANK_RAM_PORT, FILE_SELECTOR_INDEX_BANK);
+    for (uint16_t j = n; j > 0; j--)
+        FILE_SELECTOR_INDEXES[j + 1] = FILE_SELECTOR_INDEXES[j - 1];
+    FILE_SELECTOR_INDEXES[0] = n;
+    FILE_SELECTOR_INDEXES[1] = n + 1;
+
+    listing_special_slot = n;
+    *count = n + 2;
+}
+
+// Which list a root folder entry opens (FAVORITES_LIST_NONE: a real entry).
+static uint8_t ui_file_selector_special_list(uint16_t offset) {
+    if (listing_special_slot == 0xFFFF || listing_list != FAVORITES_LIST_NONE)
+        return FAVORITES_LIST_NONE;
+    outportw(WS_CART_EXTBANK_RAM_PORT, FILE_SELECTOR_INDEX_BANK);
+    uint16_t slot = FILE_SELECTOR_INDEXES[offset];
+    if (slot == listing_special_slot)
+        return FAVORITES_LIST_FAVORITES;
+    if (slot == listing_special_slot + 1)
+        return FAVORITES_LIST_RECENT;
+    return FAVORITES_LIST_NONE;
+}
+
+static void ui_file_selector_open_list(uint8_t list) {
+    if (listing_list == FAVORITES_LIST_NONE)
+        f_getcwd(listing_return_dir, sizeof(listing_return_dir));
+    listing_list = list;
+    listing_list_offset = 0;
+}
+
+static void ui_file_selector_close_list(void) {
+    if (listing_list != FAVORITES_LIST_NONE) {
+        listing_list = FAVORITES_LIST_NONE;
+        f_chdir(listing_return_dir);
+    }
+}
+
+// Copy an entry's name to buf for opening it, and return its extension (or
+// NULL). In a list, first change to the entry's directory, so that the
+// file is opened (and its saves found) exactly as from the file list.
+static const char *ui_file_selector_prepare_entry(char *buf, file_selector_entry_t __far *fno) {
+    strncpy(buf, fno->fno.fname, FF_LFN_BUF);
+    buf[FF_LFN_BUF] = 0;
+    uint8_t ext_loc = fno->extension_loc;
+
+    if (listing_list != FAVORITES_LIST_NONE) {
+        // (no strrchr(): it returns a far pointer in this toolchain)
+        char *slash = NULL;
+        for (char *p = buf; *p; p++)
+            if (*p == '/')
+                slash = p;
+        if (slash != NULL) {
+            // cut after the slash for the root directory, else at it
+            char *cut = (slash == buf) ? slash + 1 : slash;
+            char saved = *cut;
+            *cut = 0;
+            f_chdir(buf);
+            *cut = saved;
+            uint8_t base = slash + 1 - buf;
+            memmove(buf, slash + 1, strlen(slash + 1) + 1);
+            if (ext_loc != 255)
+                ext_loc -= base;
+        }
+    }
+    return ext_loc == 255 ? NULL : buf + ext_loc;
+}
+
+static bool ui_file_selector_is_game(const char *ext) {
+    return ext != NULL && (!strcasecmp(ext, s_file_ext_ws) || !strcasecmp(ext, s_file_ext_wsc)
+        || !strcasecmp(ext, s_file_ext_pc2) || !strcasecmp(ext, s_file_ext_ips)
+        || !strcasecmp(ext, s_file_ext_bps));
+}
+
+// Remember a ROM or patch that is about to be launched (name in the
+// current directory).
+static void ui_file_selector_note_recent(const char *name, const char *ext) {
+    if (settings.favorites_mode == SETTING_FAVORITES_OFF || !ui_file_selector_is_game(ext))
+        return;
+    if (favorites_full_path(status_path, sizeof(status_path), name))
+        favorites_add_recent(status_path);
+}
+
 // Width of "...", in pixels.
 #define DOT3_WIDTH 6
 
@@ -507,10 +644,21 @@ void ui_file_selector(void) {
     uint16_t path_depth[CONFIG_FILESELECT_PATH_MEMORY_DEPTH] = {0};
     uint8_t path_depth_pos = 255;
 
+// The selection to come back to: per list, or per directory depth.
+#define REMEMBER_OFFSET() \
+    if (listing_list != FAVORITES_LIST_NONE) \
+        listing_list_offset = config.offset; \
+    else if (path_depth_pos < CONFIG_FILESELECT_PATH_MEMORY_DEPTH) \
+        path_depth[path_depth_pos] = config.offset
+
 rescan_directory:
     config.draw = ui_file_selector_draw;
     config.status_text = ui_file_selector_status_text;
     config.key_mask = WS_KEY_A | WS_KEY_B | WS_KEY_START | KEY_ALEFT | KEY_ARIGHT;
+    if (settings.favorites_mode != SETTING_FAVORITES_OFF)
+        config.key_mask |= KEY_AUP;
+    else
+        ui_file_selector_close_list();
     config.style = settings.file_view;
 
     if (reinit_ui) {
@@ -522,7 +670,9 @@ rescan_directory:
     if (!reinit_ui && ui_has_wallpaper()) {
         ui_layout_bars();
     }
-    if (reinit_ui || reinit_dirs) {
+    if ((reinit_ui || reinit_dirs) && listing_list != FAVORITES_LIST_NONE) {
+        ui_draw_titlebar(lang_keys[listing_list == FAVORITES_LIST_RECENT ? LK_UI_FILE_SELECTOR_RECENT : LK_UI_FILE_SELECTOR_FAVORITES]);
+    } else if (reinit_ui || reinit_dirs) {
         char *path = strbuf + 3;
         f_getcwd(path, sizeof(strbuf) - 4);
 
@@ -556,7 +706,19 @@ rescan_directory:
         }
         ui_draw_titlebar(draw_path);
     }
-    if (reinit_dirs) {
+    if (reinit_dirs && listing_list != FAVORITES_LIST_NONE) {
+        listing_from_index = false;
+        listing_special_slot = 0xFFFF;
+        int16_t result = favorites_load(listing_list, &config.count);
+        if (ui_dialog_error_check(result, NULL, 0)) {
+            ui_file_selector_close_list();
+            reinit_ui = true;
+            goto rescan_directory;
+        }
+        config.offset = listing_list_offset;
+        if (config.offset >= config.count)
+            config.offset = config.count ? config.count - 1 : 0;
+    } else if (reinit_dirs) {
         config.offset = path_depth_pos >= CONFIG_FILESELECT_PATH_MEMORY_DEPTH ? 0 : path_depth[path_depth_pos];
         int16_t result = FR_OK;
         // Use the ROM index (Tools > Scrape ROMs) if present, else scan.
@@ -571,6 +733,10 @@ rescan_directory:
             if (path_depth_pos) path_depth_pos--;
             goto rescan_directory;
         }
+        listing_special_slot = 0xFFFF;
+        // (the remembered selection already counts the two entries)
+        if (path_depth_pos == 0 && settings.favorites_mode == SETTING_FAVORITES_FILE_LIST)
+            ui_file_selector_add_special_entries(&config.count);
     }
     if (listing_from_index)
         ui_draw_titlebar_right(lang_keys[LK_UI_FILE_SELECTOR_INDEX_TAG]);
@@ -583,15 +749,23 @@ rescan_directory:
         if (keys_pressed == UI_SELECTOR_RELOAD_REQUESTED) {
             reinit_ui = true;
             reinit_dirs = true;
-            path_depth[path_depth_pos] = config.offset;
+            REMEMBER_OFFSET();
             goto rescan_directory;
         }
         if ((keys_pressed & WS_KEY_A) && config.count) {
-            path_depth[path_depth_pos] = config.offset;
+            REMEMBER_OFFSET();
+
+            uint8_t special = ui_file_selector_special_list(config.offset);
+            if (special != FAVORITES_LIST_NONE) {
+                ui_file_selector_open_list(special);
+                reinit_ui = true;
+                reinit_dirs = true;
+                goto rescan_directory;
+            }
 
             file_selector_entry_t __far *fno = ui_file_selector_open_fno(config.offset);
-            strncpy(strbuf, fno->fno.fname, sizeof(fno->fno.fname));
             if (fno->fno.fattrib & AM_DIR) {
+                strncpy(strbuf, fno->fno.fname, sizeof(fno->fno.fname));
                 path_depth[++path_depth_pos] = 0;
                 f_chdir(strbuf);
                 reinit_ui = true;
@@ -599,8 +773,9 @@ rescan_directory:
                 goto rescan_directory;
             } else {
                 ui_selector_clear_selection(&config);
-                const char *ext = strbuf + fno->extension_loc;
-                if (!strcasecmp(ext, s_file_ext_bfb)) {
+                const char *ext = ui_file_selector_prepare_entry(strbuf, fno);
+                ui_file_selector_note_recent(strbuf, ext);
+                if (ext != NULL && !strcasecmp(ext, s_file_ext_bfb)) {
                     ui_selector_clear_selection(&config);
                     int option = ui_file_selector_actions_bfb();
                     if (option == 0) {
@@ -619,10 +794,9 @@ rescan_directory:
                             break;
                         }
                         config.offset = track;
-                        path_depth[path_depth_pos] = track;
+                        REMEMBER_OFFSET();
                         fno = ui_file_selector_open_fno(track);
-                        strncpy(strbuf, fno->fno.fname, sizeof(fno->fno.fname));
-                        ext = strbuf + fno->extension_loc;
+                        ext = ui_file_selector_prepare_entry(strbuf, fno);
                         result = launch_router_file(strbuf, ext, 0);
                     }
                     if (result && result != LAUNCH_ROUTER_OK_SRAM_UNCHANGED) {
@@ -640,9 +814,44 @@ rescan_directory:
             config.redraw_from = config.offset + 1;
             config.offset = ui_file_selector_letter_jump(config.offset, config.count,
                 (keys_pressed & KEY_ARIGHT) != 0);
-            if (path_depth_pos < CONFIG_FILESELECT_PATH_MEMORY_DEPTH)
-                path_depth[path_depth_pos] = config.offset;
+            REMEMBER_OFFSET();
             continue;
+        }
+        if ((keys_pressed & KEY_AUP) && config.count) {
+            // Y1: add the selected file to the favorites, or remove it
+            file_selector_entry_t __far *fno = ui_file_selector_open_fno(config.offset);
+            if (!(fno->fno.fattrib & AM_DIR)) {
+                bool ok;
+                if (listing_list != FAVORITES_LIST_NONE) {
+                    strncpy(status_path, fno->fno.fname, sizeof(status_path) - 1);
+                    status_path[sizeof(status_path) - 1] = 0;
+                    ok = true;
+                } else {
+                    ok = favorites_full_path(status_path, sizeof(status_path), fno->fno.fname);
+                }
+                bool added = false;
+                int16_t result = ok ? favorites_toggle(status_path, &added) : FR_INVALID_NAME;
+                if (!ui_dialog_error_check(result, NULL, 0)) {
+                    ui_draw_statusbar(lang_keys[added ? LK_UI_STATUS_FAVORITE_ADDED : LK_UI_STATUS_FAVORITE_REMOVED]);
+                    for (uint8_t i = 0; i < 45; i++)
+                        wait_for_vblank();
+                }
+                REMEMBER_OFFSET();
+                if (listing_list == FAVORITES_LIST_FAVORITES || result != FR_OK) {
+                    // the entry left the list (or a dialog covered it)
+                    reinit_ui = result != FR_OK;
+                    reinit_dirs = true;
+                    goto rescan_directory;
+                }
+                config.redraw_from = config.offset + 1;
+            }
+            continue;
+        }
+        if ((keys_pressed & WS_KEY_B) && listing_list != FAVORITES_LIST_NONE) {
+            ui_file_selector_close_list();
+            reinit_ui = true;
+            reinit_dirs = true;
+            goto rescan_directory;
         }
         if (keys_pressed & WS_KEY_B) {
             strcpy(strbuf, s_dotdot);
@@ -655,12 +864,22 @@ rescan_directory:
 
         // TODO: temporary
         if ((keys_pressed & WS_KEY_START) && config.count) {
-            path_depth[path_depth_pos] = config.offset;
+            REMEMBER_OFFSET();
 
             file_selector_entry_t __far *fno = ui_file_selector_open_fno(config.offset);
+            uint8_t attrib = fno->fno.fattrib;
+            ui_file_selector_prepare_entry(strbuf, fno);
 
             ui_selector_clear_selection(&config);
-            if (ui_file_selector_options(fno->fno.fname, fno->fno.fattrib)) {
+            uint8_t open_list = FAVORITES_LIST_NONE;
+            if (ui_file_selector_options(strbuf, attrib, &open_list)) {
+                reinit_dirs = true;
+            }
+            if (open_list != FAVORITES_LIST_NONE) {
+                if (listing_list != FAVORITES_LIST_NONE && open_list != listing_list)
+                    ui_file_selector_close_list(); // switch lists: back to where we came from first
+                if (listing_list != open_list)
+                    ui_file_selector_open_list(open_list);
                 reinit_dirs = true;
             }
             reinit_ui = true;

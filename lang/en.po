@@ -13,6 +13,18 @@ msgstr "Scraping..."
 msgid "UI_FILE_SELECTOR_INDEX_TAG"
 msgstr "Idx"
 
+msgid "UI_FILE_SELECTOR_FAVORITES"
+msgstr "Favorites"
+
+msgid "UI_FILE_SELECTOR_RECENT"
+msgstr "Recent"
+
+msgid "UI_STATUS_FAVORITE_ADDED"
+msgstr "Added to favorites"
+
+msgid "UI_STATUS_FAVORITE_REMOVED"
+msgstr "Removed from favorites"
+
 msgid "UI_STATUS_PATCH_LOADING"
 msgstr "Loading ROM... %d%%"
 
@@ -194,6 +206,21 @@ msgstr "Scroll long file names"
 
 msgid "SETTINGS_SCROLL_LONG_NAMES_HELP"
 msgstr "Enable automatically scrolling long names, such as file names, in the list view."
+
+msgid "SETTINGS_FAVORITES_KEY"
+msgstr "Favorites & recent"
+
+msgid "SETTINGS_FAVORITES_HELP"
+msgstr "Where to show the Favorites and Recent lists.\n\n\"File list\": as two folders at the top of the root folder.\n\"Start menu\": as entries of the Start menu.\n\nY1 in the file list, or Start > File, adds or removes a favorite. Recent lists the last ROMs and patches launched."
+
+msgid "SETTINGS_FAVORITES_FILE_LIST"
+msgstr "File list"
+
+msgid "SETTINGS_FAVORITES_START_MENU"
+msgstr "Start menu"
+
+msgid "SETTINGS_FAVORITES_OFF"
+msgstr "Off"
 
 msgid "SETTINGS_MENU_MUSIC_KEY"
 msgstr "Menu music"
@@ -436,6 +463,12 @@ msgstr "Extract BIOS/OS"
 
 msgid "SUBMENU_OPTION_FILE"
 msgstr "File..."
+
+msgid "SUBMENU_OPTION_FILE_ADD_FAVORITE"
+msgstr "Add to favorites"
+
+msgid "SUBMENU_OPTION_FILE_REMOVE_FAVORITE"
+msgstr "Remove from favorites"
 
 msgid "SUBMENU_OPTION_FILE_DELETE"
 msgstr "Delete"

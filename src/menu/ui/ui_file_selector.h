@@ -80,7 +80,8 @@ int16_t ui_file_selector_remove_index(void);
 
 // ui_file_selector_options.c
 int ui_file_selector_actions_bfb(void);
-bool ui_file_selector_options(const char __far *filename, uint8_t attrib);
+// open_list: set to FAVORITES_LIST_* if the user chose to open a list
+bool ui_file_selector_options(const char __far *filename, uint8_t attrib, uint8_t *open_list);
 
 // ui_file_selector_qsort.c
 void ui_file_selector_qsort(size_t nmemb, int (*compar)(const file_selector_entry_t __far*, const file_selector_entry_t __far*, void*), void *userdata);

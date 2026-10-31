@@ -40,6 +40,7 @@ DEFINE_STRING_LOCAL(s_file_sort_order_key, "FileSortOrder");
 DEFINE_STRING_LOCAL(s_file_initial_path_key, "FileInitialPath");
 DEFINE_STRING_LOCAL(s_file_view_key, "FileView");
 DEFINE_STRING_LOCAL(s_file_show_ext_key, "FileShowExt");
+DEFINE_STRING_LOCAL(s_theme_favorites_key, "ThemeFavorites");
 DEFINE_STRING_LOCAL(s_file_hide_icons_key, "FileHideIcons");
 DEFINE_STRING_LOCAL(s_program_fast_sram_key, "ProgFastSRAM");
 DEFINE_STRING_LOCAL(s_program_verify_saves_key, "ProgVerifySave");
@@ -578,15 +579,42 @@ static const setting_t __far setting_theme_menu_music_volume = {
     }
 };
 
+static const uint16_t __wf_rom settings_theme_favorites_name_table[] = {
+    LK_SETTINGS_FAVORITES_FILE_LIST,
+    LK_SETTINGS_FAVORITES_START_MENU,
+    LK_SETTINGS_FAVORITES_OFF
+};
+
+static void settings_theme_favorites_name(uint16_t value, char *buf, int buf_len) {
+    if (value > SETTING_FAVORITES_OFF) value = SETTING_FAVORITES_FILE_LIST;
+    strncpy(buf, lang_keys[settings_theme_favorites_name_table[value]], buf_len);
+}
+
+static const setting_t __far setting_theme_favorites = {
+    s_theme_favorites_key,
+    LK_SETTINGS_FAVORITES_KEY,
+    LK_SETTINGS_FAVORITES_HELP,
+    SETTING_TYPE_CHOICE_BYTE,
+    0,
+    NULL,
+    .choice = {
+        &settings.favorites_mode,
+        SETTING_FAVORITES_FILE_LIST, SETTING_FAVORITES_OFF,
+        NULL,
+        settings_theme_favorites_name
+    }
+};
+
 static const setting_category_t __far settings_theme = {
     LK_SETTINGS_THEME_KEY,
     0,
     &settings_interface,
-    5,
+    6,
     {
         &setting_theme_dark_mode,
         &setting_theme_accent_color,
         &setting_txtview_font_size,
+        &setting_theme_favorites,
         &setting_theme_menu_music,
         &setting_theme_menu_music_volume
     }

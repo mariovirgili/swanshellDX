@@ -28,6 +28,7 @@
 #include "ui/ui.h"
 #include "ui_about.h"
 #include "ui_dialog.h"
+#include "ui_favorites.h"
 #include "ui_file_selector.h"
 #include "ui_fileops.h"
 #include "ui_popup_list.h"
@@ -143,10 +144,20 @@ static enum tristate ui_file_selector_tools(ui_popup_list_config_t *lst, const c
 }
 
 static enum tristate ui_file_selector_file(ui_popup_list_config_t *lst, const char __far *filename) {
+    char path[FF_LFN_BUF + 1];
+    bool has_path = false;
+    // filename is in the current directory: make it a whole path
+    if (settings.favorites_mode != SETTING_FAVORITES_OFF)
+        has_path = favorites_full_path(path, sizeof(path), filename);
+
     while (true) {
         uint8_t options[4];
         int i = 0;
         memset(lst, 0, sizeof(ui_popup_list_config_t));
+        if (has_path) {
+            options[i] = 2;
+            lst->option[i++] = lang_keys[favorites_contains(path) ? LK_SUBMENU_OPTION_FILE_REMOVE_FAVORITE : LK_SUBMENU_OPTION_FILE_ADD_FAVORITE];
+        }
         if (fileops_is_rom(filename)) {
             options[i] = 1;
             lst->option[i++] = lang_keys[LK_SUBMENU_OPTION_FILE_ERASE_SAVE];
@@ -177,24 +188,42 @@ static enum tristate ui_file_selector_file(ui_popup_list_config_t *lst, const ch
             ui_dialog_error_check(result, lang_keys[LK_SUBMENU_OPTION_FILE_ERASE_SAVE], 0);
             return TRISTATE_TRUE;
         }
+        case 2: {
+            bool added;
+            ui_dialog_error_check(favorites_toggle(path, &added), NULL, 0);
+            return TRISTATE_TRUE;
+        }
         }
     }
 }
 
-bool ui_file_selector_options(const char __far *filename, uint8_t attrib) {
+#define OPTION_OPEN_FAVORITES 3
+#define OPTION_OPEN_RECENT    4
+
+bool ui_file_selector_options(const char __far *filename, uint8_t attrib, uint8_t *open_list) {
     ui_popup_list_config_t lst;
 
     while (true) {
         memset(&lst, 0, sizeof(ui_popup_list_config_t));
+        uint8_t options[5];
         int i = 0;
+        if (settings.favorites_mode == SETTING_FAVORITES_START_MENU) {
+            options[i] = OPTION_OPEN_FAVORITES;
+            lst.option[i++] = lang_keys[LK_UI_FILE_SELECTOR_FAVORITES];
+            options[i] = OPTION_OPEN_RECENT;
+            lst.option[i++] = lang_keys[LK_UI_FILE_SELECTOR_RECENT];
+        }
         if (!(attrib & AM_DIR)) {
+            options[i] = 0;
             lst.option[i++] = lang_keys[LK_SUBMENU_OPTION_FILE];
         }
+        options[i] = 1;
         lst.option[i++] = lang_keys[LK_SUBMENU_OPTION_TOOLS];
+        options[i] = 2;
         lst.option[i++] = lang_keys[LK_SUBMENU_OPTION_SETTINGS];
-        
+
         int option = ui_popup_list(&lst);
-        if (i == 2 && option >= 0) option++;
+        if (option >= 0) option = options[option];
 
         enum tristate result = TRISTATE_NONE;
         switch (option) {
@@ -209,6 +238,14 @@ bool ui_file_selector_options(const char __far *filename, uint8_t attrib) {
             break;
         case 2:
             ui_settings(&settings_root);
+            result = TRISTATE_TRUE;
+            break;
+        case OPTION_OPEN_FAVORITES:
+            *open_list = FAVORITES_LIST_FAVORITES;
+            result = TRISTATE_TRUE;
+            break;
+        case OPTION_OPEN_RECENT:
+            *open_list = FAVORITES_LIST_RECENT;
             result = TRISTATE_TRUE;
             break;
         }
