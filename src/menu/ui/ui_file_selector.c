@@ -213,12 +213,18 @@ static void ui_file_selector_draw(struct ui_selector_config *config, uint16_t of
             while (scroll_tick--)
                 wsx_utf8_decode_next(&s);
 
-            while (inportb(WS_DISPLAY_LINE_PORT) != (y + bitmapfont_get_font_height() - 1));
+            // The text starts a few pixels below the top of the row, so a
+            // font-height rectangle can reach past the row: on the last row it
+            // would overwrite the top line of the status bar. Clip it there.
+            uint16_t clear_height = bitmapfont_get_font_height();
+            if (y + clear_height > screen_height - 8)
+                clear_height = screen_height - 8 - y;
+            while (inportb(WS_DISPLAY_LINE_PORT) != (y + clear_height - 1));
             // Only the selected row scrolls: clear it with the selection
             // colour. With a wallpaper the bitmap is 4bpp, so all four planes
             // must be written (colour 0 would be transparent and the white
             // selection text would vanish over the wallpaper).
-            bitmap_rect_fill(&ui_bitmap, x_offset & ~7, y, screen_width - (x_offset & ~7), bitmapfont_get_font_height(),
+            bitmap_rect_fill(&ui_bitmap, x_offset & ~7, y, screen_width - (x_offset & ~7), clear_height,
                 ui_has_wallpaper() ? BITMAP_COLOR_4BPP(2) : BITMAP_COLOR_2BPP(2));
         }
     }
