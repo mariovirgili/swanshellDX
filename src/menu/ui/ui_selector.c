@@ -67,8 +67,10 @@ void ui_selector_clear_selection(ui_selector_config_t *config) {
     if (config->count > 0 && config->offset >= config->count) \
         config->offset = config->count - 1
 
-#define SCROLL_TICKS_MIN 96
-#define SCROLL_TICKS_PACE_SHIFT 5
+// Delay before a long name starts scrolling, in frames (~75 fps): ~0.5 s
+#define SCROLL_TICKS_MIN 40
+// Scroll by one character every (1 << SHIFT) frames: 8 frames (~9 chars/s)
+#define SCROLL_TICKS_PACE_SHIFT 3
 #define SCROLL_TICKS_PACE_MASK ((1 << (SCROLL_TICKS_PACE_SHIFT)) - 1)
 
 uint16_t ui_selector(ui_selector_config_t *config) {

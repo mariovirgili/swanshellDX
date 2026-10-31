@@ -196,7 +196,8 @@ static void ui_file_selector_draw(struct ui_selector_config *config, uint16_t of
                 width_cropped -= bitmapfont_get_char_width(wsx_utf8_decode_next(&s)) + CONFIG_FONT_CHAR_GAP;
             }
             int tick_count = (s - fno->fno.fname) + 2;
-            scroll_tick %= (tick_count + 8);
+            // pause at the end of the name before restarting (in scroll steps)
+            scroll_tick %= (tick_count + 12);
             if (scroll_tick > tick_count) scroll_tick = 0;
 
             s = fno->fno.fname;
