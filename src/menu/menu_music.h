@@ -44,4 +44,9 @@ void menu_music_stop(void);
 
 bool menu_music_is_playing(void);
 
+/**
+ * Apply settings.menu_music_volume. Takes effect from the next note.
+ */
+void menu_music_apply_volume(void);
+
 #endif /* MENU_MUSIC_H_ */

@@ -111,6 +111,19 @@ bool menu_music_is_playing(void) {
     return menu_music_playing;
 }
 
+// settings.menu_music_volume (1..10) -> driver scale (0..16)
+static uint8_t menu_music_volume_scale(void) {
+    uint8_t level = settings.menu_music_volume;
+    if (level < SETTING_MENU_MUSIC_VOLUME_MIN || level > SETTING_MENU_MUSIC_VOLUME_MAX)
+        level = SETTING_MENU_MUSIC_VOLUME_DEFAULT;
+    return (level * 16 + 5) / 10;
+}
+
+void menu_music_apply_volume(void) {
+    if (menu_music_playing)
+        vgm_ws_volume_scale = menu_music_volume_scale();
+}
+
 void menu_music_start(void) {
     if (menu_music_playing || menu_music_bank == MENU_MUSIC_NOT_LOADED)
         return;
@@ -119,6 +132,7 @@ void menu_music_start(void) {
 
     ws_sound_reset();
     outportb(WS_SOUND_WAVE_BASE_PORT, WS_SOUND_WAVE_BASE_ADDR(MENU_MUSIC_WAVE_BASE));
+    vgm_ws_volume_scale = menu_music_volume_scale();
 
     if (!vgm_init(&menu_music_state, menu_music_bank, 0)) {
         // MENU.VGM not supported (not a WonderSwan VGM?): fall back to the
@@ -142,6 +156,7 @@ void menu_music_start(void) {
     return;
 
 start_failed:
+    vgm_ws_volume_scale = 16;
     ws_sound_reset();
     menu_music_bank = MENU_MUSIC_NOT_LOADED;
 }
@@ -155,6 +170,8 @@ void menu_music_stop(void) {
         menu_music_playing = false;
         ia16_enable_irq();
         ws_sound_reset();
+        // the VGM player plugin shares the driver: play files at full volume
+        vgm_ws_volume_scale = 16;
         return;
     }
     ia16_enable_irq();

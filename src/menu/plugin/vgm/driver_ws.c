@@ -26,6 +26,14 @@
 #include "vgm.h"
 #include "vgm_internal.h"
 
+uint8_t vgm_ws_volume_scale = 16;
+
+static uint8_t vgm_ws_scale_volume(uint8_t data) {
+    uint8_t left = ((data >> 4) * vgm_ws_volume_scale) >> 4;
+    uint8_t right = ((data & 0x0F) * vgm_ws_volume_scale) >> 4;
+    return (left << 4) | right;
+}
+
 // return: amount of HBLANK lines to wait
 uint16_t vgm_cmd_driver_ws(vgm_state_t *state, uint8_t cmd) {
     switch (cmd) {
@@ -36,6 +44,9 @@ uint16_t vgm_cmd_driver_ws(vgm_state_t *state, uint8_t cmd) {
             case 0x0F: // skip wavebase
                 break;
             case 0x11: // skip output control
+                break;
+            case 0x08: case 0x09: case 0x0A: case 0x0B: // channel volume
+                outportb(0x80 + addr, vgm_ws_scale_volume(data));
                 break;
             case 0x10: // special handling for Ch2 DMA
                 if (!(data & 0x20))

@@ -106,4 +106,7 @@ bool vgm_init(vgm_state_t *state, uint8_t bank, uint16_t pos);
 // return: amount of HBLANK lines to wait
 uint16_t vgm_play(vgm_state_t *state);
 
+// Volume scale for WonderSwan channel volume writes: 16 = 100%, 0 = mute.
+extern uint8_t vgm_ws_volume_scale;
+
 #endif /* VGM_H_ */

@@ -160,7 +160,12 @@ typedef struct __attribute__((packed)) {
         };
         uint16_t accent_color;
     };
+    uint8_t menu_music_volume; // 1 (10%) .. 10 (100%)
 } settings_t;
+
+#define SETTING_MENU_MUSIC_VOLUME_MIN 1
+#define SETTING_MENU_MUSIC_VOLUME_MAX 10
+#define SETTING_MENU_MUSIC_VOLUME_DEFAULT 7
 
 extern settings_t settings;
 extern const setting_category_t __far settings_root;

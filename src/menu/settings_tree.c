@@ -50,6 +50,8 @@ DEFINE_STRING_LOCAL(s_theme_accent_color_key, "ThemeAccentColor");
 DEFINE_STRING_LOCAL(s_theme_dark_mode_key, "ThemeDarkMode");
 DEFINE_STRING_LOCAL(s_text_reader_font_key, "TextReaderFont");
 DEFINE_STRING_LOCAL(s_theme_menu_music_key, "ThemeMenuMusic");
+DEFINE_STRING_LOCAL(s_theme_menu_music_volume_key, "ThemeMenuMusicVol");
+DEFINE_STRING_LOCAL(s_percent_tpl, "%d%%");
 DEFINE_STRING_LOCAL(s_joy_repeat_first, "JoyRepeatFirst");
 DEFINE_STRING_LOCAL(s_joy_repeat_next, "JoyRepeatNext");
 
@@ -525,16 +527,40 @@ static const setting_t __far setting_theme_menu_music = {
     }
 };
 
+static void settings_theme_menu_music_volume_on_change(const struct setting *set) {
+    menu_music_apply_volume();
+}
+
+static void settings_percent_name(uint16_t value, char *buf, int buf_len) {
+    snprintf(buf, buf_len, s_percent_tpl, value * 10);
+}
+
+static const setting_t __far setting_theme_menu_music_volume = {
+    s_theme_menu_music_volume_key,
+    LK_SETTINGS_MENU_MUSIC_VOLUME_KEY,
+    LK_SETTINGS_MENU_MUSIC_VOLUME_HELP,
+    SETTING_TYPE_CHOICE_BYTE,
+    SETTING_FLAG_CHOICE_LIST,
+    settings_theme_menu_music_volume_on_change,
+    .choice = {
+        &settings.menu_music_volume,
+        SETTING_MENU_MUSIC_VOLUME_MIN, SETTING_MENU_MUSIC_VOLUME_MAX,
+        NULL,
+        settings_percent_name
+    }
+};
+
 static const setting_category_t __far settings_theme = {
     LK_SETTINGS_THEME_KEY,
     0,
     &settings_interface,
-    4,
+    5,
     {
         &setting_theme_dark_mode,
         &setting_theme_accent_color,
         &setting_txtview_font_size,
-        &setting_theme_menu_music
+        &setting_theme_menu_music,
+        &setting_theme_menu_music_volume
     }
 };
 
