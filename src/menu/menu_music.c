@@ -125,11 +125,17 @@ static inline uint32_t menu_music_peek32(uint16_t pos) {
     return *((const uint32_t __far*) MK_FP(WS_ROM0_SEGMENT, pos));
 }
 
+// Max player interrupts per second for background music. Normal tracks need
+// tens to a few hundred; sample playback through register writes needs
+// thousands and would leave no CPU time for the menu.
+#define MENU_MUSIC_MAX_EVENTS_PER_SEC 1500
+
 // Check a VGM loaded at bank before using it as background music:
 // only commands of the chips the player supports, WonderSwan writes limited
-// to the sound registers, and no PCM data blocks/streams (PCM would be
-// copied over the menu's tile memory). A command the player does not know
-// would make it lose its place in the file and write to arbitrary ports.
+// to the sound registers, no PCM data blocks/streams (PCM would be copied
+// over the menu's tile memory), no Ch2 "voice" sample playback, and not too
+// many player events per second. A command the player does not know would
+// make it lose its place in the file and write to arbitrary ports.
 static bool menu_music_validate(uint8_t bank, uint32_t size) {
     bool ok = false;
     uint16_t prev_rom0 = inportw(WS_CART_EXTBANK_ROM0_PORT);
@@ -145,23 +151,37 @@ static bool menu_music_validate(uint8_t bank, uint32_t size) {
     if (end > size)
         end = size;
 
+    uint32_t total_samples = 0;
+    uint32_t wait_count = 0;
+
     while (pos < end) {
         uint8_t cmd = menu_music_peek(pos);
         if (cmd == 0x66) {             // end of data
-            ok = true;
+            // each wait is one player interrupt: limit the average rate
+            ok = total_samples > 0 && wait_count * (44100 / MENU_MUSIC_MAX_EVENTS_PER_SEC) <= total_samples;
             break;
         }
         if (cmd >= 0x70 && cmd <= 0x7F) { // short wait
+            total_samples += (cmd & 0x0F) + 1;
+            wait_count++;
             pos += 1;
             continue;
         }
         switch (cmd) {
-        case 0x62: case 0x63: pos += 1; break; // waits
-        case 0x61: pos += 3; break;            // wait n samples
+        case 0x62: total_samples += 735; wait_count++; pos += 1; break;
+        case 0x63: total_samples += 882; wait_count++; pos += 1; break;
+        case 0x61:                              // wait n samples
+            total_samples += menu_music_peek(pos + 1) | ((uint16_t) menu_music_peek(pos + 2) << 8);
+            wait_count++;
+            pos += 3;
+            break;
         case 0x4F: case 0x50: pos += 2; break; // SN76489
         case 0xB3: pos += 3; break;            // Game Boy DMG
         case 0xBC:                             // WonderSwan register write
             if (menu_music_peek(pos + 1) >= 0x20)
+                goto done;
+            // channel control with Ch2 voice (sample) mode
+            if (menu_music_peek(pos + 1) == 0x10 && (menu_music_peek(pos + 2) & 0x20))
                 goto done;
             pos += 3;
             break;
