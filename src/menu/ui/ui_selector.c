@@ -30,6 +30,7 @@
 #include "ui/ui.h"
 #include "util/input.h"
 #include "util/util.h"
+#include "menu_music.h"
 
 #define SELECTOR_Y_OFFSET 8
 
@@ -85,6 +86,9 @@ uint16_t ui_selector(ui_selector_config_t *config) {
         ui_layout_bars();
         ui_selector_set_active_font(config);
         ui_draw_statusbar_lr(lang_keys[LK_UI_FILE_SELECTOR_EMPTY], config->info_str);
+        // (Re)start background music only once the screen is drawn, so it
+        // does not compete with the directory scan and font loading.
+        menu_music_start();
 
         while (true) {
             if (idle_until_vblank() || cart_status_apply_orientation_change())
@@ -162,6 +166,10 @@ uint16_t ui_selector(ui_selector_config_t *config) {
 
             prev_offset = config->offset;
             full_redraw = false;
+
+            // (Re)start background music only once the list is drawn, so it
+            // does not compete with the directory scan and font loading.
+            menu_music_start();
         }
 
         if (idle_until_vblank() || cart_status_apply_orientation_change())

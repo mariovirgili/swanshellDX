@@ -31,7 +31,6 @@
 #include "launch/launch.h"
 #include "launch/launch_athena.h"
 #include "launch/launch_router.h"
-#include "menu_music.h"
 #include "settings.h"
 #include "strings.h"
 #include "ui.h"
@@ -245,9 +244,6 @@ void ui_file_selector(void) {
     uint8_t path_depth_pos = 255;
 
 rescan_directory:
-    // (Re)start background music after returning from programs/players.
-    menu_music_start();
-
     config.draw = ui_file_selector_draw;
     config.key_mask = WS_KEY_A | WS_KEY_B | WS_KEY_START;
     config.style = settings.file_view;
