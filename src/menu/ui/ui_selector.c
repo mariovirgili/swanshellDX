@@ -74,8 +74,15 @@ void ui_selector_clear_selection(ui_selector_config_t *config) {
 #define SCROLL_TICKS_PACE_SHIFT 3
 #define SCROLL_TICKS_PACE_MASK ((1 << (SCROLL_TICKS_PACE_SHIFT)) - 1)
 
+// Frames the selection must stay on an entry before status_text() is asked
+// (avoids storage card reads while scrolling quickly through the list).
+#define STATUS_TEXT_DELAY 10
+
 uint16_t ui_selector(ui_selector_config_t *config) {
     char sbuf[33];
+    char status_buf[48];
+    uint16_t status_ticks = 0;
+    bool status_custom = false;
     bool full_redraw = true;
     uint16_t prev_offset = 0xFFFF;
     uint16_t scroll_ticks = 0;
@@ -104,6 +111,7 @@ uint16_t ui_selector(ui_selector_config_t *config) {
 
     while (true) {
         if (prev_offset != config->offset) {
+            status_ticks = 0;
             if (settings.file_flags & SETTING_THEME_SCROLL_LONG_NAMES) {
                 if (scroll_ticks > SCROLL_TICKS_MIN) {
                     ui_selector_set_active_font(config);
@@ -128,6 +136,7 @@ uint16_t ui_selector(ui_selector_config_t *config) {
 
                 snprintf(sbuf, sizeof(sbuf), lang_keys[LK_UI_FILE_SELECTOR_PAGE_FORMAT], (config->offset / row_count) + 1, ((config->count + row_count - 1) / row_count));
                 ui_draw_statusbar_lr(sbuf, config->info_str);
+                status_custom = false;
                 draw_highlights |= ui_has_wallpaper();
             }
             if (draw_highlights) {
@@ -174,6 +183,19 @@ uint16_t ui_selector(ui_selector_config_t *config) {
 
         if (idle_until_vblank() || cart_status_apply_orientation_change())
             return UI_SELECTOR_RELOAD_REQUESTED;
+
+        // Selection settled: ask for entry details for the status bar
+        if (config->status_text != NULL && status_ticks < STATUS_TEXT_DELAY && ++status_ticks == STATUS_TEXT_DELAY) {
+            if (config->offset < config->count
+                && config->status_text(config, config->offset, status_buf, sizeof(status_buf))) {
+                ui_draw_statusbar_lr(status_buf, config->info_str);
+                status_custom = true;
+            } else if (status_custom) {
+                snprintf(sbuf, sizeof(sbuf), lang_keys[LK_UI_FILE_SELECTOR_PAGE_FORMAT], (config->offset / row_count) + 1, ((config->count + row_count - 1) / row_count));
+                ui_draw_statusbar_lr(sbuf, config->info_str);
+                status_custom = false;
+            }
+        }
 
         if (settings.file_flags & SETTING_THEME_SCROLL_LONG_NAMES) {
             scroll_ticks++;

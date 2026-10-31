@@ -33,6 +33,10 @@ typedef struct ui_selector_config {
 
     void (*draw)(struct ui_selector_config *config, uint16_t idx, uint16_t y, uint16_t scroll_tick);
     bool (*can_select)(struct ui_selector_config *config, uint16_t idx);
+    /// Optional: status bar text for entry idx, shown once the selection has
+    /// stayed on it for a moment (e.g. file details). Return false to keep
+    /// the default text (page number).
+    bool (*status_text)(struct ui_selector_config *config, uint16_t idx, char *buf, uint16_t buf_len);
 } ui_selector_config_t;
 
 #define UI_SELECTOR_RELOAD_REQUESTED 0x4001

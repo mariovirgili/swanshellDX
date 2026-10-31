@@ -257,6 +257,72 @@ static uint16_t ui_file_selector_find_track(uint16_t offset, uint16_t count, boo
     return 0xFFFF;
 }
 
+/* === ROM details in the status bar === */
+
+static char status_path[FF_LFN_BUF + 1];
+
+// Append a field to buf, with two spaces between fields.
+static char *status_append(char *buf, char *p, char *end, const char __far *s) {
+    if (p != buf && p < end - 3) {
+        *(p++) = ' ';
+        *(p++) = ' ';
+    }
+    while (*s && p < end - 1)
+        *(p++) = *(s++);
+    *p = 0;
+    return p;
+}
+
+static bool ui_file_selector_status_text(struct ui_selector_config *config, uint16_t idx, char *buf, uint16_t buf_len) {
+    file_selector_entry_t __far *fno = ui_file_selector_open_fno(idx);
+    if ((fno->fno.fattrib & AM_DIR) || !FILE_SELECTOR_ENTRY_HAS_EXTENSION(fno))
+        return false;
+    const char __far *ext = FILE_SELECTOR_ENTRY_GET_EXTENSION(fno);
+    if (strcasecmp(ext, s_file_ext_ws) && strcasecmp(ext, s_file_ext_wsc) && strcasecmp(ext, s_file_ext_pc2))
+        return false;
+
+    strncpy(status_path, fno->fno.fname, sizeof(status_path) - 1);
+    status_path[sizeof(status_path) - 1] = 0;
+    launch_rom_metadata_t meta;
+    if (launch_get_rom_metadata(status_path, &meta) != FR_OK)
+        return false;
+
+    char num[16];
+    char *p = buf, *end = buf + buf_len;
+    *p = 0;
+
+    // system
+    if (meta.rom_type == ROM_TYPE_PCV2)
+        p = status_append(buf, p, end, s_rom_info_pcv2);
+    else
+        p = status_append(buf, p, end, lang_keys[(meta.footer.color & 1) ? LK_ROM_INFO_COLOR : LK_ROM_INFO_MONO]);
+
+    // ROM size, as declared in the header
+    if (meta.rom_banks >= 16 && !(meta.rom_banks & 15))
+        snprintf(num, sizeof(num), s_rom_info_mb_tpl, meta.rom_banks >> 4);
+    else if (meta.rom_banks)
+        snprintf(num, sizeof(num), s_rom_info_kb_tpl, meta.rom_banks * 64);
+    else
+        num[0] = 0;
+    if (num[0])
+        p = status_append(buf, p, end, num);
+
+    // save type
+    if (meta.sram_size)
+        snprintf(num, sizeof(num), s_rom_info_sram_tpl, (uint16_t) (meta.sram_size >> 10));
+    else if (meta.eeprom_size >= 1024)
+        snprintf(num, sizeof(num), s_rom_info_eeprom_kb_tpl, (uint16_t) (meta.eeprom_size >> 10));
+    else if (meta.eeprom_size)
+        snprintf(num, sizeof(num), s_rom_info_eeprom_b_tpl, (uint16_t) meta.eeprom_size);
+    else
+        num[0] = 0;
+    p = status_append(buf, p, end, num[0] ? (const char __far*) num : lang_keys[LK_ROM_INFO_NO_SAVE]);
+
+    // orientation
+    status_append(buf, p, end, lang_keys[(meta.footer.flags & 1) ? LK_ROM_INFO_VERTICAL : LK_ROM_INFO_HORIZONTAL]);
+    return true;
+}
+
 /* === ROM index (SWANSHELL.IDX) ===
  *
  * Header, then the entries exactly as stored in SRAM by the directory scan
@@ -378,6 +444,7 @@ void ui_file_selector(void) {
 
 rescan_directory:
     config.draw = ui_file_selector_draw;
+    config.status_text = ui_file_selector_status_text;
     config.key_mask = WS_KEY_A | WS_KEY_B | WS_KEY_START;
     config.style = settings.file_view;
 

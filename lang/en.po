@@ -25,6 +25,21 @@ msgstr "Applying patch... %d%%"
 msgid "UI_STATUS_PATCH_STARTING"
 msgstr "Starting game..."
 
+msgid "ROM_INFO_COLOR"
+msgstr "Color"
+
+msgid "ROM_INFO_MONO"
+msgstr "Mono"
+
+msgid "ROM_INFO_HORIZONTAL"
+msgstr "Horizontal"
+
+msgid "ROM_INFO_VERTICAL"
+msgstr "Vertical"
+
+msgid "ROM_INFO_NO_SAVE"
+msgstr "No save"
+
 msgid "UI_VGMPLAY_CONTROLS"
 msgstr "Left/Right = Prev./Next"
 

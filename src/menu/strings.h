@@ -67,6 +67,12 @@ DEFINE_STRING(s_path_save_ini, "/NILESWAN/SAVE.INI");
 DEFINE_STRING(s_path_config_ini, "/NILESWAN/CONFIG.INI");
 DEFINE_STRING(s_path_wallpaper_bmp, "/NILESWAN/WALLPAPER.BMP");
 DEFINE_STRING(s_file_index_name, "SWANSHELL.IDX");
+DEFINE_STRING(s_rom_info_pcv2, "PCv2");
+DEFINE_STRING(s_rom_info_mb_tpl, "%u MB");
+DEFINE_STRING(s_rom_info_kb_tpl, "%u KB");
+DEFINE_STRING(s_rom_info_sram_tpl, "SRAM %u KB");
+DEFINE_STRING(s_rom_info_eeprom_kb_tpl, "EEPROM %u KB");
+DEFINE_STRING(s_rom_info_eeprom_b_tpl, "EEPROM %u B");
 
 DEFINE_STRING(s_path_plugin_uxn, "/NILESWAN/PLUG_UXN.BIN");
 
