@@ -134,8 +134,9 @@ int ui_vgmplay(const char *path) {
     uint16_t vgm_banks_used = (size + 65535L) >> 16;
     memops_unpack_psram_data_if_gzip(&vgm_bank, vgm_banks_used);
 
-    // Controls hint: right/left skip to the next/previous track
-    ui_draw_statusbar(lang_keys[LK_UI_VGMPLAY_CONTROLS]);
+    // Controls hint: right/left skip to the next/previous track, any other
+    // key exits (aligned right, like the page counter in the file list)
+    ui_draw_statusbar_lr(lang_keys[LK_UI_VGMPLAY_CONTROLS], lang_keys[LK_UI_VGMPLAY_EXIT]);
 
     vgm_state = &local_vgm_state;
 
