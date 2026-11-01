@@ -53,10 +53,10 @@ msgid "ROM_INFO_NO_SAVE"
 msgstr "No save"
 
 msgid "UI_VGMPLAY_CONTROLS"
-msgstr "Left/Right = Prev./Next"
+msgstr "Start: Mode  Left/Right: Track"
 
 msgid "UI_VGMPLAY_EXIT"
-msgstr "Other keys = Exit"
+msgstr "Other: Exit"
 
 
 msgid "YES"

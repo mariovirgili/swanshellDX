@@ -33,6 +33,7 @@
 #include "plugin.h"
 #include "settings.h"
 #include "ui/bitmap.h"
+#include "ui/ui_popup_list.h"
 #include "util/asset_heap.h"
 #include "vgm/vgm.h"
 
@@ -67,6 +68,45 @@ static uint16_t vgm_play_seconds(uint16_t vgm_bank) {
 }
 
 static uint16_t time_text_width;
+
+// Start during playback: choose the playback mode (Next / Shuffle /
+// Repeat) in a popup, the current one marked with ">". The screen is
+// saved to the sector buffer and restored afterwards (color mode).
+static uint8_t choose_play_mode(uint8_t mode) {
+    static const uint16_t __wf_rom names[3] = {
+        LK_SETTINGS_VGM_PLAY_NEXT, LK_SETTINGS_VGM_PLAY_SHUFFLE, LK_SETTINGS_VGM_PLAY_REPEAT
+    };
+    char text[3][24];
+    ui_popup_list_config_t lst;
+    memset(&lst, 0, sizeof(lst));
+    for (uint8_t i = 0; i < 3; i++) {
+        const char __far *src = lang_keys[names[i]];
+        uint8_t n = 0;
+        text[i][n++] = i == mode ? '>' : ' ';
+        text[i][n++] = ' ';
+        while (*src && n < sizeof(text[i]) - 3)
+            text[i][n++] = *(src++);
+        text[i][n++] = ' ';
+        text[i][n++] = ' ';
+        text[i][n] = 0;
+        lst.option[i] = text[i];
+    }
+
+    uint16_t size = ui_bitmap.x_pitch * ui_bitmap.width;
+    bool saved = sector_buffer_is_active() && size <= sizeof(sector_buffer);
+    if (saved)
+        memcpy(sector_buffer, ui_bitmap.start, size);
+
+    int16_t result = ui_popup_list(&lst);
+
+    if (saved)
+        memcpy(ui_bitmap.start, sector_buffer, size);
+    else
+        ui_popup_list_clear(&lst);
+    input_wait_clear();
+
+    return (result >= 0 && result < 3) ? result : mode;
+}
 
 // "3/12  1:23 / 3:45" on the right of the title bar
 static void draw_track_status(uint16_t elapsed, uint16_t length) {
@@ -204,6 +244,7 @@ int ui_vgmplay(const char *path) {
     print_gd3_metadata(vgm_bank);
 
     uint8_t play_mode = settings.vgm_play_mode;
+    bool play_mode_changed = false;
     uint16_t length = vgm_play_seconds(vgm_bank);
     uint16_t elapsed = 0;
     uint16_t line_acc = 0;
@@ -241,6 +282,15 @@ int ui_vgmplay(const char *path) {
         }
 
         input_update();
+        if (input_pressed & WS_KEY_START) {
+            uint8_t mode = choose_play_mode(play_mode);
+            if (mode != play_mode) {
+                play_mode = mode;
+                play_mode_changed = true;
+            }
+            prev_line = inportb(WS_DISPLAY_LINE_PORT);
+            continue;
+        }
         if (input_pressed) {
             // Right/left: next/previous track in the same directory
             // (Right picks one at random in shuffle mode)
@@ -265,6 +315,11 @@ int ui_vgmplay(const char *path) {
     outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_DISABLE);
     ui_init();
     settings_load();
+    // keep a mode chosen with Start (saved now: playback is stopped)
+    if (play_mode_changed) {
+        settings.vgm_play_mode = play_mode;
+        settings_save();
+    }
 
     return exit_code;
 }
