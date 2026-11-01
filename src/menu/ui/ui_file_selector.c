@@ -262,12 +262,57 @@ static void scroll_wait_beam_below(uint16_t y_bottom) {
     }
 }
 
-// Flicker-free scrolling (color mode, horizontal layout): the row is drawn
-// into a scratch bitmap in the sector buffer, then copied to the screen
-// tiles right after the LCD has displayed it, so the visible row never
-// shows a cleared or half-drawn state. The icon columns are not copied.
+// Vertical layout: a list row is a band of physical tile columns (the
+// bitmap is rotated). The row is drawn into a scratch bitmap of those
+// columns (+1 for glyphs reaching below the row) and copied during the
+// vertical blank, skipping the icon area (the first physical tile rows).
+static void ui_file_selector_draw_scrolled_vertical(file_selector_entry_t __far *fno, uint16_t y, uint8_t row_tiles,
+    int x_offset, int x_start, const char __far *s) {
+
+    uint16_t tile_top = y & ~7;
+    uint16_t row_h = row_tiles << 3;
+    // rotated drawing maps logical y to physical x = width*8 - h - y: with
+    // width = row_tiles + 1, the row is in scratch columns 1..row_tiles and
+    // anything below it falls into column 0
+    bitmap_t tmp = BITMAP(sector_buffer, row_tiles + 1, ui_bitmap.height, ui_bitmap.bpp);
+    uint16_t ty = y - tile_top;
+    uint16_t color = ui_has_wallpaper() ? BITMAP_COLOR_4BPP(2) : BITMAP_COLOR_2BPP(2);
+
+    bitmap_rect_fill(&tmp, 0, 0, screen_width, (row_tiles + 1) << 3, color);
+    uint16_t x = x_start + bitmapfont_draw_string(&tmp, x_start, ty, s, screen_width - x_start);
+    if ((fno->fno.fattrib & AM_DIR) && x < (screen_width - 6))
+        bitmapfont_draw_char(&tmp, x + CONFIG_FONT_CHAR_GAP, ty, '/');
+    if (x_start < x_offset && (x_offset & 7))
+        bitmap_rect_fill(&tmp, x_offset & ~7, 0, x_offset & 7, (row_tiles + 1) << 3, color);
+
+    // physical column of the row on screen; logical x = physical line
+    uint16_t dst_col = ((ui_bitmap.width << 3) - row_h - tile_top) >> 3;
+    uint16_t first_line = x_offset & ~7;
+    uint16_t lines = (ui_bitmap.height << 3) - first_line;
+    uint16_t bytes = lines * ui_bitmap.y_pitch;
+    uint8_t *src = ((uint8_t*) tmp.start) + tmp.x_pitch + first_line * ui_bitmap.y_pitch;
+    uint8_t *dst = ((uint8_t*) ui_bitmap.start) + dst_col * ui_bitmap.x_pitch + first_line * ui_bitmap.y_pitch;
+
+    // the band spans every LCD line: copy during the vertical blank
+    for (uint16_t tries = 0; tries < 50000 && inportb(WS_DISPLAY_LINE_PORT) < (ui_bitmap.height << 3); tries++);
+    for (uint8_t c = 0; c < row_tiles; c++) {
+        memcpy(dst, src, bytes);
+        src += tmp.x_pitch;
+        dst += ui_bitmap.x_pitch;
+    }
+}
+
+// Flicker-free scrolling (color mode): the row is drawn into a scratch
+// bitmap in the sector buffer, then copied to the screen tiles right after
+// the LCD has displayed it, so the visible row never shows a cleared or
+// half-drawn state. The icon columns are not copied.
 static void ui_file_selector_draw_scrolled(file_selector_entry_t __far *fno, uint16_t y, uint8_t row_tiles,
     int x_offset, int x_start, const char __far *s) {
+
+    if (!bitmap_rotation) {
+        ui_file_selector_draw_scrolled_vertical(fno, y, row_tiles, x_offset, x_start, s);
+        return;
+    }
 
     uint16_t tile_top = y & ~7;
     // one extra tile row: glyphs may reach a few pixels below the row
@@ -352,9 +397,9 @@ static void ui_file_selector_draw(struct ui_selector_config *config, uint16_t of
             }
             uint16_t cw = bitmapfont_get_char_width(ch) + CONFIG_FONT_CHAR_GAP;
             if (skip < cw) {
-                if (skip > x_offset || (skip && !bitmap_rotation)) {
+                if (skip > x_offset || (skip && !bitmap_rotation && !sector_buffer_is_active())) {
                     // no room left of the text to draw it partially (icons
-                    // hidden), or vertical layout (drawn in place, the
+                    // hidden), or vertical layout drawn in place (mono: the
                     // icon would be covered): start with the next character
                     x_start = x_offset - skip + cw;
                 } else {
@@ -367,7 +412,7 @@ static void ui_file_selector_draw(struct ui_selector_config *config, uint16_t of
         }
         max_width = screen_width - x_start;
 
-        if (bitmap_rotation && sector_buffer_is_active()) {
+        if (sector_buffer_is_active()) {
             ui_file_selector_draw_scrolled(fno, y, config->style == UI_SELECTOR_STYLE_16 ? 2 : 1,
                 x_offset, x_start, s);
             return;

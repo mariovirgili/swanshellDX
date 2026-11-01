@@ -162,10 +162,33 @@ static int strlen16(const uint16_t __far* text) {
 
 #define MAX_GD3_TEXT_LEN 127
 
+// GD3 text is UTF-16; the wrapping text box takes UTF-8
+static void utf16_to_utf8(const uint16_t *src, char *dst, uint16_t dst_len) {
+    uint16_t n = 0;
+    for (; *src; src++) {
+        uint16_t c = *src;
+        if (c < 0x80) {
+            if (n + 1 >= dst_len) break;
+            dst[n++] = c;
+        } else if (c < 0x800) {
+            if (n + 2 >= dst_len) break;
+            dst[n++] = 0xC0 | (c >> 6);
+            dst[n++] = 0x80 | (c & 0x3F);
+        } else {
+            if (n + 3 >= dst_len) break;
+            dst[n++] = 0xE0 | (c >> 12);
+            dst[n++] = 0x80 | ((c >> 6) & 0x3F);
+            dst[n++] = 0x80 | (c & 0x3F);
+        }
+    }
+    dst[n] = 0;
+}
+
 __attribute__((noinline))
 static void print_gd3_metadata(uint16_t vgm_bank) {
     uint16_t old_bank = ws_bank_rom0_save(vgm_bank);
     uint16_t text16[MAX_GD3_TEXT_LEN+1];
+    char text8[MAX_GD3_TEXT_LEN * 3 + 1];
 
     uint32_t gd3_offset = *((uint32_t __far*) MK_FP(WS_ROM0_SEGMENT, 0x0014));
     if (gd3_offset != 0) {
@@ -181,14 +204,16 @@ static void print_gd3_metadata(uint16_t vgm_bank) {
 
             int len = strlen16(gd3_data);
 
-            if (len > 0 && (i == 0 || i == 2 || i == 4 || i == 6)) {
-                // Print text
+            if (len > 0 && (i == 0 || i == 2 || i == 4 || i == 6) && y < screen_height - 16) {
+                // Print text, wrapped to the screen width (long titles, and
+                // the vertical layout is only 144 pixels wide)
                 memcpy(text16, gd3_data, MIN(len, MAX_GD3_TEXT_LEN) * 2);
                 text16[MIN(len, MAX_GD3_TEXT_LEN)] = 0;
+                utf16_to_utf8(text16, text8, sizeof(text8));
 
                 bitmapfont_set_active_font(i == 0 ? font16_bitmap : font8_bitmap);
-                bitmapfont_draw_string16(&ui_bitmap, x, y, text16, 248);
-                y += i == 0 ? 16 : 12;
+                y += bitmapfont_draw_string_box(&ui_bitmap, x, y, text8, screen_width - 2 * x, 0, 0);
+                y += i == 0 ? 2 : 4;
             }
 
             gd3_data += len + 1;
