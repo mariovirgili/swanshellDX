@@ -29,6 +29,9 @@ typedef struct ui_popup_list_config {
 
 int16_t ui_popup_list(ui_popup_list_config_t *config);
 void ui_popup_list_clear(ui_popup_list_config_t *config);
+// Draw the list with option `selected` highlighted, without waiting for
+// input (e.g. to confirm a choice).
+void ui_popup_list_show(ui_popup_list_config_t *config, int selected);
 
 #endif /* __UI_POPUP_LIST_H__ */
  
