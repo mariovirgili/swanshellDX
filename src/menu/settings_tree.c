@@ -41,6 +41,7 @@ DEFINE_STRING_LOCAL(s_file_initial_path_key, "FileInitialPath");
 DEFINE_STRING_LOCAL(s_file_view_key, "FileView");
 DEFINE_STRING_LOCAL(s_file_show_ext_key, "FileShowExt");
 DEFINE_STRING_LOCAL(s_theme_favorites_key, "ThemeFavorites");
+DEFINE_STRING_LOCAL(s_file_scroll_speed_key, "FileScrollSpeed");
 DEFINE_STRING_LOCAL(s_file_hide_icons_key, "FileHideIcons");
 DEFINE_STRING_LOCAL(s_program_fast_sram_key, "ProgFastSRAM");
 DEFINE_STRING_LOCAL(s_program_verify_saves_key, "ProgVerifySave");
@@ -208,17 +209,43 @@ static const setting_t __far setting_scroll_long_names = {
     }
 };
 
+static const uint16_t __wf_rom settings_scroll_speed_name_table[] = {
+    LK_SETTINGS_SCROLL_SPEED_NORMAL,
+    LK_SETTINGS_SCROLL_SPEED_FAST
+};
+
+static void settings_scroll_speed_name(uint16_t value, char *buf, int buf_len) {
+    if (value > SETTING_SCROLL_SPEED_FAST) value = SETTING_SCROLL_SPEED_NORMAL;
+    strncpy(buf, lang_keys[settings_scroll_speed_name_table[value]], buf_len);
+}
+
+static const setting_t __far setting_scroll_speed = {
+    s_file_scroll_speed_key,
+    LK_SETTINGS_SCROLL_SPEED_KEY,
+    LK_SETTINGS_SCROLL_SPEED_HELP,
+    SETTING_TYPE_CHOICE_BYTE,
+    0,
+    NULL,
+    .choice = {
+        &settings.scroll_speed,
+        SETTING_SCROLL_SPEED_NORMAL, SETTING_SCROLL_SPEED_FAST,
+        NULL,
+        settings_scroll_speed_name
+    }
+};
+
 static const setting_category_t __far settings_file = {
     LK_SETTINGS_FILE_KEY,
     0,
     &settings_interface,
-    8,
+    9,
     {
         &setting_file_view,
         &setting_file_show_ext,
         &setting_file_sort_order,
         &setting_file_initial_path,
         &setting_scroll_long_names,
+        &setting_scroll_speed,
         &setting_file_show_saves,
         &setting_file_show_hidden,
         &setting_file_hide_icons

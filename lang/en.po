@@ -222,6 +222,18 @@ msgstr "Start menu"
 msgid "SETTINGS_FAVORITES_OFF"
 msgstr "Off"
 
+msgid "SETTINGS_SCROLL_SPEED_KEY"
+msgstr "Scroll speed"
+
+msgid "SETTINGS_SCROLL_SPEED_HELP"
+msgstr "Speed of long name scrolling.\n\n\"Normal\" moves one pixel every two frames, \"Fast\" two pixels."
+
+msgid "SETTINGS_SCROLL_SPEED_NORMAL"
+msgstr "Normal"
+
+msgid "SETTINGS_SCROLL_SPEED_FAST"
+msgstr "Fast"
+
 msgid "SETTINGS_MENU_MUSIC_KEY"
 msgstr "Menu music"
 

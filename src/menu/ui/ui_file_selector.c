@@ -321,10 +321,18 @@ static void ui_file_selector_draw(struct ui_selector_config *config, uint16_t of
 
         // scroll until the end of the name is visible, hold, jump back to
         // the start, hold, repeat
+        // (Normal: one pixel per step, Fast: two)
+        uint16_t speed = settings.scroll_speed == SETTING_SCROLL_SPEED_FAST ? 2 : 1;
         uint16_t travel = width - max_width + SCROLL_END_MARGIN;
-        uint16_t px = scroll_tick % (travel + SCROLL_HOLD_END + SCROLL_HOLD_START);
-        if (px >= travel)
-            px = px < travel + SCROLL_HOLD_END ? travel : 0;
+        uint16_t travel_steps = (travel + speed - 1) / speed;
+        uint16_t step = scroll_tick % (travel_steps + SCROLL_HOLD_END + SCROLL_HOLD_START);
+        uint16_t px;
+        if (step < travel_steps)
+            px = step * speed;
+        else
+            px = step < travel_steps + SCROLL_HOLD_END ? travel : 0;
+        if (px > travel)
+            px = travel;
         if (px == scroll_last_px && offset == scroll_last_offset)
             return; // holding: nothing changed on screen
         scroll_last_px = px;
