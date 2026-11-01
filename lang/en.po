@@ -37,6 +37,15 @@ msgstr "A: Choose  B: Cancel  Right: Full view"
 msgid "UI_WALLPAPER_CONTROLS_FULL"
 msgstr "Left: Show list"
 
+msgid "UI_IMAGES_CONTROLS"
+msgstr "Left/Right: Image  Up: Bars  A: Play  B: Back"
+
+msgid "UI_STATUS_NO_IMAGES"
+msgstr "No images for this file"
+
+msgid "SUBMENU_OPTION_IMAGES"
+msgstr "Images"
+
 msgid "UI_STATUS_PATCH_LOADING"
 msgstr "Loading ROM... %d%%"
 
@@ -266,6 +275,12 @@ msgstr "Wallpaper"
 
 msgid "SETTINGS_WALLPAPER_HELP"
 msgstr "Choose the wallpaper among the BMP files in /NILESWAN/WALLPAPERS (any name). Only valid pictures are listed: 224x144 pixels, 16 colors, uncompressed, at most 64 KB.\n\nThe selected picture is previewed behind the list; Right hides the list to see all of it."
+
+msgid "SETTINGS_IMAGES_PREVIEW_KEY"
+msgstr "Game images preview"
+
+msgid "SETTINGS_IMAGES_PREVIEW_HELP"
+msgstr "Pictures of a game (up to 6, 224x144 BMP with 16 colors, like wallpapers) go in /NILESWAN/IMAGES/<file name without extension>/. Y3 (or Start > Images) shows them; IMG in the title bar tells how many there are.\n\nWith this option, the first picture is also shown behind the list after stopping on the game for half a second."
 
 msgid "SETTINGS_MENU_MUSIC_KEY"
 msgstr "Menu music"

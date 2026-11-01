@@ -41,6 +41,10 @@ typedef struct ui_selector_config {
     /// the selection on entry (redraw_from - 1); ui_selector() then only
     /// redraws what changed instead of the whole list. Reset to 0 on entry.
     uint16_t redraw_from;
+    /// Optional: called every frame with the number of frames since the
+    /// selection last changed (1, 2, ...). Return true if the background
+    /// changed: every row of the page is then redrawn.
+    bool (*idle)(struct ui_selector_config *config, uint16_t idx, uint16_t ticks);
 } ui_selector_config_t;
 
 #define UI_SELECTOR_RELOAD_REQUESTED 0x4001

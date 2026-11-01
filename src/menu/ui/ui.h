@@ -52,6 +52,9 @@ bool ui_has_wallpaper(void);
 void ui_unload_wallpaper(void);
 /// Unload the wallpaper and load the one chosen in settings.wallpaper.
 void ui_reload_wallpaper(void);
+/// Show a picture (wallpaper format) in the wallpaper layer instead of the
+/// wallpaper, until ui_reload_wallpaper(). False if it is not valid.
+bool ui_load_background(const char *path);
 /// Path of a wallpaper name as stored in settings.wallpaper; false: none.
 bool ui_wallpaper_path(char *buf, const char __far *name);
 /// Is this BMP usable as a wallpaper (224x144, 16 colors, uncompressed)?

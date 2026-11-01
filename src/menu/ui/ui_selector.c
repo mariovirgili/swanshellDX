@@ -144,6 +144,7 @@ uint16_t ui_selector(ui_selector_config_t *config) {
     bool status_custom = false;
     uint16_t prev_offset = 0xFFFF;
     uint16_t scroll_ticks = 0;
+    uint16_t idle_ticks = 0;
     bool prev_row_dirty = false;
 
     UI_SELECTOR_ROW_CONFIG();
@@ -182,6 +183,7 @@ uint16_t ui_selector(ui_selector_config_t *config) {
     while (true) {
         if (prev_offset != config->offset) {
             status_ticks = 0;
+            idle_ticks = 0;
             if ((settings.file_flags & SETTING_THEME_SCROLL_LONG_NAMES) && scroll_ticks > SCROLL_TICKS_MIN)
                 prev_row_dirty = true; // its name was scrolled: redraw from the start
             scroll_ticks = 0;
@@ -235,6 +237,18 @@ uint16_t ui_selector(ui_selector_config_t *config) {
                 snprintf(sbuf, sizeof(sbuf), lang_keys[LK_UI_FILE_SELECTOR_PAGE_FORMAT], (config->offset / row_count) + 1, ((config->count + row_count - 1) / row_count));
                 ui_selector_draw_statusbar(sbuf, config->info_str);
                 status_custom = false;
+            }
+        }
+
+        if (config->idle != NULL) {
+            if (idle_ticks < 0xFFFF)
+                idle_ticks++;
+            if (config->idle(config, config->offset, idle_ticks)) {
+                // background changed (e.g. a picture behind the list)
+                uint16_t page_start = (config->offset / row_count) * row_count;
+                for (uint16_t i = 0; i < row_count; i++)
+                    ui_selector_redraw_row(config, i, row_height, row_offset, page_start + i);
+                scroll_ticks = 0;
             }
         }
 

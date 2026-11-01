@@ -199,13 +199,14 @@ static enum tristate ui_file_selector_file(ui_popup_list_config_t *lst, const ch
 
 #define OPTION_OPEN_FAVORITES 3
 #define OPTION_OPEN_RECENT    4
+#define OPTION_IMAGES         5
 
 bool ui_file_selector_options(const char __far *filename, uint8_t attrib, uint8_t *open_list) {
     ui_popup_list_config_t lst;
 
     while (true) {
         memset(&lst, 0, sizeof(ui_popup_list_config_t));
-        uint8_t options[5];
+        uint8_t options[6];
         int i = 0;
         if (settings.favorites_mode == SETTING_FAVORITES_START_MENU) {
             options[i] = OPTION_OPEN_FAVORITES;
@@ -216,6 +217,12 @@ bool ui_file_selector_options(const char __far *filename, uint8_t attrib, uint8_
         if (!(attrib & AM_DIR)) {
             options[i] = 0;
             lst.option[i++] = lang_keys[LK_SUBMENU_OPTION_FILE];
+#ifdef CONFIG_ENABLE_WALLPAPER
+            if (ws_system_is_color_active()) {
+                options[i] = OPTION_IMAGES;
+                lst.option[i++] = lang_keys[LK_SUBMENU_OPTION_IMAGES];
+            }
+#endif
         }
         options[i] = 1;
         lst.option[i++] = lang_keys[LK_SUBMENU_OPTION_TOOLS];
@@ -247,6 +254,10 @@ bool ui_file_selector_options(const char __far *filename, uint8_t attrib, uint8_
         case OPTION_OPEN_RECENT:
             *open_list = FAVORITES_LIST_RECENT;
             result = TRISTATE_TRUE;
+            break;
+        case OPTION_IMAGES:
+            *open_list = FILE_SELECTOR_OPTIONS_IMAGES;
+            result = TRISTATE_FALSE;
             break;
         }
 

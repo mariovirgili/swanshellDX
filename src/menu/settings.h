@@ -77,6 +77,10 @@
 #define SETTING_VGM_PLAY_SHUFFLE 1
 #define SETTING_VGM_PLAY_REPEAT  2
 
+// settings.extra_flags
+#define SETTING_EXTRA_IMAGES_PREVIEW_SHIFT 0
+#define SETTING_EXTRA_IMAGES_PREVIEW (1 << SETTING_EXTRA_IMAGES_PREVIEW_SHIFT)
+
 #define SETTING_SCROLL_SPEED_NORMAL 0
 #define SETTING_SCROLL_SPEED_FAST   1
 
@@ -185,6 +189,7 @@ typedef struct __attribute__((packed)) {
     uint8_t scroll_speed; // SETTING_SCROLL_SPEED_*
     uint8_t vgm_play_mode; // SETTING_VGM_PLAY_*
     char wallpaper[SETTING_WALLPAPER_NAME_MAX]; // see SETTING_WALLPAPER_NAME_MAX
+    uint8_t extra_flags; // SETTING_EXTRA_*
 } settings_t;
 
 #define SETTING_MENU_MUSIC_VOLUME_MIN 1

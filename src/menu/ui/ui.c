@@ -311,19 +311,17 @@ static bool load_wallpaper_data(FIL *fp) {
     return true;
 }
 
-static inline void load_wallpaper(void) {
+bool ui_load_background(const char *path) {
     FIL fp;
-    char path[UI_WALLPAPER_PATH_MAX];
 
     wallpaper_status = 2;
-    if (ws_system_get_mode() != WS_MODE_COLOR_4BPP) return;
-    if (!ui_wallpaper_path(path, settings.wallpaper)) return;
+    if (ws_system_get_mode() != WS_MODE_COLOR_4BPP) return false;
 
     int16_t result = f_open(&fp, path, FA_READ | FA_OPEN_EXISTING);
-    if (result != FR_OK) return;
+    if (result != FR_OK) return false;
     if (f_size(&fp) > 65535) {
         f_close(&fp);
-        return;
+        return false;
     }
 
     INIT_SCREEN_PATTERN(bitmap_screen1, WS_SCREEN_ATTR_PALETTE(3), WS_SCREEN_ATTR_BANK(1));
@@ -346,10 +344,20 @@ static inline void load_wallpaper(void) {
     f_close(&fp);
     if (!ok) {
         WS_DISPLAY_COLOR_MEM(0)[0] = (settings.accent_color_high & SETTING_THEME_DARK_MODE) ? 0x000 : 0xFFF;
-        return;
+        return false;
     }
 
     wallpaper_status = 1;
+    return true;
+}
+
+static inline void load_wallpaper(void) {
+    char path[UI_WALLPAPER_PATH_MAX];
+
+    wallpaper_status = 2;
+    if (ws_system_get_mode() != WS_MODE_COLOR_4BPP) return;
+    if (!ui_wallpaper_path(path, settings.wallpaper)) return;
+    ui_load_background(path);
 }
 
 void ui_reload_wallpaper(void) {

@@ -37,6 +37,7 @@
 #include "ui.h"
 #include "ui/ui_file_selector.h"
 #include "ui_favorites.h"
+#include "ui_game_images.h"
 #include "ui_dialog.h"
 #include "ui_selector.h"
 #include "util/input.h"
@@ -804,6 +805,139 @@ static void ui_file_selector_note_recent(const char *name, const char *ext) {
 // Width of "...", in pixels.
 #define DOT3_WIDTH 6
 
+/* === Title bar: path on the left, "NileSwan" in the middle, the number of
+ * game images and the IDX tag on the right === */
+
+static uint16_t ui_file_selector_title_center_width(void) {
+    bitmapfont_set_active_font(font8_bitmap);
+    return bitmapfont_get_string_width(s_title_nileswan, screen_width);
+}
+
+// room for the path, left of the centered title
+static int16_t ui_file_selector_title_left_max(void) {
+    return ((screen_width - ui_file_selector_title_center_width()) >> 1) - 4;
+}
+
+static void ui_file_selector_draw_title_center(void) {
+    uint16_t w = ui_file_selector_title_center_width();
+    uint16_t x = (screen_width - w) >> 1;
+    bitmap_rect_fill(&ui_bitmap, x - 2, 0, w + 4, 8, BITMAP_COLOR_2BPP(2));
+    bitmapfont_draw_string(&ui_bitmap, x, 0, s_title_nileswan, w + 1);
+}
+
+static void ui_file_selector_draw_images_indicator(uint8_t count) {
+    uint16_t x0 = ((screen_width + ui_file_selector_title_center_width()) >> 1) + 4;
+    uint16_t x1 = screen_width - 2;
+    if (listing_from_index)
+        x1 -= bitmapfont_get_string_width(lang_keys[LK_UI_FILE_SELECTOR_INDEX_TAG], screen_width) + 8;
+    if (x1 <= x0)
+        return;
+    bitmap_rect_fill(&ui_bitmap, x0, 0, x1 - x0, 8, BITMAP_COLOR_2BPP(2));
+    if (count) {
+        char buf[12];
+        snprintf(buf, sizeof(buf), s_images_indicator_tpl, count);
+        uint16_t w = bitmapfont_get_string_width(buf, screen_width);
+        if (x0 + w <= x1)
+            bitmapfont_draw_string(&ui_bitmap, x1 - w, 0, buf, w + 1);
+    }
+}
+
+/* === Game images: indicator, preview behind the list, viewer === */
+
+#define IMAGES_INDICATOR_TICKS 10  // ~0.13 s after the selection stops
+#define IMAGES_PREVIEW_TICKS   38  // ~0.5 s
+
+static uint8_t images_shown_count;  // indicator currently shown
+static bool images_preview_active;  // a game picture replaces the wallpaper
+
+static bool ui_file_selector_images_available(void) {
+#ifdef CONFIG_ENABLE_WALLPAPER
+    return sector_buffer_is_active() && ws_system_get_mode() == WS_MODE_COLOR_4BPP;
+#else
+    return false;
+#endif
+}
+
+// Find the pictures of entry idx (none for folders and the root entries).
+static uint8_t ui_file_selector_find_images(uint16_t idx, game_images_t *images);
+static uint8_t ui_file_selector_special_list(uint16_t offset);
+
+static void ui_file_selector_end_preview(void) {
+    if (images_preview_active) {
+        images_preview_active = false;
+        ui_reload_wallpaper();
+    }
+}
+
+static bool ui_file_selector_idle(struct ui_selector_config *config, uint16_t idx, uint16_t ticks) {
+    if (!ui_file_selector_images_available())
+        return false;
+
+    if (ticks == 1 && images_shown_count) {
+        images_shown_count = 0;
+        ui_file_selector_draw_images_indicator(0);
+    } else if (ticks == IMAGES_INDICATOR_TICKS) {
+        images_shown_count = ui_file_selector_find_images(idx, game_images_buffer());
+        if (images_shown_count)
+            ui_file_selector_draw_images_indicator(images_shown_count);
+    } else if (ticks == IMAGES_PREVIEW_TICKS && (settings.extra_flags & SETTING_EXTRA_IMAGES_PREVIEW)) {
+        // (found again: loading the menu music may have reused the buffer)
+        game_images_t *images = game_images_buffer();
+        if (images_shown_count && ui_file_selector_find_images(idx, images)
+            && game_images_path(images, 0, images->tmp)) {
+            // the first picture behind the list (the rows are redrawn)
+            if (ui_load_background(images->tmp)) {
+                images_preview_active = true;
+            } else {
+                images_preview_active = false;
+                ui_reload_wallpaper();
+            }
+            return true;
+        } else if (images_preview_active) {
+            ui_file_selector_end_preview();
+            return true;
+        }
+    }
+    return false;
+}
+
+static uint8_t ui_file_selector_find_images(uint16_t idx, game_images_t *images) {
+    images->count = 0;
+    if (ui_file_selector_special_list(idx) != FAVORITES_LIST_NONE)
+        return 0;
+    file_selector_entry_t __far *fno = ui_file_selector_open_fno(idx);
+    if (fno->fno.fattrib & AM_DIR)
+        return 0;
+    // copy the name first: reading pictures remaps the RAM window
+    // (game_images_find() copies it to images->dir before using tmp)
+    const char __far *name = ui_file_selector_entry_name(fno);
+    uint16_t n = 0;
+    while (name[n] && n < sizeof(images->tmp) - 1) {
+        images->tmp[n] = name[n];
+        n++;
+    }
+    images->tmp[n] = 0;
+    return game_images_find(images->tmp, images);
+}
+
+// Y3 / Start > Images. Returns true if the user chose to play the game.
+static bool ui_file_selector_view_images(uint16_t idx, char *title_buf) {
+    game_images_t *images = game_images_buffer();
+    if (!ui_file_selector_images_available() || !ui_file_selector_find_images(idx, images)) {
+        ui_draw_statusbar(lang_keys[LK_UI_STATUS_NO_IMAGES]);
+        for (uint8_t i = 0; i < 60; i++)
+            wait_for_vblank();
+        return false;
+    }
+    // the title: the name as shown in the list (copied: SRAM gets remapped)
+    file_selector_entry_t __far *fno = ui_file_selector_open_fno(idx);
+    const char __far *name = ui_file_selector_display_name(fno);
+    strncpy(title_buf, name, FF_LFN_BUF);
+    title_buf[FF_LFN_BUF] = 0;
+    images_preview_active = false; // the viewer restores the wallpaper
+    return game_images_view(images, title_buf);
+}
+
 void ui_file_selector(void) {
     char strbuf[FF_LFN_BUF + 1];
 
@@ -824,7 +958,11 @@ void ui_file_selector(void) {
 rescan_directory:
     config.draw = ui_file_selector_draw;
     config.status_text = ui_file_selector_status_text;
-    config.key_mask = WS_KEY_A | WS_KEY_B | WS_KEY_START | KEY_ALEFT | KEY_ARIGHT;
+    config.idle = ui_file_selector_idle;
+    config.key_mask = WS_KEY_A | WS_KEY_B | WS_KEY_START | KEY_ALEFT | KEY_ARIGHT | KEY_ADOWN;
+    // a game picture shown behind the list: back to the wallpaper
+    ui_file_selector_end_preview();
+    images_shown_count = 0;
     if (settings.favorites_mode != SETTING_FAVORITES_OFF)
         config.key_mask |= KEY_AUP;
     else
@@ -844,6 +982,7 @@ rescan_directory:
     }
     if ((reinit_ui || reinit_dirs) && listing_list != FAVORITES_LIST_NONE) {
         ui_draw_titlebar(lang_keys[listing_list == FAVORITES_LIST_RECENT ? LK_UI_FILE_SELECTOR_RECENT : LK_UI_FILE_SELECTOR_FAVORITES]);
+        ui_file_selector_draw_title_center();
     } else if (reinit_ui || reinit_dirs) {
         char *path = strbuf + 3;
         f_getcwd(path, sizeof(strbuf) - 4);
@@ -853,13 +992,14 @@ rescan_directory:
         // "/a/b" = depth 2
         path_depth_pos = (path[0] != 0 && path[1] != 0) ? 1 : 0;
 
+        int16_t title_max = ui_file_selector_title_left_max();
         bitmapfont_set_active_font(font8_bitmap);
         char *draw_path = path;
         int16_t draw_path_len = bitmapfont_get_string_width(draw_path, screen_width + DOT3_WIDTH) - DOT3_WIDTH;
         char *p = path + 1;
         while (*p) {
             if (*p == '/') {
-                if (draw_path_len > screen_width - 4 - DOT3_WIDTH) {
+                if (draw_path_len > title_max - DOT3_WIDTH) {
                     draw_path = p;
                     draw_path_len = bitmapfont_get_string_width(draw_path, screen_width);
                 }
@@ -867,7 +1007,7 @@ rescan_directory:
             }
             p++;
         }
-        while (draw_path_len > screen_width - 4 - DOT3_WIDTH) {
+        while (draw_path_len > title_max - DOT3_WIDTH) {
             draw_path++;
             draw_path_len = bitmapfont_get_string_width(draw_path, screen_width);
         }
@@ -877,6 +1017,7 @@ rescan_directory:
             *(--draw_path) = '.';
         }
         ui_draw_titlebar(draw_path);
+        ui_file_selector_draw_title_center();
     }
     if (reinit_dirs && listing_list != FAVORITES_LIST_NONE) {
         listing_from_index = false;
@@ -924,6 +1065,17 @@ rescan_directory:
             REMEMBER_OFFSET();
             goto rescan_directory;
         }
+        if ((keys_pressed & KEY_ADOWN) && config.count) {
+            // Y3: pictures of the game; A in the viewer plays it
+            REMEMBER_OFFSET();
+            if (ui_file_selector_view_images(config.offset, strbuf)) {
+                keys_pressed = WS_KEY_A;
+            } else {
+                reinit_ui = true;
+                goto rescan_directory;
+            }
+        }
+handle_a:
         if ((keys_pressed & WS_KEY_A) && config.count) {
             REMEMBER_OFFSET();
 
@@ -1051,6 +1203,13 @@ rescan_directory:
             uint8_t open_list = FAVORITES_LIST_NONE;
             if (ui_file_selector_options(strbuf, attrib, &open_list)) {
                 reinit_dirs = true;
+            }
+            if (open_list == FILE_SELECTOR_OPTIONS_IMAGES) {
+                if (ui_file_selector_view_images(config.offset, strbuf)) {
+                    keys_pressed = WS_KEY_A;
+                    goto handle_a;
+                }
+                open_list = FAVORITES_LIST_NONE;
             }
             if (open_list != FAVORITES_LIST_NONE) {
                 if (listing_list != FAVORITES_LIST_NONE && open_list != listing_list)

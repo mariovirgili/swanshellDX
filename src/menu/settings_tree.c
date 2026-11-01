@@ -44,6 +44,7 @@ DEFINE_STRING_LOCAL(s_file_show_ext_key, "FileShowExt");
 DEFINE_STRING_LOCAL(s_theme_favorites_key, "ThemeFavorites");
 DEFINE_STRING_LOCAL(s_file_scroll_speed_key, "FileScrollSpeed");
 DEFINE_STRING_LOCAL(s_file_vgm_play_mode_key, "FileVgmPlayMode");
+DEFINE_STRING_LOCAL(s_file_images_preview_key, "FileImagesPreview");
 DEFINE_STRING_LOCAL(s_file_hide_icons_key, "FileHideIcons");
 DEFINE_STRING_LOCAL(s_program_fast_sram_key, "ProgFastSRAM");
 DEFINE_STRING_LOCAL(s_program_verify_saves_key, "ProgVerifySave");
@@ -262,11 +263,32 @@ static const setting_t __far setting_vgm_play_mode = {
     }
 };
 
+#ifdef CONFIG_ENABLE_WALLPAPER
+static const setting_t __far setting_images_preview = {
+    s_file_images_preview_key,
+    LK_SETTINGS_IMAGES_PREVIEW_KEY,
+    LK_SETTINGS_IMAGES_PREVIEW_HELP,
+    SETTING_TYPE_FLAG,
+    SETTING_FLAG_COLOR_ONLY,
+    NULL,
+    .flag = {
+        &settings.extra_flags,
+        SETTING_EXTRA_IMAGES_PREVIEW_SHIFT,
+        LK_NO,
+        LK_YES
+    }
+};
+#endif
+
 static const setting_category_t __far settings_file = {
     LK_SETTINGS_FILE_KEY,
     0,
     &settings_interface,
+#ifdef CONFIG_ENABLE_WALLPAPER
+    11,
+#else
     10,
+#endif
     {
         &setting_file_view,
         &setting_file_show_ext,
@@ -275,6 +297,9 @@ static const setting_category_t __far settings_file = {
         &setting_scroll_long_names,
         &setting_scroll_speed,
         &setting_vgm_play_mode,
+#ifdef CONFIG_ENABLE_WALLPAPER
+        &setting_images_preview,
+#endif
         &setting_file_show_saves,
         &setting_file_show_hidden,
         &setting_file_hide_icons

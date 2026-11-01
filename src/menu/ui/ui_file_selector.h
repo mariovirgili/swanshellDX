@@ -98,7 +98,9 @@ int16_t ui_file_selector_remove_index(void);
 
 // ui_file_selector_options.c
 int ui_file_selector_actions_bfb(void);
-// open_list: set to FAVORITES_LIST_* if the user chose to open a list
+// open_list: set to FAVORITES_LIST_* if the user chose to open a list, or
+// to FILE_SELECTOR_OPTIONS_IMAGES for Images
+#define FILE_SELECTOR_OPTIONS_IMAGES 0x80
 bool ui_file_selector_options(const char __far *filename, uint8_t attrib, uint8_t *open_list);
 
 // ui_file_selector_qsort.c
