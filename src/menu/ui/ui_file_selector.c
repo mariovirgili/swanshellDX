@@ -409,6 +409,13 @@ static void ui_file_selector_draw(struct ui_selector_config *config, uint16_t of
 
     if (!(settings.file_flags & SETTING_FILE_HIDE_ICONS)) {
         ui_file_selector_draw_icon(0, y, icon_idx, config->style);
+        if (config->style == UI_SELECTOR_STYLE_16) {
+            // the 16x16 icons' background reaches the text (x = 16): give
+            // their last, always empty, column the row's background
+            bool selected = offset == config->offset;
+            bitmap_rect_fill(&ui_bitmap, 15, y & ~7, 1, 16,
+                (ui_has_wallpaper() && !selected) ? BITMAP_COLOR_4BPP(0) : BITMAP_COLOR_4BPP(2));
+        }
     }
 }
 
