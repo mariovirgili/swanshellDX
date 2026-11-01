@@ -137,7 +137,8 @@ static void draw_screen(uint16_t selected, bool list_hidden) {
 
     ui_layout_bars();
     ui_draw_titlebar(lang_keys[LK_SETTINGS_WALLPAPER_KEY]);
-    ui_draw_statusbar(lang_keys[list_hidden ? LK_UI_WALLPAPER_CONTROLS_FULL : LK_UI_WALLPAPER_CONTROLS]);
+    ui_draw_statusbar(lang_keys[list_hidden ? LK_UI_WALLPAPER_CONTROLS_FULL
+        : (bitmap_rotation ? LK_UI_WALLPAPER_CONTROLS : LK_UI_WALLPAPER_CONTROLS_SHORT)]);
     if (list_hidden)
         return;
 

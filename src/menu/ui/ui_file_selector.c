@@ -311,7 +311,7 @@ static void ui_file_selector_draw(struct ui_selector_config *config, uint16_t of
     const char __far *s = name;
     int max_width = screen_width - x_offset;
     int x_start = x_offset;
-    uint16_t clear_height = 0;
+    uint16_t clear_y = 0, clear_height = 0;
     if (!scroll_tick) {
         scroll_last_px = 0xFFFF;
     } else {
@@ -352,9 +352,10 @@ static void ui_file_selector_draw(struct ui_selector_config *config, uint16_t of
             }
             uint16_t cw = bitmapfont_get_char_width(ch) + CONFIG_FONT_CHAR_GAP;
             if (skip < cw) {
-                if (skip > x_offset) {
+                if (skip > x_offset || (skip && !bitmap_rotation)) {
                     // no room left of the text to draw it partially (icons
-                    // hidden): start with the next character instead
+                    // hidden), or vertical layout (drawn in place, the
+                    // icon would be covered): start with the next character
                     x_start = x_offset - skip + cw;
                 } else {
                     s = prev;
@@ -372,21 +373,21 @@ static void ui_file_selector_draw(struct ui_selector_config *config, uint16_t of
             return;
         }
 
-        // Otherwise (mono mode, vertical layout) draw in place.
-        // The text starts a few pixels below the top of the row, so a
-        // font-height rectangle can reach past the row: on the last row it
-        // would overwrite the top line of the status bar. Clip it there.
-        clear_height = bitmapfont_get_font_height();
-        if (y + clear_height > screen_height - 8)
-            clear_height = screen_height - 8 - y;
-        // redraw right after the LCD has displayed the row, so it changes
-        // between two frames
-        while (inportb(WS_DISPLAY_LINE_PORT) != (y + clear_height - 1));
+        // Otherwise (mono mode, vertical layout) draw in place. Clear
+        // exactly the row (the text starts a few pixels below its top, so a
+        // font-height rectangle would reach into the next row and leave a
+        // strip of the selection colour there).
+        clear_y = y & ~7;
+        clear_height = config->style == UI_SELECTOR_STYLE_16 ? 16 : 8;
+        // redraw right after the LCD has displayed the row (horizontal
+        // layout only: in the vertical one rows are not LCD lines)
+        if (bitmap_rotation)
+            scroll_wait_beam_below(clear_y + clear_height);
         // Only the selected row scrolls: clear it with the selection
         // colour. With a wallpaper the bitmap is 4bpp, so all four planes
         // must be written (colour 0 would be transparent and the white
         // selection text would vanish over the wallpaper).
-        bitmap_rect_fill(&ui_bitmap, x_offset & ~7, y, screen_width - (x_offset & ~7), clear_height,
+        bitmap_rect_fill(&ui_bitmap, x_offset & ~7, clear_y, screen_width - (x_offset & ~7), clear_height,
             ui_has_wallpaper() ? BITMAP_COLOR_4BPP(2) : BITMAP_COLOR_2BPP(2));
     }
 
@@ -394,7 +395,7 @@ static void ui_file_selector_draw(struct ui_selector_config *config, uint16_t of
     // a character partially scrolled out was drawn left of the text area:
     // clear the gap between icon and text (the icon is redrawn below)
     if (x_start < x_offset && (x_offset & 7)) {
-        bitmap_rect_fill(&ui_bitmap, x_offset & ~7, y, x_offset & 7, clear_height,
+        bitmap_rect_fill(&ui_bitmap, x_offset & ~7, clear_y, x_offset & 7, clear_height,
             ui_has_wallpaper() ? BITMAP_COLOR_4BPP(2) : BITMAP_COLOR_2BPP(2));
     }
     uint8_t icon_idx = 1;
@@ -537,7 +538,11 @@ static bool ui_file_selector_status_text(struct ui_selector_config *config, uint
     p = status_append(buf, p, end, num[0] ? (const char __far*) num : lang_keys[LK_ROM_INFO_NO_SAVE]);
 
     // orientation
-    status_append(buf, p, end, lang_keys[(meta.footer.flags & 1) ? LK_ROM_INFO_VERTICAL : LK_ROM_INFO_HORIZONTAL]);
+    // (vertical layout, 144 pixels: just "H" / "V")
+    if (bitmap_rotation)
+        status_append(buf, p, end, lang_keys[(meta.footer.flags & 1) ? LK_ROM_INFO_VERTICAL : LK_ROM_INFO_HORIZONTAL]);
+    else
+        status_append(buf, p, end, lang_keys[(meta.footer.flags & 1) ? LK_ROM_INFO_VERTICAL_SHORT : LK_ROM_INFO_HORIZONTAL_SHORT]);
     return true;
 }
 
@@ -836,17 +841,21 @@ static void ui_file_selector_draw_images_indicator(uint8_t count) {
     uint16_t x0 = ((screen_width + ui_file_selector_title_center_width()) >> 1) + 4;
     // fixed place, never at the right edge: that is where IDX goes (at
     // least five characters, or the IDX tag if wider, are kept free)
-    uint16_t reserve = bitmapfont_get_string_width(s_title_right_reserve, screen_width);
     uint16_t idx_width = bitmapfont_get_string_width(lang_keys[LK_UI_FILE_SELECTOR_INDEX_TAG], screen_width);
-    if (idx_width > reserve)
-        reserve = idx_width;
-    uint16_t x1 = screen_width - 2 - reserve - 8;
+    uint16_t reserve = idx_width;
+    // horizontal: at least five characters; vertical (144 pixels): just IDX
+    if (bitmap_rotation) {
+        uint16_t five = bitmapfont_get_string_width(s_title_right_reserve, screen_width);
+        if (five > reserve)
+            reserve = five;
+    }
+    uint16_t x1 = screen_width - 2 - reserve - (bitmap_rotation ? 8 : 4);
     if (x1 <= x0)
         return;
     bitmap_rect_fill(&ui_bitmap, x0, 0, x1 - x0, 8, BITMAP_COLOR_2BPP(2));
     if (count) {
         char buf[12];
-        snprintf(buf, sizeof(buf), s_images_indicator_tpl, count);
+        snprintf(buf, sizeof(buf), bitmap_rotation ? s_images_indicator_tpl : s_images_indicator_short_tpl, count);
         uint16_t w = bitmapfont_get_string_width(buf, screen_width);
         if (x0 + w <= x1)
             bitmapfont_draw_string(&ui_bitmap, x1 - w, 0, buf, w + 1);

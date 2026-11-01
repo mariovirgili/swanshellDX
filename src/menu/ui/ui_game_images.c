@@ -143,7 +143,7 @@ static void view_draw_bars(const game_images_t *images, const char __far *title,
     snprintf(pos, sizeof(pos), "%u/%u", i + 1, images->count);
     ui_draw_titlebar(title);
     ui_draw_titlebar_right(pos);
-    ui_draw_statusbar(lang_keys[LK_UI_IMAGES_CONTROLS]);
+    ui_draw_statusbar(lang_keys[bitmap_rotation ? LK_UI_IMAGES_CONTROLS : LK_UI_IMAGES_CONTROLS_SHORT]);
 }
 
 bool game_images_view(game_images_t *images, const char __far *title) {

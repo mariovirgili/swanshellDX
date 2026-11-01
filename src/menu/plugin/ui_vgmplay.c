@@ -233,7 +233,10 @@ int ui_vgmplay(const char *path) {
 
     // Controls hint: right/left skip to the next/previous track, any other
     // key exits (aligned right, like the page counter in the file list)
-    ui_draw_statusbar_lr(lang_keys[LK_UI_VGMPLAY_CONTROLS], lang_keys[LK_UI_VGMPLAY_EXIT]);
+    if (bitmap_rotation)
+        ui_draw_statusbar_lr(lang_keys[LK_UI_VGMPLAY_CONTROLS], lang_keys[LK_UI_VGMPLAY_EXIT]);
+    else // vertical: 144 pixels
+        ui_draw_statusbar(lang_keys[LK_UI_VGMPLAY_CONTROLS_SHORT]);
 
     vgm_state = &local_vgm_state;
 

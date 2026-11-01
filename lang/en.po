@@ -46,6 +46,21 @@ msgstr "No images for this file"
 msgid "SUBMENU_OPTION_IMAGES"
 msgstr "Images"
 
+msgid "UI_VGMPLAY_CONTROLS_SHORT"
+msgstr "Start:Mode L/R:Track"
+
+msgid "UI_IMAGES_CONTROLS_SHORT"
+msgstr "L/R:Image Up:Bars A:Play"
+
+msgid "UI_WALLPAPER_CONTROLS_SHORT"
+msgstr "A:OK B:Cancel R:Full"
+
+msgid "ROM_INFO_HORIZONTAL_SHORT"
+msgstr "H"
+
+msgid "ROM_INFO_VERTICAL_SHORT"
+msgstr "V"
+
 msgid "UI_STATUS_PATCH_LOADING"
 msgstr "Loading ROM... %d%%"
 

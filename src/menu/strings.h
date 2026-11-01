@@ -70,6 +70,7 @@ DEFINE_STRING(s_path_wallpapers_dir, "/NILESWAN/WALLPAPERS");
 DEFINE_STRING(s_path_images_dir, "/NILESWAN/IMAGES");
 DEFINE_STRING(s_title_nileswan, "NileSwan");
 DEFINE_STRING(s_images_indicator_tpl, "IMG %u");
+DEFINE_STRING(s_images_indicator_short_tpl, "IMG%u");
 DEFINE_STRING(s_title_right_reserve, "MMMMM");
 DEFINE_STRING(s_file_index_name, "SWANSHELL.IDX");
 DEFINE_STRING(s_path_favorites_txt, "/NILESWAN/FAVORITE.TXT");

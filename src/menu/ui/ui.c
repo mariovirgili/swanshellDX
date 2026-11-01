@@ -253,7 +253,8 @@ bool ui_wallpaper_header_ok(const bmp_header_t __far *bmp, uint32_t file_size) {
     if (file_size > 65535 || file_size < sizeof(bmp_header_t))
         return false;
     if (bmp->magic != BMP_MAGIC || bmp->header_size < BMP_MIN_HEADER_SIZE ||
-        bmp->width != screen_width || bmp->height != screen_height ||
+        // the wallpaper layer is not rotated: always the LCD size
+        bmp->width != WS_DISPLAY_WIDTH_PIXELS || bmp->height != WS_DISPLAY_HEIGHT_PIXELS ||
         bmp->compression != 0)
         return false;
     // 16 colors, or 256 colors in the native tile-palette layout
