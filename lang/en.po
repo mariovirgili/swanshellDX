@@ -234,6 +234,21 @@ msgstr "Normal"
 msgid "SETTINGS_SCROLL_SPEED_FAST"
 msgstr "Fast"
 
+msgid "SETTINGS_VGM_PLAY_MODE_KEY"
+msgstr "Music playback"
+
+msgid "SETTINGS_VGM_PLAY_MODE_HELP"
+msgstr "What the music player (VGM/VGZ) does at the end of a track.\n\n\"Next\": play the next track of the folder.\n\"Shuffle\": play another track at random (Right also picks one at random).\n\"Repeat\": keep looping the track.\n\nA track ends after its length plus one more loop, as given in the VGM header."
+
+msgid "SETTINGS_VGM_PLAY_NEXT"
+msgstr "Next"
+
+msgid "SETTINGS_VGM_PLAY_SHUFFLE"
+msgstr "Shuffle"
+
+msgid "SETTINGS_VGM_PLAY_REPEAT"
+msgstr "Repeat"
+
 msgid "SETTINGS_MENU_MUSIC_KEY"
 msgstr "Menu music"
 

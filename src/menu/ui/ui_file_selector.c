@@ -429,6 +429,44 @@ static uint16_t ui_file_selector_find_track(uint16_t offset, uint16_t count, boo
     return 0xFFFF;
 }
 
+// Position of a track among the tracks of the listing (1-based) and
+// their number, for the player's "3/12".
+static void ui_file_selector_track_position(uint16_t offset, uint16_t count) {
+    uint16_t index = 0, total = 0;
+    for (uint16_t i = 0; i < count; i++) {
+        if (ui_file_selector_is_track(ui_file_selector_open_fno(i))) {
+            total++;
+            if (i == offset)
+                index = total;
+        }
+    }
+    ui_vgmplay_set_position(index, index ? total : 0);
+}
+
+// A random track other than the current one, or 0xFFFF if there is none.
+static uint16_t ui_file_selector_random_track(uint16_t offset, uint16_t count) {
+    static uint16_t seed;
+    uint16_t total = 0;
+    for (uint16_t i = 0; i < count; i++)
+        if (i != offset && ui_file_selector_is_track(ui_file_selector_open_fno(i)))
+            total++;
+    if (!total)
+        return 0xFFFF;
+
+    // xorshift, stirred with the frame counter and the LCD line
+    seed ^= vbl_ticks ^ ((uint16_t) inportb(WS_DISPLAY_LINE_PORT) << 8);
+    if (!seed) seed = 0xACE1;
+    seed ^= seed << 7;
+    seed ^= seed >> 9;
+    seed ^= seed << 8;
+    uint16_t pick = seed % total;
+
+    for (uint16_t i = 0; i < count; i++)
+        if (i != offset && ui_file_selector_is_track(ui_file_selector_open_fno(i)) && !pick--)
+            return i;
+    return 0xFFFF;
+}
+
 /* === ROM details in the status bar === */
 
 static char status_path[FF_LFN_BUF + 1];
@@ -918,17 +956,22 @@ rescan_directory:
                     reinit_ui = true;
                     goto rescan_directory;
                 } else {
+                    ui_file_selector_track_position(config.offset, config.count);
                     int16_t result = launch_router_file(strbuf, ext, 0);
-                    // VGM player: right/left skips to the next/previous track
-                    while (result == PLUGIN_RESULT_NEXT_FILE || result == PLUGIN_RESULT_PREV_FILE) {
-                        uint16_t track = ui_file_selector_find_track(config.offset, config.count,
-                            result == PLUGIN_RESULT_NEXT_FILE);
+                    // VGM player: next/previous/random track (keys or end of track)
+                    while (result == PLUGIN_RESULT_NEXT_FILE || result == PLUGIN_RESULT_PREV_FILE
+                        || result == PLUGIN_RESULT_RANDOM_FILE) {
+                        uint16_t track = result == PLUGIN_RESULT_RANDOM_FILE
+                            ? ui_file_selector_random_track(config.offset, config.count)
+                            : ui_file_selector_find_track(config.offset, config.count,
+                                result == PLUGIN_RESULT_NEXT_FILE);
                         if (track == 0xFFFF) {
                             result = LAUNCH_ROUTER_OK_SRAM_UNCHANGED;
                             break;
                         }
                         config.offset = track;
                         REMEMBER_OFFSET();
+                        ui_file_selector_track_position(track, config.count);
                         fno = ui_file_selector_open_fno(track);
                         ext = ui_file_selector_prepare_entry(strbuf, fno);
                         result = launch_router_file(strbuf, ext, 0);

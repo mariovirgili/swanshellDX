@@ -25,8 +25,13 @@ int ui_txtview(const char *path);
 // for the next/previous track in the same directory.
 #define PLUGIN_RESULT_NEXT_FILE 0x7FFD
 #define PLUGIN_RESULT_PREV_FILE 0x7FFE
+// ...or a random other track (shuffle)
+#define PLUGIN_RESULT_RANDOM_FILE 0x7FFC
 
 int ui_vgmplay(const char *path);
+// Position of the next track played among the tracks of its folder
+// (1-based index, count), shown as "3/12"; count = 0: unknown.
+void ui_vgmplay_set_position(uint16_t index, uint16_t count);
 int ui_wavplay(const char *path);
 
 // plugin.c

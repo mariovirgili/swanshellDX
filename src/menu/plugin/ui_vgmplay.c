@@ -38,6 +38,57 @@
 
 static vgm_state_t *vgm_state;
 
+static uint16_t track_index, track_count;
+
+void ui_vgmplay_set_position(uint16_t index, uint16_t count) {
+    track_index = index;
+    track_count = count;
+}
+
+// The LCD draws 12000 lines per second, whatever the frame length: time is
+// measured in lines, by polling the line counter.
+#define LINES_PER_SECOND 12000
+
+// Length of a track before moving on, in seconds, from the VGM header:
+// total length (one pass, including one loop) plus one more loop.
+// 0: unknown.
+static uint16_t vgm_play_seconds(uint16_t vgm_bank) {
+    uint16_t old_bank = ws_bank_rom0_save(vgm_bank);
+    uint32_t total = *((uint32_t __far*) MK_FP(WS_ROM0_SEGMENT, 0x18));
+    uint32_t loop_ofs = *((uint32_t __far*) MK_FP(WS_ROM0_SEGMENT, 0x1C));
+    uint32_t loop = *((uint32_t __far*) MK_FP(WS_ROM0_SEGMENT, 0x20));
+    ws_bank_rom0_set(old_bank);
+
+    if (loop_ofs != 0 && !(loop_ofs & 0xFF000000))
+        total += loop;
+    // 44100 samples per second; at most ~18 hours
+    uint32_t seconds = (total + 44099) / 44100;
+    return seconds > 65535 ? 65535 : seconds;
+}
+
+static uint16_t time_text_width;
+
+// "3/12  1:23 / 3:45" on the right of the title bar
+static void draw_track_status(uint16_t elapsed, uint16_t length) {
+    char buf[40];
+    char *p = buf;
+    if (track_count)
+        p += sprintf(p, "%u/%u  ", track_index, track_count);
+    p += sprintf(p, "%u:%02u", elapsed / 60, elapsed % 60);
+    if (length)
+        sprintf(p, " / %u:%02u", length / 60, length % 60);
+
+    // redraw while the LCD is below the title bar, so it never shows half
+    // drawn; clear what a longer previous text left behind
+    while (inportb(WS_DISPLAY_LINE_PORT) < 8 || inportb(WS_DISPLAY_LINE_PORT) > 100);
+    bitmapfont_set_active_font(font8_bitmap);
+    uint16_t width = bitmapfont_get_string_width(buf, screen_width);
+    if (time_text_width > width)
+        bitmap_rect_fill(&ui_bitmap, screen_width - time_text_width - 6, 0, time_text_width - width, 8, BITMAP_COLOR_2BPP(2));
+    time_text_width = width;
+    ui_draw_titlebar_right(buf);
+}
+
 void  __attribute__((interrupt, assume_ss_data)) vgm_interrupt_handler(void) {
     while (true) {
         outportw(WS_TIMER_HBL_RELOAD_PORT, 65535);
@@ -152,6 +203,14 @@ int ui_vgmplay(const char *path) {
 
     print_gd3_metadata(vgm_bank);
 
+    uint8_t play_mode = settings.vgm_play_mode;
+    uint16_t length = vgm_play_seconds(vgm_bank);
+    uint16_t elapsed = 0;
+    uint16_t line_acc = 0;
+    uint8_t prev_line = inportb(WS_DISPLAY_LINE_PORT);
+    time_text_width = 0;
+    draw_track_status(0, length);
+
     input_wait_clear();
     outportb(WS_SOUND_OUT_CTRL_PORT, WS_SOUND_OUT_CTRL_SPEAKER_ENABLE | WS_SOUND_OUT_CTRL_HEADPHONE_ENABLE | WS_SOUND_OUT_CTRL_SPEAKER_VOLUME_100);
 
@@ -163,16 +222,37 @@ int ui_vgmplay(const char *path) {
 
     int exit_code = 0;
     while (vgm_state->bank != 0xFF) {
+        // elapsed time
+        uint8_t line = inportb(WS_DISPLAY_LINE_PORT);
+        int16_t d = (int16_t) line - (int16_t) prev_line;
+        if (d < 0)
+            d += inportb(WS_LCD_VTOTAL_PORT) + 1;
+        prev_line = line;
+        line_acc += d;
+        if (line_acc >= LINES_PER_SECOND) {
+            line_acc -= LINES_PER_SECOND;
+            elapsed++;
+            draw_track_status(elapsed, length);
+            // end of the track: next one (unless repeating)
+            if (length && elapsed >= length && play_mode != SETTING_VGM_PLAY_REPEAT) {
+                exit_code = play_mode == SETTING_VGM_PLAY_SHUFFLE ? PLUGIN_RESULT_RANDOM_FILE : PLUGIN_RESULT_NEXT_FILE;
+                break;
+            }
+        }
+
         input_update();
         if (input_pressed) {
             // Right/left: next/previous track in the same directory
+            // (Right picks one at random in shuffle mode)
             if (input_pressed & KEY_RIGHT)
-                exit_code = PLUGIN_RESULT_NEXT_FILE;
+                exit_code = play_mode == SETTING_VGM_PLAY_SHUFFLE ? PLUGIN_RESULT_RANDOM_FILE : PLUGIN_RESULT_NEXT_FILE;
             else if (input_pressed & KEY_LEFT)
                 exit_code = PLUGIN_RESULT_PREV_FILE;
             break;
         }
     }
+    // the position is set again before each track
+    track_count = 0;
 
     ws_int_disable(WS_INT_ENABLE_HBL_TIMER | WS_INT_ENABLE_LINE_MATCH);
     outportb(WS_TIMER_CTRL_PORT, 0);

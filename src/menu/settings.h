@@ -69,6 +69,10 @@
 #define SETTING_FILE_SHOW_EXT_EXCEPT_ROMS 1
 #define SETTING_FILE_SHOW_EXT_NONE        2
 
+#define SETTING_VGM_PLAY_NEXT    0
+#define SETTING_VGM_PLAY_SHUFFLE 1
+#define SETTING_VGM_PLAY_REPEAT  2
+
 #define SETTING_SCROLL_SPEED_NORMAL 0
 #define SETTING_SCROLL_SPEED_FAST   1
 
@@ -175,6 +179,7 @@ typedef struct __attribute__((packed)) {
     uint8_t file_show_ext; // SETTING_FILE_SHOW_EXT_*
     uint8_t favorites_mode; // SETTING_FAVORITES_*
     uint8_t scroll_speed; // SETTING_SCROLL_SPEED_*
+    uint8_t vgm_play_mode; // SETTING_VGM_PLAY_*
 } settings_t;
 
 #define SETTING_MENU_MUSIC_VOLUME_MIN 1
