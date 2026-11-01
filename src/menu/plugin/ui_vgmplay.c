@@ -83,16 +83,12 @@ static uint8_t choose_play_mode(uint8_t mode) {
     for (uint8_t i = 0; i < 3; i++) {
         const char __far *src = lang_keys[names[i]];
         uint8_t n = 0;
-        text[i][n++] = ' ';
-        text[i][n++] = ' ';
-        while (*src && n < sizeof(text[i]) - 3)
+        while (*src && n < sizeof(text[i]) - 1)
             text[i][n++] = *(src++);
-        text[i][n++] = ' ';
-        text[i][n++] = ' ';
         text[i][n] = 0;
         lst.option[i] = text[i];
     }
-    text[mode][0] = '>';
+    lst.marked = mode + 1;
 
     uint16_t size = ui_bitmap.x_pitch * ui_bitmap.width;
     bool saved = sector_buffer_is_active() && size <= sizeof(sector_buffer);
@@ -103,8 +99,7 @@ static uint8_t choose_play_mode(uint8_t mode) {
 
     if (result >= 0 && result < 3 && result != mode) {
         // confirmation: the arrow moves to the chosen mode, ~1 s
-        text[mode][0] = ' ';
-        text[result][0] = '>';
+        lst.marked = result + 1;
         ui_popup_list_show(&lst, result);
         for (uint8_t i = 0; i < 75; i++)
             wait_for_vblank();

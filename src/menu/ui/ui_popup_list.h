@@ -25,6 +25,9 @@
 typedef struct ui_popup_list_config {
     const char __far* option[UI_POPUP_LIST_MAX_OPTION_COUNT];
     uint8_t width, height;
+    /// Optional: 1-based option shown with a ">" marker (0 = none). The
+    /// marker has its own column, so moving it does not move the text.
+    uint8_t marked;
 } ui_popup_list_config_t;
 
 int16_t ui_popup_list(ui_popup_list_config_t *config);

@@ -39,8 +39,8 @@ void ui_popup_list_clear(ui_popup_list_config_t *config) {
         BITMAP_COLOR_2BPP(ui_has_wallpaper() ? 0 : 2));
 }
 
-// Draw the list with `selected` highlighted, without waiting for input.
-// Returns the number of options.
+// Draw the list with `selected` highlighted (-1: none), without waiting for
+// input. Returns the number of options.
 static int ui_popup_list_draw(ui_popup_list_config_t *config, int selected) {
     int option_count = 0;
     uint8_t option_width[UI_POPUP_LIST_MAX_OPTION_COUNT];
@@ -51,7 +51,10 @@ static int ui_popup_list_draw(ui_popup_list_config_t *config, int selected) {
         option_width[option_count] = bitmapfont_get_string_width(config->option[option_count], screen_width);
         list_inner_width = MAX(list_inner_width, option_width[option_count]);
     }
-    uint16_t list_width = list_inner_width + ((LIST_ENTRY_X_PADDING + 2) * 2);
+    // room for the marker column on the left (and as much on the right, so
+    // the options stay centered)
+    uint16_t marker_width = config->marked ? bitmapfont_get_char_width('>') + 4 : 0;
+    uint16_t list_width = list_inner_width + ((LIST_ENTRY_X_PADDING + 2) * 2) + marker_width * 2;
     uint16_t list_height = bitmapfont_get_font_height() * option_count + 4;
     uint16_t list_x = (screen_width - list_width) >> 1;
     uint16_t list_y = (screen_height - list_height) >> 1;
@@ -67,6 +70,10 @@ static int ui_popup_list_draw(ui_popup_list_config_t *config, int selected) {
             (screen_width - option_width[i]) >> 1,
             list_y + 2 + LIST_ENTRY_Y_OFFSET + bitmapfont_get_font_height() * i,
             config->option[i], screen_width);
+    }
+    if (config->marked && config->marked <= option_count) {
+        bitmapfont_draw_char(&ui_bitmap, list_x + 2 + LIST_ENTRY_X_PADDING,
+            list_y + 2 + LIST_ENTRY_Y_OFFSET + bitmapfont_get_font_height() * (config->marked - 1), '>');
     }
     if (selected >= 0 && selected < option_count) {
         bitmap_rect_fill(&ui_bitmap, list_x + 2, list_y + 2 + bitmapfont_get_font_height() * selected,
@@ -80,33 +87,10 @@ void ui_popup_list_show(ui_popup_list_config_t *config, int selected) {
 }
 
 int16_t ui_popup_list(ui_popup_list_config_t *config) {
-    int option_count = 0;
-    uint8_t option_width[UI_POPUP_LIST_MAX_OPTION_COUNT];
-    uint16_t list_inner_width = 0;
-    bitmapfont_set_active_font(font16_bitmap);
-    for (; option_count < UI_POPUP_LIST_MAX_OPTION_COUNT; option_count++) {
-        if (!config->option[option_count]) break;
-        option_width[option_count] = bitmapfont_get_string_width(config->option[option_count], screen_width);
-        list_inner_width = MAX(list_inner_width, option_width[option_count]);
-    }
-    uint16_t list_width = list_inner_width + ((LIST_ENTRY_X_PADDING + 2) * 2);
-    uint16_t list_height = bitmapfont_get_font_height() * option_count + 4;
+    int option_count = ui_popup_list_draw(config, -1);
+    uint16_t list_width = config->width;
     uint16_t list_x = (screen_width - list_width) >> 1;
-    uint16_t list_y = (screen_height - list_height) >> 1;
-    config->width = list_width;
-    config->height = list_height;
-
-    bitmap_rect_fill(&ui_bitmap, list_x, list_y, list_width, list_height,
-        BITMAP_COLOR_2BPP(2));
-    bitmap_rect_draw(&ui_bitmap, list_x + 1, list_y + 1, list_width - 2, list_height - 2,
-        BITMAP_COLOR_2BPP(3), false);
-
-    for (int i = 0; i < option_count; i++) {
-        bitmapfont_draw_string(&ui_bitmap,
-            (screen_width - option_width[i]) >> 1,
-            list_y + 2 + LIST_ENTRY_Y_OFFSET + bitmapfont_get_font_height() * i,
-            config->option[i], screen_width);
-    }
+    uint16_t list_y = (screen_height - config->height) >> 1;
 
     uint8_t selected = 0;
     uint8_t prev_selected = 0xFF;
