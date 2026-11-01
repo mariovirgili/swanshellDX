@@ -25,6 +25,7 @@
 #include "bitmap.h"
 #include "config.h"
 #include "util/math.h"
+#include "util/bmp.h"
 
 #define UI_CENTERED_IN_BOX(xofs,width,inner_width) ((xofs) + (((width) - (inner_width)) >> 1))
 
@@ -44,8 +45,17 @@ void ui_draw_titlebar_right(const char __far* text);
 void ui_draw_statusbar(const char __far* text);
 void ui_draw_statusbar_lr(const char __far* text, const char __far* right_text);
 #ifdef CONFIG_ENABLE_WALLPAPER
+#define UI_WALLPAPER_PATH_MAX 64
 bool ui_has_wallpaper(void);
+/// PSRAM bank used as scratch memory to read pictures
+#define UI_SCRATCH_PSRAM_BANK 0
 void ui_unload_wallpaper(void);
+/// Unload the wallpaper and load the one chosen in settings.wallpaper.
+void ui_reload_wallpaper(void);
+/// Path of a wallpaper name as stored in settings.wallpaper; false: none.
+bool ui_wallpaper_path(char *buf, const char __far *name);
+/// Is this BMP usable as a wallpaper (224x144, 16 colors, uncompressed)?
+bool ui_wallpaper_header_ok(const bmp_header_t __far *bmp, uint32_t file_size);
 #else
 static inline bool ui_has_wallpaper(void) { return false; }
 static inline void ui_unload_wallpaper(void) { }

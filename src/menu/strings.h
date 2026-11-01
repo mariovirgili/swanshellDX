@@ -66,6 +66,7 @@ DEFINE_STRING(s_file_ext_rtc, ".rtc");
 DEFINE_STRING(s_path_save_ini, "/NILESWAN/SAVE.INI");
 DEFINE_STRING(s_path_config_ini, "/NILESWAN/CONFIG.INI");
 DEFINE_STRING(s_path_wallpaper_bmp, "/NILESWAN/WALLPAPER.BMP");
+DEFINE_STRING(s_path_wallpapers_dir, "/NILESWAN/WALLPAPERS");
 DEFINE_STRING(s_file_index_name, "SWANSHELL.IDX");
 DEFINE_STRING(s_path_favorites_txt, "/NILESWAN/FAVORITE.TXT");
 DEFINE_STRING(s_path_recent_txt, "/NILESWAN/RECENT.TXT");

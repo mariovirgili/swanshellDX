@@ -17,6 +17,7 @@
 
 #include <stdbool.h>
 #include <stdio.h>
+#include <string.h>
 #include <ws.h>
 #include <ws/display.h>
 #include <wsx/planar_convert.h>
@@ -248,15 +249,82 @@ static inline void ui_show_inner(void) {
 }
 
 #ifdef CONFIG_ENABLE_WALLPAPER
+bool ui_wallpaper_header_ok(const bmp_header_t __far *bmp, uint32_t file_size) {
+    if (file_size > 65535 || file_size < sizeof(bmp_header_t))
+        return false;
+    if (bmp->magic != BMP_MAGIC || bmp->header_size < BMP_MIN_HEADER_SIZE ||
+        bmp->width != screen_width || bmp->height != screen_height ||
+        bmp->compression != 0 || bmp->bpp != 4)
+        return false;
+    // palette (16 colors) and pixel data inside the file
+    uint32_t pitch = (((uint32_t) bmp->width * 4 + 31) / 32) << 2;
+    return 14 + bmp->header_size + 64 <= bmp->data_start
+        && bmp->data_start + pitch * bmp->height <= file_size;
+}
+
+// Path of the chosen wallpaper (settings.wallpaper), or false for none.
+bool ui_wallpaper_path(char *buf, const char __far *name) {
+    if (name[0] == '-')
+        return false;
+    if (!name[0]) {
+        strcpy(buf, s_path_wallpaper_bmp);
+        return true;
+    }
+    strcpy(buf, s_path_wallpapers_dir);
+    uint16_t n = strlen(buf);
+    buf[n++] = '/';
+    while (*name && n < UI_WALLPAPER_PATH_MAX - 1)
+        buf[n++] = *(name++);
+    buf[n] = 0;
+    return true;
+}
+
+static bool load_wallpaper_data(FIL *fp) {
+    unsigned int br;
+    int16_t result = f_read(fp, MK_FP(0x1000, 0x0000), f_size(fp), &br);
+    if (result != FR_OK)
+        return false;
+
+    bmp_header_t __far* bmp = MK_FP(0x1000, 0x0000);
+    if (!ui_wallpaper_header_ok(bmp, f_size(fp)))
+        return false;
+
+    uint8_t __far *palette = MK_FP(0x1000, 14 + bmp->header_size);
+    for (int i = 0; i < 16; i++) {
+        uint8_t b = *(palette++);
+        uint8_t g = *(palette++);
+        uint8_t r = *(palette++);
+        palette++;
+        WS_DISPLAY_COLOR_MEM(3)[i] = WS_RGB(r >> 4, g >> 4, b >> 4);
+    }
+    WS_DISPLAY_COLOR_MEM(0)[0] = WS_DISPLAY_COLOR_MEM(3)[0];
+
+    uint8_t __far *data = MK_FP(0x1000, bmp->data_start);
+    uint16_t pitch = (((bmp->width * bmp->bpp) + 31) / 32) << 2;
+    for (uint8_t y = 0; y < bmp->height; y++, data += pitch) {
+        uint32_t __far *line_src = (uint32_t __far*) data;
+        uint32_t *line_dst = (uint32_t*) (0x8000 + (((uint16_t)bmp->height - 1 - y) * 4));
+        for (uint8_t x = 0; x < bmp->width; x += 8, line_src++, line_dst += WS_DISPLAY_HEIGHT_TILES * 8) {
+            *line_dst = wsx_planar_convert_4bpp_packed_row(*line_src);
+        }
+    }
+    return true;
+}
+
 static inline void load_wallpaper(void) {
     FIL fp;
-    unsigned int br;
+    char path[UI_WALLPAPER_PATH_MAX];
 
     wallpaper_status = 2;
     if (ws_system_get_mode() != WS_MODE_COLOR_4BPP) return;
+    if (!ui_wallpaper_path(path, settings.wallpaper)) return;
 
-    int16_t result = f_open_far(&fp, s_path_wallpaper_bmp, FA_READ | FA_OPEN_EXISTING);
-    if (result != FR_OK || f_size(&fp) > 65535) return;
+    int16_t result = f_open(&fp, path, FA_READ | FA_OPEN_EXISTING);
+    if (result != FR_OK) return;
+    if (f_size(&fp) > 65535) {
+        f_close(&fp);
+        return;
+    }
 
     INIT_SCREEN_PATTERN(bitmap_screen1, WS_SCREEN_ATTR_PALETTE(3), WS_SCREEN_ATTR_BANK(1));
     // memset(WS_TILE_4BPP_MEM(512), 0, 28 * 18 * 32);
@@ -265,38 +333,28 @@ static inline void load_wallpaper(void) {
     ui_show_inner();
     wallpaper_status = 2;
 
+    bool ok;
+    // (no return inside: the previous flash mode must be restored)
+    // The picture is read into PSRAM bank 0, the scratch area (also used by
+    // the text viewer and the VGM player): not into whatever bank is mapped,
+    // which could be part of the asset heap (fonts, music, icon set).
     ws_bank_with_flash(WS_CART_BANK_FLASH_ENABLE, {
-        result = f_read(&fp, MK_FP(0x1000, 0x0000), f_size(&fp), &br);
-        f_close(&fp);
-        if (result != FR_OK) return;
-
-        bmp_header_t __far* bmp = MK_FP(0x1000, 0x0000);
-        if (bmp->magic != BMP_MAGIC || bmp->header_size < BMP_MIN_HEADER_SIZE ||
-            bmp->width != screen_width || bmp->height != screen_height ||
-            bmp->compression != 0 || bmp->bpp != 4) return;
-
-        uint8_t __far *palette = MK_FP(0x1000, 14 + bmp->header_size);
-        for (int i = 0; i < 16; i++) {
-            uint8_t b = *(palette++);
-            uint8_t g = *(palette++);
-            uint8_t r = *(palette++);
-            palette++;
-            WS_DISPLAY_COLOR_MEM(3)[i] = WS_RGB(r >> 4, g >> 4, b >> 4);
-        }
-        WS_DISPLAY_COLOR_MEM(0)[0] = WS_DISPLAY_COLOR_MEM(3)[0];
-
-        uint8_t __far *data = MK_FP(0x1000, bmp->data_start);
-        uint16_t pitch = (((bmp->width * bmp->bpp) + 31) / 32) << 2;
-        for (uint8_t y = 0; y < bmp->height; y++, data += pitch) {
-            uint32_t __far *line_src = (uint32_t __far*) data;
-            uint32_t *line_dst = (uint32_t*) (0x8000 + (((uint16_t)bmp->height - 1 - y) * 4));
-            for (uint8_t x = 0; x < bmp->width; x += 8, line_src++, line_dst += WS_DISPLAY_HEIGHT_TILES * 8) {
-                *line_dst = wsx_planar_convert_4bpp_packed_row(*line_src);
-            }
-        }
+        ws_bank_with_ram(UI_SCRATCH_PSRAM_BANK, {
+            ok = load_wallpaper_data(&fp);
+        });
     });
+    f_close(&fp);
+    if (!ok) {
+        WS_DISPLAY_COLOR_MEM(0)[0] = (settings.accent_color_high & SETTING_THEME_DARK_MODE) ? 0x000 : 0xFFF;
+        return;
+    }
 
     wallpaper_status = 1;
+}
+
+void ui_reload_wallpaper(void) {
+    ui_unload_wallpaper();
+    ui_show();
 }
 
 void ui_unload_wallpaper(void) {

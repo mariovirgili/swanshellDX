@@ -69,6 +69,10 @@
 #define SETTING_FILE_SHOW_EXT_EXCEPT_ROMS 1
 #define SETTING_FILE_SHOW_EXT_NONE        2
 
+// settings.wallpaper: "" = /NILESWAN/WALLPAPER.BMP, "-" = none,
+// else a file name in /NILESWAN/WALLPAPERS
+#define SETTING_WALLPAPER_NAME_MAX 40
+
 #define SETTING_VGM_PLAY_NEXT    0
 #define SETTING_VGM_PLAY_SHUFFLE 1
 #define SETTING_VGM_PLAY_REPEAT  2
@@ -180,6 +184,7 @@ typedef struct __attribute__((packed)) {
     uint8_t favorites_mode; // SETTING_FAVORITES_*
     uint8_t scroll_speed; // SETTING_SCROLL_SPEED_*
     uint8_t vgm_play_mode; // SETTING_VGM_PLAY_*
+    char wallpaper[SETTING_WALLPAPER_NAME_MAX]; // see SETTING_WALLPAPER_NAME_MAX
 } settings_t;
 
 #define SETTING_MENU_MUSIC_VOLUME_MIN 1

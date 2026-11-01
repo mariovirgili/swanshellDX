@@ -33,6 +33,7 @@
 #include "ui/ui_dialog.h"
 #include "ui/ui_popup_dialog.h"
 #include "ui/ui_rtc_clock.h"
+#include "ui/ui_wallpaper.h"
 
 DEFINE_STRING_LOCAL(s_file_show_hidden_key, "FileShowHidden");
 DEFINE_STRING_LOCAL(s_file_show_save_key, "FileShowSave");
@@ -634,6 +635,21 @@ static const setting_t __far setting_theme_menu_music_volume = {
     }
 };
 
+#ifdef CONFIG_ENABLE_WALLPAPER
+static void setting_theme_wallpaper_action(const struct setting *set) {
+    ui_wallpaper_picker();
+}
+
+static const setting_t __far setting_theme_wallpaper = {
+    NULL,
+    LK_SETTINGS_WALLPAPER_KEY,
+    LK_SETTINGS_WALLPAPER_HELP,
+    SETTING_TYPE_ACTION,
+    SETTING_FLAG_COLOR_ONLY,
+    setting_theme_wallpaper_action
+};
+#endif
+
 static const uint16_t __wf_rom settings_theme_favorites_name_table[] = {
     LK_SETTINGS_FAVORITES_FILE_LIST,
     LK_SETTINGS_FAVORITES_START_MENU,
@@ -664,10 +680,17 @@ static const setting_category_t __far settings_theme = {
     LK_SETTINGS_THEME_KEY,
     0,
     &settings_interface,
+#ifdef CONFIG_ENABLE_WALLPAPER
+    7,
+#else
     6,
+#endif
     {
         &setting_theme_dark_mode,
         &setting_theme_accent_color,
+#ifdef CONFIG_ENABLE_WALLPAPER
+        &setting_theme_wallpaper,
+#endif
         &setting_txtview_font_size,
         &setting_theme_favorites,
         &setting_theme_menu_music,

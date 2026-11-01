@@ -25,6 +25,18 @@ msgstr "Added to favorites"
 msgid "UI_STATUS_FAVORITE_REMOVED"
 msgstr "Removed from favorites"
 
+msgid "UI_WALLPAPER_NONE"
+msgstr "(None)"
+
+msgid "UI_WALLPAPER_DEFAULT"
+msgstr "WALLPAPER.BMP"
+
+msgid "UI_WALLPAPER_CONTROLS"
+msgstr "A: Choose  B: Cancel  Right: Full view"
+
+msgid "UI_WALLPAPER_CONTROLS_FULL"
+msgstr "Left: Show list"
+
 msgid "UI_STATUS_PATCH_LOADING"
 msgstr "Loading ROM... %d%%"
 
@@ -248,6 +260,12 @@ msgstr "Shuffle"
 
 msgid "SETTINGS_VGM_PLAY_REPEAT"
 msgstr "Repeat"
+
+msgid "SETTINGS_WALLPAPER_KEY"
+msgstr "Wallpaper"
+
+msgid "SETTINGS_WALLPAPER_HELP"
+msgstr "Choose the wallpaper among the BMP files in /NILESWAN/WALLPAPERS (any name). Only valid pictures are listed: 224x144 pixels, 16 colors, uncompressed, at most 64 KB.\n\nThe selected picture is previewed behind the list; Right hides the list to see all of it."
 
 msgid "SETTINGS_MENU_MUSIC_KEY"
 msgstr "Menu music"

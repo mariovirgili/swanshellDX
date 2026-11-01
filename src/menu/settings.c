@@ -25,6 +25,8 @@
 #include "strings.h"
 #include "util/ini.h"
 
+DEFINE_STRING_LOCAL(s_wallpaper_key, "ThemeWallpaper");
+
 void settings_reset(void) {
     memset(&settings, 0, sizeof(settings));
     lang_keys = lang_keys_en;
@@ -95,7 +97,12 @@ int16_t settings_load(void) {
         } else if (ini_result == INI_NEXT_FINISHED) {
             break;
         } else if (ini_result == INI_NEXT_KEY_VALUE) {
-            settings_load_category(&fp, &settings_root, key, value);
+            if (!strcasecmp(key, s_wallpaper_key)) {
+                strncpy(settings.wallpaper, value, SETTING_WALLPAPER_NAME_MAX - 1);
+                settings.wallpaper[SETTING_WALLPAPER_NAME_MAX - 1] = 0;
+            } else {
+                settings_load_category(&fp, &settings_root, key, value);
+            }
         }
     }
 
@@ -107,6 +114,7 @@ settings_load_error:
 }
 
 DEFINE_STRING_LOCAL(s_ini_entry_flag, "%s=%d\n");
+DEFINE_STRING_LOCAL(s_ini_entry_string, "%s=%s\n");
 
 static int16_t settings_save_category(FIL *fp, const setting_category_t __far *cat) {
     for (int i = 0; i < cat->entry_count; i++) {
@@ -144,6 +152,10 @@ int16_t settings_save(void) {
         return result;
 
     result = settings_save_category(&fp, &settings_root);
+    if (result == FR_OK && settings.wallpaper[0]) {
+        result = f_printf(&fp, s_ini_entry_string, s_wallpaper_key,
+            (const char __far*) settings.wallpaper) < 0 ? FR_INT_ERR : FR_OK;
+    }
     if (result != FR_OK) {
         f_close(&fp);
         return result;
