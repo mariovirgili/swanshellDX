@@ -128,8 +128,8 @@ static void ui_selector_draw_statusbar(const char __far *text, const char __far 
 
 // Delay before a long name starts scrolling, in frames (~75 fps): ~0.5 s
 #define SCROLL_TICKS_MIN 40
-// Long names move by one pixel per frame (~75 pixels/s); the row is
-// redrawn every (1 << SHIFT) frames, i.e. in steps of 2 pixels
+// Long names move by one pixel every (1 << SHIFT) frames: every 2 frames
+// (~37 pixels/s), redrawn at each step
 #define SCROLL_TICKS_PACE_SHIFT 1
 #define SCROLL_TICKS_PACE_MASK ((1 << (SCROLL_TICKS_PACE_SHIFT)) - 1)
 
@@ -243,7 +243,7 @@ uint16_t ui_selector(ui_selector_config_t *config) {
             if (scroll_ticks > SCROLL_TICKS_MIN && !(scroll_ticks & SCROLL_TICKS_PACE_MASK)) {
                 ui_selector_set_active_font(config);
                 int y_offset = (config->offset % row_count) * row_height + SELECTOR_Y_OFFSET;
-                config->draw(config, config->offset, y_offset + row_offset, scroll_ticks - SCROLL_TICKS_MIN);
+                config->draw(config, config->offset, y_offset + row_offset, (scroll_ticks - SCROLL_TICKS_MIN) >> SCROLL_TICKS_PACE_SHIFT);
             }
         }
 

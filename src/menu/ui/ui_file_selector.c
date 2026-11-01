@@ -237,12 +237,13 @@ static const char __far *ui_file_selector_display_name(file_selector_entry_t __f
 }
 
 /* Long name scrolling, pixel by pixel. scroll_tick from ui_selector() is
- * the number of frames since scrolling started: one pixel per frame. */
+ * the number of scroll steps since scrolling started: one pixel per step
+ * (a step every 2 frames). */
 // extra pixels scrolled past the end of the name
 #define SCROLL_END_MARGIN 4
-// frames to hold at the end, then at the start, before scrolling again
-#define SCROLL_HOLD_END   60
-#define SCROLL_HOLD_START 30
+// steps to hold at the end (~0.8 s), then at the start (~0.4 s)
+#define SCROLL_HOLD_END   30
+#define SCROLL_HOLD_START 15
 
 static uint16_t scroll_last_px = 0xFFFF;
 static uint16_t scroll_last_offset;
@@ -313,7 +314,7 @@ static void ui_file_selector_draw(struct ui_selector_config *config, uint16_t of
     if (!scroll_tick) {
         scroll_last_px = 0xFFFF;
     } else {
-        // scroll_tick: frames since scrolling started = pixels scrolled
+        // scroll_tick: steps since scrolling started = pixels scrolled
         int width = bitmapfont_get_string_width(s, 65535);
         if (width <= max_width)
             return; // fits: already drawn in full, nothing to scroll
