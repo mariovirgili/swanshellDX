@@ -33,7 +33,6 @@
 
 #ifdef CONFIG_ENABLE_WALLPAPER
 
-#define GAME_IMAGES_BUFFER_OFFSET 4096
 _Static_assert(GAME_IMAGES_BUFFER_OFFSET + sizeof(game_images_t) <= CONFIG_MEMLAYOUT_SECTOR_BUFFER_SIZE,
     "game_images_t does not fit in the sector buffer");
 

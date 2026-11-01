@@ -906,6 +906,147 @@ static void ui_file_selector_draw_title_center(void) {
     bitmapfont_draw_string(&ui_bitmap, x, 0, s_title_nileswan, w + 1);
 }
 
+/* Long folder names scroll in the title bar (color mode, "scroll long
+ * names" on), with the speed and pauses of the file names. The text is
+ * ".../<current folder>" (or "/<folder>"), kept in the sector buffer above
+ * the game images; it is drawn into a scratch bitmap with an 8-pixel left
+ * margin (so a character partly scrolled out is drawn correctly) and the
+ * columns left of "NileSwan" are copied to the screen. */
+#define TITLE_SCROLL_OFFSET 6144
+#define TITLE_SCROLL_MAX    (CONFIG_MEMLAYOUT_SECTOR_BUFFER_SIZE - TITLE_SCROLL_OFFSET)
+#define TITLE_SCROLL_TEXT   ((char *) (sector_buffer + TITLE_SCROLL_OFFSET))
+_Static_assert(GAME_IMAGES_BUFFER_END <= TITLE_SCROLL_OFFSET, "title text overlaps the game images");
+
+static bool title_scroll_active;
+static uint16_t title_scroll_width;   // text width, pixels
+static uint16_t title_scroll_area;    // pixels copied (whole tiles, left of the centre)
+static uint16_t title_scroll_frames;
+static uint16_t title_scroll_last_px;
+static uint8_t title_scroll_check;    // sum of the text: detects a reused buffer
+
+static uint8_t title_scroll_sum(void) {
+    uint8_t sum = 0;
+    for (const char *c = TITLE_SCROLL_TEXT; *c; c++)
+        sum += (uint8_t) *c;
+    return sum;
+}
+
+static void ui_file_selector_draw_title_scrolled(uint16_t px) {
+    const char __far *s = TITLE_SCROLL_TEXT;
+    // the title font: the list may have left its 16-pixel font active, and
+    // the widths below must be those the text was measured with
+    bitmapfont_set_active_font(font8_bitmap);
+    // skip the characters scrolled out entirely
+    uint16_t skip = px;
+    while (true) {
+        const char __far *prev = s;
+        uint32_t ch = wsx_utf8_decode_next(&s);
+        if (!ch) {
+            s = prev;
+            skip = 0;
+            break;
+        }
+        uint16_t cw = bitmapfont_get_char_width(ch) + CONFIG_FONT_CHAR_GAP;
+        if (skip < cw) {
+            s = prev;
+            break;
+        }
+        skip -= cw;
+    }
+
+    uint16_t cols = title_scroll_area >> 3;
+    uint16_t color = BITMAP_COLOR_2BPP(2);
+    if (bitmap_rotation) {
+        // (one tile more on the right: a character cut by the edge is drawn)
+        bitmap_t tmp = BITMAP(sector_buffer, cols + 2, 1, ui_bitmap.bpp);
+        bitmap_rect_fill(&tmp, 0, 0, (cols + 2) << 3, 8, color);
+        bitmapfont_draw_string(&tmp, 8 + 2 - skip, 0, s, title_scroll_area + skip + 6);
+        uint8_t *src = ((uint8_t*) tmp.start) + tmp.x_pitch;
+        uint8_t *dst = (uint8_t*) ui_bitmap.start;
+        uint16_t bytes = 8 * ui_bitmap.y_pitch;
+        // right after the LCD has drawn the title bar (lines 0-7)
+        scroll_wait_beam_below(8);
+        for (uint16_t c = 0; c < cols; c++) {
+            memcpy(dst, src, bytes);
+            src += tmp.x_pitch;
+            dst += ui_bitmap.x_pitch;
+        }
+    } else {
+        // vertical: the title bar is the last physical tile column; logical
+        // x = physical line (the scratch bitmap has one more tile of lines
+        // for the margin)
+        bitmap_t tmp = BITMAP(sector_buffer, 2, ui_bitmap.height + 1, ui_bitmap.bpp);
+        bitmap_rect_fill(&tmp, 0, 0, (cols + 2) << 3, 16, color);
+        bitmapfont_draw_string(&tmp, 8 + 2 - skip, 0, s, title_scroll_area + skip + 6);
+        uint16_t dst_col = ui_bitmap.width - 1;
+        uint8_t *src = ((uint8_t*) tmp.start) + tmp.x_pitch + 8 * ui_bitmap.y_pitch;
+        uint8_t *dst = ((uint8_t*) ui_bitmap.start) + dst_col * ui_bitmap.x_pitch;
+        // the column spans every LCD line: copy during the vertical blank
+        for (uint16_t tries = 0; tries < 50000 && inportb(WS_DISPLAY_LINE_PORT) < (ui_bitmap.height << 3); tries++);
+        memcpy(dst, src, title_scroll_area * ui_bitmap.y_pitch);
+    }
+}
+
+// path: the current directory. Decides whether the title scrolls and, if
+// so, draws its first frame (call after the normal title was drawn).
+static void ui_file_selector_title_scroll_setup(const char *path, int16_t title_max) {
+    title_scroll_active = false;
+    if (!sector_buffer_is_active() || !(settings.file_flags & SETTING_THEME_SCROLL_LONG_NAMES) || title_max < 16)
+        return;
+    const char *last = path;
+    for (const char *p = path; *p; p++)
+        if (*p == '/')
+            last = p;
+    char *text = TITLE_SCROLL_TEXT;
+    uint16_t n = 0;
+    if (last != path) {
+        text[n++] = '.'; text[n++] = '.'; text[n++] = '.';
+    }
+    while (*last && n < TITLE_SCROLL_MAX - 1)
+        text[n++] = *(last++);
+    text[n] = 0;
+
+    bitmapfont_set_active_font(font8_bitmap);
+    title_scroll_area = title_max & ~7;
+    title_scroll_width = bitmapfont_get_string_width(text, 65535);
+    if (title_scroll_area < 16 || title_scroll_width + 2 <= title_scroll_area)
+        return; // fits (or no room): the normal title stays
+    title_scroll_check = title_scroll_sum();
+    title_scroll_frames = 0;
+    title_scroll_last_px = 0;
+    title_scroll_active = true;
+}
+
+// Called every frame while the list is idle.
+static void ui_file_selector_title_scroll_tick(void) {
+    if (!title_scroll_active)
+        return;
+    if (title_scroll_sum() != title_scroll_check) {
+        title_scroll_active = false; // the buffer was reused: stop
+        return;
+    }
+    title_scroll_frames++;
+    if (title_scroll_frames & 1)
+        return; // a step every 2 frames, like the file names
+    uint16_t steps = title_scroll_frames >> 1;
+    uint16_t speed = settings.scroll_speed == SETTING_SCROLL_SPEED_FAST ? 2 : 1;
+    uint16_t travel = title_scroll_width + 2 - title_scroll_area + SCROLL_END_MARGIN;
+    uint16_t travel_steps = (travel + speed - 1) / speed;
+    // start with the pause at the beginning
+    uint16_t step = (steps + travel_steps + SCROLL_HOLD_END) % (travel_steps + SCROLL_HOLD_END + SCROLL_HOLD_START);
+    uint16_t px;
+    if (step < travel_steps)
+        px = step * speed;
+    else
+        px = step < travel_steps + SCROLL_HOLD_END ? travel : 0;
+    if (px > travel)
+        px = travel;
+    if (px == title_scroll_last_px)
+        return;
+    title_scroll_last_px = px;
+    ui_file_selector_draw_title_scrolled(px);
+}
+
 static void ui_file_selector_draw_images_indicator(uint8_t count) {
     uint16_t x0 = ((screen_width + ui_file_selector_title_center_width()) >> 1) + 4;
     // fixed place, never at the right edge: that is where IDX goes (at
@@ -959,6 +1100,7 @@ static void ui_file_selector_end_preview(void) {
 }
 
 static bool ui_file_selector_idle(struct ui_selector_config *config, uint16_t idx, uint16_t ticks) {
+    ui_file_selector_title_scroll_tick();
     if (!ui_file_selector_images_available())
         return false;
 
@@ -1064,6 +1206,7 @@ rescan_directory:
     if (reinit_ui) {
         ui_layout_bars();
     }
+    title_scroll_active = false;
     ui_draw_titlebar(NULL);
     ui_draw_statusbar(lang_keys[LK_UI_STATUS_LOADING]);
     ui_show();
@@ -1083,6 +1226,11 @@ rescan_directory:
         path_depth_pos = (path[0] != 0 && path[1] != 0) ? 1 : 0;
 
         int16_t title_max = ui_file_selector_title_left_max();
+        bool title_scroll = sector_buffer_is_active() && (settings.file_flags & SETTING_THEME_SCROLL_LONG_NAMES);
+        if (title_scroll) {
+            // (copied before the path below gets its "..." written into it)
+            ui_file_selector_title_scroll_setup(path, title_max);
+        }
         bitmapfont_set_active_font(font8_bitmap);
         char *draw_path = path;
         int16_t draw_path_len = bitmapfont_get_string_width(draw_path, screen_width + DOT3_WIDTH) - DOT3_WIDTH;
@@ -1108,6 +1256,14 @@ rescan_directory:
         }
         ui_draw_titlebar(draw_path);
         ui_file_selector_draw_title_center();
+        if (title_scroll_active) {
+            // the scrolled text covers whole tiles: clear the few pixels
+            // between them and "NileSwan" (the fixed title drew there)
+            int16_t gap_end = ((screen_width - ui_file_selector_title_center_width()) >> 1) - 2;
+            if (gap_end > (int16_t) title_scroll_area)
+                bitmap_rect_fill(&ui_bitmap, title_scroll_area, 0, gap_end - title_scroll_area, 8, BITMAP_COLOR_2BPP(2));
+            ui_file_selector_draw_title_scrolled(0);
+        }
     }
     if (reinit_dirs && listing_list != FAVORITES_LIST_NONE) {
         listing_from_index = false;

@@ -38,6 +38,10 @@ typedef struct {
     char tmp[GAME_IMAGES_PATH_MAX];      ///< work buffer
 } game_images_t;
 
+/// Where game_images_t is kept in the sector buffer (see below)
+#define GAME_IMAGES_BUFFER_OFFSET 4096
+#define GAME_IMAGES_BUFFER_END (GAME_IMAGES_BUFFER_OFFSET + sizeof(game_images_t))
+
 /// The (single) game_images_t, kept in the upper half of the sector buffer
 /// (internal RAM is nearly full; the lower half is used by name scrolling).
 /// Color mode only.
