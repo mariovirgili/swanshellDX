@@ -202,19 +202,22 @@ static enum tristate ui_file_selector_file(ui_popup_list_config_t *lst, const ch
 #define OPTION_OPEN_FAVORITES 3
 #define OPTION_OPEN_RECENT    4
 #define OPTION_IMAGES         5
+#define OPTION_OPEN_PLAYED    6
 
 bool ui_file_selector_options(const char __far *filename, uint8_t attrib, uint8_t *open_list) {
     ui_popup_list_config_t lst;
 
     while (true) {
         memset(&lst, 0, sizeof(ui_popup_list_config_t));
-        uint8_t options[6];
+        uint8_t options[7];
         int i = 0;
         if (settings.favorites_mode == SETTING_FAVORITES_START_MENU) {
             options[i] = OPTION_OPEN_FAVORITES;
             lst.option[i++] = lang_keys[LK_UI_FILE_SELECTOR_FAVORITES];
             options[i] = OPTION_OPEN_RECENT;
             lst.option[i++] = lang_keys[LK_UI_FILE_SELECTOR_RECENT];
+            options[i] = OPTION_OPEN_PLAYED;
+            lst.option[i++] = lang_keys[LK_UI_FILE_SELECTOR_PLAYED];
         }
         if (!(attrib & AM_DIR)) {
             options[i] = 0;
@@ -255,6 +258,10 @@ bool ui_file_selector_options(const char __far *filename, uint8_t attrib, uint8_
             break;
         case OPTION_OPEN_RECENT:
             *open_list = FAVORITES_LIST_RECENT;
+            result = TRISTATE_TRUE;
+            break;
+        case OPTION_OPEN_PLAYED:
+            *open_list = FAVORITES_LIST_PLAYED;
             result = TRISTATE_TRUE;
             break;
         case OPTION_IMAGES:

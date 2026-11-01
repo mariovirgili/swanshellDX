@@ -25,13 +25,26 @@
  * Both lists are plain text files, one absolute path per line:
  * /NILESWAN/FAVORITE.TXT (in the order they were added) and
  * /NILESWAN/RECENT.TXT (most recent first, at most FAVORITES_RECENT_MAX).
+ *
+ * Game statistics: /NILESWAN/STATS.TXT, one line per launched ROM or patch,
+ * sorted by launch count (highest first; on a tie, the latest launched
+ * first):
+ *   "0012 2026-11-01 /ROM/Game.wsc"
+ * launch count (4 digits), date of the last launch from the cartridge RTC
+ * ("----------" if unknown), absolute path. The first FAVORITES_PLAYED_MAX
+ * lines are the "Most played" list.
  */
 
 #define FAVORITES_LIST_NONE      0
 #define FAVORITES_LIST_FAVORITES 1
 #define FAVORITES_LIST_RECENT    2
+#define FAVORITES_LIST_PLAYED    3
 
 #define FAVORITES_RECENT_MAX 10
+#define FAVORITES_PLAYED_MAX 20
+
+#define FAVORITES_STATS_COUNT_MAX 9999
+#define FAVORITES_STATS_DATE_LEN 10 // "YYYY-MM-DD"
 
 /**
  * Build the absolute path of a file in the current directory.
@@ -54,6 +67,17 @@ bool favorites_contains(const char *path);
  * Put the path at the top of the recent list.
  */
 int16_t favorites_add_recent(const char *path);
+
+/**
+ * Count one more launch of the path (and the date, if the RTC is set).
+ */
+int16_t favorites_note_played(const char *path);
+
+/**
+ * Statistics of the path: launch count (0 if never launched) and date of
+ * the last launch (date: FAVORITES_STATS_DATE_LEN + 1 bytes, "" if unknown).
+ */
+uint16_t favorites_get_stats(const char *path, char *date);
 
 /**
  * Load a list into the file selector's listing (SRAM). Entries whose file no

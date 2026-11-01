@@ -19,6 +19,12 @@ msgstr "Favorites"
 msgid "UI_FILE_SELECTOR_RECENT"
 msgstr "Recent"
 
+msgid "UI_FILE_SELECTOR_PLAYED"
+msgstr "Most played"
+
+msgid "UI_STATUS_PLAYED"
+msgstr "Played %ux"
+
 msgid "UI_STATUS_FAVORITE_ADDED"
 msgstr "Added to favorites"
 
@@ -244,10 +250,10 @@ msgid "SETTINGS_SCROLL_LONG_NAMES_HELP"
 msgstr "Enable automatically scrolling long names, such as file names, in the list view."
 
 msgid "SETTINGS_FAVORITES_KEY"
-msgstr "Favorites & recent"
+msgstr "Favorites & lists"
 
 msgid "SETTINGS_FAVORITES_HELP"
-msgstr "Where to show the Favorites and Recent lists.\n\n\"File list\": as two folders at the top of the root folder.\n\"Start menu\": as entries of the Start menu.\n\nY1 in the file list, or Start > File, adds or removes a favorite. Recent lists the last ROMs and patches launched."
+msgstr "Where to show the Favorites, Recent and Most played lists.\n\n\"File list\": as folders at the top of the root folder.\n\"Start menu\": as entries of the Start menu.\n\"Off\": no lists, and launches are not recorded.\n\nY1 in the file list, or Start > File, adds or removes a favorite. Recent lists the last ROMs and patches launched; Most played the 20 launched most often. The status bar shows how many times a game was launched (and the date of the last launch, in Recent and Most played, if the cartridge clock is set). The statistics are kept in /NILESWAN/STATS.TXT."
 
 msgid "SETTINGS_FAVORITES_FILE_LIST"
 msgstr "File list"

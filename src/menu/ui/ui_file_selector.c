@@ -562,10 +562,41 @@ static char *status_append(char *buf, char *p, char *end, const char __far *s) {
     return p;
 }
 
+// Launch statistics of an entry (0: never launched, or statistics off).
+// Leaves the whole path in status_path.
+static uint16_t ui_file_selector_entry_stats(file_selector_entry_t __far *fno, char *date) {
+    date[0] = 0;
+    if (settings.favorites_mode == SETTING_FAVORITES_OFF)
+        return 0;
+    if (listing_list != FAVORITES_LIST_NONE) {
+        // lists: fname is already the whole path
+        strncpy(status_path, fno->fno.fname, sizeof(status_path) - 1);
+        status_path[sizeof(status_path) - 1] = 0;
+    } else if (!favorites_full_path(status_path, sizeof(status_path), fno->fno.fname)) {
+        return 0;
+    }
+    return favorites_get_stats(status_path, date);
+}
+
 static bool ui_file_selector_status_text(struct ui_selector_config *config, uint16_t idx, char *buf, uint16_t buf_len) {
     file_selector_entry_t __far *fno = ui_file_selector_open_fno(idx);
     if ((fno->fno.fattrib & AM_DIR) || !FILE_SELECTOR_ENTRY_HAS_EXTENSION(fno))
         return false;
+
+    char date[FAVORITES_STATS_DATE_LEN + 1];
+    uint16_t played = 0;
+    if (listing_list == FAVORITES_LIST_RECENT || listing_list == FAVORITES_LIST_PLAYED) {
+        // Recent and Most played: the launch statistics instead of the ROM
+        // details ("Played 12x  2026-11-01")
+        played = ui_file_selector_entry_stats(fno, date);
+        if (played) {
+            snprintf(buf, buf_len, lang_keys[LK_UI_STATUS_PLAYED], played);
+            if (date[0])
+                status_append(buf, buf + strlen(buf), buf + buf_len, date);
+            return true;
+        }
+    }
+
     const char __far *ext = FILE_SELECTOR_ENTRY_GET_EXTENSION(fno);
     if (strcasecmp(ext, s_file_ext_ws) && strcasecmp(ext, s_file_ext_wsc) && strcasecmp(ext, s_file_ext_pc2))
         return false;
@@ -610,9 +641,19 @@ static bool ui_file_selector_status_text(struct ui_selector_config *config, uint
     // orientation
     // (vertical layout, 144 pixels: just "H" / "V")
     if (bitmap_rotation)
-        status_append(buf, p, end, lang_keys[(meta.footer.flags & 1) ? LK_ROM_INFO_VERTICAL : LK_ROM_INFO_HORIZONTAL]);
+        p = status_append(buf, p, end, lang_keys[(meta.footer.flags & 1) ? LK_ROM_INFO_VERTICAL : LK_ROM_INFO_HORIZONTAL]);
     else
-        status_append(buf, p, end, lang_keys[(meta.footer.flags & 1) ? LK_ROM_INFO_VERTICAL_SHORT : LK_ROM_INFO_HORIZONTAL_SHORT]);
+        p = status_append(buf, p, end, lang_keys[(meta.footer.flags & 1) ? LK_ROM_INFO_VERTICAL_SHORT : LK_ROM_INFO_HORIZONTAL_SHORT]);
+
+    // launch count ("12x"), in the file list only (the lists above show it
+    // already, or the game was never launched)
+    if (listing_list == FAVORITES_LIST_NONE) {
+        played = ui_file_selector_entry_stats(fno, date);
+        if (played) {
+            snprintf(num, sizeof(num), s_stats_count_tpl, played);
+            status_append(buf, p, end, num);
+        }
+    }
     return true;
 }
 
@@ -759,17 +800,27 @@ static uint16_t ui_file_selector_letter_jump(uint16_t offset, uint16_t count, bo
 
 /* === Favorites / Recent: listing helpers === */
 
-// "File list" mode: add "Favorites" and "Recent" as the first two entries
-// of the root folder's listing.
+// Title of a list (FAVORITES_LIST_*).
+static const char __far *ui_file_selector_list_title(uint8_t list) {
+    if (list == FAVORITES_LIST_PLAYED)
+        return lang_keys[LK_UI_FILE_SELECTOR_PLAYED];
+    return lang_keys[list == FAVORITES_LIST_RECENT ? LK_UI_FILE_SELECTOR_RECENT : LK_UI_FILE_SELECTOR_FAVORITES];
+}
+
+#define SPECIAL_ENTRY_COUNT 3
+
+// "File list" mode: add "Favorites", "Recent" and "Most played" as the
+// first entries of the root folder's listing.
 static void ui_file_selector_add_special_entries(uint16_t *count) {
     listing_special_slot = 0xFFFF;
     uint16_t n = *count;
-    if (n + 2 > FILE_SELECTOR_MAX_FILES)
+    if (n + SPECIAL_ENTRY_COUNT > FILE_SELECTOR_MAX_FILES)
         return;
 
-    for (uint8_t i = 0; i < 2; i++) {
+    for (uint8_t i = 0; i < SPECIAL_ENTRY_COUNT; i++) {
         file_selector_entry_t __far *fno = ui_file_selector_open_fno_direct(n + i);
-        const char __far *src = lang_keys[i ? LK_UI_FILE_SELECTOR_RECENT : LK_UI_FILE_SELECTOR_FAVORITES];
+        // (slot n + i opens list FAVORITES_LIST_FAVORITES + i)
+        const char __far *src = ui_file_selector_list_title(FAVORITES_LIST_FAVORITES + i);
         uint8_t j = 0;
         while (src[j] && j < sizeof(fno->fno.fname) - 1) {
             fno->fno.fname[j] = src[j];
@@ -787,12 +838,12 @@ static void ui_file_selector_add_special_entries(uint16_t *count) {
     outportw(WS_CART_EXTBANK_RAM_PORT, FILE_SELECTOR_INDEX_BANK);
     FILE_SELECTOR_MEMORY_BARRIER();
     for (uint16_t j = n; j > 0; j--)
-        FILE_SELECTOR_INDEXES[j + 1] = FILE_SELECTOR_INDEXES[j - 1];
-    FILE_SELECTOR_INDEXES[0] = n;
-    FILE_SELECTOR_INDEXES[1] = n + 1;
+        FILE_SELECTOR_INDEXES[j - 1 + SPECIAL_ENTRY_COUNT] = FILE_SELECTOR_INDEXES[j - 1];
+    for (uint8_t i = 0; i < SPECIAL_ENTRY_COUNT; i++)
+        FILE_SELECTOR_INDEXES[i] = n + i;
 
     listing_special_slot = n;
-    *count = n + 2;
+    *count = n + SPECIAL_ENTRY_COUNT;
 }
 
 // Which list a root folder entry opens (FAVORITES_LIST_NONE: a real entry).
@@ -802,10 +853,8 @@ static uint8_t ui_file_selector_special_list(uint16_t offset) {
     outportw(WS_CART_EXTBANK_RAM_PORT, FILE_SELECTOR_INDEX_BANK);
     FILE_SELECTOR_MEMORY_BARRIER();
     uint16_t slot = FILE_SELECTOR_INDEXES[offset];
-    if (slot == listing_special_slot)
-        return FAVORITES_LIST_FAVORITES;
-    if (slot == listing_special_slot + 1)
-        return FAVORITES_LIST_RECENT;
+    if (slot >= listing_special_slot && slot < listing_special_slot + SPECIAL_ENTRY_COUNT)
+        return FAVORITES_LIST_FAVORITES + (slot - listing_special_slot);
     return FAVORITES_LIST_NONE;
 }
 
@@ -876,12 +925,14 @@ static bool ui_file_selector_is_game(const char *ext) {
 }
 
 // Remember a ROM or patch that is about to be launched (name in the
-// current directory).
+// current directory): Recent list and statistics.
 static void ui_file_selector_note_recent(const char *name, const char *ext) {
     if (settings.favorites_mode == SETTING_FAVORITES_OFF || !ui_file_selector_is_game(ext))
         return;
-    if (favorites_full_path(status_path, sizeof(status_path), name))
+    if (favorites_full_path(status_path, sizeof(status_path), name)) {
         favorites_add_recent(status_path);
+        favorites_note_played(status_path);
+    }
 }
 
 // Width of "...", in pixels.
@@ -1251,7 +1302,7 @@ rescan_directory:
         ui_layout_bars();
     }
     if ((reinit_ui || reinit_dirs) && listing_list != FAVORITES_LIST_NONE) {
-        ui_draw_titlebar(lang_keys[listing_list == FAVORITES_LIST_RECENT ? LK_UI_FILE_SELECTOR_RECENT : LK_UI_FILE_SELECTOR_FAVORITES]);
+        ui_draw_titlebar(ui_file_selector_list_title(listing_list));
         ui_file_selector_draw_title_center();
     } else if (reinit_ui || reinit_dirs) {
         char *path = strbuf + 3;
@@ -1330,7 +1381,7 @@ rescan_directory:
             goto rescan_directory;
         }
         listing_special_slot = 0xFFFF;
-        // (the remembered selection already counts the two entries)
+        // (the remembered selection already counts the special entries)
         if (path_depth_pos == 0 && settings.favorites_mode == SETTING_FAVORITES_FILE_LIST)
             ui_file_selector_add_special_entries(&config.count);
     }
