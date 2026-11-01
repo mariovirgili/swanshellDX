@@ -38,6 +38,7 @@
 #include "ui/ui_file_selector.h"
 #include "ui_favorites.h"
 #include "ui_game_images.h"
+#include "ui_icons.h"
 #include "ui_dialog.h"
 #include "ui_selector.h"
 #include "util/input.h"
@@ -166,8 +167,31 @@ int ui_file_selector_get_file_icon_idx(const char __far *ext) {
     return 1;
 }
 
+// Offsets of the tile data in an .ICN file (see ui_icons.h)
+#define ICN_16COLOR 32
+#define ICN_8COLOR  (ICN_16COLOR + 2 * 1280)
+#define ICN_16MONO  (ICN_8COLOR + 2 * 320)
+#define ICN_8MONO   (ICN_16MONO + 2 * 640)
+
 void ui_file_selector_draw_icon(uint16_t x, uint16_t y, uint16_t icon_idx, uint16_t style) {
     uint16_t tile_idx = bitmap_rotation ? ((y >> 3) + ((x >> 3) * 18)) : ((((WS_DISPLAY_WIDTH_TILES - (style == UI_SELECTOR_STYLE_16 ? 2 : 1)) - (y >> 3)) * 18) + (x >> 3));
+    if (ui_icons_custom()) {
+        // set from the memory card (PSRAM): same data layout as the built-in one
+        bool color = ws_system_is_color_active();
+        uint16_t tile_size = color ? 32 : 16;
+        void __far *dest = color ? (void __far *) WS_TILE_4BPP_MEM(tile_idx) : (void __far *) WS_TILE_MEM(tile_idx);
+        if (style == UI_SELECTOR_STYLE_16) {
+            uint16_t offset = (color ? ICN_16COLOR : ICN_16MONO) + (bitmap_rotation ? 0 : 10 * 4 * tile_size) + icon_idx * 4 * tile_size;
+            void __far *dest2 = color ? (void __far *) WS_TILE_4BPP_MEM(tile_idx + WS_DISPLAY_HEIGHT_TILES)
+                : (void __far *) WS_TILE_MEM(tile_idx + WS_DISPLAY_HEIGHT_TILES);
+            ui_icons_read(dest, offset, 2 * tile_size);
+            ui_icons_read(dest2, offset + 2 * tile_size, 2 * tile_size);
+        } else {
+            uint16_t offset = (color ? ICN_8COLOR : ICN_8MONO) + (bitmap_rotation ? 0 : 10 * tile_size) + icon_idx * tile_size;
+            ui_icons_read(dest, offset, tile_size);
+        }
+        return;
+    }
     if (style == UI_SELECTOR_STYLE_16) {
         if (ws_system_is_color_active()) {
             const uint8_t __far* src = bitmap_rotation ? gfx_icons_16color : gfx_icons_16color_rot;
@@ -1021,6 +1045,7 @@ void ui_file_selector(void) {
         path_depth[path_depth_pos] = config.offset
 
 rescan_directory:
+    ui_icons_recover();
     config.draw = ui_file_selector_draw;
     config.status_text = ui_file_selector_status_text;
     config.idle = ui_file_selector_idle;

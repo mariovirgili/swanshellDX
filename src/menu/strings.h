@@ -36,6 +36,7 @@ DEFINE_STRING(s_dotdot, "..");
 
 DEFINE_STRING(s_file_ext_bfb, ".bfb");
 DEFINE_STRING(s_file_ext_bmp, ".bmp");
+DEFINE_STRING(s_file_ext_icn, ".icn");
 DEFINE_STRING(s_file_ext_bin, ".bin");
 DEFINE_STRING(s_file_ext_com, ".com");
 DEFINE_STRING(s_file_ext_fr, ".fr");
@@ -67,6 +68,7 @@ DEFINE_STRING(s_path_save_ini, "/NILESWAN/SAVE.INI");
 DEFINE_STRING(s_path_config_ini, "/NILESWAN/CONFIG.INI");
 DEFINE_STRING(s_path_wallpaper_bmp, "/NILESWAN/WALLPAPER.BMP");
 DEFINE_STRING(s_path_wallpapers_dir, "/NILESWAN/WALLPAPERS");
+DEFINE_STRING(s_path_icons_dir, "/NILESWAN/ICONS");
 DEFINE_STRING(s_path_images_dir, "/NILESWAN/IMAGES");
 DEFINE_STRING(s_title_nileswan, "NileSwan");
 DEFINE_STRING(s_images_indicator_tpl, "IMG %u");

@@ -26,6 +26,7 @@
 #include "util/ini.h"
 
 DEFINE_STRING_LOCAL(s_wallpaper_key, "ThemeWallpaper");
+DEFINE_STRING_LOCAL(s_icons_key, "ThemeIcons");
 
 void settings_reset(void) {
     memset(&settings, 0, sizeof(settings));
@@ -100,6 +101,9 @@ int16_t settings_load(void) {
             if (!strcasecmp(key, s_wallpaper_key)) {
                 strncpy(settings.wallpaper, value, SETTING_WALLPAPER_NAME_MAX - 1);
                 settings.wallpaper[SETTING_WALLPAPER_NAME_MAX - 1] = 0;
+            } else if (!strcasecmp(key, s_icons_key)) {
+                strncpy(settings.icons, value, SETTING_ICONS_NAME_MAX - 1);
+                settings.icons[SETTING_ICONS_NAME_MAX - 1] = 0;
             } else {
                 settings_load_category(&fp, &settings_root, key, value);
             }
@@ -155,6 +159,10 @@ int16_t settings_save(void) {
     if (result == FR_OK && settings.wallpaper[0]) {
         result = f_printf(&fp, s_ini_entry_string, s_wallpaper_key,
             (const char __far*) settings.wallpaper) < 0 ? FR_INT_ERR : FR_OK;
+    }
+    if (result == FR_OK && settings.icons[0]) {
+        result = f_printf(&fp, s_ini_entry_string, s_icons_key,
+            (const char __far*) settings.icons) < 0 ? FR_INT_ERR : FR_OK;
     }
     if (result != FR_OK) {
         f_close(&fp);

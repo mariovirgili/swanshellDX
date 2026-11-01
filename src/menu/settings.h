@@ -72,6 +72,8 @@
 // settings.wallpaper: "" = /NILESWAN/WALLPAPER.BMP, "-" = none,
 // else a file name in /NILESWAN/WALLPAPERS
 #define SETTING_WALLPAPER_NAME_MAX 40
+// settings.icons: "" = built-in icons, else a file name in /NILESWAN/ICONS
+#define SETTING_ICONS_NAME_MAX 32
 
 #define SETTING_VGM_PLAY_NEXT    0
 #define SETTING_VGM_PLAY_SHUFFLE 1
@@ -190,6 +192,7 @@ typedef struct __attribute__((packed)) {
     uint8_t vgm_play_mode; // SETTING_VGM_PLAY_*
     char wallpaper[SETTING_WALLPAPER_NAME_MAX]; // see SETTING_WALLPAPER_NAME_MAX
     uint8_t extra_flags; // SETTING_EXTRA_*
+    char icons[SETTING_ICONS_NAME_MAX]; // see SETTING_ICONS_NAME_MAX
 } settings_t;
 
 #define SETTING_MENU_MUSIC_VOLUME_MIN 1

@@ -34,6 +34,7 @@
 #include "ui/ui_popup_dialog.h"
 #include "ui/ui_rtc_clock.h"
 #include "ui/ui_wallpaper.h"
+#include "ui/ui_icons.h"
 
 DEFINE_STRING_LOCAL(s_file_show_hidden_key, "FileShowHidden");
 DEFINE_STRING_LOCAL(s_file_show_save_key, "FileShowSave");
@@ -675,6 +676,19 @@ static const setting_t __far setting_theme_wallpaper = {
 };
 #endif
 
+static void setting_theme_icons_action(const struct setting *set) {
+    ui_icons_picker();
+}
+
+static const setting_t __far setting_theme_icons = {
+    NULL,
+    LK_SETTINGS_ICONS_KEY,
+    LK_SETTINGS_ICONS_HELP,
+    SETTING_TYPE_ACTION,
+    0,
+    setting_theme_icons_action
+};
+
 static const uint16_t __wf_rom settings_theme_favorites_name_table[] = {
     LK_SETTINGS_FAVORITES_FILE_LIST,
     LK_SETTINGS_FAVORITES_START_MENU,
@@ -706,9 +720,9 @@ static const setting_category_t __far settings_theme = {
     0,
     &settings_interface,
 #ifdef CONFIG_ENABLE_WALLPAPER
-    7,
+    8,
 #else
-    6,
+    7,
 #endif
     {
         &setting_theme_dark_mode,
@@ -716,6 +730,7 @@ static const setting_category_t __far settings_theme = {
 #ifdef CONFIG_ENABLE_WALLPAPER
         &setting_theme_wallpaper,
 #endif
+        &setting_theme_icons,
         &setting_txtview_font_size,
         &setting_theme_favorites,
         &setting_theme_menu_music,

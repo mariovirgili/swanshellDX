@@ -30,6 +30,7 @@
 #include "fs.h"
 #include "settings.h"
 #include "../../../build/menu/assets/menu/bar_icons.h"
+#include "ui_icons.h"
 #include "../../../build/menu/assets/menu/icons.h"
 #include "../../../build/menu/assets/menu/screen_patterns.h"
 #include "lang.h"
@@ -196,6 +197,8 @@ void ui_init(void) {
         WS_DISPLAY_COLOR_MEM(1)[1] = 0xFFF;
         WS_DISPLAY_COLOR_MEM(1)[2] ^= 0xFFF;
         WS_DISPLAY_COLOR_MEM(1)[3] ^= 0xFFF;
+        // colors 4..15: those of the icon set in use
+        ui_icons_apply_palette();
 
         // palette 2 - titlebar palette
         WS_DISPLAY_COLOR_MEM(2)[0] = 0xFFF;

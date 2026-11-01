@@ -660,3 +660,18 @@ msgstr "Blue"
 
 msgid "COLOR_PREVIEW"
 msgstr "Preview"
+
+msgid "SETTINGS_ICONS_KEY"
+msgstr "Icons"
+
+msgid "SETTINGS_ICONS_HELP"
+msgstr "Choose the file icons among the sets in /NILESWAN/ICONS (.ICN files, made with the tools/icon_set.py tool). Each set has its own colors. Without a valid set the built-in icons are used.\n\nThe selected set is previewed on the right: normal, on the selected row and small."
+
+msgid "UI_ICONS_BUILTIN"
+msgstr "(Built-in)"
+
+msgid "UI_ICONS_CONTROLS"
+msgstr "A: Choose  B: Cancel"
+
+msgid "UI_ICONS_CONTROLS_SHORT"
+msgstr "A:OK B:Cancel"
