@@ -247,6 +247,55 @@ static const char __far *ui_file_selector_display_name(file_selector_entry_t __f
 static uint16_t scroll_last_px = 0xFFFF;
 static uint16_t scroll_last_offset;
 
+// Wait until the LCD has just drawn line y_bottom - 1 (within 48 lines).
+// Bounded, so it can never hang.
+static void scroll_wait_beam_below(uint16_t y_bottom) {
+    int16_t lines = inportb(WS_LCD_VTOTAL_PORT) + 1;
+    for (uint16_t tries = 0; tries < 50000; tries++) {
+        int16_t d = (int16_t) inportb(WS_DISPLAY_LINE_PORT) - (int16_t) y_bottom;
+        if (d < 0)
+            d += lines;
+        if (d < 48)
+            return;
+    }
+}
+
+// Flicker-free scrolling (color mode, horizontal layout): the row is drawn
+// into a scratch bitmap in the sector buffer, then copied to the screen
+// tiles right after the LCD has displayed it, so the visible row never
+// shows a cleared or half-drawn state. The icon columns are not copied.
+static void ui_file_selector_draw_scrolled(file_selector_entry_t __far *fno, uint16_t y, uint8_t row_tiles,
+    int x_offset, int x_start, const char __far *s) {
+
+    uint16_t tile_top = y & ~7;
+    // one extra tile row: glyphs may reach a few pixels below the row
+    bitmap_t tmp = BITMAP(sector_buffer, ui_bitmap.width, row_tiles + 1, ui_bitmap.bpp);
+    uint16_t ty = y - tile_top;
+    uint16_t color = ui_has_wallpaper() ? BITMAP_COLOR_4BPP(2) : BITMAP_COLOR_2BPP(2);
+
+    bitmap_rect_fill(&tmp, 0, 0, screen_width, (row_tiles + 1) << 3, color);
+    uint16_t x = x_start + bitmapfont_draw_string(&tmp, x_start, ty, s, screen_width - x_start);
+    if ((fno->fno.fattrib & AM_DIR) && x < (screen_width - 6))
+        bitmapfont_draw_char(&tmp, x + CONFIG_FONT_CHAR_GAP, ty, '/');
+    // a character partially scrolled out reaches left of the text area:
+    // clear the gap between icon and text (the icon columns are not copied)
+    if (x_start < x_offset && (x_offset & 7))
+        bitmap_rect_fill(&tmp, x_offset & ~7, 0, x_offset & 7, (row_tiles + 1) << 3, color);
+
+    uint16_t first_col = x_offset >> 3;
+    uint16_t bytes = (row_tiles << 3) * ui_bitmap.y_pitch;
+    uint8_t *src = ((uint8_t*) tmp.start) + first_col * tmp.x_pitch;
+    uint8_t *dst = ((uint8_t*) ui_bitmap.start) + first_col * ui_bitmap.x_pitch + tile_top * ui_bitmap.y_pitch;
+    uint16_t cols = (screen_width >> 3) - first_col;
+
+    scroll_wait_beam_below(tile_top + (row_tiles << 3));
+    for (uint16_t c = 0; c < cols; c++) {
+        memcpy(dst, src, bytes);
+        src += tmp.x_pitch;
+        dst += ui_bitmap.x_pitch;
+    }
+}
+
 static void ui_file_selector_draw(struct ui_selector_config *config, uint16_t offset, uint16_t y, uint16_t scroll_tick) {
     int x_offset;
     if (settings.file_flags & SETTING_FILE_HIDE_ICONS)
@@ -307,6 +356,13 @@ static void ui_file_selector_draw(struct ui_selector_config *config, uint16_t of
         }
         max_width = screen_width - x_start;
 
+        if (bitmap_rotation && sector_buffer_is_active()) {
+            ui_file_selector_draw_scrolled(fno, y, config->style == UI_SELECTOR_STYLE_16 ? 2 : 1,
+                x_offset, x_start, s);
+            return;
+        }
+
+        // Otherwise (mono mode, vertical layout) draw in place.
         // The text starts a few pixels below the top of the row, so a
         // font-height rectangle can reach past the row: on the last row it
         // would overwrite the top line of the status bar. Clip it there.
