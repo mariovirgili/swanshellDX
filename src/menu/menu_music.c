@@ -38,6 +38,18 @@ DEFINE_STRING_LOCAL(s_path_menu_vgz, "/NILESWAN/MENU.VGZ");
 
 static vgm_state_t menu_music_state;
 static uint8_t menu_music_bank = MENU_MUSIC_NOT_LOADED;
+// MENU_MUSIC_MAX_BANKS banks of the asset heap reserved at the first load:
+// every track (file or built-in) is loaded there, so the music can be
+// replaced later without freeing heap banks (later allocations, e.g.
+// fonts, would make that free the wrong banks).
+static uint8_t menu_music_area = MENU_MUSIC_NOT_LOADED;
+static bool menu_music_install_requested = false;
+
+static uint8_t menu_music_get_area(void) {
+    if (menu_music_area == MENU_MUSIC_NOT_LOADED)
+        menu_music_area = asset_heap_alloc_banks(MENU_MUSIC_MAX_BANKS);
+    return menu_music_area;
+}
 static bool menu_music_is_default = false;
 static volatile bool menu_music_playing = false;
 
@@ -66,7 +78,7 @@ void __attribute__((interrupt, assume_ss_data)) menu_music_interrupt_handler(voi
 }
 
 static void menu_music_load_default(void) {
-    uint8_t bank = asset_heap_alloc_banks(1);
+    uint8_t bank = menu_music_get_area();
     uint16_t prev_ram_bank = inportw(WS_CART_EXTBANK_RAM_PORT);
 
     ws_bank_with_flash(WS_CART_BANK_FLASH_ENABLE, {
@@ -217,7 +229,8 @@ static bool menu_music_load_file(const char __far *path) {
     if (magic[0] == 0x1F && magic[1] == 0x8B) {
         // asset heap grows downwards: destination first, so it stays
         // allocated after the temporary source banks are freed
-        uint8_t dest_bank = asset_heap_alloc_banks(MENU_MUSIC_MAX_BANKS);
+        uint8_t dest_bank = menu_music_get_area();
+        // temporary source banks: allocated and freed right away (LIFO)
         uint8_t src_bank = asset_heap_alloc_banks(src_banks);
         if (f_read_rom_banked(&fp, src_bank, size, NULL, NULL) == FR_OK)
             ok = menu_music_gunzip(src_bank, size, dest_bank);
@@ -226,16 +239,12 @@ static bool menu_music_load_file(const char __far *path) {
             ok = menu_music_validate(dest_bank, (uint32_t) MENU_MUSIC_MAX_BANKS << 16);
         if (ok)
             menu_music_bank = dest_bank;
-        else
-            asset_heap_free_last_banks(MENU_MUSIC_MAX_BANKS);
     } else {
-        uint8_t bank = asset_heap_alloc_banks(src_banks);
+        uint8_t bank = menu_music_get_area();
         if (f_read_rom_banked(&fp, bank, size, NULL, NULL) == FR_OK
             && menu_music_validate(bank, size)) {
             menu_music_bank = bank;
             ok = true;
-        } else {
-            asset_heap_free_last_banks(src_banks);
         }
     }
 
@@ -254,6 +263,87 @@ void menu_music_init(void) {
         menu_music_load_file(s_path_menu_vgz);
     if (menu_music_bank == MENU_MUSIC_NOT_LOADED)
         menu_music_load_default();
+}
+
+// Can the VGM at bank (already in PSRAM, uncompressed) be the menu music?
+bool menu_music_track_ok(uint16_t bank) {
+    uint16_t prev_rom0 = inportw(WS_CART_EXTBANK_ROM0_PORT);
+    outportw(WS_CART_EXTBANK_ROM0_PORT, bank);
+    uint32_t size = menu_music_peek32(0x04) + 4; // end of file offset
+    outportw(WS_CART_EXTBANK_ROM0_PORT, prev_rom0);
+    if (size < 0x40 || size > ((uint32_t) MENU_MUSIC_MAX_BANKS << 16))
+        return false;
+    return menu_music_validate(bank, size);
+}
+
+// "Use as menu music" in the VGM player: the track, already uncompressed
+// in PSRAM at bank, is checked and copied into the menu music area, which
+// then plays it (no file is read or decompressed again: that would need
+// a lot of stack deep in the file list). The file list writes it to
+// /NILESWAN/MENU.VGM afterwards (menu_music_save()).
+static uint32_t menu_music_size;   // size of a track taken from the player
+
+bool menu_music_take_from(uint16_t bank) {
+    if (!menu_music_track_ok(bank))
+        return false;
+    uint16_t prev_rom0 = inportw(WS_CART_EXTBANK_ROM0_PORT);
+    outportw(WS_CART_EXTBANK_ROM0_PORT, bank);
+    uint32_t size = menu_music_peek32(0x04) + 4;
+    outportw(WS_CART_EXTBANK_ROM0_PORT, prev_rom0);
+
+    menu_music_stop();
+    uint8_t area = menu_music_get_area();
+    uint16_t prev_ram = inportw(WS_CART_EXTBANK_RAM_PORT);
+    // 32 KiB at a time: ROM0 window -> RAM window (PSRAM)
+    ws_bank_with_flash(WS_CART_BANK_FLASH_ENABLE, {
+        for (uint32_t pos = 0; pos < size; pos += 0x8000) {
+            uint16_t len = (size - pos) > 0x8000 ? 0x8000 : (uint16_t) (size - pos);
+            uint16_t off = (uint16_t) pos & 0x8000;
+            outportw(WS_CART_EXTBANK_ROM0_PORT, bank + (uint16_t) (pos >> 16));
+            outportw(WS_CART_EXTBANK_RAM_PORT, area + (uint16_t) (pos >> 16));
+            _fmemcpy(MK_FP(0x1000, off), MK_FP(WS_ROM0_SEGMENT, off), len);
+        }
+        outportw(WS_CART_EXTBANK_RAM_PORT, prev_ram);
+    });
+    outportw(WS_CART_EXTBANK_ROM0_PORT, prev_rom0);
+
+    menu_music_bank = area;
+    menu_music_is_default = false;
+    menu_music_size = size;
+    return true;
+}
+
+// Write the track taken from the player to /NILESWAN/MENU.VGM (removing
+// MENU.VGZ, which would otherwise be loaded at the next start instead).
+int16_t menu_music_save(void) {
+    FIL fp;
+    char path[24];
+    strcpy(path, s_path_menu_vgm);
+    int16_t result = f_open(&fp, path, FA_WRITE | FA_CREATE_ALWAYS);
+    if (result != FR_OK)
+        return result;
+    result = f_write_rom_banked(&fp, menu_music_area, menu_music_size, NULL, NULL, false);
+    int16_t close_result = f_close(&fp);
+    if (result == FR_OK)
+        result = close_result;
+    if (result != FR_OK) {
+        f_unlink(path);
+        return result;
+    }
+    strcpy(path, s_path_menu_vgz);
+    f_unlink(path);
+    return FR_OK;
+}
+
+// The player asks; the file list does the copy once the player has returned.
+void menu_music_request_install(void) {
+    menu_music_install_requested = true;
+}
+
+bool menu_music_take_install_request(void) {
+    bool r = menu_music_install_requested;
+    menu_music_install_requested = false;
+    return r;
 }
 
 bool menu_music_is_playing(void) {

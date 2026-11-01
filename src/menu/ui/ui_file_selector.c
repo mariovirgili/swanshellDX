@@ -39,6 +39,7 @@
 #include "ui_favorites.h"
 #include "ui_game_images.h"
 #include "ui_icons.h"
+#include "menu_music.h"
 #include "ui_dialog.h"
 #include "ui_selector.h"
 #include "util/input.h"
@@ -1092,6 +1093,22 @@ static bool ui_file_selector_images_available(void) {
 static uint8_t ui_file_selector_find_images(uint16_t idx, game_images_t *images);
 static uint8_t ui_file_selector_special_list(uint16_t offset);
 
+// The VGM player took its track as menu music (already in the music area):
+// save it as /NILESWAN/MENU.VGM now, with the player off the stack, and
+// turn the music on.
+static void ui_file_selector_apply_menu_music(const char *name) {
+    (void) name;
+    if (!menu_music_take_install_request())
+        return;
+    int16_t result = menu_music_save();
+    if (result == FR_OK) {
+        settings.file_flags |= SETTING_FILE_MENU_MUSIC;
+        settings_save();
+    } else {
+        ui_dialog_error_check(result, lang_keys[LK_UI_VGMPLAY_MENU_MUSIC_FAILED], 0);
+    }
+}
+
 // Close the thumbnail popup (before anything else is drawn over the list).
 static void ui_file_selector_end_thumbnail(void) {
 #ifdef CONFIG_ENABLE_WALLPAPER
@@ -1379,6 +1396,7 @@ handle_a:
                 } else {
                     ui_file_selector_track_position(config.offset, config.count);
                     int16_t result = launch_router_file(strbuf, ext, 0);
+                    ui_file_selector_apply_menu_music(strbuf);
                     // VGM player: next/previous/random track (keys or end of track)
                     while (result == PLUGIN_RESULT_NEXT_FILE || result == PLUGIN_RESULT_PREV_FILE
                         || result == PLUGIN_RESULT_RANDOM_FILE) {
@@ -1396,6 +1414,7 @@ handle_a:
                         fno = ui_file_selector_open_fno(track);
                         ext = ui_file_selector_prepare_entry(strbuf, fno);
                         result = launch_router_file(strbuf, ext, 0);
+                        ui_file_selector_apply_menu_music(strbuf);
                     }
                     if (result && result != LAUNCH_ROUTER_OK_SRAM_UNCHANGED) {
                         ui_dialog_error_check(result, NULL, 0);

@@ -37,6 +37,7 @@
 #include "main.h"
 #include "util/asset_heap.h"
 #include "vgm/vgm.h"
+#include "menu_music.h"
 
 static vgm_state_t *vgm_state;
 
@@ -71,16 +72,19 @@ static uint16_t vgm_play_seconds(uint16_t vgm_bank) {
 static uint16_t time_text_width;
 
 // Start during playback: choose the playback mode (Next / Shuffle /
-// Repeat) in a popup, the current one marked with ">". The screen is
-// saved to the sector buffer and restored afterwards (color mode).
-static uint8_t choose_play_mode(uint8_t mode) {
-    static const uint16_t __wf_rom names[3] = {
-        LK_SETTINGS_VGM_PLAY_NEXT, LK_SETTINGS_VGM_PLAY_SHUFFLE, LK_SETTINGS_VGM_PLAY_REPEAT
+// Repeat) in a popup, the current one marked with ">", or "Use as menu
+// music" (*menu_music set). The screen is saved to the sector buffer and
+// restored afterwards (color mode).
+static uint8_t choose_play_mode(uint8_t mode, bool *menu_music) {
+    static const uint16_t __wf_rom names[4] = {
+        LK_SETTINGS_VGM_PLAY_NEXT, LK_SETTINGS_VGM_PLAY_SHUFFLE, LK_SETTINGS_VGM_PLAY_REPEAT,
+        LK_UI_VGMPLAY_SET_MENU_MUSIC
     };
-    char text[3][24];
+    char text[4][24];
     ui_popup_list_config_t lst;
     memset(&lst, 0, sizeof(lst));
-    for (uint8_t i = 0; i < 3; i++) {
+    *menu_music = false;
+    for (uint8_t i = 0; i < 4; i++) {
         const char __far *src = lang_keys[names[i]];
         uint8_t n = 0;
         while (*src && n < sizeof(text[i]) - 1)
@@ -111,7 +115,34 @@ static uint8_t choose_play_mode(uint8_t mode) {
         ui_popup_list_clear(&lst);
     input_wait_clear();
 
+    *menu_music = result == 3;
     return (result >= 0 && result < 3) ? result : mode;
+}
+
+static void draw_controls(void) {
+    if (bitmap_rotation)
+        ui_draw_statusbar_lr(lang_keys[LK_UI_VGMPLAY_CONTROLS], lang_keys[LK_UI_VGMPLAY_EXIT]);
+    else // vertical: 144 pixels
+        ui_draw_statusbar(lang_keys[LK_UI_VGMPLAY_CONTROLS_SHORT]);
+}
+
+// "Use as menu music": the track (already uncompressed in PSRAM) is
+// checked and copied into the menu music area; the file list writes
+// /NILESWAN/MENU.VGM and turns the menu music on when the player returns
+// (no card access here: the player is deep in the stack). The result is
+// shown in the status bar for a moment.
+static void use_as_menu_music(uint16_t vgm_bank) {
+    uint16_t msg;
+    if (menu_music_take_from(vgm_bank)) {
+        menu_music_request_install();
+        msg = LK_UI_VGMPLAY_MENU_MUSIC_SET;
+    } else {
+        msg = LK_UI_VGMPLAY_MENU_MUSIC_UNSUITABLE;
+    }
+    ui_draw_statusbar(lang_keys[msg]);
+    for (uint8_t i = 0; i < 110; i++)
+        wait_for_vblank();
+    draw_controls();
 }
 
 // "3/12  1:23 / 3:45" on the right of the title bar
@@ -258,10 +289,7 @@ int ui_vgmplay(const char *path) {
 
     // Controls hint: right/left skip to the next/previous track, any other
     // key exits (aligned right, like the page counter in the file list)
-    if (bitmap_rotation)
-        ui_draw_statusbar_lr(lang_keys[LK_UI_VGMPLAY_CONTROLS], lang_keys[LK_UI_VGMPLAY_EXIT]);
-    else // vertical: 144 pixels
-        ui_draw_statusbar(lang_keys[LK_UI_VGMPLAY_CONTROLS_SHORT]);
+    draw_controls();
 
     vgm_state = &local_vgm_state;
 
@@ -317,11 +345,17 @@ int ui_vgmplay(const char *path) {
 
         input_update();
         if (input_pressed & WS_KEY_START) {
-            uint8_t mode = choose_play_mode(play_mode);
+            bool menu_music;
+            uint8_t mode = choose_play_mode(play_mode, &menu_music);
             if (mode != play_mode) {
                 play_mode = mode;
                 play_mode_changed = true;
             }
+            // the popup may have cleared part of the text (the screen is
+            // only saved when it fits in the sector buffer)
+            print_gd3_metadata(vgm_bank);
+            if (menu_music)
+                use_as_menu_music(vgm_bank);
             prev_line = inportb(WS_DISPLAY_LINE_PORT);
             continue;
         }

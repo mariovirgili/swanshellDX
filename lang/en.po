@@ -684,3 +684,15 @@ msgstr "A: Choose  B: Cancel"
 
 msgid "UI_ICONS_CONTROLS_SHORT"
 msgstr "A:OK B:Cancel"
+
+msgid "UI_VGMPLAY_SET_MENU_MUSIC"
+msgstr "Use as menu music"
+
+msgid "UI_VGMPLAY_MENU_MUSIC_SET"
+msgstr "Set as menu music"
+
+msgid "UI_VGMPLAY_MENU_MUSIC_UNSUITABLE"
+msgstr "Not usable as menu music"
+
+msgid "UI_VGMPLAY_MENU_MUSIC_FAILED"
+msgstr "Could not copy the file"
