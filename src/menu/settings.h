@@ -80,8 +80,11 @@
 #define SETTING_VGM_PLAY_REPEAT  2
 
 // settings.extra_flags
-#define SETTING_EXTRA_IMAGES_PREVIEW_SHIFT 0
-#define SETTING_EXTRA_IMAGES_PREVIEW (1 << SETTING_EXTRA_IMAGES_PREVIEW_SHIFT)
+// settings.images_preview: what the file list shows ~0.5 s after the
+// selection stops on a game with pictures
+#define SETTING_IMAGES_PREVIEW_OFF        0
+#define SETTING_IMAGES_PREVIEW_BACKGROUND 1 // the first picture behind the list
+#define SETTING_IMAGES_PREVIEW_THUMBNAIL  2 // thumb.bmp in a popup
 
 #define SETTING_SCROLL_SPEED_NORMAL 0
 #define SETTING_SCROLL_SPEED_FAST   1
@@ -191,7 +194,8 @@ typedef struct __attribute__((packed)) {
     uint8_t scroll_speed; // SETTING_SCROLL_SPEED_*
     uint8_t vgm_play_mode; // SETTING_VGM_PLAY_*
     char wallpaper[SETTING_WALLPAPER_NAME_MAX]; // see SETTING_WALLPAPER_NAME_MAX
-    uint8_t extra_flags; // SETTING_EXTRA_*
+    uint8_t extra_flags; // SETTING_EXTRA_* (unused)
+    uint8_t images_preview; // SETTING_IMAGES_PREVIEW_*
     char icons[SETTING_ICONS_NAME_MAX]; // see SETTING_ICONS_NAME_MAX
 } settings_t;
 

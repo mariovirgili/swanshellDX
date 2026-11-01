@@ -1092,6 +1092,13 @@ static bool ui_file_selector_images_available(void) {
 static uint8_t ui_file_selector_find_images(uint16_t idx, game_images_t *images);
 static uint8_t ui_file_selector_special_list(uint16_t offset);
 
+// Close the thumbnail popup (before anything else is drawn over the list).
+static void ui_file_selector_end_thumbnail(void) {
+#ifdef CONFIG_ENABLE_WALLPAPER
+    ui_hide_thumbnail();
+#endif
+}
+
 static void ui_file_selector_end_preview(void) {
     if (images_preview_active) {
         images_preview_active = false;
@@ -1104,14 +1111,25 @@ static bool ui_file_selector_idle(struct ui_selector_config *config, uint16_t id
     if (!ui_file_selector_images_available())
         return false;
 
+    if (ticks == 1)
+        ui_file_selector_end_thumbnail(); // the selection moved
     if (ticks == 1 && images_shown_count) {
         images_shown_count = 0;
         ui_file_selector_draw_images_indicator(0);
+    } else if (ticks == IMAGES_PREVIEW_TICKS && settings.images_preview == SETTING_IMAGES_PREVIEW_THUMBNAIL) {
+        // thumb.bmp of the game in a popup (found again: loading the menu
+        // music may have reused the buffer)
+        game_images_t *images = game_images_buffer();
+        ui_file_selector_find_images(idx, images);
+#ifdef CONFIG_ENABLE_WALLPAPER
+        if (game_images_thumb_path(images, images->tmp))
+            ui_show_thumbnail(images->tmp);
+#endif
     } else if (ticks == IMAGES_INDICATOR_TICKS) {
         images_shown_count = ui_file_selector_find_images(idx, game_images_buffer());
         if (images_shown_count)
             ui_file_selector_draw_images_indicator(images_shown_count);
-    } else if (ticks == IMAGES_PREVIEW_TICKS && (settings.extra_flags & SETTING_EXTRA_IMAGES_PREVIEW)) {
+    } else if (ticks == IMAGES_PREVIEW_TICKS && settings.images_preview == SETTING_IMAGES_PREVIEW_BACKGROUND) {
         // (found again: loading the menu music may have reused the buffer)
         game_images_t *images = game_images_buffer();
         if (images_shown_count && ui_file_selector_find_images(idx, images)
@@ -1134,6 +1152,7 @@ static bool ui_file_selector_idle(struct ui_selector_config *config, uint16_t id
 
 static uint8_t ui_file_selector_find_images(uint16_t idx, game_images_t *images) {
     images->count = 0;
+    images->has_thumb = false; // (folders and the root entries return early)
     if (ui_file_selector_special_list(idx) != FAVORITES_LIST_NONE)
         return 0;
     file_selector_entry_t __far *fno = ui_file_selector_open_fno(idx);
@@ -1193,6 +1212,7 @@ rescan_directory:
     config.idle = ui_file_selector_idle;
     config.key_mask = WS_KEY_A | WS_KEY_B | WS_KEY_START | KEY_ALEFT | KEY_ARIGHT | KEY_ADOWN;
     // a game picture shown behind the list: back to the wallpaper
+    ui_file_selector_end_thumbnail();
     ui_file_selector_end_preview();
     images_shown_count = 0;
     if (settings.favorites_mode != SETTING_FAVORITES_OFF)
@@ -1304,6 +1324,9 @@ rescan_directory:
 
     while (true) {
         uint16_t keys_pressed = ui_selector(&config);
+        // a key for an action (or a reload): the popup would hide part of
+        // what comes next
+        ui_file_selector_end_thumbnail();
 
         if (keys_pressed == UI_SELECTOR_RELOAD_REQUESTED) {
             reinit_ui = true;

@@ -36,6 +36,7 @@ typedef struct {
     char dir[GAME_IMAGES_PATH_MAX];      ///< /NILESWAN/IMAGES/<name>
     char name[GAME_IMAGES_MAX][GAME_IMAGES_NAME_MAX];
     char tmp[GAME_IMAGES_PATH_MAX];      ///< work buffer
+    bool has_thumb;                      ///< dir contains thumb.bmp
 } game_images_t;
 
 /// Where game_images_t is kept in the sector buffer (see below)
@@ -51,6 +52,8 @@ game_images_t *game_images_buffer(void);
 uint8_t game_images_find(const char __far *file_name, game_images_t *images);
 
 /// Full path of picture i in buf (GAME_IMAGES_PATH_MAX bytes).
+/// Path of images->dir/thumb.bmp (false if the folder has none).
+bool game_images_thumb_path(const game_images_t *images, char *buf);
 bool game_images_path(const game_images_t *images, uint8_t i, char *buf);
 
 /**

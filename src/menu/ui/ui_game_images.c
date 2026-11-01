@@ -69,6 +69,11 @@ static uint8_t collect(game_images_t *images) {
         uint16_t len = strlen(fno.fname);
         if (len < 5 || len >= GAME_IMAGES_NAME_MAX || strcasecmp(fno.fname + len - 4, s_file_ext_bmp))
             continue;
+        // the thumbnail (112x72) is not one of the pictures
+        if (!strcasecmp(fno.fname, s_thumb_bmp)) {
+            images->has_thumb = true;
+            continue;
+        }
         // position in the sorted list; skip if after the last kept one
         uint8_t pos = images->count;
         while (pos > 0 && strcasecmp(fno.fname, images->name[pos - 1]) < 0)
@@ -98,6 +103,7 @@ static uint8_t collect(game_images_t *images) {
 
 uint8_t game_images_find(const char __far *file_name, game_images_t *images) {
     images->count = 0;
+    images->has_thumb = false;
     strcpy(images->dir, s_path_images_dir);
     uint16_t n = strlen(images->dir);
     images->dir[n++] = '/';
@@ -118,10 +124,23 @@ uint8_t game_images_find(const char __far *file_name, game_images_t *images) {
             break;
         }
         *dot = 0;
-        if (collect(images))
+        if (collect(images) || images->has_thumb)
             break;
     }
     return images->count;
+}
+
+bool game_images_thumb_path(const game_images_t *images, char *buf) {
+    if (!images->has_thumb)
+        return false;
+    uint16_t dlen = strlen(images->dir);
+    uint16_t len = strlen(s_thumb_bmp);
+    if (dlen + 1 + len >= GAME_IMAGES_PATH_MAX)
+        return false;
+    memcpy(buf, images->dir, dlen);
+    buf[dlen] = '/';
+    strcpy(buf + dlen + 1, s_thumb_bmp);
+    return true;
 }
 
 bool game_images_path(const game_images_t *images, uint8_t i, char *buf) {
@@ -198,9 +217,11 @@ done:
 
 uint8_t game_images_find(const char __far *file_name, game_images_t *images) {
     images->count = 0;
+    images->has_thumb = false;
     return 0;
 }
 bool game_images_path(const game_images_t *images, uint8_t i, char *buf) { return false; }
+bool game_images_thumb_path(const game_images_t *images, char *buf) { return false; }
 bool game_images_view(game_images_t *images, const char __far *title) { return false; }
 game_images_t *game_images_buffer(void) { return NULL; }
 

@@ -36,6 +36,7 @@ void settings_reset(void) {
     settings.joy_repeat_first_ticks = 18;
     settings.joy_repeat_next_ticks = 5;
     settings.file_sort = SETTING_FILE_SORT_NAME_ASC;
+    settings.images_preview = SETTING_IMAGES_PREVIEW_THUMBNAIL;
     settings.language = 0xFF;
     settings.file_flags = SETTING_FILE_OPEN_LAST_DIRECTORY | SETTING_FILE_MENU_MUSIC;
     settings.menu_music_volume = SETTING_MENU_MUSIC_VOLUME_DEFAULT;

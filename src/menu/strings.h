@@ -37,6 +37,7 @@ DEFINE_STRING(s_dotdot, "..");
 DEFINE_STRING(s_file_ext_bfb, ".bfb");
 DEFINE_STRING(s_file_ext_bmp, ".bmp");
 DEFINE_STRING(s_file_ext_icn, ".icn");
+DEFINE_STRING(s_thumb_bmp, "thumb.bmp");
 DEFINE_STRING(s_file_ext_bin, ".bin");
 DEFINE_STRING(s_file_ext_com, ".com");
 DEFINE_STRING(s_file_ext_fr, ".fr");

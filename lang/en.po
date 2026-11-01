@@ -294,8 +294,17 @@ msgstr "Choose the wallpaper among the BMP files in /NILESWAN/WALLPAPERS (any na
 msgid "SETTINGS_IMAGES_PREVIEW_KEY"
 msgstr "Game images preview"
 
+msgid "SETTINGS_IMAGES_PREVIEW_OFF"
+msgstr "Off"
+
+msgid "SETTINGS_IMAGES_PREVIEW_BACKGROUND"
+msgstr "Background"
+
+msgid "SETTINGS_IMAGES_PREVIEW_THUMBNAIL"
+msgstr "Thumbnail"
+
 msgid "SETTINGS_IMAGES_PREVIEW_HELP"
-msgstr "Pictures of a game (up to 6, 224x144 BMP with 16 colors, like wallpapers) go in /NILESWAN/IMAGES/<file name without extension>/. Y3 (or Start > Images) shows them; IMG in the title bar tells how many there are.\n\nWith this option, the first picture is also shown behind the list after stopping on the game for half a second."
+msgstr "Pictures of a game (up to 6, 224x144 BMP, like wallpapers) go in /NILESWAN/IMAGES/<file name without extension>/. Y3 (or Start > Images) shows them; IMG in the title bar tells how many there are.\n\nAfter stopping on the game for half a second:\nThumbnail: thumb.bmp of that folder (112x72, 16 colors) in a popup on the right (below in the vertical layout).\nBackground: the first picture behind the list.\nOff: nothing."
 
 msgid "SETTINGS_MENU_MUSIC_KEY"
 msgstr "Menu music"

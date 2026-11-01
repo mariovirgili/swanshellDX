@@ -55,6 +55,12 @@ void ui_reload_wallpaper(void);
 /// Show a picture (wallpaper format) in the wallpaper layer instead of the
 /// wallpaper, until ui_reload_wallpaper(). False if it is not valid.
 bool ui_load_background(const char *path);
+/// Show thumb.bmp (112x72, 16 colors) in a framed popup over the file list
+/// (right half; lower half in the vertical layout). False if not valid.
+bool ui_show_thumbnail(const char *path);
+/// Close the popup (the wallpaper is restored).
+void ui_hide_thumbnail(void);
+bool ui_thumbnail_active(void);
 /// Path of a wallpaper name as stored in settings.wallpaper; false: none.
 bool ui_wallpaper_path(char *buf, const char __far *name);
 /// Is this BMP usable as a wallpaper (224x144, 16 colors, uncompressed)?

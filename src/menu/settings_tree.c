@@ -265,18 +265,30 @@ static const setting_t __far setting_vgm_play_mode = {
 };
 
 #ifdef CONFIG_ENABLE_WALLPAPER
+static const uint16_t __wf_rom settings_images_preview_name_table[] = {
+    LK_SETTINGS_IMAGES_PREVIEW_OFF,
+    LK_SETTINGS_IMAGES_PREVIEW_BACKGROUND,
+    LK_SETTINGS_IMAGES_PREVIEW_THUMBNAIL
+};
+
+static void settings_images_preview_name(uint16_t value, char *buf, int buf_len) {
+    if (value > SETTING_IMAGES_PREVIEW_THUMBNAIL) value = SETTING_IMAGES_PREVIEW_OFF;
+    strncpy(buf, lang_keys[settings_images_preview_name_table[value]], buf_len);
+}
+
+// (the key is the one of the former Yes/No setting: 1 stays "Background")
 static const setting_t __far setting_images_preview = {
     s_file_images_preview_key,
     LK_SETTINGS_IMAGES_PREVIEW_KEY,
     LK_SETTINGS_IMAGES_PREVIEW_HELP,
-    SETTING_TYPE_FLAG,
+    SETTING_TYPE_CHOICE_BYTE,
     SETTING_FLAG_COLOR_ONLY,
     NULL,
-    .flag = {
-        &settings.extra_flags,
-        SETTING_EXTRA_IMAGES_PREVIEW_SHIFT,
-        LK_NO,
-        LK_YES
+    .choice = {
+        &settings.images_preview,
+        SETTING_IMAGES_PREVIEW_OFF, SETTING_IMAGES_PREVIEW_THUMBNAIL,
+        NULL,
+        settings_images_preview_name
     }
 };
 #endif
