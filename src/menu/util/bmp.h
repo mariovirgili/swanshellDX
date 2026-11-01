@@ -40,6 +40,12 @@ typedef struct {
 } bmp_header_t;
 
 #define BMP_MIN_HEADER_SIZE 40
+
+// "Native" 256-color BMP for the WonderSwan Color: every 8x8 tile uses one
+// 16-color palette (pixel = palette * 16 + color); palettes 3-15 (0-2 are
+// the menu's), color 0 of each = the backdrop. Marked in the reserved fields.
+#define BMP_WS_NATIVE_RES0 0x5357 // "WS"
+#define BMP_WS_NATIVE_RES1 0x3631 // "16"
 // 'BM'
 #define BMP_MAGIC 0x4D42
 

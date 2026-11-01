@@ -241,6 +241,11 @@ reload_menu:
                 ui_draw_titlebar(lang_keys[s->name]);
                 ui_color_picker(s->color.value);
                 bitmap_set_screen_force_horizontal(false);
+#ifdef CONFIG_ENABLE_WALLPAPER
+                // the picker uses palettes 8-15, also used by native wallpapers
+                if (ui_has_wallpaper())
+                    ui_reload_wallpaper();
+#endif
                 reinit_ui = true;
                 reload_required = true;
             }

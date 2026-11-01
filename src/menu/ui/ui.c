@@ -254,11 +254,19 @@ bool ui_wallpaper_header_ok(const bmp_header_t __far *bmp, uint32_t file_size) {
         return false;
     if (bmp->magic != BMP_MAGIC || bmp->header_size < BMP_MIN_HEADER_SIZE ||
         bmp->width != screen_width || bmp->height != screen_height ||
-        bmp->compression != 0 || bmp->bpp != 4)
+        bmp->compression != 0)
         return false;
-    // palette (16 colors) and pixel data inside the file
-    uint32_t pitch = (((uint32_t) bmp->width * 4 + 31) / 32) << 2;
-    return 14 + bmp->header_size + 64 <= bmp->data_start
+    // 16 colors, or 256 colors in the native tile-palette layout
+    uint16_t palette_bytes;
+    if (bmp->bpp == 4)
+        palette_bytes = 16 * 4;
+    else if (bmp->bpp == 8 && bmp->res0 == BMP_WS_NATIVE_RES0 && bmp->res1 == BMP_WS_NATIVE_RES1)
+        palette_bytes = 256 * 4;
+    else
+        return false;
+    // palette and pixel data inside the file
+    uint32_t pitch = (((uint32_t) bmp->width * bmp->bpp + 31) / 32) << 2;
+    return 14 + bmp->header_size + palette_bytes <= bmp->data_start
         && bmp->data_start + pitch * bmp->height <= file_size;
 }
 
@@ -279,6 +287,41 @@ bool ui_wallpaper_path(char *buf, const char __far *name) {
     return true;
 }
 
+static inline uint16_t bmp_color(const uint8_t __far *entry) {
+    return WS_RGB(entry[2] >> 4, entry[1] >> 4, entry[0] >> 4);
+}
+
+// Native 256-color layout: palettes 3-15 and one palette per tile.
+static void load_native_data(bmp_header_t __far *bmp) {
+    const uint8_t __far *palette = MK_FP(0x1000, 14 + bmp->header_size);
+    for (uint8_t p = 3; p < 16; p++)
+        for (uint8_t c = 0; c < 16; c++)
+            WS_DISPLAY_COLOR_MEM(p)[c] = bmp_color(palette + ((p << 4) + c) * 4);
+    WS_DISPLAY_COLOR_MEM(0)[0] = WS_DISPLAY_COLOR_MEM(3)[0];
+
+    const uint8_t __far *data = MK_FP(0x1000, bmp->data_start);
+    uint16_t pitch = (((uint16_t) bmp->width * 8) + 31) / 32 * 4;
+    uint8_t height = bmp->height;
+    for (uint8_t tx = 0; tx < WS_DISPLAY_WIDTH_TILES; tx++) {
+        for (uint8_t ty = 0; ty < WS_DISPLAY_HEIGHT_TILES; ty++) {
+            uint16_t tile = tx * WS_DISPLAY_HEIGHT_TILES + ty;
+            uint32_t *dst = (uint32_t*) (0x8000 + tile * 32);
+            // rows are stored bottom-up
+            const uint8_t __far *src = data + (uint16_t) (height - 1 - (ty << 3)) * pitch + (tx << 3);
+            uint8_t pal = src[0] >> 4;
+            if (pal < 3)
+                pal = 3;
+            for (uint8_t r = 0; r < 8; r++, src -= pitch) {
+                uint8_t packed[4];
+                for (uint8_t k = 0; k < 4; k++)
+                    packed[k] = ((src[k << 1] & 15) << 4) | (src[(k << 1) + 1] & 15);
+                dst[r] = wsx_planar_convert_4bpp_packed_row(*((uint32_t*) packed));
+            }
+            ws_screen_put_tile(bitmap_screen1, WS_SCREEN_ATTR_PALETTE(pal) | WS_SCREEN_ATTR_BANK(1) | tile, tx, ty);
+        }
+    }
+}
+
 static bool load_wallpaper_data(FIL *fp) {
     unsigned int br;
     int16_t result = f_read(fp, MK_FP(0x1000, 0x0000), f_size(fp), &br);
@@ -288,6 +331,11 @@ static bool load_wallpaper_data(FIL *fp) {
     bmp_header_t __far* bmp = MK_FP(0x1000, 0x0000);
     if (!ui_wallpaper_header_ok(bmp, f_size(fp)))
         return false;
+
+    if (bmp->bpp == 8) {
+        load_native_data(bmp);
+        return true;
+    }
 
     uint8_t __far *palette = MK_FP(0x1000, 14 + bmp->header_size);
     for (int i = 0; i < 16; i++) {
