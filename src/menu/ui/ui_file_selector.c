@@ -827,9 +827,13 @@ static void ui_file_selector_draw_title_center(void) {
 
 static void ui_file_selector_draw_images_indicator(uint8_t count) {
     uint16_t x0 = ((screen_width + ui_file_selector_title_center_width()) >> 1) + 4;
-    uint16_t x1 = screen_width - 2;
-    if (listing_from_index)
-        x1 -= bitmapfont_get_string_width(lang_keys[LK_UI_FILE_SELECTOR_INDEX_TAG], screen_width) + 8;
+    // fixed place, never at the right edge: that is where IDX goes (at
+    // least five characters, or the IDX tag if wider, are kept free)
+    uint16_t reserve = bitmapfont_get_string_width(s_title_right_reserve, screen_width);
+    uint16_t idx_width = bitmapfont_get_string_width(lang_keys[LK_UI_FILE_SELECTOR_INDEX_TAG], screen_width);
+    if (idx_width > reserve)
+        reserve = idx_width;
+    uint16_t x1 = screen_width - 2 - reserve - 8;
     if (x1 <= x0)
         return;
     bitmap_rect_fill(&ui_bitmap, x0, 0, x1 - x0, 8, BITMAP_COLOR_2BPP(2));
