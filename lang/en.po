@@ -26,7 +26,7 @@ msgid "UI_SAVE_BACKUP_CURRENT"
 msgstr "Current save"
 
 msgid "UI_SAVE_BACKUP_TITLE"
-msgstr "Save backups"
+msgstr "Restore save backup"
 
 msgid "UI_STATUS_SAVE_RESTORED"
 msgstr "Save backup restored"
@@ -259,10 +259,10 @@ msgid "SETTINGS_SCROLL_LONG_NAMES_HELP"
 msgstr "Enable automatically scrolling long names, such as file names, in the list view."
 
 msgid "SETTINGS_SAVE_BACKUPS_KEY"
-msgstr "Save backups"
+msgstr "Keep save backups"
 
 msgid "SETTINGS_SAVE_BACKUPS_HELP"
-msgstr "Before a game's save (SRAM or EEPROM) is written back to its file, keep a copy of the old file in /NILESWAN/SAVES/<game>/, named after the date and time of the cartridge clock (or numbered if the clock is not set). This sets how many are kept per game; the oldest is deleted. Saves of the flash kind are not copied.\n\nStart > File > Save backups puts one back; the current save is copied first."
+msgstr "Before a game's save (SRAM or EEPROM) is written back to its file, keep a copy of the old file in /NILESWAN/SAVES/<game>/, named after the date and time of the cartridge clock (or numbered if the clock is not set). This sets how many are kept per game; the oldest is deleted. Saves of the flash kind are not copied.\n\nStart > File > Restore save backup puts one back; the current save is copied first."
 
 msgid "SETTINGS_SAVE_BACKUPS_OFF"
 msgstr "Off"
