@@ -1294,6 +1294,17 @@ void ui_file_selector(void) {
     uint16_t path_depth[CONFIG_FILESELECT_PATH_MEMORY_DEPTH] = {0};
     uint8_t path_depth_pos = 255;
 
+    // Y1 held at startup: launch the first game of Recent right away
+    bool quick_launch = false;
+    if (settings.favorites_mode != SETTING_FAVORITES_OFF) {
+        input_update();
+        if (input_held & KEY_AUP) {
+            input_wait_clear(); // (the release must not count as a press)
+            ui_file_selector_open_list(FAVORITES_LIST_RECENT, strbuf);
+            quick_launch = true;
+        }
+    }
+
 // The selection to come back to: per list, or per directory depth.
 #define REMEMBER_OFFSET() \
     if (listing_list != FAVORITES_LIST_NONE) \
@@ -1419,7 +1430,15 @@ rescan_directory:
     reinit_dirs = false;
 
     while (true) {
-        uint16_t keys_pressed = ui_selector(&config);
+        uint16_t keys_pressed;
+        if (quick_launch) {
+            // the list was just loaded: "press" A on its first entry (an
+            // empty Recent list is simply shown)
+            quick_launch = false;
+            keys_pressed = config.count ? WS_KEY_A : 0;
+        } else {
+            keys_pressed = ui_selector(&config);
+        }
         // a key for an action (or a reload): the popup would hide part of
         // what comes next
         ui_file_selector_end_thumbnail();
