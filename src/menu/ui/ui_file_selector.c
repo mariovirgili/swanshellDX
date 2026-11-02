@@ -37,6 +37,7 @@
 #include "ui.h"
 #include "ui/ui_file_selector.h"
 #include "ui_favorites.h"
+#include "ui_save_backup.h"
 #include "ui_game_images.h"
 #include "ui_icons.h"
 #include "menu_music.h"
@@ -952,6 +953,16 @@ static void ui_file_selector_note_recent(const char *name, const char *ext) {
     }
 }
 
+// Settings > System > Choose save at launch: a game whose save has backups
+// asks which save to use. False: cancelled (back to the list).
+static bool ui_file_selector_choose_save(const char *name, const char *ext) {
+    if (!(settings.save_flags & SETTING_SAVE_ASK_BACKUP) || !ui_file_selector_is_game(ext))
+        return true;
+    if (!save_backup_find(status_path, sizeof(status_path), name))
+        return true;
+    return ui_save_backup_choose(status_path, true);
+}
+
 // Width of "...", in pixels.
 #define DOT3_WIDTH 6
 
@@ -1452,6 +1463,10 @@ handle_a:
             } else {
                 ui_selector_clear_selection(&config);
                 const char *ext = ui_file_selector_prepare_entry(strbuf, fno);
+                if (!ui_file_selector_choose_save(strbuf, ext)) {
+                    reinit_ui = true;
+                    goto rescan_directory;
+                }
                 ui_file_selector_note_recent(strbuf, ext);
                 if (ext != NULL && !strcasecmp(ext, s_file_ext_bfb)) {
                     ui_selector_clear_selection(&config);

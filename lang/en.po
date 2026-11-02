@@ -22,6 +22,15 @@ msgstr "Recent"
 msgid "UI_FILE_SELECTOR_PLAYED"
 msgstr "Most played"
 
+msgid "UI_SAVE_BACKUP_CURRENT"
+msgstr "Current save"
+
+msgid "UI_SAVE_BACKUP_TITLE"
+msgstr "Save backups"
+
+msgid "UI_STATUS_SAVE_RESTORED"
+msgstr "Save backup restored"
+
 msgid "UI_STATUS_PLAYED"
 msgstr "Played %ux"
 
@@ -248,6 +257,30 @@ msgstr "Scroll long file names"
 
 msgid "SETTINGS_SCROLL_LONG_NAMES_HELP"
 msgstr "Enable automatically scrolling long names, such as file names, in the list view."
+
+msgid "SETTINGS_SAVE_BACKUPS_KEY"
+msgstr "Save backups"
+
+msgid "SETTINGS_SAVE_BACKUPS_HELP"
+msgstr "Before a game's save (SRAM or EEPROM) is written back to its file, keep a copy of the old file in /NILESWAN/SAVES/<game>/, named after the date and time of the cartridge clock (or numbered if the clock is not set). This sets how many are kept per game; the oldest is deleted. Saves of the flash kind are not copied.\n\nStart > File > Save backups puts one back; the current save is copied first."
+
+msgid "SETTINGS_SAVE_BACKUPS_OFF"
+msgstr "Off"
+
+msgid "SETTINGS_SAVE_BACKUPS_1"
+msgstr "1"
+
+msgid "SETTINGS_SAVE_BACKUPS_3"
+msgstr "3"
+
+msgid "SETTINGS_SAVE_BACKUPS_5"
+msgstr "5"
+
+msgid "SETTINGS_SAVE_ASK_BACKUP_KEY"
+msgstr "Choose save at launch"
+
+msgid "SETTINGS_SAVE_ASK_BACKUP_HELP"
+msgstr "When a game with save backups is launched, ask which save to use: the current one (A on the first entry) or one of the backups. B goes back to the list."
 
 msgid "SETTINGS_HIDE_NILESWAN_KEY"
 msgstr "Hide NILESWAN folder"

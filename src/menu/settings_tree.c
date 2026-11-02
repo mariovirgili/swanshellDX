@@ -48,6 +48,8 @@ DEFINE_STRING_LOCAL(s_file_vgm_play_mode_key, "FileVgmPlayMode");
 DEFINE_STRING_LOCAL(s_file_images_preview_key, "FileImagesPreview");
 DEFINE_STRING_LOCAL(s_file_hide_icons_key, "FileHideIcons");
 DEFINE_STRING_LOCAL(s_file_hide_nileswan_key, "FileHideNileswan");
+DEFINE_STRING_LOCAL(s_save_backups_key, "SaveBackups");
+DEFINE_STRING_LOCAL(s_save_ask_backup_key, "SaveAskBackup");
 DEFINE_STRING_LOCAL(s_program_fast_sram_key, "ProgFastSRAM");
 DEFINE_STRING_LOCAL(s_program_verify_saves_key, "ProgVerifySave");
 DEFINE_STRING_LOCAL(s_program_fx_bios_key, "ProgFxCmptBios");
@@ -554,13 +556,55 @@ static const setting_t __far setting_file_hide_nileswan = {
     }
 };
 
+static const uint16_t __wf_rom settings_save_backups_name_table[] = {
+    LK_SETTINGS_SAVE_BACKUPS_OFF,
+    LK_SETTINGS_SAVE_BACKUPS_1,
+    LK_SETTINGS_SAVE_BACKUPS_3,
+    LK_SETTINGS_SAVE_BACKUPS_5
+};
+
+static void settings_save_backups_name(uint16_t value, char *buf, int buf_len) {
+    if (value > SETTING_SAVE_BACKUPS_5) value = SETTING_SAVE_BACKUPS_OFF;
+    strncpy(buf, lang_keys[settings_save_backups_name_table[value]], buf_len);
+}
+
+static const setting_t __far setting_save_backups = {
+    s_save_backups_key,
+    LK_SETTINGS_SAVE_BACKUPS_KEY,
+    LK_SETTINGS_SAVE_BACKUPS_HELP,
+    SETTING_TYPE_CHOICE_BYTE,
+    0,
+    NULL,
+    .choice = {
+        &settings.save_backups,
+        SETTING_SAVE_BACKUPS_OFF, SETTING_SAVE_BACKUPS_5,
+        NULL,
+        settings_save_backups_name
+    }
+};
+
+static const setting_t __far setting_save_ask_backup = {
+    s_save_ask_backup_key,
+    LK_SETTINGS_SAVE_ASK_BACKUP_KEY,
+    LK_SETTINGS_SAVE_ASK_BACKUP_HELP,
+    SETTING_TYPE_FLAG,
+    0,
+    .flag = {
+        &settings.save_flags,
+        SETTING_SAVE_ASK_BACKUP_SHIFT,
+        LK_NO, LK_YES
+    }
+};
+
 static const setting_category_t __far settings_system = {
     LK_SETTINGS_SYSTEM_KEY,
     0,
     &settings_root,
-    4,
+    6,
     {
         &setting_program_verify_saves,
+        &setting_save_backups,
+        &setting_save_ask_backup,
         &setting_file_hide_nileswan,
         &setting_cart_set_rtc_time,
         &setting_sys_advanced

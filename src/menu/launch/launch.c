@@ -37,6 +37,7 @@
 #include "lang.h"
 #include "ui/ui.h"
 #include "ui/ui_popup_dialog.h"
+#include "ui/ui_save_backup.h"
 #include "util/file.h"
 #include "util/ini.h"
 #include "menu_music.h"
@@ -543,6 +544,11 @@ int16_t launch_backup_save_data(void) {
                     result = file_type == SAVE_ID_FOR_FLASH ? ERR_SAVE_PSRAM_CORRUPT : ERR_SAVE_CORRUPT;
                     goto launch_backup_save_data_return_result;
                 }
+
+                // keep a copy of the old save first (Settings > System >
+                // Save backups; not for flash saves, as big as the ROM)
+                if (file_type != SAVE_ID_FOR_FLASH)
+                    save_backup_create(value);
 
                 result = f_open(&save_fp, value, FA_OPEN_EXISTING | FA_READ | FA_WRITE);
                 if (result != FR_OK) {

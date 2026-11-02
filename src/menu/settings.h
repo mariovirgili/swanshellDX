@@ -59,6 +59,16 @@
 #define SETTING_FILE_HIDE_NILESWAN_SHIFT 7
 #define SETTING_FILE_HIDE_NILESWAN       (1 << SETTING_FILE_HIDE_NILESWAN_SHIFT)
 
+// settings.save_backups: how many save backups are kept per game
+#define SETTING_SAVE_BACKUPS_OFF 0
+#define SETTING_SAVE_BACKUPS_1   1
+#define SETTING_SAVE_BACKUPS_3   2
+#define SETTING_SAVE_BACKUPS_5   3
+
+// settings.save_flags
+#define SETTING_SAVE_ASK_BACKUP_SHIFT 0
+#define SETTING_SAVE_ASK_BACKUP       (1 << SETTING_SAVE_ASK_BACKUP_SHIFT) // choose a backup at launch
+
 #define SETTING_FILE_SORT_FILESYSTEM 0
 #define SETTING_FILE_SORT_NAME_ASC   1
 #define SETTING_FILE_SORT_NAME_DESC  2
@@ -199,6 +209,8 @@ typedef struct __attribute__((packed)) {
     uint8_t extra_flags; // SETTING_EXTRA_* (unused)
     uint8_t images_preview; // SETTING_IMAGES_PREVIEW_*
     char icons[SETTING_ICONS_NAME_MAX]; // see SETTING_ICONS_NAME_MAX
+    uint8_t save_backups; // SETTING_SAVE_BACKUPS_* (index: Off / 1 / 3 / 5)
+    uint8_t save_flags; // SETTING_SAVE_*
 } settings_t;
 
 #define SETTING_MENU_MUSIC_VOLUME_MIN 1

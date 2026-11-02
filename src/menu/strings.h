@@ -80,6 +80,7 @@ DEFINE_STRING(s_file_index_name, "SWANSHELL.IDX");
 DEFINE_STRING(s_path_favorites_txt, "/NILESWAN/FAVORITE.TXT");
 DEFINE_STRING(s_path_recent_txt, "/NILESWAN/RECENT.TXT");
 DEFINE_STRING(s_path_stats_txt, "/NILESWAN/STATS.TXT");
+DEFINE_STRING(s_path_saves_dir, "/NILESWAN/SAVES");
 DEFINE_STRING(s_path_list_tmp, "/NILESWAN/LIST.TMP");
 DEFINE_STRING(s_rom_info_pcv2, "PCv2");
 DEFINE_STRING(s_stats_count_tpl, "%ux");

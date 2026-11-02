@@ -29,6 +29,7 @@
 #include "ui_about.h"
 #include "ui_dialog.h"
 #include "ui_favorites.h"
+#include "ui_save_backup.h"
 #include "ui_file_selector.h"
 #include "ui_fileops.h"
 #include "ui_popup_list.h"
@@ -148,12 +149,17 @@ static enum tristate ui_file_selector_tools(ui_popup_list_config_t *lst, const c
 static enum tristate ui_file_selector_file(ui_popup_list_config_t *lst, const char __far *filename) {
     char path[FF_LFN_BUF + 1];
     bool has_path = false;
+    // does the save of this game (ROM or patch) have backups? (path is used
+    // as a work buffer first)
+    bool has_backups = (fileops_is_rom(filename) || fileops_has_extension(filename, s_file_ext_ips)
+        || fileops_has_extension(filename, s_file_ext_bps))
+        && save_backup_find(path, sizeof(path), filename);
     // filename is in the current directory: make it a whole path
     if (settings.favorites_mode != SETTING_FAVORITES_OFF)
         has_path = favorites_full_path(path, sizeof(path), filename);
 
     while (true) {
-        uint8_t options[4];
+        uint8_t options[5];
         int i = 0;
         memset(lst, 0, sizeof(ui_popup_list_config_t));
         if (has_path) {
@@ -163,6 +169,10 @@ static enum tristate ui_file_selector_file(ui_popup_list_config_t *lst, const ch
         if (fileops_is_rom(filename)) {
             options[i] = 1;
             lst->option[i++] = lang_keys[LK_SUBMENU_OPTION_FILE_ERASE_SAVE];
+        }
+        if (has_backups) {
+            options[i] = 4;
+            lst->option[i++] = lang_keys[LK_UI_SAVE_BACKUP_TITLE];
         }
         options[i] = 0;
         lst->option[i++] = lang_keys[LK_SUBMENU_OPTION_FILE_DELETE];
@@ -193,6 +203,12 @@ static enum tristate ui_file_selector_file(ui_popup_list_config_t *lst, const ch
         case 2: {
             bool added;
             ui_dialog_error_check(favorites_toggle(path, &added), NULL, 0);
+            return TRISTATE_TRUE;
+        }
+        case 4: {
+            ui_popup_list_clear(lst);
+            if (save_backup_find(path, sizeof(path), filename))
+                ui_save_backup_choose(path, false);
             return TRISTATE_TRUE;
         }
         }
