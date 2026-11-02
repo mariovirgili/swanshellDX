@@ -336,6 +336,35 @@ bool save_backup_find(char *save_path, uint16_t save_path_len, const char __far 
     return false;
 }
 
+void save_backup_game(const char __far *game_name) {
+    char save_path[FF_LFN_BUF + 1];
+    if (save_name(save_path, sizeof(save_path), game_name, s_file_ext_sram))
+        save_backup_create(save_path);
+    if (save_name(save_path, sizeof(save_path), game_name, s_file_ext_eeprom))
+        save_backup_create(save_path);
+}
+
+// Delete the backups of one save kind (save_ext) of a game file.
+static void delete_backups(const char __far *game_name, const char __far *save_ext) {
+    char save_path[FF_LFN_BUF + 1];
+    char path[FF_LFN_BUF + 1];
+    const char *ext;
+    if (!save_name(save_path, sizeof(save_path), game_name, save_ext))
+        return;
+    uint16_t dir_len = backup_dir(path, sizeof(path), save_path, &ext);
+    if (!dir_len)
+        return;
+    backup_prune(path, dir_len, ext, 0);
+    // the folder, once empty (an error if other files are left: kept)
+    f_unlink(path);
+}
+
+int16_t save_backup_delete_all(const char __far *game_name) {
+    delete_backups(game_name, s_file_ext_sram);
+    delete_backups(game_name, s_file_ext_eeprom);
+    return FR_OK;
+}
+
 // "2026-11-02_232410.ram" -> "2026-11-02 23:24"; else the name without
 // its extension
 static void backup_label(char *label, const char *name, const char *ext) {

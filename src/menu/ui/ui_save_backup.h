@@ -51,6 +51,13 @@ int16_t save_backup_create(const char *save_path);
 /// EEPROM. False if neither has backups.
 bool save_backup_find(char *save_path, uint16_t save_path_len, const char __far *game_name);
 
+/// Back up the saves (SRAM, EEPROM) of a game file, as at startup (e.g.
+/// before they are erased).
+void save_backup_game(const char __far *game_name);
+
+/// Delete all the save backups of a game file (and their folders).
+int16_t save_backup_delete_all(const char __far *game_name);
+
 /// Popup: "Current save" and the backups of save_path, newest first. A on a
 /// backup puts it back (the current save is backed up first).
 /// at_launch: shown before a game starts; B cancels the launch.

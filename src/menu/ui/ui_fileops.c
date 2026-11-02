@@ -27,6 +27,7 @@
 #include "strings.h"
 #include "util/file.h"
 #include "ui/ui_popup_dialog.h"
+#include "ui/ui_save_backup.h"
 
 bool fileops_has_extension(const char __far *filename, const char __far *ext) {
     const char __far *filename_ext = strrchr(filename, '.');
@@ -134,9 +135,27 @@ int16_t ui_fileops_check_file_erase_savedata(const char __far *filename) {
     ui_popup_dialog_draw(&dlg);
     ui_show();
     
-    if (ui_popup_dialog_action(&dlg, 1) == 0) {
-        return fileops_delete_file_maybe_savedata(filename, FILEOPS_DELETE_FILE_MAYBE_INCLUDE_SAVEDATA);
-    } else {
+    if (ui_popup_dialog_action(&dlg, 1) != 0)
         return FR_OK;
+
+    // keep a copy of what is erased (Settings > System > Keep save backups)
+    save_backup_game(filename);
+    int16_t result = fileops_delete_file_maybe_savedata(filename, FILEOPS_DELETE_FILE_MAYBE_INCLUDE_SAVEDATA);
+    if (result != FR_OK)
+        return result;
+
+    // the backups too? (No by default)
+    char save_path[FF_LFN_BUF + 1];
+    if (save_backup_find(save_path, sizeof(save_path), filename)) {
+        ui_popup_dialog_config_t dlg2 = {0};
+        dlg2.title = lang_keys[LK_SUBMENU_OPTION_FILE_ERASE_SAVE];
+        dlg2.description = lang_keys[LK_DIALOG_ERASE_SAVE_BACKUPS_CONFIRM];
+        dlg2.buttons[0] = LK_YES;
+        dlg2.buttons[1] = LK_NO;
+        ui_popup_dialog_draw(&dlg2);
+        ui_show();
+        if (ui_popup_dialog_action(&dlg2, 1) == 0)
+            result = save_backup_delete_all(filename);
     }
+    return result;
 }
