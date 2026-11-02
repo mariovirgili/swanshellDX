@@ -440,6 +440,19 @@ static inline bool launch_should_save_path_info(void) {
     return (settings.file_flags & SETTING_FILE_OPEN_LAST_DIRECTORY);
 }
 
+// "Last directory": go to the directory of a save file listed in SAVE.INI
+// (the directory of the game). Done before the save is restored, so that it
+// also happens when restoring fails.
+static bool launch_chdir_to_save_dir(char *save_path) {
+    char *last_path_delim = (char*) strrchr(save_path, '/');
+    if (last_path_delim == NULL || last_path_delim == save_path)
+        return false;
+    *last_path_delim = 0;
+    f_chdir(save_path);
+    *last_path_delim = '/';
+    return true;
+}
+
 int16_t launch_backup_save_data(void) {
     FIL fp, save_fp;
     char buffer[FF_LFN_BUF + 33];
@@ -494,20 +507,13 @@ int16_t launch_backup_save_data(void) {
             }
 
             if (!strcasecmp(key, s_save_ini_freya_ram0)) {
+                if (dir_change_requested && launch_chdir_to_save_dir(value))
+                    dir_change_requested = false;
+
                 uint32_t fetched_id = launch_get_save_id(SAVE_ID_FOR_SRAM);
                 if (id != fetched_id) {
                     result = ERR_SAVE_CORRUPT;
                     goto launch_backup_save_data_return_result;
-                }
-
-                if (dir_change_requested) {
-                    char *last_path_delim = (char*) strrchr(value, '/');
-                    if (last_path_delim != NULL && last_path_delim != value) {
-                        *last_path_delim = 0;
-                        f_chdir(value);
-                        *last_path_delim = '/';
-                        dir_change_requested = false;
-                    }
                 }
 
                 result = launch_athena_restore_ram0(value);
@@ -528,6 +534,9 @@ int16_t launch_backup_save_data(void) {
                 key[0] = 0;
                 value_num = atoi(value);
                 value = key + 1;
+
+                if (dir_change_requested && launch_chdir_to_save_dir(value))
+                    dir_change_requested = false;
 
                 uint32_t fetched_id = launch_get_save_id(file_type);
                 if (id != fetched_id) {
@@ -566,15 +575,6 @@ int16_t launch_backup_save_data(void) {
                 f_close(&save_fp);
                 if (result != FR_OK) {
                     goto launch_backup_save_data_return_result;
-                }
-
-                if (dir_change_requested) {
-                    char *last_path_delim = (char*) strrchr(value, '/');
-                    if (last_path_delim != NULL && last_path_delim != value) {
-                        *last_path_delim = 0;
-                        f_chdir(value);
-                        dir_change_requested = false;
-                    }
                 }
             }
         }
