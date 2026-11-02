@@ -47,6 +47,7 @@ DEFINE_STRING_LOCAL(s_file_scroll_speed_key, "FileScrollSpeed");
 DEFINE_STRING_LOCAL(s_file_vgm_play_mode_key, "FileVgmPlayMode");
 DEFINE_STRING_LOCAL(s_file_images_preview_key, "FileImagesPreview");
 DEFINE_STRING_LOCAL(s_file_hide_icons_key, "FileHideIcons");
+DEFINE_STRING_LOCAL(s_file_hide_nileswan_key, "FileHideNileswan");
 DEFINE_STRING_LOCAL(s_program_fast_sram_key, "ProgFastSRAM");
 DEFINE_STRING_LOCAL(s_program_verify_saves_key, "ProgVerifySave");
 DEFINE_STRING_LOCAL(s_program_fx_bios_key, "ProgFxCmptBios");
@@ -540,13 +541,27 @@ static const setting_t __far setting_sys_advanced = {
     .category = { &settings_sys_advanced }
 };
 
+static const setting_t __far setting_file_hide_nileswan = {
+    s_file_hide_nileswan_key,
+    LK_SETTINGS_HIDE_NILESWAN_KEY,
+    LK_SETTINGS_HIDE_NILESWAN_HELP,
+    SETTING_TYPE_FLAG,
+    0,
+    .flag = {
+        &settings.file_flags,
+        SETTING_FILE_HIDE_NILESWAN_SHIFT,
+        LK_NO, LK_YES
+    }
+};
+
 static const setting_category_t __far settings_system = {
     LK_SETTINGS_SYSTEM_KEY,
     0,
     &settings_root,
-    3,
+    4,
     {
         &setting_program_verify_saves,
+        &setting_file_hide_nileswan,
         &setting_cart_set_rtc_time,
         &setting_sys_advanced
     }

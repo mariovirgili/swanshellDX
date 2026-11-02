@@ -32,6 +32,7 @@ DEFINE_STRING(s_hex_byte, "%02x");
 DEFINE_STRING(s_path_sep, "/");
 DEFINE_STRING(s_comma, ",");
 DEFINE_STRING(s_dot, ".");
+DEFINE_STRING(s_nileswan_dir_name, "NILESWAN");
 DEFINE_STRING(s_dotdot, "..");
 
 DEFINE_STRING(s_file_ext_bfb, ".bfb");

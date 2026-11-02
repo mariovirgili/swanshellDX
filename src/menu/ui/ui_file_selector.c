@@ -76,9 +76,16 @@ static int compare_filenames(const file_selector_entry_t __far* a, const file_se
     }
 }
 
+// Settings > System > Hide NILESWAN folder: leave /NILESWAN out of the
+// root folder's listing (set by ui_file_selector_scan_directory()).
+static bool scan_hide_nileswan;
+
 bool ui_file_selector_default_predicate(const FILINFO __far *fno, const char __far* ext) {
     // the ROM index file is never listed
     if (!strcasecmp(fno->fname, s_file_index_name))
+        return false;
+
+    if (scan_hide_nileswan && (fno->fattrib & AM_DIR) && !strcasecmp(fno->fname, s_nileswan_dir_name))
         return false;
 
     if (!(settings.file_flags & SETTING_FILE_SHOW_HIDDEN)) {
@@ -110,6 +117,16 @@ int16_t ui_file_selector_scan_directory(const char *path, filinfo_predicate_t pr
     DIR dir;
     uint16_t file_count = 0;
     *count = 0;
+
+    // listing the root folder? ("/", or "." while in it)
+    scan_hide_nileswan = false;
+    if (settings.file_flags & SETTING_FILE_HIDE_NILESWAN) {
+        char cwd[4];
+        if (path[0] == '/' && !path[1])
+            scan_hide_nileswan = true;
+        else if (path[0] == '.' && !path[1] && f_getcwd(cwd, sizeof(cwd)) == FR_OK && cwd[0] == '/' && !cwd[1])
+            scan_hide_nileswan = true;
+    }
 
     uint8_t result = f_opendir(&dir, path);
 	if (result != FR_OK)
@@ -665,7 +682,7 @@ static bool ui_file_selector_status_text(struct ui_selector_config *config, uint
  */
 
 #define FILE_INDEX_VERSION 1
-#define FILE_INDEX_FILTER_FLAGS (SETTING_FILE_SHOW_HIDDEN | SETTING_FILE_SHOW_SAVES)
+#define FILE_INDEX_FILTER_FLAGS (SETTING_FILE_SHOW_HIDDEN | SETTING_FILE_SHOW_SAVES | SETTING_FILE_HIDE_NILESWAN)
 
 typedef struct __attribute__((packed)) {
     char magic[4];         // "SSIX"
