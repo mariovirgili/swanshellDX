@@ -253,7 +253,7 @@ msgid "SETTINGS_HIDE_NILESWAN_KEY"
 msgstr "Hide NILESWAN folder"
 
 msgid "SETTINGS_HIDE_NILESWAN_HELP"
-msgstr "Leave the NILESWAN folder (menu files, settings, saves list, pictures...) out of the root folder's list. Turn this off to see it again."
+msgstr "Leave the NILESWAN folder (menu files, settings, saves list, pictures...) out of the root folder's list (on by default). Turn this off to see it again."
 
 msgid "SETTINGS_FAVORITES_KEY"
 msgstr "Favorites & lists"

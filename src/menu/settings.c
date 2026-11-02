@@ -38,7 +38,7 @@ void settings_reset(void) {
     settings.file_sort = SETTING_FILE_SORT_NAME_ASC;
     settings.images_preview = SETTING_IMAGES_PREVIEW_THUMBNAIL;
     settings.language = 0xFF;
-    settings.file_flags = SETTING_FILE_OPEN_LAST_DIRECTORY | SETTING_FILE_MENU_MUSIC;
+    settings.file_flags = SETTING_FILE_OPEN_LAST_DIRECTORY | SETTING_FILE_MENU_MUSIC | SETTING_FILE_HIDE_NILESWAN;
     settings.menu_music_volume = SETTING_MENU_MUSIC_VOLUME_DEFAULT;
 }
 
