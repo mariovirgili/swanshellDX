@@ -30,6 +30,7 @@
 #include "ui_dialog.h"
 #include "ui_favorites.h"
 #include "ui_save_backup.h"
+#include "ui_rom_info.h"
 #include "ui_file_selector.h"
 #include "ui_fileops.h"
 #include "ui_popup_list.h"
@@ -159,7 +160,7 @@ static enum tristate ui_file_selector_file(ui_popup_list_config_t *lst, const ch
         has_path = favorites_full_path(path, sizeof(path), filename);
 
     while (true) {
-        uint8_t options[5];
+        uint8_t options[6];
         int i = 0;
         memset(lst, 0, sizeof(ui_popup_list_config_t));
         if (has_path) {
@@ -169,6 +170,10 @@ static enum tristate ui_file_selector_file(ui_popup_list_config_t *lst, const ch
         if (fileops_is_rom(filename)) {
             options[i] = 1;
             lst->option[i++] = lang_keys[LK_SUBMENU_OPTION_FILE_ERASE_SAVE];
+        }
+        if (fileops_is_rom(filename)) {
+            options[i] = 5;
+            lst->option[i++] = lang_keys[LK_UI_ROM_INFO_TITLE];
         }
         if (has_backups) {
             options[i] = 4;
@@ -205,6 +210,10 @@ static enum tristate ui_file_selector_file(ui_popup_list_config_t *lst, const ch
             ui_dialog_error_check(favorites_toggle(path, &added), NULL, 0);
             return TRISTATE_TRUE;
         }
+        case 5:
+            ui_popup_list_clear(lst);
+            ui_rom_info(filename);
+            return TRISTATE_TRUE;
         case 4: {
             ui_popup_list_clear(lst);
             if (save_backup_find(path, sizeof(path), filename))

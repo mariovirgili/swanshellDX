@@ -22,6 +22,60 @@ msgstr "Recent"
 msgid "UI_FILE_SELECTOR_PLAYED"
 msgstr "Most played"
 
+msgid "UI_ROM_INFO_TITLE"
+msgstr "ROM info"
+
+msgid "UI_ROM_INFO_CONTROLS"
+msgstr "A: Verify checksum  B: Back"
+
+msgid "UI_ROM_INFO_CONTROLS_DONE"
+msgstr "B: Back"
+
+msgid "UI_ROM_INFO_VERIFYING"
+msgstr "Verifying checksum... (B: stop)"
+
+msgid "UI_ROM_INFO_FILE"
+msgstr "File"
+
+msgid "UI_ROM_INFO_SYSTEM"
+msgstr "System"
+
+msgid "UI_ROM_INFO_PUBLISHER"
+msgstr "Publisher"
+
+msgid "UI_ROM_INFO_GAME_ID"
+msgstr "Game ID"
+
+msgid "UI_ROM_INFO_ROM_SIZE"
+msgstr "ROM size"
+
+msgid "UI_ROM_INFO_FILE_SIZE"
+msgstr "File size"
+
+msgid "UI_ROM_INFO_SAVE"
+msgstr "Save"
+
+msgid "UI_ROM_INFO_MAPPER"
+msgstr "Mapper"
+
+msgid "UI_ROM_INFO_ORIENTATION"
+msgstr "Orientation"
+
+msgid "UI_ROM_INFO_BUS"
+msgstr "ROM bus"
+
+msgid "UI_ROM_INFO_CHECKSUM"
+msgstr "Checksum"
+
+msgid "UI_ROM_INFO_COMPUTED"
+msgstr "Computed"
+
+msgid "UI_ROM_INFO_CHECKSUM_OK"
+msgstr "OK"
+
+msgid "UI_ROM_INFO_CHECKSUM_WRONG"
+msgstr "%s (wrong)"
+
 msgid "UI_SAVE_BACKUP_CURRENT"
 msgstr "Current save"
 
