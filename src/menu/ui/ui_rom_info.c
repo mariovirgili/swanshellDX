@@ -46,7 +46,6 @@
 #define VALUE_X 62
 
 DEFINE_STRING_LOCAL(s_hex2_tpl, "%02X");
-DEFINE_STRING_LOCAL(s_space, " ");
 DEFINE_STRING_LOCAL(s_close_paren, ")");
 DEFINE_STRING_LOCAL(s_hex4_tpl, "%04X");
 DEFINE_STRING_LOCAL(s_publisher_tpl, "%02X ");
@@ -60,58 +59,57 @@ DEFINE_STRING_LOCAL(s_mapper_tpl, "%02X");
 DEFINE_STRING_LOCAL(s_bus_tpl, "%u-bit, +%u wait");
 DEFINE_STRING_LOCAL(s_checksum_bad_tpl, "%04X (");
 
-// Developer/publisher IDs (ws.nesdev.org/wiki/ROM_header)
-typedef struct {
-    uint8_t id;
-    char code[4];
-    char name[20];
-} rom_publisher_t;
-
-static const rom_publisher_t __far publishers[] = {
-    {0x01, "BAN", "Bandai"},
-    {0x02, "TAT", "Taito"},
-    {0x03, "TMY", "Tomy"},
-    {0x04, "KEX", "Koei"},
-    {0x05, "DTE", "Data East"},
-    {0x06, "AAE", "Asmik Ace"},
-    {0x07, "MDE", "Media Entertainment"},
-    {0x08, "NHB", "Nichibutsu"},
-    {0x0A, "CCJ", "Coconuts Japan"},
-    {0x0B, "SUM", "Sammy"},
-    {0x0C, "SUN", "Sunsoft"},
-    {0x0D, "PAW", "Mebius"},
-    {0x0E, "BPR", "Banpresto"},
-    {0x10, "JLC", "Jaleco"},
-    {0x11, "MGA", "Imagineer"},
-    {0x12, "KNM", "Konami"},
-    {0x16, "KBS", "Kobunsha"},
-    {0x17, "BTM", "Bottom Up"},
-    {0x18, "KGT", "Kaga Tech"},
-    {0x19, "SRV", "Sunrise"},
-    {0x1A, "CFT", "Cyber Front"},
-    {0x1B, "MGH", "Megahouse"},
-    {0x1D, "BEC", "Interbec"},
-    {0x1E, "NAP", "Nihon Application"},
-    {0x1F, "BVL", "Bandai Visual"},
-    {0x20, "ATN", "Athena"},
-    {0x21, "KDX", "KID"},
-    {0x22, "HAL", "HAL Corporation"},
-    {0x23, "YKE", "Yuki Enterprise"},
-    {0x24, "OMN", "Omega Micott"},
-    {0x25, "LAY", "Layup"},
-    {0x26, "KDK", "Kadokawa Shoten"},
-    {0x27, "SHL", "Shall Luck"},
-    {0x28, "SQR", "Squaresoft"},
-    {0x2B, "TMC", "Tom Create"},
-    {0x2D, "NMC", "Namco"},
-    {0x2E, "SES", "Soeishinsha"},
-    {0x2F, "HTR", "Hearty Robin"},
-    {0x31, "VGD", "Vanguard"},
-    {0x32, "MGT", "Megatron"},
-    {0x33, "WIZ", "Wiz"},
-    {0x35, "TAN", "Tanita"},
-    {0x36, "CPC", "Capcom"},
+// Developer/publisher IDs (ws.nesdev.org/wiki/ROM_header): the IDs, and
+// "code name" strings in the same order, one after the other. (Plain byte
+// arrays: a table of structs did not work.)
+static const uint8_t __far publisher_ids[] = {
+    0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x10, 0x11, 0x12, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1D, 0x1E, 0x1F, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2B, 0x2D, 0x2E, 0x2F, 0x31, 0x32, 0x33, 0x35, 0x36
 };
+
+static const char __far publisher_names[] =
+    "BAN Bandai\0"
+    "TAT Taito\0"
+    "TMY Tomy\0"
+    "KEX Koei\0"
+    "DTE Data East\0"
+    "AAE Asmik Ace\0"
+    "MDE Media Entertainment\0"
+    "NHB Nichibutsu\0"
+    "CCJ Coconuts Japan\0"
+    "SUM Sammy\0"
+    "SUN Sunsoft\0"
+    "PAW Mebius\0"
+    "BPR Banpresto\0"
+    "JLC Jaleco\0"
+    "MGA Imagineer\0"
+    "KNM Konami\0"
+    "KBS Kobunsha\0"
+    "BTM Bottom Up\0"
+    "KGT Kaga Tech\0"
+    "SRV Sunrise\0"
+    "CFT Cyber Front\0"
+    "MGH Megahouse\0"
+    "BEC Interbec\0"
+    "NAP Nihon Application\0"
+    "BVL Bandai Visual\0"
+    "ATN Athena\0"
+    "KDX KID\0"
+    "HAL HAL Corporation\0"
+    "YKE Yuki Enterprise\0"
+    "OMN Omega Micott\0"
+    "LAY Layup\0"
+    "KDK Kadokawa Shoten\0"
+    "SHL Shall Luck\0"
+    "SQR Squaresoft\0"
+    "TMC Tom Create\0"
+    "NMC Namco\0"
+    "SES Soeishinsha\0"
+    "HTR Hearty Robin\0"
+    "VGD Vanguard\0"
+    "MGT Megatron\0"
+    "WIZ Wiz\0"
+    "TAN Tanita\0"
+    "CPC Capcom\0";
 
 // ROM sizes (header byte $A), in KB
 static const uint16_t __far rom_size_kb[] = {
@@ -248,12 +246,16 @@ void ui_rom_info(const char __far *filename) {
             draw_row(LK_UI_ROM_INFO_SYSTEM, lang_keys[(meta.footer.color & 1) ? LK_ROM_INFO_COLOR : LK_ROM_INFO_MONO]);
 
         snprintf(value, sizeof(value), s_publisher_tpl, meta.footer.publisher_id);
-        for (uint8_t i = 0; i < sizeof(publishers) / sizeof(rom_publisher_t); i++) {
-            if (publishers[i].id == meta.footer.publisher_id) {
-                append(value, sizeof(value), publishers[i].code);
-                append(value, sizeof(value), s_space);
-                append(value, sizeof(value), publishers[i].name);
-                break;
+        {
+            const char __far *name = publisher_names;
+            for (uint8_t i = 0; i < sizeof(publisher_ids); i++) {
+                if (publisher_ids[i] == meta.footer.publisher_id) {
+                    append(value, sizeof(value), name);
+                    break;
+                }
+                while (*name)
+                    name++;
+                name++; // the next "code name"
             }
         }
         draw_row(LK_UI_ROM_INFO_PUBLISHER, value);
