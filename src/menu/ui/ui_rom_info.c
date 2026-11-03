@@ -24,6 +24,7 @@
 #include "lang_gen.h"
 #include "launch/launch.h"
 #include "main.h"
+#include "menu_music.h"
 #include "strings.h"
 #include "ui/bitmap.h"
 #include "ui/ui.h"
@@ -45,9 +46,10 @@
 #define VALUE_X 62
 
 DEFINE_STRING_LOCAL(s_hex2_tpl, "%02X");
+DEFINE_STRING_LOCAL(s_space, " ");
+DEFINE_STRING_LOCAL(s_close_paren, ")");
 DEFINE_STRING_LOCAL(s_hex4_tpl, "%04X");
-DEFINE_STRING_LOCAL(s_publisher_tpl, "%02X %s %s");
-DEFINE_STRING_LOCAL(s_publisher_unknown_tpl, "%02X");
+DEFINE_STRING_LOCAL(s_publisher_tpl, "%02X ");
 DEFINE_STRING_LOCAL(s_game_id_tpl, "%02X  v%u");
 DEFINE_STRING_LOCAL(s_size_mb_tpl, "%u MB");
 DEFINE_STRING_LOCAL(s_size_kb_tpl, "%u KB");
@@ -56,7 +58,7 @@ DEFINE_STRING_LOCAL(s_mapper_2001, "Bandai 2001");
 DEFINE_STRING_LOCAL(s_mapper_2003, "Bandai 2003 (RTC)");
 DEFINE_STRING_LOCAL(s_mapper_tpl, "%02X");
 DEFINE_STRING_LOCAL(s_bus_tpl, "%u-bit, +%u wait");
-DEFINE_STRING_LOCAL(s_checksum_bad_tpl, "%04X");
+DEFINE_STRING_LOCAL(s_checksum_bad_tpl, "%04X (");
 
 // Developer/publisher IDs (ws.nesdev.org/wiki/ROM_header)
 typedef struct {
@@ -123,6 +125,14 @@ static void format_size(char *buf, uint16_t buf_len, uint32_t bytes) {
         snprintf(buf, buf_len, s_size_kb_tpl, (uint16_t) (bytes >> 10));
     else
         snprintf(buf, buf_len, s_size_b_tpl, bytes);
+}
+
+// Append a far string to buf (no printf "%s": near/far pointers).
+static void append(char *buf, uint16_t buf_len, const char __far *s) {
+    uint16_t n = strlen(buf);
+    while (*s && n + 1 < buf_len)
+        buf[n++] = *(s++);
+    buf[n] = 0;
 }
 
 static uint16_t row_y;
@@ -219,6 +229,10 @@ void ui_rom_info(const char __far *filename) {
     bool checked = false;
     uint16_t computed = 0;
 
+    // plain background: the text is hard to read over a wallpaper (the file
+    // list loads it again when it is redrawn)
+    ui_unload_wallpaper();
+
     while (true) {
         ui_layout_bars();
         ui_draw_titlebar(lang_keys[LK_UI_ROM_INFO_TITLE]);
@@ -233,14 +247,12 @@ void ui_rom_info(const char __far *filename) {
         else
             draw_row(LK_UI_ROM_INFO_SYSTEM, lang_keys[(meta.footer.color & 1) ? LK_ROM_INFO_COLOR : LK_ROM_INFO_MONO]);
 
-        snprintf(value, sizeof(value), s_publisher_unknown_tpl, meta.footer.publisher_id);
+        snprintf(value, sizeof(value), s_publisher_tpl, meta.footer.publisher_id);
         for (uint8_t i = 0; i < sizeof(publishers) / sizeof(rom_publisher_t); i++) {
             if (publishers[i].id == meta.footer.publisher_id) {
-                char code[4], name[20];
-                memcpy(code, publishers[i].code, sizeof(code));
-                memcpy(name, publishers[i].name, sizeof(name));
-                snprintf(value, sizeof(value), s_publisher_tpl, meta.footer.publisher_id,
-                    (const char __far*) code, (const char __far*) name);
+                append(value, sizeof(value), publishers[i].code);
+                append(value, sizeof(value), s_space);
+                append(value, sizeof(value), publishers[i].name);
                 break;
             }
         }
@@ -293,9 +305,10 @@ void ui_rom_info(const char __far *filename) {
             if (computed == meta.footer.checksum) {
                 draw_row(LK_UI_ROM_INFO_COMPUTED, lang_keys[LK_UI_ROM_INFO_CHECKSUM_OK]);
             } else {
-                char wrong[24];
-                snprintf(wrong, sizeof(wrong), s_checksum_bad_tpl, computed);
-                snprintf(value, sizeof(value), lang_keys[LK_UI_ROM_INFO_CHECKSUM_WRONG], (const char __far*) wrong);
+                // "1A2C (wrong)"
+                snprintf(value, sizeof(value), s_checksum_bad_tpl, computed);
+                append(value, sizeof(value), lang_keys[LK_UI_ROM_INFO_CHECKSUM_WRONG]);
+                append(value, sizeof(value), s_close_paren);
                 draw_row(LK_UI_ROM_INFO_COMPUTED, value);
             }
         }
@@ -310,7 +323,14 @@ void ui_rom_info(const char __far *filename) {
                 break;
         }
 
+        // the menu music plays from PSRAM in an interrupt: pause it while
+        // the file is read through the PSRAM window, and resume it after
+        bool music = menu_music_is_playing();
+        if (music)
+            menu_music_stop();
         result = compute_checksum(path, &computed);
+        if (music)
+            menu_music_start();
         if (result == ERR_USER_EXIT_REQUESTED)
             continue;
         if (ui_dialog_error_check(result, lang_keys[LK_UI_ROM_INFO_TITLE], 0))

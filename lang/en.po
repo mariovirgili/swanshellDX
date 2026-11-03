@@ -74,7 +74,7 @@ msgid "UI_ROM_INFO_CHECKSUM_OK"
 msgstr "OK"
 
 msgid "UI_ROM_INFO_CHECKSUM_WRONG"
-msgstr "%s (wrong)"
+msgstr "wrong"
 
 msgid "UI_SAVE_BACKUP_CURRENT"
 msgstr "Current save"

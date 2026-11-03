@@ -26,6 +26,7 @@
 #include "lang.h"
 #include "lang_gen.h"
 #include "main.h"
+#include "menu_music.h"
 #include "settings.h"
 #include "strings.h"
 #include "ui/ui.h"
@@ -338,10 +339,16 @@ bool save_backup_find(char *save_path, uint16_t save_path_len, const char __far 
 
 void save_backup_game(const char __far *game_name) {
     char save_path[FF_LFN_BUF + 1];
+    // (the copies go through the PSRAM window: pause the menu music)
+    bool music = menu_music_is_playing();
+    if (music)
+        menu_music_stop();
     if (save_name(save_path, sizeof(save_path), game_name, s_file_ext_sram))
         save_backup_create(save_path);
     if (save_name(save_path, sizeof(save_path), game_name, s_file_ext_eeprom))
         save_backup_create(save_path);
+    if (music)
+        menu_music_start();
 }
 
 // Delete the backups of one save kind (save_ext) of a game file.
@@ -432,7 +439,13 @@ bool ui_save_backup_choose(const char *save_path, bool at_launch) {
         return true;  // the current save
 
     ui_draw_statusbar(lang_keys[LK_UI_STATUS_LOADING]);
+    // (the copies go through the PSRAM window: pause the menu music)
+    bool music = menu_music_is_playing();
+    if (music)
+        menu_music_stop();
     int16_t restore_result = backup_restore(save_path, s.list[result - 1], path);
+    if (music)
+        menu_music_start();
     if (ui_dialog_error_check(restore_result, lang_keys[LK_UI_SAVE_BACKUP_TITLE], 0))
         return !at_launch; // do not start a game with a half-restored save
     if (!at_launch) {
