@@ -643,10 +643,10 @@ int32_t drc_z80_run(int32_t cycles) {
         // the previous block can jump straight here from now on
         if (pending_link && !drc_no_links) {
             // (a guarded exit has "cmp byte [key], bank; jne X" just before
-            // L; any other has "jmp" there: see drc.c)
-            const uint8_t __far *g = MK_FP(pending_seg, pending_link - 3);
+            // L; any other has "jle X" there: see drc.c)
+            const uint8_t __far *g = MK_FP(pending_seg, pending_link - 2);
             link_patch(pending_seg, pending_link, drc_entry[1], off,
-                       g[0] != 0xE9, bank);
+                       g[0] == 0x75, bank);
         }
         pending_link = 0;
         int16_t start = z80.cycles > 30000 ? 30000 : (int16_t) z80.cycles;

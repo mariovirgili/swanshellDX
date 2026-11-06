@@ -171,34 +171,38 @@ static void sub_cycles(uint16_t n) {
 static void exit_const(uint16_t target, uint16_t extra) {
     materialize();
     sub_cycles(cyc + extra);
-    B(0xC7); B(0x06); W(ZA(pc)); W(target);   // mov word [pc], target
+    // (z80.pc and the link are only needed by the runtime: a linked exit
+    // is just SUB + JG + JMP)
     if (linkable(target)) {
-        set_link(here() + 6 + 2 + 3);         // L
-        B(0x7F); B(0x03);                     // jg L
+        // (V30MZ: a branch not taken costs 1 cycle, a taken one about 4)
+        B(0x7E); B(5);                        // jle X
+        uint16_t l = here();
+        B(0xEB); B(3);                        // L: jmp X until the runtime
+        B(0x90); B(0x90); B(0x90);            // links it (near or far jump)
+        B(0xC7); B(0x06); W(ZA(pc)); W(target);   // X: mov word [pc], target
+        set_link(l);
         jmp_near(env->exit_off);
-        jmp_near(env->exit_off);              // L: (the runtime may change it:
-        B(0x90); B(0x90);                     // near or far jump)
     } else if (guarded(target)) {
+        // to another slot: cycles left, then (slot 2: no cartridge RAM
+        // there) the bank the link was made for; the CMPs come after the
+        // JLE because they replace the flags of the SUB
         uint8_t slot = target >> 14;
-        uint8_t *u = 0;
+        uint8_t *x1 = jcc8(0x7E), *x2 = 0;               // jle X
         if (slot == 2) {
             B(0x80); B(0x3E); W(SA(keys)); B(0);          // cmp byte [keys], 0
-            u = jcc8(0x75);                               // jne: cartridge RAM
+            x2 = jcc8(0x75);                              // jne X
         }
-        // (the cycle check first: the CMP replaces the flags of the SUB)
-        set_link(here() + 6 + 2 + 5 + 2);                 // L
-        B(0x7E); B(0x0C);                                 // jle X
         B(0x80); B(0x3E); W(SA(keys) + 1 + slot); B(0xFF);   // cmp byte [key], bank (L-3)
-        B(0x75); B(0x05);                                 // jne X
-        jmp_near(env->exit_off);                          // L: (the runtime links it
-        B(0x90); B(0x90);                                 // and sets the bank)
-        jmp_near(env->exit_off);                          // X
-        if (u) {
-            land8(u);
-            set_link(0);
-            jmp_near(env->exit_off);
-        }
+        uint8_t *x3 = jcc8(0x75);                         // jne X
+        uint16_t l = here();
+        B(0xEB); B(3);                                    // L: jmp X until the runtime
+        B(0x90); B(0x90); B(0x90);                        // links it and sets the bank
+        land8(x1); if (x2) land8(x2); land8(x3);          // X:
+        B(0xC7); B(0x06); W(ZA(pc)); W(target);
+        set_link(l);
+        jmp_near(env->exit_off);
     } else {
+        B(0xC7); B(0x06); W(ZA(pc)); W(target);
         set_link(0);
         jmp_near(env->exit_off);
     }
@@ -260,16 +264,21 @@ static void write_byte(uint8_t addr_reg, uint8_t src, uint8_t imm, uint8_t live)
     uint8_t rm = addr_reg == X_BX ? 7 : 4;   // [bx+d16] / [si+d16]
     uint8_t *j1, *j2, *j3;
     if (addr_reg == X_BX) {
-        B(0x80); B(0xFF); B(0xC0); j1 = jcc8(0x72);   // cmp bh, C0h; jb
-        B(0x80); B(0xFF); B(0xE0); j2 = jcc8(0x73);   // cmp bh, E0h; jae
+        // C000-DFFF + 4000h wraps to 0000-1FFF: one comparison
+        B(0x8D); B(0xB7); W(0x4000);                   // lea si, [bx + 4000h]
+        B(0x81); B(0xFE); W(0x2000); j1 = jcc8(0x73);  // cmp si, 2000h; jae slow
+        j2 = 0;
+        uint16_t d = (uint16_t) (env->ram_delta + 0xC000);   // (IRAM of C000)
+        if (src == 0xFF) { B(0xC6); B(0x84); W(d); B(imm); }
+        else { B(0x88); B(0x84 | (src << 3)); W(d); }
     } else {
         B(0x81); B(0xFE); W(0xC000); j1 = jcc8(0x72);
         B(0x81); B(0xFE); W(0xE000); j2 = jcc8(0x73);
+        if (src == 0xFF) { B(0xC6); B(0x80 | rm); W(env->ram_delta); B(imm); }
+        else { B(0x88); B(0x80 | (src << 3) | rm); W(env->ram_delta); }
     }
-    if (src == 0xFF) { B(0xC6); B(0x80 | rm); W(env->ram_delta); B(imm); }
-    else { B(0x88); B(0x80 | (src << 3) | rm); W(env->ram_delta); }
     j3 = jcc8(0xEB);
-    land8(j1); land8(j2);
+    land8(j1); if (j2) land8(j2);
     if (src == 0xFF) { B(0xC6); B(0x06); W(SA(val)); B(imm); }
     else { B(0x88); B(0x06 | (src << 3)); W(SA(val)); }
     B(0x89); B(0x06 | (addr_reg << 3)); W(SA(arg));   // mov [arg], reg
