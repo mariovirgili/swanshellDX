@@ -12,7 +12,7 @@
 /// Segments of the linear ROM area where the code cache is executed
 /// (DRC_CODE_BANKS banks of 64 KiB)...
 #define DRC_CODE_SEG 0x4000
-#define DRC_CODE_BANKS 4
+#define DRC_CODE_BANKS 6
 /// ... and the block table (the PSRAM bank after them)
 #define DRC_TABLE_SEG (DRC_CODE_SEG + DRC_CODE_BANKS * 0x1000)
 

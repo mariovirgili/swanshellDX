@@ -30,7 +30,7 @@ def load(path):
     lib.sys_code_version.restype = ctypes.c_uint32
     return lib
 
-CODE_SEG, SENTINEL_SEG = 0x4000, 0xA000
+CODE_SEG, SENTINEL_SEG = 0x4000, 0xD000
 
 class X86:
     def __init__(self, lib):
@@ -40,7 +40,7 @@ class X86:
         self.uc = Uc(UC_ARCH_X86, UC_MODE_16)
         self.uc.mem_map_ptr(0x00000, 0x10000, 7, self.iram)
         self.uc.mem_map_ptr(0x100000, 0x10000, 7, self.iram)
-        for i in range(6):   # code banks, block table, self-check copy
+        for i in range(8):   # code banks, block table, self-check copy
             self.uc.mem_map_ptr((CODE_SEG + i * 0x1000) << 4, 0x10000, 7, self.psram + (20 + i) * 0x10000)
         self.uc.mem_map(SENTINEL_SEG << 4, 0x1000)
         self.uc.mem_write(SENTINEL_SEG << 4, b'\xF4')

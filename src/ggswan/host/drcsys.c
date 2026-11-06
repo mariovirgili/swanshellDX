@@ -31,6 +31,7 @@ void *MK_FP(uint16_t seg, uint16_t off) {
     case 0x2000: return psram + (uint32_t) (inportw(0xC2) & 31) * 65536 + off;
     case 0x3000: return psram + (uint32_t) (inportw(0xC3) & 31) * 65536 + off;
     case 0x4000: case 0x5000: case 0x6000: case 0x7000: case 0x8000: case 0x9000:
+    case 0xA000: case 0xB000:
         return psram + (20 + ((seg - 0x4000) >> 12)) * 65536 + off;
     default: return iram + seg * 16 + off;
     }

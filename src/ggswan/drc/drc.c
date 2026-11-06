@@ -366,7 +366,7 @@ static void decode(uint16_t pc, ins_t *I) {
             I->nn = rd(pc + 2) | (rd(pc + 3) << 8); I->len = 4; return;
         case 0x45: case 0x4D: case 0x55: case 0x5D:
         case 0x65: case 0x6D: case 0x75: case 0x7D:                 // RETN, RETI
-            I->term = T_STOP; return;
+            I->term = T_END; return;
         }
         if (op == 0xA0 || op == 0xA8 || op == 0xA3 || op == 0xAB) {
             // LDI LDD OUTI OUTD: games unroll long runs of them (VRAM
@@ -668,6 +668,22 @@ static int emit(int i) {
 
     if (I->pre == 0xED) {
         switch (op) {
+        case 0x45: case 0x4D: case 0x55: case 0x5D:
+        case 0x65: case 0x6D: case 0x75: case 0x7D:   // RETN, RETI: IFF1 = IFF2, return
+            B(0x50);                                  // push ax
+            B(0xA0); W(ZA(iff2));                     // mov al, [iff2]
+            B(0xA2); W(ZA(iff1));                     // mov [iff1], al
+            B(0x58);                                  // pop ax
+            B(0x8B); B(0xB6); W(env->ram_delta);      // mov si, [bp + d]
+            B(0x8D); B(0x6E); B(0x02);                // lea bp, [bp + 2]
+            cyc += 14;
+            // back to the runtime: an interrupt may be pending now
+            materialize();
+            sub_cycles(cyc);
+            B(0x89); B(0x36); W(ZA(pc));              // mov [pc], si
+            set_link(0);
+            jmp_near(env->exit_off);
+            return 1;
         case 0x44:   // NEG
             B(0xF6); B(0xD8);
             fkind = K_SUB; cf_valid = 1; cyc += 8;
