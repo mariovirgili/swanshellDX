@@ -148,6 +148,8 @@ static void vdp_write_control(uint8_t v) {
             gg.vdp.reg[r] = gg.vdp.latch;
             gg_platform_vdp_reg(r, gg.vdp.latch);
             update_irq();
+            if (r == 0 || r == 1 || r == 10)
+                z80_break = 1;   // interrupt settings: plan the timing again
         }
         break;
     }
@@ -156,9 +158,38 @@ static void vdp_write_control(uint8_t v) {
     }
 }
 
+/* === Timing ===
+ *
+ * The CPU does not stop at every line: gg_run_frame() runs it up to the
+ * next line where something must happen at an exact time (the frame
+ * interrupt at line 193, a line interrupt, the end of the frame); the line
+ * being drawn is worked out from the cycles when the game asks for it.
+ * Writes to VDP registers 0, 1 and 10 (interrupt settings) make the CPU
+ * return early (z80_break) so that the next stop is computed again.
+ */
+
+int32_t (*gg_cpu_left)(void);   // cycles left in the current CPU run
+uint8_t gg_every_line;          // stop at every line, call gg_platform_line
+static int32_t frame_given;     // cycles given to the CPU in this frame
+static uint16_t frame_carry;    // cycles run past the end of the last frame
+
+// cycles run since the start of the frame
+static uint16_t frame_pos(void) {
+    int32_t left = gg_cpu_left ? gg_cpu_left() : z80.cycles;
+    int32_t p = frame_given - left;
+    if (p < 0) return 0;
+    if (p > 0xFFFF) return 0xFFFF;
+    return (uint16_t) p;
+}
+
+uint16_t gg_current_line(void) {
+    uint16_t l = frame_pos() / GG_CYCLES_PER_LINE;
+    return l < GG_LINES ? l : GG_LINES - 1;
+}
+
 static uint8_t vdp_vcounter(void) {
     // NTSC 192-line mode: 0x00-0xDA, then 0xD5-0xFF
-    uint16_t l = gg.vdp.vcounter;
+    uint16_t l = gg_current_line();
     return l <= 0xDA ? l : l - 6;
 }
 
@@ -258,11 +289,47 @@ static void vdp_line(uint16_t line) {
     update_irq();
 }
 
-void gg_run_frame(void) {
-    for (uint16_t line = 0; line < GG_LINES; line++) {
-        vdp_line(line);
-        gg_platform_line(line);
-        gg_cpu_run(GG_CYCLES_PER_LINE);
+// the next line (from l, the first one not started yet) whose start must
+// happen at its exact time
+static uint16_t next_event(uint16_t l) {
+    if (gg_every_line)
+        return l;
+    uint16_t e = GG_LINES;
+    if (l <= GG_ACTIVE_LINES + 1)
+        e = GG_ACTIVE_LINES + 1;   // frame interrupt
+    if ((gg.vdp.reg[0] & 0x10) && l <= GG_ACTIVE_LINES) {
+        // the line counter reaches zero at the start of line l + counter
+        uint16_t u = l + gg.vdp.line_counter;
+        if (u < e)
+            e = u;
     }
+    return e;
+}
+
+void gg_run_frame(void) {
+    uint16_t started = 0;   // lines started
+    // (left = z80.cycles, so the frame starts frame_carry cycles in)
+    frame_given = (int32_t) frame_carry + (gg_cpu_left ? gg_cpu_left() : z80.cycles);
+    while (1) {
+        uint16_t pos = frame_pos();
+        // start the lines the CPU has reached
+        while (started < GG_LINES && (uint16_t) (started * GG_CYCLES_PER_LINE) <= pos) {
+            vdp_line(started);
+            if (gg_every_line)
+                gg_platform_line(started);
+            started++;
+        }
+        if (started >= GG_LINES && pos >= (uint16_t) (GG_LINES * GG_CYCLES_PER_LINE))
+            break;
+        uint16_t e = next_event(started);
+        // (cycles already given but not run yet, after an early stop, count)
+        int32_t want = (int32_t) e * GG_CYCLES_PER_LINE - frame_given;
+        if (want < 0)
+            want = 0;
+        frame_given += want;
+        z80_break = 0;
+        gg_cpu_run(want);
+    }
+    frame_carry = frame_pos() - GG_LINES * GG_CYCLES_PER_LINE;
     gg.frame++;
 }

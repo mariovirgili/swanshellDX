@@ -9,6 +9,7 @@
 #include <stddef.h>
 #include "drc.h"
 #include "../core/z80.h"
+#include "../core/gg.h"
 
 /* === Z80 flags === */
 #define FS 0x80
@@ -60,10 +61,16 @@ static inline uint16_t here(void) { return o_base + (uint16_t) (o - o_start); }
 // Absolute IRAM addresses of fields
 #define ZA(field) ((uint16_t) (env->z80_addr + offsetof(z80_t, field)))
 #define SA(field) ((uint16_t) (env->state_addr + offsetof(drc_state_t, field)))
+#define VA(field) ((uint16_t) (env->vdp_addr + offsetof(gg_vdp_t, field)))
 
 // short forward jumps: returns the position of the rel8 byte
 static uint8_t *jcc8(uint8_t opcode) { B(opcode); B(0); return o - 1; }
-static void land8(uint8_t *p) { *p = (uint8_t) (o - p - 1); }
+static void land8(uint8_t *p) {
+#ifdef GGSWAN_HOST
+    if (o - p - 1 > 127) { extern void abort(void); abort(); }   // (short jump too far)
+#endif
+    *p = (uint8_t) (o - p - 1);
+}
 
 static void jmp_near(uint16_t target) { B(0xE9); W(target - (here() + 2)); }
 static void call_near(uint16_t target) { B(0xE8); W(target - (here() + 2)); }
@@ -174,6 +181,10 @@ static void exit_reg(uint8_t reg16, uint16_t extra) {
     materialize();
     sub_cycles(cyc + extra);
     B(0x89); B(0x06 | (reg16 << 3)); W(ZA(pc));   // mov [pc], reg
+    if (env->dyn_off) {
+        jmp_near(env->dyn_off);   // look the next block up (drc_rt.c)
+        return;
+    }
     set_link(0);
     jmp_near(env->exit_off);
 }
@@ -278,6 +289,40 @@ static void read_const16(uint16_t addr, uint8_t dst) {
     B(0x26); B(0x8B); B(0x06 | (dst << 3)); W(addr);
 }
 
+/*
+ * Fast path of a write to the VDP data port (VRAM; CRAM goes to *slow1).
+ * The Game Gear VRAM is the WS tile memory: tile data needs nothing more;
+ * name table writes also update the WS screen map (routine at
+ * nt_stub_off), sprite table writes mark the sprites to be rebuilt.
+ * src: x86 8-bit register. x86 flags destroyed; uses SI and DI.
+ */
+static void vram_fast(uint8_t src, uint8_t **slow1) {
+    B(0x80); B(0x3E); W(VA(code)); B(3);                 // cmp byte [code], 3
+    *slow1 = jcc8(0x74);                                 // je slow (CRAM)
+    B(0x8B); B(0x36); W(VA(addr));                       // mov si, [addr]
+    B(0x81); B(0xE6); W(0x3FFF);                         // and si, 3FFFh
+    B(0x88); B(0x84 | (src << 3)); W(env->vram_addr);    // mov [si + vram], src
+    B(0x88); B(0x06 | (src << 3)); W(VA(read_buffer));   // mov [read_buffer], src
+    B(0x89); B(0xF7);                                    // mov di, si
+    B(0x2B); B(0x3E); W(SA(nt_base));                    // sub di, [nt_base]
+    B(0x81); B(0xFF); W(0x0700);                         // cmp di, 700h
+    uint8_t *not_nt = jcc8(0x73);                        // jae
+    call_near(env->nt_stub_off);                         // name table
+    uint8_t *after = jcc8(0xEB);
+    land8(not_nt);
+    B(0x89); B(0xF7);                                    // mov di, si
+    B(0x2B); B(0x3E); W(SA(sat_base));                   // sub di, [sat_base]
+    B(0x81); B(0xFF); W(0x0100);                         // cmp di, 100h
+    uint8_t *not_sat = jcc8(0x73);                       // jae
+    B(0xC6); B(0x06); W(SA(sprites_dirty)); B(1);        // sprites_dirty = 1
+    land8(not_sat);
+    land8(after);
+    B(0x46);                                             // inc si
+    B(0x81); B(0xE6); W(0x3FFF);                         // and si, 3FFFh
+    B(0x89); B(0x36); W(VA(addr));                       // mov [addr], si
+    B(0xC6); B(0x06); W(VA(latch_full)); B(0);           // mov byte [latch_full], 0
+}
+
 /* === Decoder === */
 
 static uint8_t rd(uint16_t a) { return z80_read(a); }
@@ -328,7 +373,11 @@ static void decode(uint16_t pc, ins_t *I) {
             // uploads); a run is one interpreted step of n instructions
             uint8_t k = 1;
             while (k < 64 && rd(pc + k * 2) == 0xED && rd(pc + k * 2 + 1) == op) k++;
-            I->len = k * 2; I->count = k; I->step = 1;
+            I->len = k * 2; I->count = k;
+            if ((op == 0xA3 || op == 0xAB) && env->vdp_addr)
+                I->fwrite = FALL;   // native loop (VRAM uploads), see emit
+            else
+                I->step = 1;
             return;
         }
         if ((op & 0xC7) == 0x41 && op != 0x71) return;                      // OUT (C),r
@@ -452,7 +501,7 @@ static void decode(uint16_t pc, ins_t *I) {
             case 2: case 3: I->nn = rd(pc + 1); I->len = 2; return;   // OUT (n),A / IN A,(n)
             case 4: case 5: return;                                   // EX (SP),HL / EX DE,HL
             case 6: return;                                           // DI
-            case 7: I->step = 1; I->term = T_END_AFTER; return;       // EI
+            case 7: I->term = T_END_AFTER; return;                    // EI
             }
             return;
         case 5:
@@ -623,13 +672,83 @@ static int emit(int i) {
             B(0xF6); B(0xD8);
             fkind = K_SUB; cf_valid = 1; cyc += 8;
             return 1;
-        case 0x41: case 0x49: case 0x51: case 0x59: case 0x61: case 0x69: case 0x79:   // OUT (C),r
+        case 0x41: case 0x49: case 0x51: case 0x59: case 0x61: case 0x69: case 0x79: {   // OUT (C),r
             clobber(live);
-            B(0x88); B(0x06 | (r8x[(op >> 3) & 7] << 3)); W(SA(val));
+            uint8_t src = r8x[(op >> 3) & 7];
+            uint8_t *s0 = 0, *s1 = 0, *done = 0;
+            if (env->vdp_addr) {
+                B(0x89); B(0xCE);                        // mov si, cx
+                B(0x81); B(0xE6); W(0x00C1);             // and si, C1h
+                B(0x81); B(0xFE); W(0x0080);             // cmp si, 80h (VDP data)
+                s0 = jcc8(0x75);
+                vram_fast(src, &s1);
+                done = jcc8(0xEB);
+                land8(s0); land8(s1);
+            }
+            B(0x88); B(0x06 | (src << 3)); W(SA(val));
             B(0x88); B(0x0E); W(SA(arg));
             helper(DRC_H_OUT);
+            if (done) land8(done);
             cyc += 12;
             return 1;
+        }
+        case 0xA3: case 0xAB: {   // a run of OUTI / OUTD (fast VRAM path)
+            uint8_t inc = op == 0xA3 ? 0x01 : 0xFF;
+            uint8_t k = I->count;
+            clobber(0);
+            seg_hl(0);
+            B(0xBF); W(k);                                   // mov di, k (left)
+            B(0x89); B(0xCE);                                // mov si, cx
+            B(0x81); B(0xE6); W(0x00C1);                     // and si, C1h
+            B(0x81); B(0xFE); W(0x0080);                     // cmp si, 80h
+            uint8_t *s0 = jcc8(0x75);                        // jne slow
+            uint8_t *loop = o;
+            B(0x57);                                         // push di
+            uint8_t *s1;
+            // the byte is read into AH (F is rewritten by OUTI anyway)
+            B(0x26); B(0x8A); B(0x27);                       // mov ah, es:[bx]
+            vram_fast(4 /* AH */, &s1);
+            B(0x5F);                                         // pop di
+            B(0xFE); B(0xCD);                                // dec ch
+            B(0x8D); B(0x5F); B(inc);                        // lea bx, [bx +- 1]
+            B(0xF7); B(0xC3); W(0x1FFF);                     // test bx, 1FFFh
+            uint8_t *noseg = jcc8(0x75);                     // jnz: same ES
+            B(0x89); B(0xDE);                                // mov si, bx
+            B(0xC1); B(0xC6); B(0x04);                       // rol si, 4
+            B(0x83); B(0xE6); B(0x0E);                       // and si, 14
+            B(0x8E); B(0x84); W(SA(segtab));                 // mov es, [si + segtab]
+            land8(noseg);
+            B(0x4F);                                         // dec di
+            int16_t back = (int16_t) (loop - (o + 2));
+            if (back < -128) return 0;
+            B(0x75); B((uint8_t) back);                      // jnz loop
+            // flags of the last OUTI: S, Z from B; N from bit 7 of the byte
+            B(0x88); B(0x26); W(SA(val));                    // mov [val], ah
+            B(0x84); B(0xED);                                // test ch, ch
+            B(0x9F);                                         // lahf
+            B(0x80); B(0xE4); B(0xC0);                       // and ah, C0h
+            B(0xF6); B(0x06); W(SA(val)); B(0x80);           // test byte [val], 80h
+            B(0x74); B(0x03); B(0x80); B(0xCC); B(0x02);     // jz +3; or ah, 2
+            uint8_t *done = jcc8(0xEB);
+            // slow: the OUTIs left (DI of them) with the interpreter
+            land8(s1);
+            B(0x5F);                                         // pop di
+            land8(s0);
+            B(0xBE); W(k);                                   // mov si, k
+            B(0x29); B(0xFE);                                // sub si, di
+            B(0xD1); B(0xE6);                                // shl si, 1
+            B(0x81); B(0xC6); W(I->pc);                      // add si, pc
+            B(0x89); B(0x3E); W(SA(val));                    // mov [val], di (count)
+            B(0x89); B(0x36); W(SA(arg));                    // mov [arg], si
+            B(0x89); B(0xFE);                                // mov si, di
+            B(0xC1); B(0xE6); B(0x04);                       // shl si, 4
+            B(0x01); B(0x36); W(SA(cycles));                 // add [cycles], si (counted below)
+            helper(DRC_H_STEP);
+            land8(done);
+            fkind = K_AH; hl_es = 0;
+            cyc += 16 * k;
+            return 1;
+        }
         case 0x43: case 0x53: case 0x73: {   // LD (nn),rr
             uint8_t xr = r16x[(op >> 4) & 3];
             if (I->nn >= 0xC000 && I->nn < 0xDFFF) {
@@ -1063,13 +1182,21 @@ static int emit(int i) {
         case 3:
             switch (y) {
             case 0: branch_to(I->nn, 10); return 1;   // JP nn
-            case 2:   // OUT (n),A
+            case 2: {   // OUT (n),A
                 clobber(live);
+                uint8_t *s1 = 0, *done = 0;
+                if (env->vdp_addr && (I->nn & 0xC1) == 0x80) {
+                    vram_fast(X_AX, &s1);
+                    done = jcc8(0xEB);
+                    land8(s1);
+                }
                 B(0xA2); W(SA(val));
                 B(0xC7); B(0x06); W(SA(arg)); W(I->nn);
                 helper(DRC_H_OUT);
+                if (done) land8(done);
                 cyc += 11;
                 return 1;
+            }
             case 3:   // IN A,(n)
                 clobber(live);
                 B(0xC7); B(0x06); W(SA(arg)); W(I->nn);
@@ -1080,6 +1207,13 @@ static int emit(int i) {
             case 6:   // DI
                 B(0xC7); B(0x06); W(ZA(iff1)); W(0);   // iff1 = iff2 = 0
                 cyc += 4;
+                return 1;
+            case 7:   // EI (the runtime takes a pending interrupt after the next instruction)
+                B(0xC7); B(0x06); W(ZA(iff1)); W(0x0101);
+                B(0xC6); B(0x06); W(ZA(ei_pending)); B(1);
+                cyc += 4;
+                force_nolink = 1;
+                exit_const(next, 0);
                 return 1;
             case 4:   // EX (SP),HL
                 B(0x87); B(0x9E); W(env->ram_delta);

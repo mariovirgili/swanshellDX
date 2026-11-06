@@ -72,7 +72,8 @@ extern const uint8_t GGFAR *gg_slot[3];
 const uint8_t GGFAR *gg_platform_bank(uint8_t slot, uint16_t bank);
 /// Cartridge RAM (32 KiB), mapped at $8000 when enabled.
 uint8_t GGFAR *gg_platform_cart_ram(uint8_t page);
-/// Called at the start of each line, before the CPU runs it.
+/// Called at the start of each line, before the CPU runs it (only with
+/// gg_every_line).
 void gg_platform_line(uint16_t line);
 /// A write to the PSG (port $7F) or the stereo register (port $06).
 void gg_platform_psg(uint8_t value);
@@ -88,6 +89,13 @@ void gg_init(uint16_t rom_banks);
 void gg_reset(void);
 /// The CPU core used by gg_run_frame (default: z80_run).
 extern int32_t (*gg_cpu_run)(int32_t cycles);
+/// Cycles left in the current CPU run, if not z80.cycles (recompiler).
+extern int32_t (*gg_cpu_left)(void);
+/// Stop the CPU at every line and call gg_platform_line (PC tests);
+/// otherwise the CPU only stops where timing matters.
+extern uint8_t gg_every_line;
+/// The line being drawn (0-261), from the cycles run in this frame.
+uint16_t gg_current_line(void);
 /// Recompute the slot mapping from gg.mapper.
 void gg_remap(void);
 /// Run one frame (262 lines).

@@ -33,10 +33,14 @@ void drc_check_failed(uint16_t pc, const z80_t *before, const z80_t *drc,
 void drc_rt_init(uint16_t bank);
 /// set when slot 0 changes bank: links into it are no longer valid
 extern uint8_t drc_flush_request;
+/// main.c: IRAM address of the WS screen map of the Game Gear background
+uint16_t ws_map1_iram(void);
 /// main.c: put the RAM window back as Game Gear slot 2 needs it
 void ws_ram_window_restore(void);
 /// check the PSRAM banks of the recompiler (0: all right)
 uint8_t drc_rt_test_banks(void);
+/// cycles left in the current run (for gg_cpu_left)
+int32_t drc_cycles_left(void);
 /// z80_run() equivalent using the recompiler
 int32_t drc_z80_run(int32_t cycles);
 /// Run translated code at DRC_CODE_SEG:offset (drc_asm.s)
@@ -45,8 +49,10 @@ void drc_enter(uint16_t offset);
 #ifdef GGSWAN_HOST
 #define HOST_Z80_ADDR 0xC000
 #define HOST_ST_ADDR  0xC100
+#define HOST_VDP_ADDR 0xC200
 void host_code_changed(void);
 void host_miss(int evict);
+void host_step(uint16_t pc);
 void host_lookup_fail(uint16_t pc, uint8_t bank, uint16_t h, uint16_t off, uint16_t tpc, uint8_t tbank);
 void host_trace(uint16_t pc, uint8_t b, uint16_t hl);
 void host_translated(uint16_t pc, uint16_t len, uint16_t n);

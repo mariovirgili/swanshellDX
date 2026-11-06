@@ -32,7 +32,8 @@ class St(ctypes.Structure):
     _fields_ = [("segtab", ctypes.c_uint16 * 8), ("cycles", ctypes.c_int16),
                 ("op", ctypes.c_uint8), ("val", ctypes.c_uint8), ("arg", ctypes.c_uint16),
                 ("resume", ctypes.c_uint16), ("reason", ctypes.c_uint8), ("pad", ctypes.c_uint8),
-                ("link", ctypes.c_uint16)]
+                ("link", ctypes.c_uint16), ("keys", ctypes.c_uint8 * 4), ("table_seg", ctypes.c_uint16),
+                ("nolink", ctypes.c_uint8), ("pad2", ctypes.c_uint8)]
 class Res(ctypes.Structure):
     _fields_ = [("length", ctypes.c_uint16), ("z80_instr", ctypes.c_uint16), ("z80_end", ctypes.c_uint16)]
 

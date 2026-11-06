@@ -22,14 +22,15 @@ keys = dict((int(k.split(':')[0]), int(k.split(':')[1], 16)) for k in KEYS.split
 
 def load(path):
     lib = ctypes.CDLL(path)   # (two different copies: see main)
-    for fn in ("sys_fb", "sys_iram", "sys_psram", "sys_sram", "sys_ports"):
+    for fn in ("sys_fb", "sys_fb_end", "sys_iram", "sys_psram", "sys_sram", "sys_ports"):
         getattr(lib, fn).restype = ctypes.c_void_p
-    lib.sys_init.argtypes = [ctypes.c_char_p, ctypes.c_int]
+    lib.sys_init.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.c_int]
+    lib.sys_digest.restype = ctypes.c_uint32
     lib.sys_stat.restype = ctypes.c_uint32
     lib.sys_code_version.restype = ctypes.c_uint32
     return lib
 
-CODE_SEG, SENTINEL_SEG = 0x4000, 0x9000
+CODE_SEG, SENTINEL_SEG = 0x4000, 0xA000
 
 class X86:
     def __init__(self, lib):
@@ -39,7 +40,7 @@ class X86:
         self.uc = Uc(UC_ARCH_X86, UC_MODE_16)
         self.uc.mem_map_ptr(0x00000, 0x10000, 7, self.iram)
         self.uc.mem_map_ptr(0x100000, 0x10000, 7, self.iram)
-        for i in range(4):   # code banks
+        for i in range(6):   # code banks, block table, self-check copy
             self.uc.mem_map_ptr((CODE_SEG + i * 0x1000) << 4, 0x10000, 7, self.psram + (20 + i) * 0x10000)
         self.uc.mem_map(SENTINEL_SEG << 4, 0x1000)
         self.uc.mem_write(SENTINEL_SEG << 4, b'\xF4')
@@ -83,8 +84,8 @@ class X86:
         for r, val in ((UC_X86_REG_DS, 0), (UC_X86_REG_SS, 0), (UC_X86_REG_ES, 0x5555)):
             uc.reg_write(r, val)
         # far return address -> sentinel (HLT)
-        uc.mem_write(0x7EFC, bytes([0, 0, SENTINEL_SEG & 255, SENTINEL_SEG >> 8]))
-        uc.reg_write(UC_X86_REG_SP, 0x7EFC)
+        uc.mem_write(0xEFFC, bytes([0, 0, SENTINEL_SEG & 255, SENTINEL_SEG >> 8]))
+        uc.reg_write(UC_X86_REG_SP, 0xEFFC)   # (free IRAM, like the C stack)
         seg = self.entry_seg()
         uc.reg_write(UC_X86_REG_CS, seg)
         self.calls += 1
@@ -92,7 +93,8 @@ class X86:
             uc.emu_start((seg << 4) + offset, SENTINEL_SEG << 4, count=2000000)
         except UcError as e:
             print("x86 crash: %s at %04X:%04X" % (e, uc.reg_read(UC_X86_REG_CS), uc.reg_read(UC_X86_REG_IP)))
-            raise SystemExit(1)
+            import os
+            os._exit(1)   # (an exception would be lost inside the ctypes callback)
 
 def write_ppm(path, a, b):
     with open(path, 'wb') as f:
@@ -107,12 +109,24 @@ def main():
     shutil.copy(LIB, tmp + "/a.so"); shutil.copy(LIB, tmp + "/b.so")
     ref = load(tmp + "/a.so")
     drc = load(tmp + "/b.so")
-    assert ref.sys_init(ROM.encode(), 0) and drc.sys_init(ROM.encode(), 1)
+    # reference: interpreter stopping at every line; tested: the recompiler
+    # (or with --interp the interpreter) stopping only where timing matters
+    every = 1 if "--every-line" in sys.argv else 0
+    ref_drc = "--ref-drc" in sys.argv
+    assert ref.sys_init(ROM.encode(), 1 if ref_drc else 0, 0 if ref_drc else 1)
+    assert drc.sys_init(ROM.encode(), 0 if "--interp" in sys.argv else 1, every)
+    if ref_drc:
+        # reference: the recompiler too, without links (and dynamic lookups)
+        ref.sys_nolinks(1)
+        x86_ref = X86(ref)
     if "--selfcheck" in sys.argv:
         drc.sys_check(1)
+
     x86 = X86(drc)
     t0 = time.time()
     same = 0
+    same_screen = 0
+    first_diff = [None]
     cur_keys = [0]
     for fr in range(FRAMES):
         if fr in keys:
@@ -131,18 +145,27 @@ def main():
                 d = [i for i in range(0x2000) if ra[i] != rb[i]]
                 print("frame %d: RAM differs at %d bytes, first C%03X (%02X/%02X)" % (fr + 1, len(d), d[0], ra[d[0]], rb[d[0]]))
                 break
-        a = ctypes.string_at(ref.sys_fb(), 160 * 144 * 3)
-        b = ctypes.string_at(drc.sys_fb(), 160 * 144 * 3)
+        a = ctypes.string_at(ref.sys_fb_end(), 160 * 144 * 3)
+        b = ctypes.string_at(drc.sys_fb_end(), 160 * 144 * 3)
         if a == b:
+            same_screen += 1
+        elif "--show-diff" in sys.argv:
+            print("  frame %d: %d pixels differ" % (fr + 1, sum(1 for i in range(0, len(a), 3) if a[i:i + 3] != b[i:i + 3])))
+        if a == b and ref.sys_digest() == drc.sys_digest():
             same += 1
+        elif first_diff[0] is None:
+            first_diff[0] = fr + 1
         if EVERY and (fr + 1) % EVERY == 0:
             diff = sum(1 for i in range(0, len(a), 3) if a[i:i + 3] != b[i:i + 3])
             print("frame %5d: %5.1f%% pixels differ  (blocks %d, flushes %d, interpreted %d, block calls %d, %.1fs)"
                   % (fr + 1, diff * 100 / (160 * 144), drc.sys_stat(0), drc.sys_stat(1), drc.sys_stat(2),
                      x86.calls, time.time() - t0))
             write_ppm("%s_%05d.ppm" % (PREFIX, fr + 1), a, b)
-    print("identical frames: %d of %d" % (same, FRAMES))
+    print("identical screens: %d of %d; identical screen and RAM/VRAM/CRAM: %d (first different: %s)"
+          % (same_screen, FRAMES, same, first_diff[0]))
     sys.stdout.flush()
     drc.sys_tr_report()
+    sys.stdout.flush()
+    drc.sys_step_report()
 
 main()

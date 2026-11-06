@@ -44,6 +44,10 @@ void z80_reset(void);
 /// Run for (about) the given number of cycles; returns the overrun (<= 0
 /// means not all of them were used, > 0 means more were used).
 int32_t z80_run(int32_t cycles);
+/// Run one instruction (or take an interrupt), subtracting its cycles
+void z80_step(void);
+/// Set to make z80_run() return early (timing changed: see gg.c)
+extern volatile uint8_t z80_break;
 /// Non-maskable interrupt.
 void z80_nmi(void);
 

@@ -43,9 +43,9 @@ void t_init(void) { z80_init(); out_count = 0; }
 int t_step(void) {
     z80.cycles = 0;
     uint8_t irq = z80.irq; z80.irq = 0;
-    int32_t r = z80_run(1);
+    z80_step();
     z80.irq = irq;
-    return 1 - r;
+    return (int) -z80.cycles;
 }
 
 // the helper routine's C side (registers already in z80)
@@ -69,6 +69,6 @@ int t_translate(uint16_t z80_addr, uint16_t state_addr, uint16_t exit_off,
                 uint16_t helper_off, int16_t ram_delta,
                 uint16_t pc, uint8_t *out, uint16_t out_off, uint16_t out_max,
                 drc_result_t *res) {
-    drc_env_t env = { z80_addr, state_addr, exit_off, helper_off, ram_delta };
+    drc_env_t env = { z80_addr, state_addr, exit_off, helper_off, ram_delta, 0, 0, 0, 0 };
     return drc_translate(&env, pc, out, out_off, out_max, res);
 }

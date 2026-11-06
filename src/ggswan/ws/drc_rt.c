@@ -18,6 +18,8 @@
 #include <stdint.h>
 #include <string.h>
 #ifdef GGSWAN_HOST
+#include <stdio.h>
+#include <stdlib.h>
 #include "wsshim.h"
 #else
 #include <ws.h>
@@ -33,7 +35,9 @@ uint16_t drc_entry[2];   // far pointer used by drc_enter: offset, segment
 
 #define STUB_EXIT   0x0000
 #define STUB_HELPER 0x0020
-#define CACHE_START 0x0040
+#define STUB_DYN    0x0040
+#define STUB_NT     0x0140
+#define CACHE_START 0x0240
 // translation buffer in free IRAM (between the font tiles and the mask tile)
 #define BUF_ADDR    0xA600
 #define BUF_SIZE    0x1900
@@ -102,6 +106,142 @@ static uint8_t *put_store_regs(uint8_t *p) {
     return p;
 }
 
+/*
+ * DYN: the exit of a block whose next address is only known at run time
+ * (RET, JP (HL)...): z80.pc is set, the cycles subtracted. Looks the block
+ * up in the table (the same hash and 4-way set as drc_z80_run) and jumps
+ * to it if it is in this code bank; otherwise exits to the runtime.
+ */
+static uint16_t put_dyn(uint8_t *stub, uint8_t bank_index) {
+    uint8_t *p = stub + STUB_DYN;
+    uint16_t a;
+#define PB(x) (*p++ = (x))
+#define PW(x) (a = (x), *p++ = a, *p++ = a >> 8)
+#define REL8(target) ((uint8_t) ((target) - (p + 1)))
+#define PREL(target) do { uint8_t r_ = REL8(target); PB(r_); } while (0)
+    uint16_t cyc = env.state_addr + offsetof(drc_state_t, cycles);
+    uint16_t pc = env.z80_addr + offsetof(z80_t, pc);
+    uint16_t keys = env.state_addr + offsetof(drc_state_t, keys);
+    uint16_t tseg = env.state_addr + offsetof(drc_state_t, table_seg);
+    uint16_t nolink = env.state_addr + offsetof(drc_state_t, nolink);
+    uint16_t link = env.state_addr + offsetof(drc_state_t, link);
+    // (the exits first, so that the short jumps to them go backwards)
+    uint8_t *miss = p;
+    PB(0x5B); PB(0x58);                              // MISS: pop bx; pop ax
+    uint8_t *exit0 = p;
+    PB(0xC7); PB(0x06); PW(link); PW(0);             // EXIT0: link = 0
+    PB(0xE9); PW(STUB_EXIT - ((uint16_t) (p - stub) + 2));   // jmp EXIT
+    uint16_t entry = (uint16_t) (p - stub);
+    PB(0x83); PB(0x3E); PW(cyc); PB(0);              // cmp word [cycles], 0
+    PB(0x7E); PREL(exit0);                       // jle EXIT0
+    PB(0x80); PB(0x3E); PW(nolink); PB(0);           // cmp byte [nolink], 0
+    PB(0x75); PREL(exit0);                       // jne EXIT0
+    PB(0x50); PB(0x53);                              // push ax; push bx
+    PB(0xA1); PW(pc);                                // mov ax, [pc]
+    PB(0x3D); PW(0xC000);                            // cmp ax, C000h
+    PB(0x73); PREL(miss);                        // jae MISS
+    PB(0x3D); PW(0x8000);                            // cmp ax, 8000h
+    PB(0x72); PB(0x07);                              // jb +7
+    PB(0xF6); PB(0x06); PW(keys); PB(0x08);          // test byte [keys], 8
+    PB(0x75); PREL(miss);                        // jnz MISS (cartridge RAM)
+    PB(0x89); PB(0xC6);                              // mov si, ax
+    PB(0xC1); PB(0xC6); PB(0x02);                    // rol si, 2
+    PB(0x83); PB(0xE6); PB(0x03);                    // and si, 3
+    PB(0x8A); PB(0x9C); PW(keys + 1);                // mov bl, [si + keys + 1]
+    PB(0x89); PB(0xDF);                              // mov di, bx
+    PB(0x81); PB(0xE7); PW(0x00FF);                  // and di, 00FFh
+    PB(0xC1); PB(0xE7); PB(0x05);                    // shl di, 5
+    PB(0x31); PB(0xC7);                              // xor di, ax
+    PB(0x89); PB(0xC6);                              // mov si, ax
+    PB(0xC1); PB(0xEE); PB(0x09);                    // shr si, 9
+    PB(0x31); PB(0xF7);                              // xor di, si
+    PB(0x81); PB(0xE7); PW((HASH_SIZE - 1) & ~3);    // and di, set mask
+    PB(0x8E); PB(0x06); PW(tseg);                    // mov es, [table_seg]
+    for (uint8_t way = 0; way < 4; way++) {
+        uint8_t *next[4];
+        PB(0x89); PB(0xFE);                          // mov si, di
+        PB(0xD1); PB(0xE6);                          // shl si, 1
+        PB(0x26); PB(0x3B); PB(0x04);                // cmp ax, es:[si]        (T_PC)
+        PB(0x75); next[0] = p++;
+        PB(0x26); PB(0x3A); PB(0x9D); PW(T_BANK);    // cmp bl, es:[di + T_BANK]
+        PB(0x75); next[1] = p++;
+        PB(0x26); PB(0x80); PB(0xBD); PW(T_CODE); PB(bank_index);   // cmp byte es:[di + T_CODE], bank
+        PB(0x75); next[2] = p++;
+        PB(0x26); PB(0x8B); PB(0xB4); PW(T_OFF);     // mov si, es:[si + T_OFF]
+        PB(0x83); PB(0xFE); PB(0x01);                // cmp si, 1
+        PB(0x76); next[3] = p++;                     // jbe (empty, not translated)
+        PB(0x5B); PB(0x58);                          // pop bx; pop ax
+        PB(0xFF); PB(0xE6);                          // jmp si
+        for (uint8_t k = 0; k < 4; k++) *next[k] = (uint8_t) (p - next[k] - 1);
+        PB(0x47);                                    // inc di
+    }
+    PB(0xE9); PW((uint16_t) (miss - stub) - ((uint16_t) (p - stub) + 2));   // jmp MISS
+#undef PB
+#undef PW
+#undef REL8
+#undef PREL
+#ifdef GGSWAN_HOST
+    if (p > stub + STUB_NT) { printf("DYN stub too long\n"); exit(1); }
+#endif
+    return entry;
+}
+
+/*
+ * NT: after a name table byte was written (SI = its VRAM address), puts the
+ * converted entry into the WS screen map, like map_put() in main.c: Game
+ * Gear row r appears at WS rows (v & 31) for v = r, r + 28, r + 56 within
+ * map_top .. map_top + 31. Keeps every register except the x86 flags.
+ */
+static uint16_t put_nt(uint8_t *stub, uint16_t at) {
+    uint8_t *p = stub + at;
+    uint16_t a;
+#define PB(x) (*p++ = (x))
+#define PW(x) (a = (x), *p++ = a, *p++ = a >> 8)
+    uint16_t map1 = ws_map1_iram();
+    uint16_t nt = env.state_addr + offsetof(drc_state_t, nt_base);
+    uint16_t top = env.state_addr + offsetof(drc_state_t, map_top);
+    PB(0x50); PB(0x53); PB(0x51); PB(0x52); PB(0x57);   // push ax bx cx dx di
+    PB(0x89); PB(0xF3);                                  // mov bx, si
+    PB(0x81); PB(0xE3); PW(0x3FFE);                      // and bx, 3FFEh
+    PB(0x8B); PB(0x87); PW(env.vram_addr);               // mov ax, [bx + vram]
+    PB(0x89); PB(0xC2);                                  // mov dx, ax
+    PB(0x81); PB(0xE2); PW(0x01FF);                      // and dx, 1FFh
+    PB(0xA9); PW(0x0800); PB(0x74); PB(0x04); PB(0x81); PB(0xCA); PW(0x0200);   // palette
+    PB(0xA9); PW(0x0200); PB(0x74); PB(0x04); PB(0x81); PB(0xCA); PW(0x4000);   // h flip
+    PB(0xA9); PW(0x0400); PB(0x74); PB(0x04); PB(0x81); PB(0xCA); PW(0x8000);   // v flip
+    PB(0x89); PB(0xF0);                                  // mov ax, si
+    PB(0x2B); PB(0x06); PW(nt);                          // sub ax, [nt_base]
+    PB(0x89); PB(0xC3);                                  // mov bx, ax
+    PB(0xD1); PB(0xEB);                                  // shr bx, 1
+    PB(0x83); PB(0xE3); PB(0x1F);                        // and bx, 31 (column)
+    PB(0xC1); PB(0xE8); PB(0x06);                        // shr ax, 6 (row)
+    PB(0x8A); PB(0x0E); PW(top);                         // mov cl, [map_top]
+    PB(0x30); PB(0xED);                                  // xor ch, ch
+    for (uint8_t i = 0; i < 3; i++) {
+        uint8_t *s1, *s2;
+        PB(0x39); PB(0xC8);                              // cmp ax, cx
+        PB(0x72); s1 = p++;                              // jb skip
+        PB(0x89); PB(0xCF);                              // mov di, cx
+        PB(0x83); PB(0xC7); PB(0x20);                    // add di, 32
+        PB(0x39); PB(0xF8);                              // cmp ax, di
+        PB(0x73); s2 = p++;                              // jae skip
+        PB(0x89); PB(0xC7);                              // mov di, ax
+        PB(0x83); PB(0xE7); PB(0x1F);                    // and di, 31
+        PB(0xC1); PB(0xE7); PB(0x05);                    // shl di, 5
+        PB(0x01); PB(0xDF);                              // add di, bx
+        PB(0xD1); PB(0xE7);                              // shl di, 1
+        PB(0x89); PB(0x95); PW(map1);                    // mov [di + map1], dx
+        *s1 = (uint8_t) (p - s1 - 1);
+        *s2 = (uint8_t) (p - s2 - 1);
+        PB(0x83); PB(0xC0); PB(28);                      // add ax, 28
+    }
+    PB(0x5F); PB(0x5A); PB(0x59); PB(0x5B); PB(0x58);   // pop di dx cx bx ax
+    PB(0xC3);                                            // ret
+#undef PB
+#undef PW
+    return (uint16_t) (p - stub);
+}
+
 static void flush(void) {
     pending_link = 0;
     psram_write(DRC_CODE_BANKS, T_OFF, NULL, HASH_SIZE * 2);
@@ -115,39 +255,48 @@ void drc_rt_init(uint16_t bank) {
 #ifdef GGSWAN_HOST
     env.z80_addr = HOST_Z80_ADDR;
     env.state_addr = HOST_ST_ADDR;
+    env.vdp_addr = HOST_VDP_ADDR;
 #else
     env.z80_addr = (uint16_t) &z80;
     env.state_addr = (uint16_t) &drc_st;
+    env.vdp_addr = (uint16_t) &gg.vdp;
 #endif
+    env.vram_addr = 0x4000;   // Game Gear VRAM = WS tiles (main.c)
     env.exit_off = STUB_EXIT;
     env.helper_off = STUB_HELPER;
+    drc_st.table_seg = DRC_TABLE_SEG;
     env.ram_delta = 0x8000 - 0xC000;   // Game Gear RAM at IRAM 8000h
 
-    uint8_t stub[0x40];
-    memset(stub, 0xCC, sizeof(stub));
-    uint16_t reason = env.state_addr + offsetof(drc_state_t, reason);
-    uint16_t resume = env.state_addr + offsetof(drc_state_t, resume);
-    uint8_t *p = put_store_regs(stub + STUB_EXIT);
-    *p++ = 0xC6; *p++ = 0x06; *p++ = reason; *p++ = reason >> 8; *p++ = 0;   // reason = 0
-    *p++ = 0xCB;                                                             // retf
-    p = stub + STUB_HELPER;
-    *p++ = 0x8F; *p++ = 0x06; *p++ = resume; *p++ = resume >> 8;             // pop [resume]
-    p = put_store_regs(p);
-    *p++ = 0xC6; *p++ = 0x06; *p++ = reason; *p++ = reason >> 8; *p++ = 1;   // reason = 1
-    *p++ = 0xCB;
-    for (cache_bank = 0; cache_bank < DRC_CODE_BANKS; cache_bank++)
+    for (cache_bank = 0; cache_bank < DRC_CODE_BANKS; cache_bank++) {
+        uint8_t stub[CACHE_START];
+        memset(stub, 0xCC, sizeof(stub));
+        uint16_t reason = env.state_addr + offsetof(drc_state_t, reason);
+        uint16_t resume = env.state_addr + offsetof(drc_state_t, resume);
+        uint8_t *p = put_store_regs(stub + STUB_EXIT);
+        *p++ = 0xC6; *p++ = 0x06; *p++ = reason; *p++ = reason >> 8; *p++ = 0;   // reason = 0
+        *p++ = 0xCB;                                                             // retf
+        p = stub + STUB_HELPER;
+        *p++ = 0x8F; *p++ = 0x06; *p++ = resume; *p++ = resume >> 8;             // pop [resume]
+        p = put_store_regs(p);
+        *p++ = 0xC6; *p++ = 0x06; *p++ = reason; *p++ = reason >> 8; *p++ = 1;   // reason = 1
+        *p++ = 0xCB;
+        env.dyn_off = put_dyn(stub, cache_bank);   // (the same in every bank)
+        env.nt_stub_off = STUB_NT;
+        uint16_t end = put_nt(stub, STUB_NT);
+#ifdef GGSWAN_HOST
+        if (end > CACHE_START) { printf("stubs too long\n"); exit(1); }
+#else
+        (void) end;
+#endif
         code_write(0, stub, sizeof(stub));
-    // C000-DFFF -> IRAM 8000h, E000-FFFF (mirror) too: the segments are
-    // "negative" (FC00h, FA00h), the 1 MiB address space wraps around.
-    // (Computed in segment units: with 16-bit ints, (8000h - C000h) >> 4
-    // would be 0C00h.)
+    }
     drc_st.segtab[6] = (uint16_t) (0x0800 - 0x0C00);
     drc_st.segtab[7] = (uint16_t) (0x0800 - 0x0E00);
     flush();
 }
 
 static inline uint8_t bank_key(uint16_t pc) {
-    return gg.mapper[1 + (pc >> 14)];
+    return drc_st.keys[1 + (pc >> 14)];
 }
 
 static inline uint16_t hash(uint16_t pc, uint8_t bank) {
@@ -195,11 +344,17 @@ static uint16_t translate(uint16_t pc, uint8_t bank, uint16_t h) {
 
 // one instruction (or an interrupt) with the interpreter
 static void interp_one(void) {
-    int32_t left = z80.cycles;
-    z80.cycles = 0;
-    int32_t r = z80_run(1);
-    z80.cycles = left - (1 - r);
+    z80_step();
     drc_stat_interp++;
+}
+
+// While a block runs, z80.cycles still holds the cycles left when it
+// started; the block counts down drc_st.cycles from block_start.
+static int16_t block_start;
+static uint8_t in_block;
+
+int32_t drc_cycles_left(void) {
+    return in_block ? z80.cycles - (block_start - drc_st.cycles) : z80.cycles;
 }
 
 // The helper routine's C side: the registers are in z80
@@ -214,10 +369,11 @@ static void drc_helper(void) {
     drc_stat_helper[drc_st.op < 5 ? drc_st.op : 0]++;
     uint8_t m0 = gg.mapper[0], m1 = gg.mapper[1], m2 = gg.mapper[2], m3 = gg.mapper[3];
     drc_helper_op();
-    if (!remapped && (m0 != gg.mapper[0] || m1 != gg.mapper[1]
+    if (!remapped && (z80_break || m0 != gg.mapper[0] || m1 != gg.mapper[1]
                       || m2 != gg.mapper[2] || m3 != gg.mapper[3])) {
         // the mapping changed: the rest of the block must not follow links
-        // to blocks translated for the old mapping (cycles <= 0 stops them)
+        // to blocks translated for the old mapping (cycles <= 0 stops them);
+        // or the timing must be planned again (z80_break): stop too
         remapped = 1;
         remap_saved = drc_st.cycles;
         drc_st.cycles = -30000;
@@ -230,17 +386,26 @@ static void drc_helper_op(void) {
     case DRC_H_OUT: z80_out(drc_st.arg, drc_st.val); break;
     case DRC_H_IN: drc_st.val = z80_in(drc_st.arg); break;
     case DRC_H_STEP: {
-        int32_t left = z80.cycles;
+        // the interpreter counts down the real cycles left in z80.cycles
+        int32_t block_left = z80.cycles;
+        int32_t before = drc_cycles_left();
+        z80.cycles = before;
+        in_block = 0;
         uint8_t irq = z80.irq;
         z80.irq = 0;
         uint8_t n = drc_st.val ? drc_st.val : 1;
         z80.pc = drc_st.arg;
+#ifdef GGSWAN_HOST
+        host_step(drc_st.arg);
+#endif
         while (n--) {
             uint16_t p = z80.pc;
-            do { drc_st.cycles -= (z80.cycles = 0, 1 - z80_run(1)); } while (z80.pc == p);   // (repeating ones)
+            do { z80_step(); } while (z80.pc == p);   // (repeating ones)
         }
         z80.irq = irq;
-        z80.cycles = left;
+        drc_st.cycles -= (int16_t) (before - z80.cycles);
+        z80.cycles = block_left;
+        in_block = 1;
         break;
     }
     }
@@ -299,7 +464,8 @@ static void check_end(uint16_t pc, int16_t used) {
     while (1) {
         uint8_t f0 = z80.f, op0 = z80_read(z80.pc);
         z80.cycles = 0;
-        c += 1 - z80_run(1);
+        z80_step();
+        c += (int16_t) -z80.cycles;
         steps++;
         // (the recompiler leaves the undocumented bits 3 and 5 of F at 0)
         if (z80.f != f0 && op0 != 0xF1 && op0 != 0x08)
@@ -320,7 +486,8 @@ static void check_end(uint16_t pc, int16_t used) {
 
 int32_t drc_z80_run(int32_t cycles) {
     z80.cycles += cycles;
-    while (z80.cycles > 0) {
+    drc_st.nolink = drc_no_links;
+    while (z80.cycles > 0 && !z80_break) {
         uint16_t pc = z80.pc;
         if (drc_flush_request) { drc_flush_request = 0; flush(); }
         if (z80.halted) {
@@ -330,7 +497,7 @@ int32_t drc_z80_run(int32_t cycles) {
             break;
         }
         if ((z80.irq && z80.iff1) || z80.ei_pending
-            || pc >= 0xC000 || (pc >= 0x8000 && (gg.mapper[0] & 0x08))) {
+            || pc >= 0xC000 || (pc >= 0x8000 && (drc_st.keys[0] & 0x08))) {
             // interrupts, and code in RAM (it may change): interpreter
             pending_link = 0;
             interp_one();
@@ -366,17 +533,20 @@ int32_t drc_z80_run(int32_t cycles) {
         pending_link = 0;
         int16_t start = z80.cycles > 30000 ? 30000 : (int16_t) z80.cycles;
         drc_st.cycles = start;
+        block_start = start;
         uint32_t io_before = drc_stat_helper[1] + drc_stat_helper[2] + drc_stat_helper[3] + drc_stat_helper[4];
         if (drc_check)
             check_begin();
 #ifdef GGSWAN_HOST
         host_trace(pc, z80.b, z80.h << 8 | z80.l);
 #endif
+        in_block = 1;
         drc_enter(off);
         while (drc_st.reason) {
             drc_helper();
             drc_enter(drc_st.resume);
         }
+        in_block = 0;
         if (remapped) {
             remapped = 0;
             drc_st.cycles = remap_saved + (drc_st.cycles + 30000);

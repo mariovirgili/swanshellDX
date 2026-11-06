@@ -724,59 +724,69 @@ void z80_nmi(void) {
     z80.cycles -= 11;
 }
 
+// one instruction, or taking an interrupt; subtracts its cycles
+static inline void step(void) {
+    if (z80.irq && z80.iff1 && !z80.ei_pending) {
+        take_irq();
+        return;
+    }
+    z80.ei_pending = 0;
+    if (z80.halted) {
+        // nothing to do until an interrupt
+        if (z80.cycles > 0)
+            z80.cycles = 0;
+        return;
+    }
+#ifdef Z80_COUNT
+    z80_count++;
+#endif
+    uint8_t op = fetch();
+    inc_r();
+    int c;
+    if (op == 0xDD || op == 0xFD) {
+        // index prefixes (repeated ones: the last one counts)
+        c = 0;
+        do {
+            idx = (op == 0xDD) ? 1 : 2;
+            c += 4;
+            op = fetch();
+            inc_r();
+        } while (op == 0xDD || op == 0xFD);
+        if (idx == 1) { rh = &z80.ixh; rl = &z80.ixl; }
+        else { rh = &z80.iyh; rl = &z80.iyl; }
+        if (op == 0xCB)
+            c += exec_cb() - 4;
+        else if (op == 0xED) {
+            idx = 0; rh = &z80.h; rl = &z80.l;
+            c += exec_ed();
+        } else
+            c += exec_op(op);
+        idx = 0;
+        rh = &z80.h;
+        rl = &z80.l;
+    } else {
+        idx = 0;
+        rh = &z80.h;
+        rl = &z80.l;
+        if (op == 0xCB)
+            c = exec_cb();
+        else if (op == 0xED)
+            c = exec_ed();
+        else
+            c = exec_op(op);
+    }
+    z80.cycles -= c;
+}
+
+void z80_step(void) {
+    step();
+}
+
+volatile uint8_t z80_break;
+
 int32_t z80_run(int32_t cycles) {
     z80.cycles += cycles;
-    while (z80.cycles > 0) {
-        if (z80.irq && z80.iff1 && !z80.ei_pending) {
-            take_irq();
-            continue;
-        }
-        z80.ei_pending = 0;
-        if (z80.halted) {
-            // nothing to do until an interrupt
-            z80.cycles = 0;
-            break;
-        }
-
-#ifdef Z80_COUNT
-        z80_count++;
-#endif
-        uint8_t op = fetch();
-        inc_r();
-        int c;
-        if (op == 0xDD || op == 0xFD) {
-            // index prefixes (repeated ones: the last one counts)
-            c = 0;
-            do {
-                idx = (op == 0xDD) ? 1 : 2;
-                c += 4;
-                op = fetch();
-                inc_r();
-            } while (op == 0xDD || op == 0xFD);
-            if (idx == 1) { rh = &z80.ixh; rl = &z80.ixl; }
-            else { rh = &z80.iyh; rl = &z80.iyl; }
-            if (op == 0xCB)
-                c += exec_cb() - 4;
-            else if (op == 0xED) {
-                idx = 0; rh = &z80.h; rl = &z80.l;
-                c += exec_ed();
-            } else
-                c += exec_op(op);
-            idx = 0;
-            rh = &z80.h;
-            rl = &z80.l;
-        } else {
-            idx = 0;
-            rh = &z80.h;
-            rl = &z80.l;
-            if (op == 0xCB)
-                c = exec_cb();
-            else if (op == 0xED)
-                c = exec_ed();
-            else
-                c = exec_op(op);
-        }
-        z80.cycles -= c;
-    }
+    while (z80.cycles > 0 && !z80_break)
+        step();
     return z80.cycles;
 }

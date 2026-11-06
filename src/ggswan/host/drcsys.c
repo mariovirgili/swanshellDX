@@ -46,6 +46,24 @@ void drc_check_failed(uint16_t pc, const z80_t *before, const z80_t *drc,
 }
 void sys_check(int on) { drc_check = on; drc_no_links = on; }
 int trace_on;
+static uint32_t step_op[256], step_ed[256];
+void host_step(uint16_t pc) {
+    uint8_t op = z80_read(pc);
+    if (op == 0xED || op == 0xCB || op == 0xDD || op == 0xFD) step_ed[z80_read(pc + 1)]++, step_op[op]++;
+    else step_op[op]++;
+}
+void sys_step_report(void) {
+    for (int k = 0; k < 8; k++) {
+        int b = 0; for (int i = 1; i < 256; i++) if (step_op[i] > step_op[b]) b = i;
+        if (!step_op[b]) break;
+        printf("  step %02X: %u\n", b, step_op[b]); step_op[b] = 0;
+    }
+    for (int k = 0; k < 8; k++) {
+        int b = 0; for (int i = 1; i < 256; i++) if (step_ed[i] > step_ed[b]) b = i;
+        if (!step_ed[b]) break;
+        printf("  step prefix+%02X: %u\n", b, step_ed[b]); step_ed[b] = 0;
+    }
+}
 static uint32_t miss_empty, miss_evict;
 void host_miss(int e) { if (e) miss_evict++; else miss_empty++; }
 void sys_trace(int on) { trace_on = on; }
@@ -173,16 +191,19 @@ void sys_set_callback(run_cb_t cb) { run_cb = cb; }
 void drc_enter(uint16_t offset) {
     memcpy(iram + HOST_Z80_ADDR, &z80, sizeof(z80));
     memcpy(iram + HOST_ST_ADDR, &drc_st, sizeof(drc_st));
+    memcpy(iram + HOST_VDP_ADDR, &gg.vdp, sizeof(gg.vdp));
     run_cb(offset);
     memcpy(&z80, iram + HOST_Z80_ADDR, sizeof(z80));
     memcpy(&drc_st, iram + HOST_ST_ADDR, sizeof(drc_st));
+    memcpy(&gg.vdp, iram + HOST_VDP_ADDR, sizeof(gg.vdp));
 }
 
 void video_init(void);
 void video_present(void);
 void sound_init(void);
 
-int sys_init(const char *path, int use_drc) {
+int sys_init(const char *path, int use_drc, int every_line) {
+    gg_every_line = every_line;
     FILE *f = fopen(path, "rb");
     if (!f) return 0;
     size_t n = fread(psram, 1, 512 * 1024, f);
@@ -193,11 +214,32 @@ int sys_init(const char *path, int use_drc) {
     if (use_drc) {
         drc_rt_init(20);
         gg_cpu_run = drc_z80_run;
+        gg_cpu_left = drc_cycles_left;
     }
     gg_init(banks);
     return banks;
 }
-void sys_frame(int keys) { gg.keys = keys; gg_run_frame(); video_present(); }
+static uint8_t fb_end[GG_VIEW_H][GG_VIEW_W][3];
+void sys_frame(int keys) {
+    gg.keys = keys;
+    gg_run_frame();
+    video_present();
+    // the whole frame drawn again from the final state (comparable between
+    // runs that stop at every line and runs that do not)
+    uint8_t save[GG_VIEW_H][GG_VIEW_W][3];
+    memcpy(save, fb, sizeof(fb));
+    for (uint16_t l = 0; l < GG_ACTIVE_LINES; l++) render_line(l);
+    memcpy(fb_end, fb, sizeof(fb));
+    memcpy(fb, save, sizeof(fb));
+}
+uint8_t *sys_fb_end(void) { return &fb_end[0][0][0]; }
+uint32_t sys_digest(void) {
+    uint32_t h = 2166136261u;
+    for (int i = 0; i < 0x2000; i++) h = (h ^ gg_ram[i]) * 16777619u;
+    for (int i = 0; i < 0x4000; i++) h = (h ^ gg_vram[i]) * 16777619u;
+    for (int i = 0; i < 64; i++) h = (h ^ gg_cram[i]) * 16777619u;
+    return h;
+}
 uint8_t *sys_fb(void) { return &fb[0][0][0]; }
 uint8_t *sys_iram(void) { return iram; }
 uint8_t *sys_psram(void) { return psram; }
@@ -206,3 +248,5 @@ uint8_t *sys_ports(void) { return ports; }
 uint32_t sys_code_version(void) { return code_version; }
 uint32_t sys_stat(int i) { return i == 0 ? drc_stat_blocks : i == 1 ? drc_stat_flushes : drc_stat_interp; }
 int sys_pc(void) { return z80.pc; }
+
+void sys_nolinks(int on) { drc_no_links = on; }

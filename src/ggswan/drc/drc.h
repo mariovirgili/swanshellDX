@@ -48,6 +48,15 @@ typedef struct {
     uint8_t pad;
     uint16_t link;        // set by every exit: offset of a JMP the runtime
                           // may point at the next block (0: none)
+    uint8_t keys[4];      // [0]: 8 if cartridge RAM is at 8000h; [1..3]: the
+                          // ROM bank of each slot (block table keys)
+    uint16_t table_seg;   // segment of the block table
+    uint8_t nolink;       // diagnostics: never jump between blocks
+    uint8_t pad2;
+    uint16_t nt_base;     // VRAM name table and sprite table: writes there
+    uint16_t sat_base;    // need more than the byte stored (see drc_rt.c)
+    uint8_t map_top;      // platform's screen map state (main.c)
+    uint8_t sprites_dirty;
 } drc_state_t;
 
 /// Helper operations: generated code sets drc_state.op (and arg/val),
@@ -67,6 +76,13 @@ typedef struct {
     uint16_t exit_off;     // code-segment offset of the exit routine
     uint16_t helper_off;   // code-segment offset of the helper routine
     int16_t ram_delta;     // IRAM address - Z80 address, for C000-DFFF
+    uint16_t dyn_off;      // offset of the routine that looks up the block
+                           // at z80.pc itself (0: exits go to exit_off)
+    uint16_t vdp_addr;     // IRAM address of gg.vdp (gg_vdp_t), for the fast
+                           // VRAM write path (0: always the helper)
+    uint16_t vram_addr;    // IRAM address of the Game Gear VRAM
+    uint16_t nt_stub_off;  // routine updating the screen map after a name
+                           // table write (SI = VRAM address written)
 } drc_env_t;
 
 typedef struct {

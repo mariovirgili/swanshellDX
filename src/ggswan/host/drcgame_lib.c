@@ -37,7 +37,7 @@ int t_load(const char *path) {
 }
 void t_frames(int n) { while (n--) gg_run_frame(); }
 // run the interpreter for about n cycles (with interrupts, like the game)
-void t_run(int n) { z80_run(n); }
+void t_run(int n) { z80_break = 0; z80_run(n); }
 
 static struct { gg_t gg; z80_t z; uint8_t ram[0x2000], vram[0x4000], cart[0x8000], cram[64]; } snap;
 void t_snapshot(void) {
@@ -74,9 +74,9 @@ drc_state_t *t_st(void) { return &st; }
 int t_step(void) {
     z80.cycles = 0;
     uint8_t irq = z80.irq; z80.irq = 0;
-    int32_t r = z80_run(1);
+    z80_step();
     z80.irq = irq;
-    return 1 - r;
+    return (int) -z80.cycles;
 }
 void t_helper(void) {
     switch (st.op) {
@@ -97,7 +97,7 @@ int t_translate(uint16_t z80_addr, uint16_t state_addr, uint16_t exit_off,
                 uint16_t helper_off, int16_t ram_delta,
                 uint16_t pc, uint8_t *out, uint16_t out_off, uint16_t out_max,
                 drc_result_t *res) {
-    drc_env_t env = { z80_addr, state_addr, exit_off, helper_off, ram_delta };
+    drc_env_t env = { z80_addr, state_addr, exit_off, helper_off, ram_delta, 0, 0, 0, 0 };
     return drc_translate(&env, pc, out, out_off, out_max, res);
 }
 void t_keys(int k) { gg.keys = k; }

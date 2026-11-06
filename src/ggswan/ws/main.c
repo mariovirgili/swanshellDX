@@ -179,15 +179,19 @@ const uint8_t __far *gg_platform_bank(uint8_t slot, uint16_t bank) {
         }
         }
         outportw(WS_CART_EXTBANK_ROM0_PORT, ws_bank);
+        drc_st.keys[1] = bank;
         drc_st.segtab[0] = drc_st.segtab[1] = 0x2000 + (offset >> 4);
         return MK_FP(0x2000, offset);
     case 1:
         outportw(WS_CART_EXTBANK_ROM1_PORT, ws_bank);
+        drc_st.keys[2] = bank;
         drc_st.segtab[2] = drc_st.segtab[3] = 0x3000 + (offset >> 4) - 0x400;
         return MK_FP(0x3000, offset);
     default:
         // slot 2: the RAM window, on PSRAM
         ram_window_set(WS_CART_BANK_FLASH_ENABLE, ws_bank);
+        drc_st.keys[3] = bank;
+        drc_st.keys[0] = 0;
         drc_st.segtab[4] = drc_st.segtab[5] = 0x1000 + (offset >> 4) - 0x800;
         return MK_FP(0x1000, offset);
     }
@@ -196,6 +200,7 @@ const uint8_t __far *gg_platform_bank(uint8_t slot, uint16_t bank) {
 uint8_t __far *gg_platform_cart_ram(uint8_t page) {
     // the RAM window, on SRAM (first 32 KiB)
     ram_window_set(WS_CART_BANK_FLASH_DISABLE, 0);
+    drc_st.keys[0] = 0x08;
     drc_st.segtab[4] = drc_st.segtab[5] = 0x1000 + ((uint16_t) page << 10) - 0x800;
     return MK_FP(0x1000, (uint16_t) page << 14);
 }
@@ -205,7 +210,6 @@ uint8_t __far *gg_platform_cart_ram(uint8_t page) {
 static uint16_t nt_base = 0x3800;
 static uint16_t sat_base = 0x3F00;
 static uint8_t map_top;        // first "virtual" Game Gear row in map1
-static bool sprites_dirty = true;
 static uint8_t backdrop_palette;
 
 /*
@@ -215,9 +219,14 @@ static uint8_t backdrop_palette;
  * interrupt that replays them while the WS draws the screen.
  */
 #define MAX_SPLITS 24
-static uint8_t rec_line[MAX_SPLITS], rec_val[MAX_SPLITS], rec_n;
+static uint8_t rec_line[MAX_SPLITS], rec_val[MAX_SPLITS], rec_n = 1;
+static void hscroll_write(uint8_t value);
 GGSWAN_HOST_VISIBLE volatile uint8_t act_line[MAX_SPLITS], act_val[MAX_SPLITS], act_n = 1;
 static volatile uint8_t act_i;
+
+uint16_t ws_map1_iram(void) {
+    return IRAM_OFF(map1);
+}
 
 // Game Gear name table entry -> WS screen entry
 static inline uint16_t conv_entry(uint16_t e) {
@@ -241,6 +250,7 @@ static inline uint16_t gg_entry(uint8_t row, uint8_t col) {
  */
 static void map_relayout(uint8_t top) {
     map_top = top;
+    drc_st.map_top = top;
     for (uint8_t w = 0; w < 32; w++) {
         uint8_t v = top + ((w - top) & 31);
         uint8_t r = v % 28;
@@ -261,7 +271,7 @@ void gg_platform_vram_write(uint16_t a, uint8_t value) {
     if (off < 0x700) {
         map_put(off >> 6, (off >> 1) & 31, conv_entry(gg_entry(off >> 6, (off >> 1) & 31)));
     } else if ((uint16_t) (a - sat_base) < 0x100) {
-        sprites_dirty = true;
+        drc_st.sprites_dirty = true;
     }
 }
 
@@ -281,31 +291,48 @@ void gg_platform_vdp_reg(uint8_t r, uint8_t v) {
     switch (r) {
     case 2:
         nt_base = (v & 0x0E) << 10;
+        drc_st.nt_base = nt_base;
         map_relayout(map_top);
         break;
     case 5:
         sat_base = (v & 0x7E) << 7;
-        sprites_dirty = true;
+        drc_st.sat_base = sat_base;
+        drc_st.sprites_dirty = true;
         break;
     case 0: case 1: case 6:
-        sprites_dirty = true;
+        drc_st.sprites_dirty = true;
+        break;
+    case 8:
+        hscroll_write(v);
         break;
     }
 }
 
 void gg_platform_line(uint16_t line) {
+    // (only called on the PC tests, which stop at every line)
 #ifdef GGSWAN_HOST
     host_line_hook(line);
+#else
+    (void) line;
 #endif
-    uint8_t y = line - GG_VIEW_Y;
-    if (y >= GG_VIEW_H)
-        return;
-    // WS x shows Game Gear picture column x + 16
-    uint8_t v = 16 - gg.vdp.reg[8];
-    if (y == 0) {
-        rec_val[0] = v;
+}
+
+// A write to the horizontal scroll register: it takes effect from the next
+// line. WS x shows Game Gear picture column x + 16.
+static void hscroll_write(uint8_t value) {
+    uint16_t line = gg_current_line() + 1;
+    uint8_t v = 16 - value;
+    if (line <= GG_VIEW_Y) {
+        rec_val[0] = v;   // before the view: the value for its first line
         rec_n = 1;
-    } else if (v != rec_val[rec_n - 1] && rec_n < MAX_SPLITS) {
+        return;
+    }
+    uint16_t y = line - GG_VIEW_Y;
+    if (y >= GG_VIEW_H || v == rec_val[rec_n - 1])
+        return;
+    if (rec_n > 1 && rec_line[rec_n - 1] == y) {
+        rec_val[rec_n - 1] = v;
+    } else if (rec_n < MAX_SPLITS) {
         rec_line[rec_n] = y;
         rec_val[rec_n] = v;
         rec_n++;
@@ -398,10 +425,13 @@ static void build_sprites(void) {
     }
     outportb(0x05, 0);        // first sprite
     outportb(0x06, n);        // sprite count
-    sprites_dirty = false;
+    drc_st.sprites_dirty = false;
 }
 
 GGSWAN_HOST_VISIBLE void video_init(void) {
+    drc_st.sprites_dirty = 1;
+    drc_st.nt_base = nt_base;
+    drc_st.sat_base = sat_base;
     memset(gg_vram, 0, 0x4000);
     memset(map1, 0, MAP_SIZE);
     // border mask: tile 1022 opaque (color 1 of MASK_PALETTE = black)
@@ -451,10 +481,13 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
     }
     outportb(0x11, vy & 0xFF);
     splits_commit();
+    // record the next frame: it starts with the current value
+    rec_val[0] = 16 - gg.vdp.reg[8];
+    rec_n = 1;
     if (!(gg.frame & 7))
         update_backdrop();
 
-    if (sprites_dirty)
+    if (drc_st.sprites_dirty)
         build_sprites();
 
     if (reg[1] & 0x40) {
@@ -673,43 +706,55 @@ static uint16_t font_entry(char c) {
     return TILE_ENTRY(FONT_TILE + g) | PAL_ENTRY(FONT_PALETTE);
 }
 
-// screen 2, columns 0-3 (outside the Game Gear view): a label and a value
-static void show_value(uint8_t row, char label, uint32_t v) {
-    map2[row * 32] = font_entry(label);
-    if (v > 999) v = 999;
-    map2[row * 32 + 1] = font_entry('0' + v / 100);
-    map2[row * 32 + 2] = font_entry('0' + (v / 10) % 10);
-    map2[row * 32 + 3] = font_entry('0' + v % 10);
+// Diagnostics in the borders (screen 2, outside the Game Gear view):
+// left columns 0-3, right columns 24-27, one empty row between lines.
+static void put_text(uint8_t row, uint8_t col, const char __far *t) {
+    while (*t)
+        map2[row * 32 + col++] = font_entry(*(t++));
 }
 
-static void show_hex(uint8_t row, uint16_t v) {
+static void put_value(uint8_t row, uint8_t col, char label, uint32_t v) {
+    char t[5];
+    if (v > 999) v = 999;
+    t[0] = label;
+    t[1] = v >= 100 ? '0' + v / 100 : ' ';
+    t[2] = v >= 10 ? '0' + (v / 10) % 10 : ' ';
+    t[3] = '0' + v % 10;
+    t[4] = 0;
+    put_text(row, col, t);
+}
+
+static void put_hex(uint8_t row, uint8_t col, uint16_t v) {
+    char t[5];
     for (uint8_t i = 0; i < 4; i++)
-        map2[row * 32 + i] = font_entry("0123456789ABCDEF"[(v >> (12 - i * 4)) & 15]);
+        t[i] = "0123456789ABCDEF"[(v >> (12 - i * 4)) & 15];
+    t[4] = 0;
+    put_text(row, col, t);
 }
 
 static bool show_stats;
 
 static void show_fps(uint8_t fps) {
-    map2[1 * 32 + 0] = font_entry('F');
-    map2[1 * 32 + 1] = font_entry('P');
-    map2[1 * 32 + 2] = font_entry('S');
-    map2[2 * 32 + 1] = font_entry('0' + (fps / 10) % 10);
-    map2[2 * 32 + 2] = font_entry('0' + fps % 10);
+    put_text(1, 0, "FPS");
+    put_value(2, 0, ' ', fps);
     if (!show_stats)
         return;
-    // per second: T translations, D dispatches/100, W O I S helpers
-    // (write, out, in, step)/100, N interpreted/100; X flushes; Z80 PC
+    // per second: T translations; D returns to the dispatcher, helpers
+    // W (write) O (out) I (in) S (interpreted step), N interpreted
+    // instructions, all in hundreds; X cache flushes (total)
     static uint32_t l_blocks, l_disp, l_help[5], l_interp;
-    show_value(4, 'T', drc_stat_blocks - l_blocks);
-    show_value(5, 'D', (drc_stat_dispatch - l_disp) / 100);
-    show_value(6, 'W', (drc_stat_helper[1] - l_help[1]) / 100);
-    show_value(7, 'O', (drc_stat_helper[2] - l_help[2]) / 100);
-    show_value(8, 'I', (drc_stat_helper[3] - l_help[3]) / 100);
-    show_value(9, 'S', (drc_stat_helper[4] - l_help[4]) / 100);
-    show_value(10, 'N', (drc_stat_interp - l_interp) / 100);
-    show_value(11, 'X', drc_stat_flushes);
-    show_hex(13, z80.pc);
-    show_hex(14, drc_entry[1]);
+    put_value(4, 0, 'T', drc_stat_blocks - l_blocks);
+    put_value(6, 0, 'D', (drc_stat_dispatch - l_disp) / 100);
+    put_value(8, 0, 'W', (drc_stat_helper[1] - l_help[1]) / 100);
+    put_value(10, 0, 'O', (drc_stat_helper[2] - l_help[2]) / 100);
+    put_value(12, 0, 'I', (drc_stat_helper[3] - l_help[3]) / 100);
+    put_value(14, 0, 'S', (drc_stat_helper[4] - l_help[4]) / 100);
+    put_value(16, 0, 'N', (drc_stat_interp - l_interp) / 100);
+    put_value(1, 24, 'X', drc_stat_flushes);
+    put_text(4, 24, "PC");
+    put_hex(5, 24, z80.pc);
+    put_text(8, 24, "SEG");
+    put_hex(9, 24, drc_entry[1]);
     l_blocks = drc_stat_blocks; l_disp = drc_stat_dispatch; l_interp = drc_stat_interp;
     for (uint8_t i = 0; i < 5; i++) l_help[i] = drc_stat_helper[i];
 }
@@ -775,6 +820,7 @@ int main(void) {
         if (bad)
             fail("BANK TEST", bad);
         gg_cpu_run = drc_z80_run;
+        gg_cpu_left = drc_cycles_left;
         show_stats = true;
         if (ws_keypad_scan() & WS_KEY_Y3) {
             drc_no_links = 1;

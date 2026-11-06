@@ -203,6 +203,7 @@ int main(int argc, char **argv) {
     uint16_t banks = (n + 0x3FFF) >> 14;
     video_init();
     sound_init();
+    gg_every_line = 1;   // the reference renderer draws line by line
     gg_init(banks);
     int frames = atoi(argv[2]);
     const char *keys = argc > 4 ? argv[4] : "";
