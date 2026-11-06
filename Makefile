@@ -111,9 +111,9 @@ DEPS		:= $(OBJS:.o=.d)
 # Targets
 # -------
 
-.PHONY: all clean dist distclean fonts athenaos-compatible athenaos-native libnile-bootfriend libnile-medium plugin-uxnws usage usage-symbols rotate-icons
+.PHONY: all clean dist distclean fonts athenaos-compatible athenaos-native libnile-bootfriend libnile-medium plugin-uxnws plugin-ggswan usage usage-symbols rotate-icons
 
-all: $(ROM) compile_commands.json
+all: $(ROM) compile_commands.json plugin-ggswan
 
 dist: all athenaos-compatible athenaos-native plugin-uxnws dist/NILESWAN/font8/default.sff dist/NILESWAN/font8/vdefault.sff dist/NILESWAN/font16/default.sff dist/NILESWAN/font16/vdefault.sff dist/NILESWAN/font16/zh_hans/default.sff dist/NILESWAN/font16/zh_hans/vdefault.sff dist/NILESWAN/unicode/shiftjis.tbl
 	@echo "  DIST"
@@ -200,6 +200,10 @@ libnile-medium:
 plugin-uxnws:
 	@$(MAKE) -C vendor/uxnws PLATFORM=nileswan
 
+# Game Gear emulator plugin (dist/NILESWAN/PLUG_GG.BIN)
+plugin-ggswan: libnile-medium
+	$(_V)$(MAKE) -f Makefile.ggswan --no-print-directory
+
 build/bootstub.bin: libnile-bootfriend
 	$(_V)$(MAKE) -f Makefile.bootstub --no-print-directory
 
@@ -216,6 +220,7 @@ $(ELF_STAGE1): $(OBJS)
 clean:
 	@echo "  CLEAN"
 	$(_V)$(MAKE) -f Makefile.bootstub clean --no-print-directory
+	$(_V)$(MAKE) -f Makefile.ggswan clean --no-print-directory
 	$(_V)$(RM) $(ELF_STAGE1) $(ELF) dist/ $(BUILDDIR) compile_commands.json || true
 	$(_V)cd $(LIBNILE_PATH) && $(MAKE) TARGET=wswan/bootfriend clean
 	$(_V)cd $(LIBNILE_PATH) && $(MAKE) TARGET=wswan/medium clean

@@ -84,6 +84,10 @@ exit_no_launch:
             return launch_com(path);
         } else if (!strcasecmp(ext, s_file_ext_rom)) {
             return launch_plugin_via_ipc(s_path_plugin_uxn, path);
+        } else if (!strcasecmp(ext, s_file_ext_gg)) {
+            // Game Gear ROM: ggswan emulator plugin
+            if (flags & LAUNCH_ROUTER_USE_SERIAL_OUT) return ERR_FILE_NOT_EXECUTABLE;
+            return launch_plugin_via_ipc(s_path_plugin_gg, path);
         } else {
             goto txtview;
         }

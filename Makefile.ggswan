@@ -1,0 +1,79 @@
+# SPDX-License-Identifier: CC0-1.0
+#
+# ggswan: Game Gear emulator plugin for swanshell (nileswan).
+# Built from the main Makefile; output: dist/NILESWAN/PLUG_GG.BIN
+
+WONDERFUL_TOOLCHAIN ?= /opt/wonderful
+TARGET = wswan/medium
+include $(WONDERFUL_TOOLCHAIN)/target/$(TARGET)/makedefs.mk
+
+NAME		:= ggswan
+INCLUDEDIRS	:= src/ggswan/core src/ggswan/ws
+SOURCEDIRS	:= src/ggswan/core src/ggswan/ws
+DEFINES		:= -DLIBWS_USE_EXTBANK
+
+LIBNILE_PATH	?= vendor/libnile
+LIBS		:= -lnilefs -lnile -lwsx -lws
+LIBDIRS		:= $(WF_ARCH_LIBDIRS) \
+		   $(LIBNILE_PATH)/dist/$(TARGET)
+
+BUILDDIR	:= build/ggswan
+ELF		:= build/$(NAME).elf
+ELF_STAGE1	:= build/$(NAME)_stage1.elf
+ROM		:= dist/NILESWAN/PLUG_GG.BIN
+
+ifeq ($(V),1)
+_V		:=
+else
+_V		:= @
+endif
+
+SOURCES_S	:= $(shell find -L $(SOURCEDIRS) -name "*.s")
+SOURCES_C	:= $(shell find -L $(SOURCEDIRS) -name "*.c")
+
+WARNFLAGS	:= -Wall
+INCLUDEFLAGS	:= $(foreach path,$(INCLUDEDIRS),-I$(path)) \
+		   $(foreach path,$(LIBDIRS),-isystem $(path)/include)
+LIBDIRSFLAGS	:= $(foreach path,$(LIBDIRS),-L$(path)/lib)
+
+ASFLAGS		:= -x assembler-with-cpp $(DEFINES) $(WF_ARCH_CFLAGS) \
+		   $(INCLUDEFLAGS) -ffunction-sections -fdata-sections -fno-common
+CFLAGS		:= -std=gnu11 $(WARNFLAGS) $(DEFINES) $(WF_ARCH_CFLAGS) \
+		   $(INCLUDEFLAGS) -ffunction-sections -fdata-sections -fno-common -O2
+LDFLAGS		:= -T$(WF_LDSCRIPT) $(LIBDIRSFLAGS) \
+		   $(WF_ARCH_LDFLAGS) $(LIBS)
+BUILDROMFLAGS	:= -c src/ggswan/wfconfig.toml --trim
+
+OBJS		:= $(addsuffix .o,$(addprefix $(BUILDDIR)/,$(SOURCES_S))) \
+		   $(addsuffix .o,$(addprefix $(BUILDDIR)/,$(SOURCES_C)))
+DEPS		:= $(OBJS:.o=.d)
+
+.PHONY: all clean
+
+all: $(ROM)
+
+$(ROM) $(ELF): $(ELF_STAGE1)
+	@echo "  ROM     $@"
+	@$(MKDIR) -p $(@D)
+	$(_V)$(BUILDROM) -o $(ROM) --output-elf $(ELF) $(BUILDROMFLAGS) $<
+
+$(ELF_STAGE1): $(OBJS)
+	@echo "  LD      $@"
+	@$(MKDIR) -p $(@D)
+	$(_V)$(CC) -r -o $(ELF_STAGE1) $(OBJS) $(WF_CRT0) $(LDFLAGS)
+
+clean:
+	@echo "  CLEAN"
+	$(_V)$(RM) $(ELF_STAGE1) $(ELF) $(ROM) $(BUILDDIR) || true
+
+$(BUILDDIR)/%.s.o : %.s
+	@echo "  AS      $<"
+	@$(MKDIR) -p $(@D)
+	$(_V)$(CC) $(ASFLAGS) -MMD -MP -c -o $@ $<
+
+$(BUILDDIR)/%.c.o : %.c
+	@echo "  CC      $<"
+	@$(MKDIR) -p $(@D)
+	$(_V)$(CC) $(CFLAGS) -MMD -MP -c -o $@ $<
+
+-include $(DEPS)

@@ -43,6 +43,7 @@ DEFINE_STRING(s_file_ext_bin, ".bin");
 DEFINE_STRING(s_file_ext_com, ".com");
 DEFINE_STRING(s_file_ext_fr, ".fr");
 DEFINE_STRING(s_file_ext_fx, ".fx");
+DEFINE_STRING(s_file_ext_gg, ".gg");
 DEFINE_STRING(s_file_ext_htm, ".htm");
 DEFINE_STRING(s_file_ext_html, ".html");
 DEFINE_STRING(s_file_ext_il, ".il");
@@ -91,6 +92,7 @@ DEFINE_STRING(s_rom_info_eeprom_kb_tpl, "EEPROM %u KB");
 DEFINE_STRING(s_rom_info_eeprom_b_tpl, "EEPROM %u B");
 
 DEFINE_STRING(s_path_plugin_uxn, "/NILESWAN/PLUG_UXN.BIN");
+DEFINE_STRING(s_path_plugin_gg, "/NILESWAN/PLUG_GG.BIN");
 
 DEFINE_STRING(s_error_unknown, "Error %d");
 

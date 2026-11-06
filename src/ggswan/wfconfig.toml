@@ -1,0 +1,16 @@
+# ggswan plugin ROM header.
+# rom_banks = 32 (2 MiB): the bootstub maps the plugin at the top of these
+# PSRAM banks; banks 0-7 stay free for the Game Gear ROM (up to 512 KiB),
+# which the plugin reaches through the ROM0, ROM1 and RAM windows.
+# save_type: the Game Gear cartridge RAM lives in SRAM bank 0.
+[cartridge]
+publisher_id = 0x00
+game_id = 0
+game_version = 0
+
+save_type = "SRAM_512KB"
+color = true
+rtc = false
+vertical = false
+
+rom_banks = 32
