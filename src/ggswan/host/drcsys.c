@@ -234,6 +234,9 @@ int sys_init(const char *path, int use_drc, int every_line) {
     sound_init();
     if (use_drc) {
         drc_rt_init(20);
+        // the same start-up checks as main.c
+        if (*((const uint8_t __far*) MK_FP(DRC_CODE_SEG, 0)) != 0xC6) { printf("CODE READ failed\n"); return 0; }
+        { uint8_t bad = drc_rt_test_banks(); if (bad) { printf("BANK TEST failed: %d\n", bad); return 0; } }
         gg_cpu_run = drc_z80_run;
         gg_cpu_left = drc_cycles_left;
     }

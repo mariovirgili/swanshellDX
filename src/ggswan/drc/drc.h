@@ -60,6 +60,7 @@ typedef struct {
     uint16_t far_off;     // DYN: far jump to a block in another code bank
     uint16_t far_seg;
     uint16_t cur_seg;     // code segment of the last exit (set by the stubs)
+    uint16_t l0_slot;     // DYN: L0 entry being filled
 } drc_state_t;
 
 /// Helper operations: generated code sets drc_state.op (and arg/val),

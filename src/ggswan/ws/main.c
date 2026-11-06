@@ -858,7 +858,8 @@ int main(void) {
             fail("CODE BANK", code_bank);
         drc_rt_init(code_bank);
         // the stubs written through the RAM window must be visible there
-        if (*((const uint8_t __far*) MK_FP(DRC_CODE_SEG, 0)) != 0xA3)
+        // (the EXIT stub starts with mov byte [reason], 0: C6h)
+        if (*((const uint8_t __far*) MK_FP(DRC_CODE_SEG, 0)) != 0xC6)
             fail("CODE READ", code_bank);
         uint8_t bad = drc_rt_test_banks();
         if (bad)

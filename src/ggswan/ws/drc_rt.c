@@ -36,14 +36,19 @@ uint16_t drc_entry[2];   // far pointer used by drc_enter: offset, segment
 #define STUB_EXIT   0x0000
 #define STUB_HELPER 0x0020
 #define STUB_DYN    0x0040
-#define STUB_NT     0x0140
-#define STUB_OUTI   0x0240   // (OUTD: + DRC_OUTD_DELTA)
-#define STUB_LDI    0x0440   // (LDD: + DRC_LDD_DELTA)
-#define STUB_HCALL  0x0540   // helpers called without leaving the block
-#define STUB_CTL    0x0580   // OUT (BFh),A
-#define CACHE_START 0x05E0
+#define STUB_NT     0x0180
+#define STUB_OUTI   0x0280   // (OUTD: + DRC_OUTD_DELTA)
+#define STUB_LDI    0x0480   // (LDD: + DRC_LDD_DELTA)
+#define STUB_HCALL  0x0580   // helpers called without leaving the block
+#define STUB_CTL    0x05C0   // OUT (BFh),A
+#define CACHE_START 0x0620
 // translation buffer in free IRAM (between the font tiles and the mask tile)
 #define BUF_ADDR    0xA600
+/// DYN L0 cache: 512 direct-mapped entries of 8 bytes in free IRAM (in the
+/// WS Color 4bpp mode C000-FDFF is free): Z80 pc (FFFF: empty), bank,
+/// -, offset, segment of the block
+#define L0_ADDR     0xD000
+#define L0_SIZE     0x1000
 #define BUF_SIZE    0x1900
 
 /*
@@ -142,6 +147,7 @@ static uint16_t put_dyn(uint8_t *stub, uint8_t bank_index) {
     uint16_t nolink = env.state_addr + offsetof(drc_state_t, nolink);
     uint16_t link = env.state_addr + offsetof(drc_state_t, link);
     uint16_t far_off = env.state_addr + offsetof(drc_state_t, far_off);
+    uint16_t l0_slot = env.state_addr + offsetof(drc_state_t, l0_slot);
     uint8_t *found[4];
     (void) bank_index;
     // (the exits first, so that the short jumps to them go backwards)
@@ -175,6 +181,19 @@ static uint16_t put_dyn(uint8_t *stub, uint8_t bank_index) {
     PB(0xC1); PB(0xEE); PB(0x09);                    // shr si, 9
     PB(0x31); PB(0xF7);                              // xor di, si
     PB(0x81); PB(0xE7); PW((HASH_SIZE - 1) & ~3);    // and di, set mask
+    // L0 first: entry (di & 7FCh) * 2
+    PB(0x89); PB(0xFE);                              // mov si, di
+    PB(0x81); PB(0xE6); PW(0x07FC);                  // and si, 7FCh
+    PB(0xD1); PB(0xE6);                              // shl si, 1
+    PB(0x3B); PB(0x84); PW(L0_ADDR);                 // cmp ax, [si + L0]
+    PB(0x75); uint8_t *l0miss1 = p++;                // jne
+    PB(0x3A); PB(0x9C); PW(L0_ADDR + 2);             // cmp bl, [si + L0 + 2]
+    PB(0x75); uint8_t *l0miss2 = p++;                // jne
+    PB(0x5B); PB(0x58);                              // pop bx; pop ax
+    PB(0xFF); PB(0xAC); PW(L0_ADDR + 4);             // jmp far [si + L0 + 4]
+    *l0miss1 = (uint8_t) (p - l0miss1 - 1);
+    *l0miss2 = (uint8_t) (p - l0miss2 - 1);
+    PB(0x89); PB(0x36); PW(l0_slot);                 // mov [l0_slot], si
     PB(0x8E); PB(0x06); PW(tseg);                    // mov es, [table_seg]
     for (uint8_t way = 0; way < 4; way++) {
         uint8_t *next[2];
@@ -194,12 +213,18 @@ static uint16_t put_dyn(uint8_t *stub, uint8_t bank_index) {
     // FOUND: SI = offset, DI = entry; jump far to its code bank
     for (uint8_t way = 0; way < 4; way++) *found[way] = (uint8_t) (p - found[way] - 1);
     PB(0x89); PB(0x36); PW(far_off);                 // mov [far_off], si
+    PB(0x8A); PB(0xFB);                              // mov bh, bl (bank)
     PB(0x26); PB(0x8A); PB(0x9D); PW(T_CODE);        // mov bl, es:[di + T_CODE]
+    PB(0x8B); PB(0x3E); PW(l0_slot);                 // mov di, [l0_slot]
+    PB(0x89); PB(0x85); PW(L0_ADDR);                 // mov [di + L0], ax (pc)
+    PB(0x88); PB(0xBD); PW(L0_ADDR + 2);             // mov [di + L0 + 2], bh (bank)
+    PB(0x89); PB(0xB5); PW(L0_ADDR + 4);             // mov [di + L0 + 4], si (offset)
     PB(0x88); PB(0xDF);                              // mov bh, bl
     PB(0xC0); PB(0xE7); PB(0x04);                    // shl bh, 4
     PB(0x80); PB(0xC7); PB(DRC_CODE_SEG >> 8);       // add bh, code segment
     PB(0x30); PB(0xDB);                              // xor bl, bl
     PB(0x89); PB(0x1E); PW(far_off + 2);             // mov [far_seg], bx
+    PB(0x89); PB(0x9D); PW(L0_ADDR + 6);             // mov [di + L0 + 6], bx (segment)
     PB(0x5B); PB(0x58);                              // pop bx; pop ax
     PB(0xFF); PB(0x2E); PW(far_off);                 // jmp far [far_off]
 #undef PB
@@ -270,6 +295,7 @@ static uint16_t put_nt(uint8_t *stub, uint16_t at) {
 
 static void flush(void) {
     pending_link = 0;
+    memset(IRAM(L0_ADDR), 0xFF, L0_SIZE);
     psram_write(DRC_CODE_BANKS, T_OFF, NULL, HASH_SIZE * 2);
     cache_bank = 0;
     cache_top = CACHE_START;
@@ -506,7 +532,8 @@ uint8_t drc_rt_test_banks(void) {
         const uint8_t __far *p = MK_FP(DRC_CODE_SEG + ((uint16_t) i << 12), 0xFFF0);
         if (p[0] != 0x5A || p[1] != i)
             return i + 1;
-        if (i < DRC_CODE_BANKS && *((const uint8_t __far*) MK_FP(DRC_CODE_SEG + ((uint16_t) i << 12), 0)) != 0xA3)
+        // (the EXIT stub starts with mov byte [reason], 0: C6h)
+        if (i < DRC_CODE_BANKS && *((const uint8_t __far*) MK_FP(DRC_CODE_SEG + ((uint16_t) i << 12), 0)) != 0xC6)
             return i + 1;
     }
     return 0;
