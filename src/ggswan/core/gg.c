@@ -289,6 +289,37 @@ static void vdp_line(uint16_t line) {
     update_irq();
 }
 
+// start lines from .. to - 1 at once (the same as vdp_line on each, in
+// order): one pass instead of one call per line
+static void vdp_lines(uint16_t from, uint16_t to) {
+    if (from >= to) return;
+    if (from == 0)
+        gg.vdp.vscroll_frame = gg.vdp.reg[9];
+    uint8_t c = gg.vdp.line_counter, r = gg.vdp.reg[10];
+    // lines 0-192: the counter counts down, reloading (and requesting an
+    // interrupt) on the line after it reached 0
+    uint16_t a_end = to < GG_ACTIVE_LINES + 1 ? to : GG_ACTIVE_LINES + 1;
+    if (from < a_end) {
+        uint16_t k = a_end - from;
+        if (k > c) {
+            gg.vdp.line_pending = 1;
+            k -= c + 1;   // lines after the reload
+            c = r - (uint8_t) (k % ((uint16_t) r + 1));
+        } else {
+            c -= (uint8_t) k;
+        }
+    }
+    // the other lines reload it
+    if (to > GG_ACTIVE_LINES + 1)
+        c = r;
+    gg.vdp.line_counter = c;
+    // frame interrupt
+    if (from <= GG_ACTIVE_LINES + 1 && to > GG_ACTIVE_LINES + 1)
+        gg.vdp.status |= 0x80;
+    gg.vdp.vcounter = to - 1;
+    update_irq();
+}
+
 // the next line (from l, the first one not started yet) whose start must
 // happen at its exact time
 static uint16_t next_event(uint16_t l) {
@@ -313,11 +344,17 @@ void gg_run_frame(void) {
     while (1) {
         uint16_t pos = frame_pos();
         // start the lines the CPU has reached
-        while (started < GG_LINES && (uint16_t) (started * GG_CYCLES_PER_LINE) <= pos) {
-            vdp_line(started);
-            if (gg_every_line)
+        if (gg_every_line) {
+            while (started < GG_LINES && (uint16_t) (started * GG_CYCLES_PER_LINE) <= pos) {
+                vdp_line(started);
                 gg_platform_line(started);
-            started++;
+                started++;
+            }
+        } else {
+            uint16_t reached = pos / GG_CYCLES_PER_LINE + 1;
+            if (reached > GG_LINES) reached = GG_LINES;
+            vdp_lines(started, reached);
+            if (reached > started) started = reached;
         }
         if (started >= GG_LINES && pos >= (uint16_t) (GG_LINES * GG_CYCLES_PER_LINE))
             break;
