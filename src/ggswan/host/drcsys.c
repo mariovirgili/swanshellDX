@@ -81,6 +81,13 @@ uint32_t hs_crossbank, hs_disp_from[4], hs_nolink_kind[8];
 static uint32_t nl_pc[65536], nl_out;
 void hs_nolink_pc(uint16_t pc, int16_t cyc) { nl_pc[pc]++; if (cyc <= 0) nl_out++; }
 uint32_t hs_out[256], hs_in[256];
+uint32_t hs_ram_pc[8192], hs_ram_fail;
+void sys_ram_report(void) {
+    uint32_t tot = 0; for (int i = 0; i < 8192; i++) tot += hs_ram_pc[i];
+    printf("RAM instructions interpreted: %u (RAM blocks whose code changed: %u)\n", tot, hs_ram_fail);
+    for (int k = 0; k < 15; k++) { uint32_t m = 0; int mi = 0; for (int i = 0; i < 8192; i++) if (hs_ram_pc[i] > m) { m = hs_ram_pc[i]; mi = i; }
+        if (!m) break; printf("  %04X: %u\n", 0xC000 + mi, m); hs_ram_pc[mi] = 0; }
+}
 void sys_hs_report(void) {
     printf("OUT ports:"); for (int i = 0; i < 256; i++) if (hs_out[i] > 500) printf(" %02X:%u", i, hs_out[i]); printf("\n");
     printf("IN ports:"); for (int i = 0; i < 256; i++) if (hs_in[i] > 500) printf(" %02X:%u", i, hs_in[i]); printf("\n");

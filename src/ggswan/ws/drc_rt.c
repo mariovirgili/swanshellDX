@@ -48,6 +48,8 @@ uint16_t drc_entry[2];   // far pointer used by drc_enter: offset, segment
 /// WS Color 4bpp mode C000-FDFF is free): Z80 pc (FFFF: empty), bank,
 /// -, offset, segment of the block
 #define L0_ADDR     0xD000
+/// block table key of the code in work RAM (banks are below 64)
+#define RAM_KEY     0xFE
 #define L0_SIZE     0x1000
 #define BUF_SIZE    0x1900
 
@@ -360,6 +362,7 @@ void drc_rt_init(uint16_t bank) {
         if (p > stub + CACHE_START) { printf("HCALL stub too long\n"); exit(1); }
 #endif
         env.helper_off = STUB_HCALL;
+        env.ram_blocks = 1;
         env.ctl_off = STUB_CTL;
         uint16_t l5 = drc_emit_ctl_stub(&env, stub + STUB_CTL, STUB_CTL);
 #ifdef GGSWAN_HOST
@@ -630,14 +633,20 @@ int32_t drc_z80_run(int32_t cycles) {
         // (no interrupt waiting: the instruction after EI needs nothing
         // special, an interrupt can only arrive after the block)
         z80.ei_pending = 0;
-        if (pc >= 0xC000 || (pc >= 0x8000 && (drc_st.keys[0] & 0x08))) {
+        // work RAM C000-DFFF: translated blocks that check their bytes
+        // (key RAM_KEY); the mirror and cartridge RAM: interpreter
+        uint8_t ram_code = pc >= 0xC000 && pc < 0xDFC0;
+        if ((pc >= 0xC000 && !ram_code) || (pc >= 0x8000 && pc < 0xC000 && (drc_st.keys[0] & 0x08))) {
             // code in RAM (it may change): interpreter
             pending_link = 0;
             drc_last_interp_pc = pc;
+#ifdef GGSWAN_HOST
+            { extern uint32_t hs_ram_pc[8192]; hs_ram_pc[pc & 8191]++; }
+#endif
             interp_one();
             continue;
         }
-        uint8_t bank = bank_key(pc);
+        uint8_t bank = ram_code ? RAM_KEY : bank_key(pc);
         // 4-way: the four slots of the set of h
         uint16_t h0 = hash(pc, bank) & ~3;
         const uint16_t __far *tw = MK_FP(DRC_TABLE_SEG, 0);
@@ -697,6 +706,16 @@ int32_t drc_z80_run(int32_t cycles) {
             drc_enter(drc_st.resume);
         }
         drc_entry[1] = drc_st.cur_seg;
+        if (drc_st.ram_fail) {
+            // a block in RAM whose code changed: the interpreter from now on
+            // (it was entered from here, linked exits never lead to RAM)
+            uint16_t marker = DRC_NOT_TRANSLATED;
+            drc_st.ram_fail = 0;
+            psram_write(DRC_CODE_BANKS, T_OFF + h * 2, (const uint8_t*) &marker, 2);
+#ifdef GGSWAN_HOST
+            { extern uint32_t hs_ram_fail; hs_ram_fail++; }
+#endif
+        }
         prof_phase = PROF_DISPATCH;
         in_block = 0;
         if (remapped) {

@@ -61,6 +61,8 @@ typedef struct {
     uint16_t far_seg;
     uint16_t cur_seg;     // code segment of the last exit (set by the stubs)
     uint16_t l0_slot;     // DYN: L0 entry being filled
+    uint8_t ram_fail;     // a block in RAM found its code changed
+    uint8_t pad3;
 } drc_state_t;
 
 /// Helper operations: generated code sets drc_state.op (and arg/val),
@@ -92,6 +94,7 @@ typedef struct {
     uint16_t outi_off;     // routine for runs of OUTI (drc_emit_run_stub),
                            // OUTD's at outi_off + DRC_OUTD_DELTA
     uint16_t ctl_off;      // routine for OUT (BFh),A (drc_emit_ctl_stub; 0: helper)
+    uint16_t ram_blocks;   // translate code in work RAM too (runtime)
     uint16_t ldi_off;      // routine for runs of LDI (drc_emit_ldi_stub),
                            // LDD's at ldi_off + DRC_LDD_DELTA (0: interpreted)
 } drc_env_t;

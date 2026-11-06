@@ -182,5 +182,8 @@ def main():
     sys.stdout.flush()
     drc.sys_step_report()
     sys.stdout.flush(); drc.sys_hs_report()
+    sys.stdout.flush(); drc.sys_ram_report()
+    sys.stdout.flush()
+    open(PREFIX + '_ram.bin', 'wb').write(ctypes.string_at(drc.sys_iram() + 0x8000, 0x2000))
 
 main()

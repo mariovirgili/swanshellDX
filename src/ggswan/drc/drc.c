@@ -6,6 +6,7 @@
  */
 
 #include <stdint.h>
+#include <string.h>
 #include <stddef.h>
 #include "drc.h"
 #include "../core/z80.h"
@@ -43,6 +44,8 @@ typedef struct {
     uint8_t term;
     uint8_t step;      // run with the interpreter (DRC_H_STEP)...
     uint8_t count;     // ... this many instructions
+    uint8_t dyn;       // LD A,(nn) whose nn an earlier instruction of the
+                       // block rewrites (code in RAM): read nn at run time
 } ins_t;
 
 static ins_t ins[MAX_INSTR];
@@ -1404,7 +1407,13 @@ static int emit(int i) {
                 if (I->term == T_END_AFTER) { force_nolink = !map_write_safe(I->nn); exit_const(next, 0); }
                 return 1;
             case 7:   // LD A,(nn)
-                read_const(I->nn, X_AX);
+                if (I->dyn) {
+                    // (self-modifying code in RAM: the address as it is now)
+                    B(0x8B); B(0x36); W((uint16_t) (I->pc + 1 + env->ram_delta));   // mov si, [operand]
+                    seg_si(live);
+                    B(0x26); B(0x8A); B(0x04);                    // mov al, es:[si]
+                } else
+                    read_const(I->nn, X_AX);
                 cyc += 13;
                 return 1;
             }
@@ -1667,9 +1676,75 @@ static int emit(int i) {
     return 0;
 }
 
+/*
+ * Code in RAM. A constant write into the block's own bytes is allowed only
+ * for the address of a later LD A,(nn) (read at run time then, see emit);
+ * anything else: not translated. The other bytes are checked every time the
+ * block is entered.
+ */
+#define RAM_BLOCK_MAX 24
+static uint8_t ram_mask[RAM_BLOCK_MAX];   // 1: byte not checked
+
+static int ram_smc(int n, uint16_t pc, uint16_t end) {
+    memset(ram_mask, 0, sizeof(ram_mask));
+    for (int i = 0; i < n; i++) {
+        const ins_t *I = &ins[i];
+        uint16_t t; uint8_t w;
+        if (I->pre == 0 && I->op == 0x32) { t = I->nn; w = 1; }          // LD (nn),A
+        else if (I->pre == 0 && I->op == 0x22) { t = I->nn; w = 2; }     // LD (nn),HL
+        else if ((I->pre == 0xED && (I->op & 0xC7) == 0x43)
+                 || ((I->pre == 0xDD || I->pre == 0xFD) && !I->cb && I->op == 0x22)) { t = I->nn; w = 2; }
+        else continue;
+        for (uint8_t k = 0; k < w; k++) {
+            uint16_t a = t + k;
+            if (a < pc || a >= end) continue;
+            int j;
+            for (j = i + 1; j < n; j++)
+                if (a >= ins[j].pc && a < ins[j].pc + ins[j].len) break;
+            if (j == n || ins[j].pre || ins[j].op != 0x3A || a == ins[j].pc)
+                return 0;
+            ins[j].dyn = 1;
+            ram_mask[a - pc] = 1;
+        }
+    }
+    return 1;
+}
+
+// at the start of a block in RAM: are its bytes still the translated ones?
+static void ram_check(uint16_t pc, uint16_t end) {
+    uint8_t *fail[RAM_BLOCK_MAX];
+    int nf = 0;
+    uint16_t a = pc;
+    while (a < end) {
+        uint8_t k = a - pc;
+        uint16_t ia = (uint16_t) (a + env->ram_delta);
+        if (a + 1 < end && !ram_mask[k] && !ram_mask[k + 1]) {
+            B(0x81); B(0x3E); W(ia); B(rd(a)); B(rd(a + 1));    // cmp word [ia], bytes
+            a += 2;
+        } else {
+            if (!ram_mask[k]) { B(0x80); B(0x3E); W(ia); B(rd(a)); }   // cmp byte [ia], byte
+            else { a++; continue; }
+            a++;
+        }
+        fail[nf++] = jcc8(0x75);                                 // jne fail
+    }
+    uint8_t *body = jcc8(0xEB);
+    for (int i = 0; i < nf; i++) land8(fail[i]);
+    // changed: back to the runtime, which leaves this address to the interpreter
+    B(0xC6); B(0x06); W(SA(ram_fail)); B(1);
+    B(0xC7); B(0x06); W(ZA(pc)); W(pc);
+    set_link(0);
+    jmp_near(env->exit_off);
+    land8(body);
+}
+
 int drc_translate(const drc_env_t *e, uint16_t pc, uint8_t *out,
                   uint16_t out_off, uint16_t out_max, drc_result_t *res) {
     env = e;
+    // code in work RAM (C000-DFFF): short blocks that check their own bytes
+    // when entered (see ram_check)
+    uint8_t ram = pc >= 0xC000;
+    if (ram && (!env->ram_blocks || pc >= 0xDFC0)) return 0;
     // decode
     int n = 0;
     uint16_t p = pc;
@@ -1678,13 +1753,17 @@ int drc_translate(const drc_env_t *e, uint16_t pc, uint8_t *out,
     if (max_n > MAX_INSTR) max_n = MAX_INSTR;
     while (n < max_n) {
         if (n && ((p ^ pc) & 0xC000)) break;   // stay inside one 16 KiB slot
+        if (ram && p - pc > RAM_BLOCK_MAX - 4) break;
         decode(p, &ins[n]);
+        ins[n].dyn = 0;
         if (ins[n].term == T_STOP) break;
         p += ins[n].len;
         n++;
         if (ins[n - 1].term == T_END || ins[n - 1].term == T_END_AFTER) break;
     }
     if (n == 0) return 0;
+    uint16_t end = p;
+    if (ram && !ram_smc(n, pc, end)) return 0;
 
     // liveness of the flags (all live at the end of the block)
     uint8_t live = FALL;
@@ -1701,6 +1780,7 @@ int drc_translate(const drc_env_t *e, uint16_t pc, uint8_t *out,
     fkind = K_AH; cf_valid = 0; hl_es = 0; cyc = 0;
     force_nolink = 0;
     idle_block = is_idle(n, pc);
+    if (ram) ram_check(pc, end);
     int i;
     for (i = 0; i < n; i++) {
         // emit() can only refuse an instruction that decode() accepted by
