@@ -40,7 +40,8 @@ typedef struct {
     uint16_t nn;       // immediate (n or nn)
     uint8_t fread, fwrite;
     uint8_t term;
-    uint8_t step;      // run with the interpreter (DRC_H_STEP)
+    uint8_t step;      // run with the interpreter (DRC_H_STEP)...
+    uint8_t count;     // ... this many instructions
 } ins_t;
 
 static ins_t ins[MAX_INSTR];
@@ -135,9 +136,21 @@ static void need_cf(void) {
 /* === Cycles and exits === */
 
 static uint16_t cyc;   // cycles of the instructions translated so far
+static uint16_t block_start_off;
+static uint16_t block_pc;
+
+static uint8_t force_nolink;   // the next exit must return to the runtime
+// (a helper that changes the mapping makes the runtime end the block
+// without following links: see drc_rt.c)
+
+static int linkable(uint16_t target) {
+    if (force_nolink || target >= 0xC000) return 0;
+    return (target >> 14) == 0 || (target >> 14) == (block_pc >> 14);
+}
+
+static void set_link(uint16_t v) { B(0xC7); B(0x06); W(SA(link)); W(v); }
 
 static void sub_cycles(uint16_t n) {
-    if (!n) return;
     if (n < 128) { B(0x83); B(0x2E); W(SA(cycles)); B(n); }
     else { B(0x81); B(0x2E); W(SA(cycles)); W(n); }
 }
@@ -146,13 +159,22 @@ static void exit_const(uint16_t target, uint16_t extra) {
     materialize();
     sub_cycles(cyc + extra);
     B(0xC7); B(0x06); W(ZA(pc)); W(target);   // mov word [pc], target
-    jmp_near(env->exit_off);
+    if (linkable(target)) {
+        set_link(here() + 6 + 2 + 3);         // L
+        B(0x7F); B(0x03);                     // jg L
+        jmp_near(env->exit_off);
+        jmp_near(env->exit_off);              // L: (the runtime may change it)
+    } else {
+        set_link(0);
+        jmp_near(env->exit_off);
+    }
 }
 
 static void exit_reg(uint8_t reg16, uint16_t extra) {
     materialize();
     sub_cycles(cyc + extra);
     B(0x89); B(0x06 | (reg16 << 3)); W(ZA(pc));   // mov [pc], reg
+    set_link(0);
     jmp_near(env->exit_off);
 }
 
@@ -269,7 +291,7 @@ static int is_cond_true_flag(uint8_t cc) {
 static void decode(uint16_t pc, ins_t *I) {
     uint8_t op = rd(pc);
     I->pc = pc; I->pre = 0; I->cb = 0; I->d = 0; I->nn = 0;
-    I->fread = 0; I->fwrite = 0; I->term = T_NONE; I->step = 0;
+    I->fread = 0; I->fwrite = 0; I->term = T_NONE; I->step = 0; I->count = 1;
     I->len = 1; I->op = op;
 
     if (op == 0xCB) {
@@ -301,8 +323,14 @@ static void decode(uint16_t pc, ins_t *I) {
         case 0x65: case 0x6D: case 0x75: case 0x7D:                 // RETN, RETI
             I->term = T_STOP; return;
         }
-        if (op == 0xA3 || op == 0xAB) { I->fwrite = FALL; return; }          // OUTI, OUTD
-        if (op == 0xA0 || op == 0xA8) { I->fwrite = FH | FP | FN; return; }  // LDI, LDD
+        if (op == 0xA0 || op == 0xA8 || op == 0xA3 || op == 0xAB) {
+            // LDI LDD OUTI OUTD: games unroll long runs of them (VRAM
+            // uploads); a run is one interpreted step of n instructions
+            uint8_t k = 1;
+            while (k < 64 && rd(pc + k * 2) == 0xED && rd(pc + k * 2 + 1) == op) k++;
+            I->len = k * 2; I->count = k; I->step = 1;
+            return;
+        }
         if ((op & 0xC7) == 0x41 && op != 0x71) return;                      // OUT (C),r
         if (op >= 0xB0 && op <= 0xBB && !(op & 4)) {
             // LDIR, CPIR, INIR, OTIR...: the interpreter runs them between
@@ -477,8 +505,6 @@ static void inc_dec_flags(uint8_t dec, uint8_t live_c) {
     (void) dec;
 }
 
-static uint16_t block_start_off;
-static uint16_t block_pc;
 
 // Taken branch to target: loop back inside the block when possible
 static void branch_to(uint16_t target, uint16_t extra) {
@@ -490,6 +516,7 @@ static void branch_to(uint16_t target, uint16_t extra) {
         if (rel >= -128) { B(0x7F); B((uint8_t) rel); }
         else { B(0x7E); B(0x03); jmp_near(block_start_off); }
         B(0xC7); B(0x06); W(ZA(pc)); W(target);
+        set_link(0);
         jmp_near(env->exit_off);
         return;
     }
@@ -513,9 +540,10 @@ static int emit(int i) {
     if (I->step) {
         materialize();
         B(0xC7); B(0x06); W(SA(arg)); W(I->pc);
+        B(0xC6); B(0x06); W(SA(val)); B(I->count);   // instructions
         helper(DRC_H_STEP);
         fkind = K_AH;
-        if (I->term == T_END_AFTER) exit_const(next, 0);
+        if (I->term == T_END_AFTER) { force_nolink = 1; exit_const(next, 0); }
         return 1;
     }
 
@@ -582,6 +610,7 @@ static int emit(int i) {
         uint8_t *j3 = jcc8(0xEB);
         land8(j1); land8(j2);
         B(0xC7); B(0x06); W(SA(arg)); W(I->pc);
+        B(0xC6); B(0x06); W(SA(val)); B(1);
         helper(DRC_H_STEP);
         land8(j3);
         hl_es = 0;
@@ -594,39 +623,6 @@ static int emit(int i) {
             B(0xF6); B(0xD8);
             fkind = K_SUB; cf_valid = 1; cyc += 8;
             return 1;
-        case 0xA3: case 0xAB:   // OUTI, OUTD
-            seg_hl(live);
-            B(0x26); B(0x8B); B(0x37);              // mov si, es:[bx]
-            B(0x89); B(0x36); W(SA(val));           // mov [val], si (low byte)
-            B(0x88); B(0x0E); W(SA(arg));           // mov [arg], cl
-            helper(DRC_H_OUT);
-            B(0x8D); B(0x5F); B(op == 0xA3 ? 0x01 : 0xFF);   // lea bx, [bx+-1]
-            B(0xFE); B(0xCD);                       // dec ch
-            B(0x9F);                                // lahf
-            B(0x80); B(0xE4); B(0xC0);              // and ah, C0h (S, Z)
-            B(0xF6); B(0x06); W(SA(val)); B(0x80);  // test byte [val], 80h
-            B(0x74); B(0x03); B(0x80); B(0xCC); B(0x02);
-            fkind = K_AH; hl_es = 0;
-            cyc += 16;
-            return 1;
-        case 0xA0: case 0xA8: {   // LDI, LDD
-            uint8_t inc = op == 0xA0 ? 0x01 : 0xFF;
-            need_ah(live);
-            seg_hl(live);
-            B(0x50);                                // push ax
-            B(0x26); B(0x8A); B(0x07);              // mov al, es:[bx]
-            B(0x89); B(0xD6);                       // mov si, dx
-            write_byte(X_SI, X_AX, 0, 0);
-            B(0x58);                                // pop ax
-            B(0x8D); B(0x5F); B(inc);               // lea bx, [bx+-1]
-            B(0x87); B(0xD3); B(0x8D); B(0x5F); B(inc); B(0x87); B(0xD3);   // DE+-1
-            B(0x80); B(0xE4); B(0xC1);              // and ah, C1h
-            B(0x49);                                // dec cx
-            B(0x74); B(0x03); B(0x80); B(0xCC); B(0x04);
-            fkind = K_AH; hl_es = 0;
-            cyc += 16;
-            return 1;
-        }
         case 0x41: case 0x49: case 0x51: case 0x59: case 0x61: case 0x69: case 0x79:   // OUT (C),r
             clobber(live);
             B(0x88); B(0x06 | (r8x[(op >> 3) & 7] << 3)); W(SA(val));
@@ -686,6 +682,7 @@ static int emit(int i) {
             uint8_t *j3 = jcc8(0xEB);
             land8(j1); land8(j2);
             B(0xC7); B(0x06); W(SA(arg)); W(I->pc);
+            B(0xC6); B(0x06); W(SA(val)); B(1);
             helper(DRC_H_STEP);
             land8(j3);
             return 1;
@@ -903,7 +900,7 @@ static int emit(int i) {
                     write_const(I->nn + 1, 7, live);
                 }
                 cyc += 16;
-                if (I->term == T_END_AFTER) exit_const(next, 0);
+                if (I->term == T_END_AFTER) { force_nolink = 1; exit_const(next, 0); }
                 return 1;
             case 5:   // LD HL,(nn)
                 read_const16(I->nn, X_BX);
@@ -913,7 +910,7 @@ static int emit(int i) {
             case 6:   // LD (nn),A
                 write_const(I->nn, X_AX, live);
                 cyc += 13;
-                if (I->term == T_END_AFTER) exit_const(next, 0);
+                if (I->term == T_END_AFTER) { force_nolink = 1; exit_const(next, 0); }
                 return 1;
             case 7:   // LD A,(nn)
                 read_const(I->nn, X_AX);
@@ -954,6 +951,7 @@ static int emit(int i) {
                 uint8_t *j3 = jcc8(0xEB);
                 land8(j1); land8(j2);
                 B(0xC7); B(0x06); W(SA(arg)); W(I->pc);
+                B(0xC6); B(0x06); W(SA(val)); B(1);
                 helper(DRC_H_STEP);
                 land8(j3);
                 fkind = K_AH;
@@ -1170,6 +1168,7 @@ int drc_translate(const drc_env_t *e, uint16_t pc, uint8_t *out,
     o = o_start = out; o_base = out_off; o_limit = out + out_max;
     block_start_off = out_off; block_pc = pc;
     fkind = K_AH; cf_valid = 0; hl_es = 0; cyc = 0;
+    force_nolink = 0;
     int i;
     for (i = 0; i < n; i++) {
         // emit() can only refuse an instruction that decode() accepted by

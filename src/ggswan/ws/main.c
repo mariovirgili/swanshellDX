@@ -24,6 +24,7 @@
 #endif
 #include "gg.h"
 #include "z80.h"
+#include "drc_rt.h"
 
 /* === IRAM layout (color mode) ===
  * $4000-$7FFF  Game Gear VRAM = WS 4bpp tiles 0-511 (same tile format)
@@ -87,7 +88,7 @@ static void text_init(void) {
         uint8_t *t = TILE_PTR(FONT_TILE + g);
         for (uint8_t r = 0; r < 8; r++) {
             t[r * 4] = font_data[g * 8 + r];
-            t[r * 4 + 1] = 0;
+            t[r * 4 + 1] = ~font_data[g * 8 + r];   // opaque background (color 2)
             t[r * 4 + 2] = 0;
             t[r * 4 + 3] = 0;
         }
@@ -96,6 +97,7 @@ static void text_init(void) {
     uint16_t m1 = IRAM_OFF(map1), m2 = IRAM_OFF(map2);
     outportb(WS_SCR_BASE_PORT, ((m1 >> 11) & 0x0F) | (((m2 >> 11) & 0x0F) << 4));
     WS_DISPLAY_COLOR_MEM(FONT_PALETTE)[1] = 0xFFF;
+    WS_DISPLAY_COLOR_MEM(FONT_PALETTE)[2] = 0x000;
     WS_DISPLAY_COLOR_MEM(0)[0] = 0x000;
     outportb(0x01, 0x00);                 // backdrop: palette 0 color 0
     outportb(0x13, 0);                    // screen 2 scroll
@@ -150,16 +152,28 @@ const uint8_t __far *gg_platform_bank(uint8_t slot, uint16_t bank) {
     uint16_t ws_bank = GG_PSRAM_FIRST_BANK + (bank >> 2);
     uint16_t offset = (bank & 3) << 14;
     switch (slot) {
-    case 0:
+    // recompiled code reaches Z80 address X as ES:X with ES = segtab[X >> 13]
+    case 0: {
+        // blocks may jump straight into slot 0: when it changes, start over
+        static uint16_t slot0_bank = 0xFFFF;
+        if (bank != slot0_bank) {
+            if (slot0_bank != 0xFFFF)
+                drc_flush_request = 1;
+            slot0_bank = bank;
+        }
+        }
         outportw(WS_CART_EXTBANK_ROM0_PORT, ws_bank);
+        drc_st.segtab[0] = drc_st.segtab[1] = 0x2000 + (offset >> 4);
         return MK_FP(0x2000, offset);
     case 1:
         outportw(WS_CART_EXTBANK_ROM1_PORT, ws_bank);
+        drc_st.segtab[2] = drc_st.segtab[3] = 0x3000 + (offset >> 4) - 0x400;
         return MK_FP(0x3000, offset);
     default:
         // slot 2: the RAM window, on PSRAM
         outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_ENABLE);
         outportw(WS_CART_EXTBANK_RAM_PORT, ws_bank);
+        drc_st.segtab[4] = drc_st.segtab[5] = 0x1000 + (offset >> 4) - 0x800;
         return MK_FP(0x1000, offset);
     }
 }
@@ -168,6 +182,7 @@ uint8_t __far *gg_platform_cart_ram(uint8_t page) {
     // the RAM window, on SRAM (first 32 KiB)
     outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_DISABLE);
     outportw(WS_CART_EXTBANK_RAM_PORT, 0);
+    drc_st.segtab[4] = drc_st.segtab[5] = 0x1000 + ((uint16_t) page << 10) - 0x800;
     return MK_FP(0x1000, (uint16_t) page << 14);
 }
 
@@ -582,6 +597,29 @@ static uint16_t load_rom(void) {
     return banks16;
 }
 
+static volatile uint8_t vblanks;
+
+static void __attribute__((interrupt, assume_ss_data)) vblank_irq(void) {
+    vblanks++;
+    ws_int_ack(WS_INT_ACK_VBLANK);
+}
+
+static uint16_t font_entry(char c) {
+    uint8_t g = 0;
+    for (uint8_t i = 0; font_chars[i]; i++)
+        if (font_chars[i] == c) { g = i; break; }
+    return TILE_ENTRY(FONT_TILE + g) | PAL_ENTRY(FONT_PALETTE);
+}
+
+static void show_fps(uint8_t fps) {
+    // screen 2, rows 1-2, columns 0-3 (outside the Game Gear view)
+    map2[1 * 32 + 0] = font_entry('F');
+    map2[1 * 32 + 1] = font_entry('P');
+    map2[1 * 32 + 2] = font_entry('S');
+    map2[2 * 32 + 1] = font_entry('0' + (fps / 10) % 10);
+    map2[2 * 32 + 2] = font_entry('0' + fps % 10);
+}
+
 int main(void) {
     // The bootstub hides the nileswan registers and powers the TF card off
     // before starting a plugin: turn them back on. Bank masks: keep the ROM
@@ -625,6 +663,24 @@ int main(void) {
     uint16_t banks = load_rom();
     text_hex("BANKS", banks);
 
+    // CPU: the recompiler, or the interpreter if Y1 is held
+    if (ws_keypad_scan() & WS_KEY_Y1) {
+        text_print("CPU: INTERPRETER");
+    } else {
+        // the code cache: the PSRAM bank behind linear segment DRC_CODE_SEG
+        uint16_t code_bank = (((uint16_t) inportb(0xC0 /* linear bank */) << 4)
+            | (DRC_CODE_SEG >> 12)) & (old_mask & NILE_SEG_MASK_ROM_MASK);
+        text_hex("CODE BANK", code_bank);
+        if (code_bank < GG_PSRAM_FIRST_BANK + 8)
+            fail("CODE BANK", code_bank);
+        drc_rt_init(code_bank);
+        // the stubs written through the RAM window must be visible there
+        if (*((const uint8_t __far*) MK_FP(DRC_CODE_SEG, 0)) != 0xA3)
+            fail("CODE READ", code_bank);
+        gg_cpu_run = drc_z80_run;
+        text_print("CPU: RECOMPILER");
+    }
+
     // give time to read the text
     for (uint16_t i = 0; i < 60; i++) {
         while (inportb(WS_DISPLAY_LINE_PORT) != 144) {}
@@ -636,10 +692,23 @@ int main(void) {
     sound_init();
     gg_init(banks);
 
+    ia16_disable_irq();
+    ws_int_set_handler(WS_INT_VBLANK, (ia16_int_handler_t) vblank_irq);
+    ws_int_enable(WS_INT_ENABLE_VBLANK);
+    ia16_enable_irq();
+
+    uint8_t frames = 0;
     while (1) {
         read_keys();
         gg_run_frame();
         video_present();
+        frames++;
+        // frames per second, in the left border (the WS shows 75.47 Hz)
+        if (vblanks >= 75) {
+            vblanks -= 75;
+            show_fps(frames);
+            frames = 0;
+        }
     }
 }
 #endif

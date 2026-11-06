@@ -1,0 +1,41 @@
+/**
+ * ggswan - recompiler runtime (see drc_rt.c)
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+#ifndef GGSWAN_DRC_RT_H_
+#define GGSWAN_DRC_RT_H_
+
+#include <stdint.h>
+#include "../drc/drc.h"
+
+/// Segments of the linear ROM area where the code cache is executed
+/// (DRC_CODE_BANKS banks of 64 KiB)...
+#define DRC_CODE_SEG 0x4000
+#define DRC_CODE_BANKS 4
+/// ... and the block table (the PSRAM bank after them)
+#define DRC_TABLE_SEG (DRC_CODE_SEG + DRC_CODE_BANKS * 0x1000)
+
+extern drc_state_t drc_st;
+extern uint16_t drc_entry[2];
+extern uint32_t drc_stat_blocks, drc_stat_flushes, drc_stat_interp;
+
+/// bank: PSRAM bank behind linear segment DRC_CODE_SEG
+void drc_rt_init(uint16_t bank);
+/// set when slot 0 changes bank: links into it are no longer valid
+extern uint8_t drc_flush_request;
+/// z80_run() equivalent using the recompiler
+int32_t drc_z80_run(int32_t cycles);
+/// Run translated code at DRC_CODE_SEG:offset (drc_asm.s)
+void drc_enter(uint16_t offset);
+
+#ifdef GGSWAN_HOST
+#define HOST_Z80_ADDR 0xC000
+#define HOST_ST_ADDR  0xC100
+void host_code_changed(void);
+void host_miss(int evict);
+void host_lookup_fail(uint16_t pc, uint8_t bank, uint16_t h, uint16_t off, uint16_t tpc, uint8_t tbank);
+void host_trace(uint16_t pc, uint8_t b, uint16_t hl);
+void host_translated(uint16_t pc, uint16_t len, uint16_t n);
+#endif
+
+#endif

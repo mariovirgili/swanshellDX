@@ -10,6 +10,9 @@
 #                             run in Unicorn (pip install unicorn capstone),
 #                             compared with the interpreter
 #   make drcgame ROM=x.gg     recompiler: the same on a real game
+#   make drcsys ROM=x.gg      recompiler: the whole plugin (runtime, block
+#                             cache, links) on a real game, compared frame
+#                             by frame with the interpreter
 CC ?= cc
 CFLAGS ?= -O2 -Wall
 
@@ -18,7 +21,7 @@ all: ggtest wssim
 ggtest: host_main.c ../core/gg.c ../core/z80.c
 	$(CC) $(CFLAGS) -o $@ $^
 
-wssim: wssim.c ../ws/main.c ../core/gg.c ../core/z80.c
+wssim: wssim.c wssim_drcst.c ../ws/main.c ../core/gg.c ../core/z80.c
 	$(CC) $(CFLAGS) -DGGSWAN_HOST -DGGSWAN_HOST_VISIBLE= -I. -I../core -I../ws -o $@ $^
 
 libztest.so: ztest_lib.c ../core/z80.c
@@ -39,7 +42,13 @@ drctest: libdrctest.so
 drcgame: libdrcgame.so
 	python3 drcgame.py ./libdrcgame.so "$(ROM)" 1500
 
-clean:
-	rm -f ggtest wssim libztest.so libdrctest.so libdrcgame.so *.ppm
+drcsys: libdrcsys.so
+	python3 drcsys.py ./libdrcsys.so "$(ROM)" 600 drcsys "100:80,110:00,300:80,310:00" 100
 
-.PHONY: all ztest drctest drcgame clean
+clean:
+	rm -f ggtest wssim libztest.so libdrctest.so libdrcgame.so libdrcsys.so *.ppm
+
+.PHONY: all ztest drctest drcgame drcsys clean
+
+libdrcsys.so: drcsys.c ../ws/main.c ../ws/drc_rt.c ../drc/drc.c ../core/gg.c ../core/z80.c
+	$(CC) $(CFLAGS) -shared -fPIC -DGGSWAN_HOST -DGGSWAN_HOST_VISIBLE= -I. -I../core -I../ws -o $@ $^

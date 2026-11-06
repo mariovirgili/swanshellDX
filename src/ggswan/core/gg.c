@@ -11,6 +11,8 @@
 #include "z80.h"
 
 gg_t gg;
+// the CPU core: the interpreter, or the recompiler's z80_run equivalent
+int32_t (*gg_cpu_run)(int32_t cycles) = z80_run;
 uint8_t gg_cram[64];
 const uint8_t GGFAR *gg_slot[3];
 static uint8_t GGFAR *cart_ram;   // at $8000 when enabled, else NULL
@@ -260,7 +262,7 @@ void gg_run_frame(void) {
     for (uint16_t line = 0; line < GG_LINES; line++) {
         vdp_line(line);
         gg_platform_line(line);
-        z80_run(GG_CYCLES_PER_LINE);
+        gg_cpu_run(GG_CYCLES_PER_LINE);
     }
     gg.frame++;
 }

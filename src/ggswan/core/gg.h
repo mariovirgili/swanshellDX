@@ -86,6 +86,8 @@ void gg_platform_vdp_reg(uint8_t reg, uint8_t value);
 
 void gg_init(uint16_t rom_banks);
 void gg_reset(void);
+/// The CPU core used by gg_run_frame (default: z80_run).
+extern int32_t (*gg_cpu_run)(int32_t cycles);
 /// Recompute the slot mapping from gg.mapper.
 void gg_remap(void);
 /// Run one frame (262 lines).

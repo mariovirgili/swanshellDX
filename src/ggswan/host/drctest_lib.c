@@ -55,8 +55,12 @@ void t_helper(void) {
     case DRC_H_OUT: z80_out(st.arg, st.val); break;
     case DRC_H_IN: st.val = z80_in(st.arg); break;
     case DRC_H_STEP:
+        uint8_t n = st.val ? st.val : 1;
         z80.pc = st.arg;
-        do { st.cycles -= t_step(); } while (z80.pc == st.arg);
+        while (n--) {
+            uint16_t p = z80.pc;
+            do { st.cycles -= t_step(); } while (z80.pc == p);   // (repeating ones)
+        }
         break;
     }
 }

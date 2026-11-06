@@ -30,7 +30,9 @@ class Z80(ctypes.Structure):
                [("cycles", ctypes.c_int32)]
 class St(ctypes.Structure):
     _fields_ = [("segtab", ctypes.c_uint16 * 8), ("cycles", ctypes.c_int16),
-                ("op", ctypes.c_uint8), ("val", ctypes.c_uint8), ("arg", ctypes.c_uint16)]
+                ("op", ctypes.c_uint8), ("val", ctypes.c_uint8), ("arg", ctypes.c_uint16),
+                ("resume", ctypes.c_uint16), ("reason", ctypes.c_uint8), ("pad", ctypes.c_uint8),
+                ("link", ctypes.c_uint16)]
 class Res(ctypes.Structure):
     _fields_ = [("length", ctypes.c_uint16), ("z80_instr", ctypes.c_uint16), ("z80_end", ctypes.c_uint16)]
 

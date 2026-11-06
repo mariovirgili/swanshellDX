@@ -19,6 +19,12 @@
  * writes them to AH when something needs them there (block exits, PUSH AF,
  * x86 instructions that would destroy them).
  *
+ * Block linking: an exit to a constant address that stays valid (same
+ * 16 KiB slot, or slot 0, and no mapper change possible in the block) ends
+ * with "JG L; JMP exit; L: JMP exit" and stores L in drc_state.link; the
+ * runtime then points the JMP at L to the next block, so translated code
+ * runs from block to block until its cycles run out.
+ *
  * Memory: Z80 address X is ES:X with ES = segtab[X >> 13] (each segment is
  * pre-adjusted so that the offset is X itself; 8 KiB steps so that the RAM
  * mirror at E000-FFFF works too). Work RAM (C000-DFFF) is also reachable as
@@ -37,6 +43,11 @@ typedef struct {
     uint8_t op;           // helper operation (DRC_H_*)
     uint8_t val;          // helper value (byte in / out)
     uint16_t arg;         // helper argument (address or port)
+    uint16_t resume;      // where to continue the block after a helper
+    uint8_t reason;       // 0: the block exited, 1: it wants a helper
+    uint8_t pad;
+    uint16_t link;        // set by every exit: offset of a JMP the runtime
+                          // may point at the next block (0: none)
 } drc_state_t;
 
 /// Helper operations: generated code sets drc_state.op (and arg/val),
@@ -46,8 +57,8 @@ enum {
     DRC_H_WRITE = 1,   // write val to Z80 address arg
     DRC_H_OUT,         // OUT (arg), val
     DRC_H_IN,          // val = IN (arg)
-    DRC_H_STEP,        // interpret the instruction at arg (not a jump);
-                       // the helper subtracts its cycles
+    DRC_H_STEP,        // interpret val instructions from arg (no jumps);
+                       // the helper subtracts their cycles
 };
 
 typedef struct {
