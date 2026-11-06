@@ -17,7 +17,12 @@ uint8_t gg_cram[64];
 const uint8_t GGFAR *gg_slot[3];
 static uint8_t GGFAR *cart_ram;   // at $8000 when enabled, else NULL
 // the first KiB of the ROM (always visible at $0000: interrupt vectors)
+#ifdef __ia16__
+// (WonderSwan: in the free internal RAM, see ws/main.c "IRAM layout")
+#define rom_first_kb ((uint8_t*) 0xEC00)
+#else
 static uint8_t rom_first_kb[0x400];
+#endif
 
 /* === Memory === */
 
@@ -255,7 +260,7 @@ void gg_reset(void) {
     gg.mapper[3] = 2;
     {
         const uint8_t GGFAR *b0 = gg_platform_bank(0, 0);
-        for (uint16_t i = 0; i < sizeof(rom_first_kb); i++)
+        for (uint16_t i = 0; i < 0x400; i++)
             rom_first_kb[i] = b0[i];
     }
     for (uint8_t s = 0; s < 3; s++)

@@ -135,6 +135,8 @@ def main():
         x86_ref = X86(ref)
     if "--selfcheck" in sys.argv:
         drc.sys_check(1)
+    if "--nolinks" in sys.argv:
+        drc.sys_nolinks(1)
 
     x86 = X86(drc)
     t0 = time.time()
@@ -159,6 +161,20 @@ def main():
                 d = [i for i in range(0x2000) if ra[i] != rb[i]]
                 print("frame %d: RAM differs at %d bytes, first C%03X (%02X/%02X)" % (fr + 1, len(d), d[0], ra[d[0]], rb[d[0]]))
                 break
+        if "--map" in sys.argv:
+            mb = drc.host_map_check()
+            if mb:
+                nmap = globals().setdefault('nmap', [0]); nmap[0] += 1
+                if nmap[0] <= 12:
+                    print("frame %d: %d WS map entries differ from the GG name table (ref %d)" % (fr + 1, mb, ref.host_map_check()))
+        if "--splits" in sys.argv:
+            sa = (ctypes.c_uint8 * 49)(); sb = (ctypes.c_uint8 * 49)()
+            ref.sys_splits(sa); drc.sys_splits(sb)
+            la = list(sa)[:1 + 2 * sa[0]]; lb = list(sb)[:1 + 2 * sb[0]]
+            if la != lb:
+                nspl = globals().setdefault('nspl', [0]); nspl[0] += 1
+                if nspl[0] <= 12:
+                    print("frame %d splits: ref %s drc %s" % (fr + 1, la, lb))
         a = ctypes.string_at(ref.sys_fb_end(), 160 * 144 * 3)
         b = ctypes.string_at(drc.sys_fb_end(), 160 * 144 * 3)
         if a == b:

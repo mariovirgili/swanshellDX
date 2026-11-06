@@ -51,8 +51,15 @@ typedef struct {
                        // block rewrites (code in RAM): read nn at run time
 } ins_t;
 
+#ifdef __ia16__
+// (WonderSwan: in the free internal RAM above E000, not in the crowded
+// area below 4000 where the C data, the stack and the screen maps are)
+#define ins ((ins_t*) 0xE000)
+#define live_out ((uint8_t*) (0xE000 + MAX_INSTR * sizeof(ins_t)))
+#else
 static ins_t ins[MAX_INSTR];
 static uint8_t live_out[MAX_INSTR];
+#endif
 
 /* === Output === */
 
@@ -1756,10 +1763,14 @@ static int emit(int i) {
  */
 #define RAM_BLOCK_MAX 24
 #define CALL_INLINE_MAX 12   // instructions of an inline routine (RET included)
+#ifdef __ia16__
+#define ram_mask ((uint8_t*) (0xE000 + MAX_INSTR * (sizeof(ins_t) + 1)))
+#else
 static uint8_t ram_mask[RAM_BLOCK_MAX];   // 1: byte not checked
+#endif
 
 static int ram_smc(int n, uint16_t pc, uint16_t end) {
-    memset(ram_mask, 0, sizeof(ram_mask));
+    memset(ram_mask, 0, RAM_BLOCK_MAX);
     for (int i = 0; i < n; i++) {
         const ins_t *I = &ins[i];
         uint16_t t; uint8_t w;

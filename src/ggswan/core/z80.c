@@ -14,8 +14,14 @@ uint32_t z80_count;
 #endif
 
 // S, Z, undocumented 5/3 bits of a value; and the same plus parity
+#ifdef __ia16__
+// (WonderSwan: in the free internal RAM, see ws/main.c "IRAM layout")
+#define sz_table ((uint8_t*) 0xF000)
+#define szp_table ((uint8_t*) 0xF100)
+#else
 static uint8_t sz_table[256];
 static uint8_t szp_table[256];
+#endif
 
 #define FC Z80_FLAG_C
 #define FN Z80_FLAG_N

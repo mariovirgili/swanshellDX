@@ -31,7 +31,16 @@
  * $8000-$9FFF  Game Gear work RAM
  * $A000-       debug font tiles (768+)
  * $BFC0/$BFE0  tile 1022 (opaque, border mask) / 1023 (blank)
- * screen maps, sprite table, wave table: aligned arrays below $4000
+ * $C000-$FDFF  free in color mode; used by the plugin:
+ *   $D000-$DFFF  recompiler: L0 cache of RET / JP (HL) targets (drc_rt.c)
+ *   $E000-$E347  recompiler: decoded instructions, flag liveness (drc.c)
+ *   $E800-$EB20  ROM path
+ *   $EC00-$EFFF  first KiB of the Game Gear ROM (gg.c)
+ *   $F000-$F1FF  Z80 flag tables (z80.c)
+ * screen maps, sprite table, wave table: aligned arrays below $4000 (the
+ * hardware needs them there); the C data and the stack share that area
+ * (the stack gets the largest gap left by the linker), so big buffers
+ * that do not need to be there live above $C000
  */
 #define GG_VRAM_ADDR 0x4000
 #define GG_RAM_ADDR  0x8000
@@ -68,7 +77,14 @@ static uint8_t wave_table[64] __attribute__((aligned(64)));
 #define MAP_SIZE 2048
 
 static FATFS fs;
-static char rom_path[0x400 - 0xE0 + 1];
+#define ROM_PATH_SIZE (0x400 - 0xE0 + 1)
+#ifndef GGSWAN_HOST
+// (in the free internal RAM above E000: below 4000 there is little room
+// left for the stack; drc.c uses E000-E4FF)
+#define rom_path ((char*) 0xE800)
+#else
+static char rom_path[ROM_PATH_SIZE];
+#endif
 #endif
 
 #include "font.inc"
@@ -261,6 +277,20 @@ static void map_relayout(uint8_t top) {
             map1[w * 32 + c] = conv_entry(gg_entry(r, c));
     }
 }
+
+#ifdef GGSWAN_HOST
+// tests: map1 entries that differ from the Game Gear name table
+uint16_t host_map_check(void) {
+    uint16_t bad = 0;
+    for (uint8_t w = 0; w < 32; w++) {
+        uint8_t v = map_top + ((w - map_top) & 31);
+        uint8_t r = v % 28;
+        for (uint8_t c = 0; c < 32; c++)
+            if (map1[w * 32 + c] != conv_entry(gg_entry(r, c))) bad++;
+    }
+    return bad;
+}
+#endif
 
 static void map_put(uint8_t row, uint8_t col, uint16_t w) {
     for (uint8_t v = row; v < map_top + 32; v += 28)
@@ -849,7 +879,7 @@ int main(void) {
     {
         const char __far *src = MK_FP(0x1000, 0x00E0);
         uint16_t i = 0;
-        while (src[i] && i < sizeof(rom_path) - 1) {
+        while (src[i] && i < ROM_PATH_SIZE - 1) {
             rom_path[i] = src[i];
             i++;
         }

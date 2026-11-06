@@ -264,6 +264,12 @@ void sys_frame(int keys) {
     memcpy(fb, save, sizeof(fb));
 }
 uint8_t *sys_fb_end(void) { return &fb_end[0][0][0]; }
+// the scroll splits of the last frame (main.c): n, then line/value pairs
+extern volatile uint8_t act_line[], act_val[], act_n;
+void sys_splits(uint8_t *out) {
+    out[0] = act_n;
+    for (int i = 0; i < act_n && i < 24; i++) { out[1 + i * 2] = act_line[i]; out[2 + i * 2] = act_val[i]; }
+}
 uint32_t sys_digest(void) {
     uint32_t h = 2166136261u;
     for (int i = 0; i < 0x2000; i++) h = (h ^ gg_ram[i]) * 16777619u;
