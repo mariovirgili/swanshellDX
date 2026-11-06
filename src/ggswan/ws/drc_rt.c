@@ -169,7 +169,13 @@ static uint16_t put_dyn(uint8_t *stub, uint8_t bank_index) {
     PB(0x50); PB(0x53);                              // push ax; push bx
     PB(0xA1); PW(pc);                                // mov ax, [pc]
     PB(0x3D); PW(0xC000);                            // cmp ax, C000h
+    PB(0x72); uint8_t *rom = p++;                    // jb rom
+    // work RAM: its blocks check their own bytes (key RAM_KEY)
+    PB(0x3D); PW(0xDFC0);                            // cmp ax, DFC0h
     PB(0x73); PREL(miss);                        // jae MISS
+    PB(0xB3); PB(RAM_KEY);                           // mov bl, RAM_KEY
+    PB(0xEB); uint8_t *have = p++;                   // jmp have
+    *rom = (uint8_t) (p - rom - 1);
     PB(0x3D); PW(0x8000);                            // cmp ax, 8000h
     PB(0x72); PB(0x07);                              // jb +7
     PB(0xF6); PB(0x06); PW(keys); PB(0x08);          // test byte [keys], 8
@@ -178,6 +184,7 @@ static uint16_t put_dyn(uint8_t *stub, uint8_t bank_index) {
     PB(0xC1); PB(0xC6); PB(0x02);                    // rol si, 2
     PB(0x83); PB(0xE6); PB(0x03);                    // and si, 3
     PB(0x8A); PB(0x9C); PW(keys + 1);                // mov bl, [si + keys + 1]
+    *have = (uint8_t) (p - have - 1);
     PB(0x89); PB(0xDF);                              // mov di, bx
     PB(0x81); PB(0xE7); PW(0x00FF);                  // and di, 00FFh
     PB(0xC1); PB(0xE7); PB(0x05);                    // shl di, 5
@@ -725,11 +732,15 @@ int32_t drc_z80_run(int32_t cycles) {
         }
         drc_entry[1] = drc_st.cur_seg;
         if (drc_st.ram_fail) {
-            // a block in RAM whose code changed: the interpreter from now on
-            // (it was entered from here, linked exits never lead to RAM)
+            // a block in RAM whose code changed (at z80.pc; entered from
+            // here, a link or DYN): the interpreter from now on
             uint16_t marker = DRC_NOT_TRANSLATED;
+            uint16_t f0 = hash(z80.pc, RAM_KEY) & ~3;
             drc_st.ram_fail = 0;
-            psram_write(DRC_CODE_BANKS, T_OFF + h * 2, (const uint8_t*) &marker, 2);
+            for (uint16_t f = f0; f < f0 + 4; f++)
+                if (tw[(T_PC / 2) + f] == z80.pc && tb[T_BANK + f] == RAM_KEY)
+                    psram_write(DRC_CODE_BANKS, T_OFF + f * 2, (const uint8_t*) &marker, 2);
+            memset(IRAM(L0_ADDR), 0xFF, L0_SIZE);   // (DYN may know it)
 #ifdef GGSWAN_HOST
             { extern uint32_t hs_ram_fail; hs_ram_fail++; }
 #endif

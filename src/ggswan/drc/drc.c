@@ -154,6 +154,8 @@ static uint8_t force_nolink;   // the next exit must return to the runtime
 // without following links: see drc_rt.c)
 
 static int linkable(uint16_t target) {
+    // (blocks in work RAM check their bytes at entry: they can be linked)
+    if (!force_nolink && env->ram_blocks && target >= 0xC000 && target < 0xDFC0) return 1;
     if (force_nolink || target >= 0xC000) return 0;
     return (target >> 14) == 0 || (target >> 14) == (block_pc >> 14);
 }
