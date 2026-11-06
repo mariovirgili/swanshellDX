@@ -86,6 +86,8 @@ void gg_platform_vdp_reg(uint8_t reg, uint8_t value);
 
 void gg_init(uint16_t rom_banks);
 void gg_reset(void);
+/// Recompute the slot mapping from gg.mapper.
+void gg_remap(void);
 /// Run one frame (262 lines).
 void gg_run_frame(void);
 

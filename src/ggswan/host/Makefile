@@ -6,6 +6,10 @@
 #                             reference renderer
 #   make ztest                compare the Z80 core with the "z80" Python
 #                             package (pip install z80) on random code
+#   make drctest              recompiler: random Z80 code, translated and
+#                             run in Unicorn (pip install unicorn capstone),
+#                             compared with the interpreter
+#   make drcgame ROM=x.gg     recompiler: the same on a real game
 CC ?= cc
 CFLAGS ?= -O2 -Wall
 
@@ -23,7 +27,19 @@ libztest.so: ztest_lib.c ../core/z80.c
 ztest: libztest.so
 	python3 ztest.py ./libztest.so
 
-clean:
-	rm -f ggtest wssim libztest.so *.ppm
+libdrctest.so: drctest_lib.c ../core/z80.c ../drc/drc.c
+	$(CC) $(CFLAGS) -shared -fPIC -o $@ $^
 
-.PHONY: all ztest clean
+libdrcgame.so: drcgame_lib.c ../core/gg.c ../core/z80.c ../drc/drc.c
+	$(CC) $(CFLAGS) -shared -fPIC -o $@ $^
+
+drctest: libdrctest.so
+	python3 drctest.py ./libdrctest.so 3000
+
+drcgame: libdrcgame.so
+	python3 drcgame.py ./libdrcgame.so "$(ROM)" 1500
+
+clean:
+	rm -f ggtest wssim libztest.so libdrctest.so libdrcgame.so *.ppm
+
+.PHONY: all ztest drctest drcgame clean

@@ -5,7 +5,7 @@ import ctypes, random, sys, z80 as ref
 lib = ctypes.CDLL(sys.argv[1])
 class St(ctypes.Structure):
     _fields_ = [(n, ctypes.c_uint8) for n in
-                "a f b c d e h l a_ f_ b_ c_ d_ e_ h_ l_ ixh ixl iyh iyl".split()] + \
+                "a f c b e d l h a_ f_ c_ b_ e_ d_ l_ h_ ixl ixh iyl iyh".split()] + \
                [("sp", ctypes.c_uint16), ("pc", ctypes.c_uint16)] + \
                [(n, ctypes.c_uint8) for n in "i r iff1 iff2 im halted ei_pending irq".split()] + \
                [("cycles", ctypes.c_int32)]

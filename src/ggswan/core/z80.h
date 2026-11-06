@@ -12,9 +12,12 @@
 #include <stdint.h>
 
 typedef struct {
-    uint8_t a, f, b, c, d, e, h, l;
-    uint8_t a_, f_, b_, c_, d_, e_, h_, l_;
-    uint8_t ixh, ixl, iyh, iyl;
+    // Pairs are stored low byte first (c before b...), so that the
+    // recompiler can store and load them as 16-bit words (x86 is little
+    // endian). A comes before F for the same reason (AL = A, AH = F).
+    uint8_t a, f, c, b, e, d, l, h;
+    uint8_t a_, f_, c_, b_, e_, d_, l_, h_;
+    uint8_t ixl, ixh, iyl, iyh;
     uint16_t sp, pc;
     uint8_t i, r;
     uint8_t iff1, iff2, im;

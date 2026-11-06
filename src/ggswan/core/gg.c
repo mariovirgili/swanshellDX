@@ -70,6 +70,14 @@ void z80_write(uint16_t a, uint8_t v) {
     // writes to ROM are ignored
 }
 
+/// Recompute the slot pointers from the mapper registers (after a
+/// restore, or when the platform needs the mapping again).
+void gg_remap(void) {
+    for (uint8_t s = 0; s < 3; s++)
+        map_slot(s);
+    map_cart_ram();
+}
+
 /* === VDP === */
 
 static inline void update_irq(void) {
