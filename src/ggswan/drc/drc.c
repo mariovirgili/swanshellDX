@@ -44,6 +44,9 @@ typedef struct {
     uint8_t term;
     uint8_t step;      // run with the interpreter (DRC_H_STEP)...
     uint8_t count;     // ... this many instructions
+    uint8_t trace;     // 1: JP nn / JR e followed inside the block (no
+                       // code); 2: CALL nn whose routine follows inline;
+                       // 3: its RET (nn: the expected return address)
     uint8_t dyn;       // LD A,(nn) whose nn an earlier instruction of the
                        // block rewrites (code in RAM): read nn at run time
 } ins_t;
@@ -883,6 +886,28 @@ static int emit(int i) {
     uint8_t op = I->op;
     uint16_t next = I->pc + I->len;
 
+    if (I->trace == 1) {   // the block goes on at the target
+        cyc += op == 0x18 ? 12 : 10;
+        return 1;
+    }
+    if (I->trace == 2) {   // CALL nn, routine inline: push the return address
+        push_imm(next);
+        cyc += 17;
+        return 1;
+    }
+    if (I->trace == 3) {   // its RET: go on inline if it returns to the CALL
+        materialize();
+        B(0x8B); B(0xB6); W(env->ram_delta);       // mov si, [bp+d]
+        B(0x8D); B(0x6E); B(0x02);                 // lea bp, [bp+2]
+        B(0x81); B(0xFE); W(I->nn);                // cmp si, return address
+        uint8_t *same = jcc8(0x74);                // je: inline
+        exit_reg(X_SI, 10);                        // (the stack was changed)
+        land8(same);
+        fkind = K_AH;
+        cyc += 10;
+        return 1;
+    }
+
     if (I->step) {
         materialize();
         B(0xC7); B(0x06); W(SA(arg)); W(I->pc);
@@ -1685,6 +1710,7 @@ static int emit(int i) {
  * block is entered.
  */
 #define RAM_BLOCK_MAX 24
+#define CALL_INLINE_MAX 12   // instructions of an inline routine (RET included)
 static uint8_t ram_mask[RAM_BLOCK_MAX];   // 1: byte not checked
 
 static int ram_smc(int n, uint16_t pc, uint16_t end) {
@@ -1753,15 +1779,62 @@ int drc_translate(const drc_env_t *e, uint16_t pc, uint8_t *out,
     // every instruction fits in 96 bytes of x86 code: stop early enough
     int max_n = (out_max - 128) / 96;
     if (max_n > MAX_INSTR) max_n = MAX_INSTR;
+    uint8_t inlined = 0;
     while (n < max_n) {
-        if (n && ((p ^ pc) & 0xC000)) break;   // stay inside one 16 KiB slot
+        // stay inside the block's 16 KiB slot (or slot 0, through a jump)
+        if (n && ((p ^ pc) & 0xC000) && !(p < 0x4000 && !ram)) break;
         if (ram && p - pc > RAM_BLOCK_MAX - 4) break;
         decode(p, &ins[n]);
         ins[n].dyn = 0;
+        ins[n].trace = 0;
         if (ins[n].term == T_STOP) break;
         p += ins[n].len;
         n++;
-        if (ins[n - 1].term == T_END || ins[n - 1].term == T_END_AFTER) break;
+        const ins_t *J = &ins[n - 1];
+        if (!ram && J->pre == 0 && (J->op == 0xC3 || J->op == 0x18) && n < max_n - 1) {
+            // JP nn / JR e: go on at the target, unless it leaves slot 0 and
+            // the block's slot, or is already in the block (a loop)
+            uint16_t t = J->op == 0xC3 ? J->nn : (uint16_t) (J->pc + 2 + (int8_t) J->nn);
+            int seen = t >= 0xC000 || ((t ^ pc) & 0xC000 && t >= 0x4000);
+            for (int k = 0; k < n && !seen; k++)
+                if (ins[k].pc == t) seen = 1;
+            if (!seen) {
+                ins[n - 1].term = T_NONE;
+                ins[n - 1].trace = 1;
+                p = t;
+                continue;
+            }
+        }
+        if (!ram && J->pre == 0 && J->op == 0xCD && !inlined && n + CALL_INLINE_MAX + 2 < max_n
+            && !(((J->nn ^ pc) & 0xC000) && J->nn >= 0x4000) && J->nn < 0xC000) {
+            // CALL nn to a short routine (no jumps out of it, ends with RET):
+            // its instructions follow inline (once per block)
+            uint16_t q = J->nn;
+            int k, ok = 0;
+            for (k = 0; k <= CALL_INLINE_MAX; k++) {
+                if (((q ^ pc) & 0xC000) && q >= 0x4000) break;
+                decode(q, &ins[n + k]);
+                ins[n + k].dyn = 0;
+                ins[n + k].trace = 0;
+                if (ins[n + k].pre == 0 && ins[n + k].op == 0xC9) { ok = 1; break; }
+                if (ins[n + k].term != T_NONE || ins[n + k].step) break;
+                q += ins[n + k].len;
+            }
+            if (ok) {
+                inlined = 1;
+                ins[n - 1].term = T_NONE;
+                ins[n - 1].trace = 2;
+                ins_t *R = &ins[n + k];
+                R->term = T_NONE;
+                R->trace = 3;
+                R->nn = J->pc + 3;
+                R->fread = FALL;   // (the flags are needed if it does not return here)
+                n += k + 1;
+                p = J->pc + 3;
+                continue;
+            }
+        }
+        if (J->term == T_END || J->term == T_END_AFTER) break;
     }
     if (n == 0) return 0;
     uint16_t end = p;
@@ -1792,8 +1865,15 @@ int drc_translate(const drc_env_t *e, uint16_t pc, uint8_t *out,
         if (ins[i].term == T_END || ins[i].term == T_END_AFTER) { i++; goto done; }
     }
     if (i == 0) return 0;
-    // fell off the end: continue at the next instruction
-    exit_const(ins[i - 1].pc + ins[i - 1].len, 0);
+    // fell off the end: continue at the next instruction (or the target
+    // of a followed jump)
+    {
+        const ins_t *L = &ins[i - 1];
+        uint16_t t = L->pc + L->len;
+        if (L->trace == 1) t = L->op == 0xC3 ? L->nn : (uint16_t) (L->pc + 2 + (int8_t) L->nn);
+        if (L->trace == 3) t = L->nn;   // (after an inline routine)
+        exit_const(t, 0);
+    }
 done:
     res->length = (uint16_t) (o - o_start);
     res->z80_instr = i;
