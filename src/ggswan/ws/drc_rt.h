@@ -33,6 +33,20 @@ void drc_check_failed(uint16_t pc, const z80_t *before, const z80_t *drc,
 void drc_rt_init(uint16_t bank);
 /// set when slot 0 changes bank: links into it are no longer valid
 extern uint8_t drc_flush_request;
+/// Profiler: what the plugin is doing now (sampled by an interrupt)
+enum {
+    PROF_OTHER = 0,   // main loop, frame timing
+    PROF_CODE,        // translated code
+    PROF_DISPATCH,    // dispatcher (C)
+    PROF_HELPER,      // helpers: ports, memory writes (C)
+    PROF_STEP,        // instructions interpreted inside blocks
+    PROF_INTERP,      // interpreter (interrupts, RAM code, interpreter mode)
+    PROF_TRANSLATE,   // translating blocks
+    PROF_VIDEO,       // end of frame: scroll, sprites, colors
+    PROF_COUNT
+};
+extern volatile uint8_t prof_phase;
+
 /// main.c: IRAM address of the WS screen map of the Game Gear background
 uint16_t ws_map1_iram(void);
 /// main.c: put the RAM window back as Game Gear slot 2 needs it

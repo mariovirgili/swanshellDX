@@ -468,6 +468,7 @@ GGSWAN_HOST_VISIBLE void video_init(void) {
 }
 
 GGSWAN_HOST_VISIBLE void video_present(void) {
+    prof_phase = PROF_VIDEO;
     const uint8_t *reg = gg.vdp.reg;
 
     // vertical: the Game Gear view starts at row (24 + vscroll) mod 224
@@ -497,6 +498,7 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
         outportb(0x01, 0x10 | (reg[7] & 0x0F));       // backdrop color
         outportb(0x00, 0x02 | 0x10 | 0x20);
     }
+    prof_phase = PROF_OTHER;
 }
 
 /* === Sound: SN76489 to WS === */
@@ -692,10 +694,23 @@ void drc_check_failed(uint16_t pc, const z80_t *before, const z80_t *drc,
     while (1) {}
 }
 
+// the interpreter, marked for the profiler
+static int32_t interp_run(int32_t cycles) {
+    prof_phase = PROF_INTERP;
+    int32_t r = z80_run(cycles);
+    prof_phase = PROF_OTHER;
+    return r;
+}
+
 static volatile uint8_t vblanks;
+static volatile uint16_t prof_count[PROF_COUNT];
+static volatile uint16_t prof_total;
 
 static void __attribute__((interrupt, assume_ss_data)) vblank_irq(void) {
     vblanks++;
+    // profiler: one sample of what the plugin is doing, 75 times a second
+    prof_count[prof_phase]++;
+    prof_total++;
     ws_int_ack(WS_INT_ACK_VBLANK);
 }
 
@@ -734,6 +749,35 @@ static void put_hex(uint8_t row, uint8_t col, uint16_t v) {
 
 static bool show_stats;
 
+// Profile: share of the samples (percent) in the right border, every 8
+// seconds: CD translated code, DI dispatcher, PO helpers (ports, memory),
+// ST interpreted inside blocks, IN interpreter, TR translating,
+// VI end of frame video, AL the rest
+static void show_profile(void) {
+    static const char __far labels[] = "ALCDDIPOSTINTRVI";   // (enum order)
+    uint16_t total = prof_total;
+    if (total < 600)
+        return;
+    for (uint8_t i = 0; i < PROF_COUNT; i++) {
+        uint32_t pct = (uint32_t) prof_count[i] * 100 / total;
+        if (pct > 99) pct = 99;
+        char t[5];
+        t[0] = labels[i * 2];
+        t[1] = labels[i * 2 + 1];
+        t[2] = '0' + pct / 10;
+        t[3] = '0' + pct % 10;
+        t[4] = 0;
+        // order on screen: CD DI PO ST IN TR VI AL (rows 1, 3, ... 15)
+        static const uint8_t row_of[PROF_COUNT] = { 15, 1, 3, 5, 7, 9, 11, 13 };
+        put_text(row_of[i], 24, t);
+    }
+    ia16_disable_irq();
+    for (uint8_t i = 0; i < PROF_COUNT; i++)
+        prof_count[i] = 0;
+    prof_total = 0;
+    ia16_enable_irq();
+}
+
 static void show_fps(uint8_t fps) {
     put_text(1, 0, "FPS");
     put_value(2, 0, ' ', fps);
@@ -750,11 +794,7 @@ static void show_fps(uint8_t fps) {
     put_value(12, 0, 'I', (drc_stat_helper[3] - l_help[3]) / 100);
     put_value(14, 0, 'S', (drc_stat_helper[4] - l_help[4]) / 100);
     put_value(16, 0, 'N', (drc_stat_interp - l_interp) / 100);
-    put_value(1, 24, 'X', drc_stat_flushes);
-    put_text(4, 24, "PC");
-    put_hex(5, 24, z80.pc);
-    put_text(8, 24, "SEG");
-    put_hex(9, 24, drc_entry[1]);
+    put_hex(17, 24, z80.pc);
     l_blocks = drc_stat_blocks; l_disp = drc_stat_dispatch; l_interp = drc_stat_interp;
     for (uint8_t i = 0; i < 5; i++) l_help[i] = drc_stat_helper[i];
 }
@@ -805,6 +845,7 @@ int main(void) {
     // CPU: the recompiler, or the interpreter if Y1 is held
     if (ws_keypad_scan() & WS_KEY_Y1) {
         text_print("CPU: INTERPRETER");
+        gg_cpu_run = interp_run;
     } else {
         // the code cache: the PSRAM bank behind linear segment DRC_CODE_SEG
         uint16_t code_bank = (((uint16_t) inportb(0xC0 /* linear bank */) << 4)
@@ -860,6 +901,7 @@ int main(void) {
         if (vblanks >= 75) {
             vblanks -= 75;
             show_fps(frames);
+            show_profile();
             frames = 0;
         }
     }

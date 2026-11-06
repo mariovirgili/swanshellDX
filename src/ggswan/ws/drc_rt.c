@@ -304,6 +304,7 @@ static inline uint16_t hash(uint16_t pc, uint8_t bank) {
 }
 
 static uint16_t translate(uint16_t pc, uint8_t bank, uint16_t h) {
+    prof_phase = PROF_TRANSLATE;
     if (cache_top > 0xFFF0 - BUF_SIZE) {
         // this bank is full: the next one, or start again
         if (++cache_bank < DRC_CODE_BANKS)
@@ -344,7 +345,9 @@ static uint16_t translate(uint16_t pc, uint8_t bank, uint16_t h) {
 
 // one instruction (or an interrupt) with the interpreter
 static void interp_one(void) {
+    prof_phase = PROF_INTERP;
     z80_step();
+    prof_phase = PROF_DISPATCH;
     drc_stat_interp++;
 }
 
@@ -362,11 +365,13 @@ static void drc_helper_op(void);
 static int16_t remap_saved;   // cycles left when the mapping changed
 static uint8_t remapped;
 uint8_t drc_flush_request;
+volatile uint8_t prof_phase;
 uint8_t drc_no_links;
 
 uint32_t drc_stat_helper[5], drc_stat_dispatch, drc_stat_nolink;
 static void drc_helper(void) {
     drc_stat_helper[drc_st.op < 5 ? drc_st.op : 0]++;
+    prof_phase = drc_st.op == DRC_H_STEP ? PROF_STEP : PROF_HELPER;
     uint8_t m0 = gg.mapper[0], m1 = gg.mapper[1], m2 = gg.mapper[2], m3 = gg.mapper[3];
     drc_helper_op();
     if (!remapped && (z80_break || m0 != gg.mapper[0] || m1 != gg.mapper[1]
@@ -485,6 +490,7 @@ static void check_end(uint16_t pc, int16_t used) {
 }
 
 int32_t drc_z80_run(int32_t cycles) {
+    prof_phase = PROF_DISPATCH;
     z80.cycles += cycles;
     drc_st.nolink = drc_no_links;
     while (z80.cycles > 0 && !z80_break) {
@@ -541,11 +547,14 @@ int32_t drc_z80_run(int32_t cycles) {
         host_trace(pc, z80.b, z80.h << 8 | z80.l);
 #endif
         in_block = 1;
+        prof_phase = PROF_CODE;
         drc_enter(off);
         while (drc_st.reason) {
             drc_helper();
+            prof_phase = PROF_CODE;
             drc_enter(drc_st.resume);
         }
+        prof_phase = PROF_DISPATCH;
         in_block = 0;
         if (remapped) {
             remapped = 0;
@@ -563,5 +572,6 @@ int32_t drc_z80_run(int32_t cycles) {
             check_end(pc, start - drc_st.cycles);
         z80.cycles -= start - drc_st.cycles;
     }
+    prof_phase = PROF_OTHER;
     return z80.cycles;
 }
