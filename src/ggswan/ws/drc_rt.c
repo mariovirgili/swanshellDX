@@ -73,6 +73,9 @@ static uint16_t pending_link, pending_seg;   // exit to link to the next block
 static drc_env_t env;
 uint32_t drc_stat_blocks, drc_stat_flushes, drc_stat_interp, drc_stat_irq;
 uint16_t drc_last_interp_pc;
+/// far address of drc_helper_tramp (drc_asm.s fills it in), called by the
+/// HCALL stub
+uint16_t drc_tramp[2];
 
 // Write to PSRAM bank code_bank + which through the RAM window
 static void psram_write(uint8_t which, uint16_t off, const uint8_t *src, uint16_t len) {
@@ -478,7 +481,6 @@ static void drc_helper(void) {
 }
 
 // the helper stub calls this (through drc_helper_tramp, drc_asm.s)
-uint16_t drc_tramp[2];
 void drc_helper_direct(void) {
     drc_helper();
     prof_phase = PROF_CODE;

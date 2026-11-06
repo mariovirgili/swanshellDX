@@ -51,6 +51,11 @@ drc_enter:
 
     // Far-called by the helper stub of a code bank (registers already
     // stored in z80): runs the helper in C and returns to the stub.
+    // ES is whatever the translated code had: C may expect it equal to DS.
 drc_helper_tramp:
+    push es
+    push ds
+    pop es
     IA16_CALL drc_helper_direct
+    pop es
     retf
