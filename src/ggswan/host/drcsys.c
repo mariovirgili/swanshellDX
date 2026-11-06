@@ -77,6 +77,16 @@ void host_lookup_fail(uint16_t pc, uint8_t bank, uint16_t h, uint16_t off, uint1
     if (off && lf_count < 12) { lf_count++; printf("  miss %04X/%d at h=%d: entry %04X/%d off %04X\n", pc, bank, h, tpc, tbank, off); }
 }
 static uint32_t retr_same, key_count[64][65536 / 64 * 64 / 64];
+uint32_t hs_crossbank, hs_disp_from[4], hs_nolink_kind[8];
+static uint32_t nl_pc[65536], nl_out;
+void hs_nolink_pc(uint16_t pc, int16_t cyc) { nl_pc[pc]++; if (cyc <= 0) nl_out++; }
+uint32_t hs_out[256], hs_in[256];
+void sys_hs_report(void) {
+    printf("OUT ports:"); for (int i = 0; i < 256; i++) if (hs_out[i] > 500) printf(" %02X:%u", i, hs_out[i]); printf("\n");
+    printf("IN ports:"); for (int i = 0; i < 256; i++) if (hs_in[i] > 500) printf(" %02X:%u", i, hs_in[i]); printf("\n");
+    printf("unlinked exits with no cycles left: %u\n", nl_out);
+    for (int k = 0; k < 12; k++) { uint32_t m = 0; int mi = 0; for (int i = 0; i < 65536; i++) if (nl_pc[i] > m) { m = nl_pc[i]; mi = i; }
+        if (!m) break; printf("  to %04X: %u  [%02X %02X %02X | before: %02X %02X %02X]\n", mi, m, z80_read(mi), z80_read(mi+1), z80_read(mi+2), z80_read(mi-3), z80_read(mi-2), z80_read(mi-1)); nl_pc[mi] = 0; } printf("cross-bank pending links %u; unlinked exits: same slot %u, to slot0 %u, other slot %u, to RAM %u\n", hs_crossbank, hs_nolink_kind[0], hs_nolink_kind[1], hs_nolink_kind[2], hs_nolink_kind[3]); }
 void host_translated(uint16_t pc, uint16_t len, uint16_t n) {
     {
         static uint16_t gen[64][65536];
@@ -197,6 +207,16 @@ void drc_enter(uint16_t offset) {
     memcpy(&z80, iram + HOST_Z80_ADDR, sizeof(z80));
     memcpy(&drc_st, iram + HOST_ST_ADDR, sizeof(drc_st));
     memcpy(&gg.vdp, iram + HOST_VDP_ADDR, sizeof(gg.vdp));
+}
+
+void sys_helper_direct(void) {
+    memcpy(&z80, iram + HOST_Z80_ADDR, sizeof(z80));
+    memcpy(&drc_st, iram + HOST_ST_ADDR, sizeof(drc_st));
+    memcpy(&gg.vdp, iram + HOST_VDP_ADDR, sizeof(gg.vdp));
+    drc_helper_direct();
+    memcpy(iram + HOST_Z80_ADDR, &z80, sizeof(z80));
+    memcpy(iram + HOST_ST_ADDR, &drc_st, sizeof(drc_st));
+    memcpy(iram + HOST_VDP_ADDR, &gg.vdp, sizeof(gg.vdp));
 }
 
 void video_init(void);

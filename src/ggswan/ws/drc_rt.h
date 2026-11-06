@@ -61,6 +61,8 @@ int32_t drc_cycles_left(void);
 int32_t drc_z80_run(int32_t cycles);
 /// Run translated code at DRC_CODE_SEG:offset (drc_asm.s)
 void drc_enter(uint16_t offset);
+/// a helper called from translated code (stub HCALL)
+void drc_helper_direct(void);
 
 #ifdef GGSWAN_HOST
 #define HOST_Z80_ADDR 0xC000

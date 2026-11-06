@@ -57,6 +57,9 @@ typedef struct {
     uint16_t sat_base;    // need more than the byte stored (see drc_rt.c)
     uint8_t map_top;      // platform's screen map state (main.c)
     uint8_t sprites_dirty;
+    uint16_t far_off;     // DYN: far jump to a block in another code bank
+    uint16_t far_seg;
+    uint16_t cur_seg;     // code segment of the last exit (set by the stubs)
 } drc_state_t;
 
 /// Helper operations: generated code sets drc_state.op (and arg/val),
@@ -68,6 +71,8 @@ enum {
     DRC_H_IN,          // val = IN (arg)
     DRC_H_STEP,        // interpret val instructions from arg (no jumps);
                        // the helper subtracts their cycles
+    DRC_H_WRITE_MAP,   // write to a mapper register that changes neither
+                       // slot 0 nor the slot of the block: it may go on
 };
 
 typedef struct {
@@ -85,6 +90,7 @@ typedef struct {
                            // table write (SI = VRAM address written)
     uint16_t outi_off;     // routine for runs of OUTI (drc_emit_run_stub),
                            // OUTD's at outi_off + DRC_OUTD_DELTA
+    uint16_t ctl_off;      // routine for OUT (BFh),A (drc_emit_ctl_stub; 0: helper)
     uint16_t ldi_off;      // routine for runs of LDI (drc_emit_ldi_stub),
                            // LDD's at ldi_off + DRC_LDD_DELTA (0: interpreted)
 } drc_env_t;
@@ -106,6 +112,9 @@ uint16_t drc_emit_run_stub(const drc_env_t *env, uint8_t *out, uint16_t out_off,
 
 /// Write the routine for runs of LDI (dec = 0) or LDD; returns its length
 uint16_t drc_emit_ldi_stub(const drc_env_t *env, uint8_t *out, uint16_t out_off, uint8_t dec);
+
+/// Write the routine for OUT (BFh),A; returns its length
+uint16_t drc_emit_ctl_stub(const drc_env_t *env, uint8_t *out, uint16_t out_off);
 
 int drc_translate(const drc_env_t *env, uint16_t pc, uint8_t *out,
                   uint16_t out_off, uint16_t out_max, drc_result_t *res);

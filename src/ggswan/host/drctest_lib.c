@@ -51,7 +51,7 @@ int t_step(void) {
 // the helper routine's C side (registers already in z80)
 void t_helper(void) {
     switch (st.op) {
-    case DRC_H_WRITE: z80_write(st.arg, st.val); break;
+    case DRC_H_WRITE: case DRC_H_WRITE_MAP: z80_write(st.arg, st.val); break;
     case DRC_H_OUT: z80_out(st.arg, st.val); break;
     case DRC_H_IN: st.val = z80_in(st.arg); break;
     case DRC_H_STEP:

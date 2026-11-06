@@ -39,7 +39,9 @@ uint16_t drc_entry[2];   // far pointer used by drc_enter: offset, segment
 #define STUB_NT     0x0140
 #define STUB_OUTI   0x0240   // (OUTD: + DRC_OUTD_DELTA)
 #define STUB_LDI    0x0440   // (LDD: + DRC_LDD_DELTA)
-#define CACHE_START 0x0540
+#define STUB_HCALL  0x0540   // helpers called without leaving the block
+#define STUB_CTL    0x0580   // OUT (BFh),A
+#define CACHE_START 0x05E0
 // translation buffer in free IRAM (between the font tiles and the mask tile)
 #define BUF_ADDR    0xA600
 #define BUF_SIZE    0x1900
@@ -90,9 +92,20 @@ static void code_write(uint16_t off, const uint8_t *src, uint16_t len) {
 }
 
 // point the JMP at link (code bank of segment seg) at offset target
-static void link_patch(uint16_t seg, uint16_t link, uint16_t target) {
-    uint16_t rel = target - (link + 3);
-    psram_write((seg - DRC_CODE_SEG) >> 12, link + 1, (const uint8_t*) &rel, 2);
+// point the jump at link (in code segment seg) at target_seg:target; a
+// guarded exit (to another slot) also gets the bank it is valid for
+static void link_patch(uint16_t seg, uint16_t link, uint16_t target_seg, uint16_t target,
+                       uint8_t guard, uint8_t bank) {
+    uint8_t j[5];
+    if (target_seg == seg) {
+        uint16_t rel = target - (link + 3);
+        j[0] = 0xE9; j[1] = rel; j[2] = rel >> 8; j[3] = 0x90; j[4] = 0x90;
+    } else {
+        j[0] = 0xEA; j[1] = target; j[2] = target >> 8; j[3] = target_seg; j[4] = target_seg >> 8;
+    }
+    psram_write((seg - DRC_CODE_SEG) >> 12, link, j, 5);
+    if (guard)
+        psram_write((seg - DRC_CODE_SEG) >> 12, link - 3, &bank, 1);
 #ifdef GGSWAN_HOST
     host_code_changed();
 #endif
@@ -128,6 +141,9 @@ static uint16_t put_dyn(uint8_t *stub, uint8_t bank_index) {
     uint16_t tseg = env.state_addr + offsetof(drc_state_t, table_seg);
     uint16_t nolink = env.state_addr + offsetof(drc_state_t, nolink);
     uint16_t link = env.state_addr + offsetof(drc_state_t, link);
+    uint16_t far_off = env.state_addr + offsetof(drc_state_t, far_off);
+    uint8_t *found[4];
+    (void) bank_index;
     // (the exits first, so that the short jumps to them go backwards)
     uint8_t *miss = p;
     PB(0x5B); PB(0x58);                              // MISS: pop bx; pop ax
@@ -161,24 +177,31 @@ static uint16_t put_dyn(uint8_t *stub, uint8_t bank_index) {
     PB(0x81); PB(0xE7); PW((HASH_SIZE - 1) & ~3);    // and di, set mask
     PB(0x8E); PB(0x06); PW(tseg);                    // mov es, [table_seg]
     for (uint8_t way = 0; way < 4; way++) {
-        uint8_t *next[4];
+        uint8_t *next[2];
         PB(0x89); PB(0xFE);                          // mov si, di
         PB(0xD1); PB(0xE6);                          // shl si, 1
         PB(0x26); PB(0x3B); PB(0x04);                // cmp ax, es:[si]        (T_PC)
         PB(0x75); next[0] = p++;
         PB(0x26); PB(0x3A); PB(0x9D); PW(T_BANK);    // cmp bl, es:[di + T_BANK]
         PB(0x75); next[1] = p++;
-        PB(0x26); PB(0x80); PB(0xBD); PW(T_CODE); PB(bank_index);   // cmp byte es:[di + T_CODE], bank
-        PB(0x75); next[2] = p++;
         PB(0x26); PB(0x8B); PB(0xB4); PW(T_OFF);     // mov si, es:[si + T_OFF]
         PB(0x83); PB(0xFE); PB(0x01);                // cmp si, 1
-        PB(0x76); next[3] = p++;                     // jbe (empty, not translated)
-        PB(0x5B); PB(0x58);                          // pop bx; pop ax
-        PB(0xFF); PB(0xE6);                          // jmp si
-        for (uint8_t k = 0; k < 4; k++) *next[k] = (uint8_t) (p - next[k] - 1);
+        PB(0x77); found[way] = p++;                  // ja FOUND
+        for (uint8_t k = 0; k < 2; k++) *next[k] = (uint8_t) (p - next[k] - 1);
         PB(0x47);                                    // inc di
     }
     PB(0xE9); PW((uint16_t) (miss - stub) - ((uint16_t) (p - stub) + 2));   // jmp MISS
+    // FOUND: SI = offset, DI = entry; jump far to its code bank
+    for (uint8_t way = 0; way < 4; way++) *found[way] = (uint8_t) (p - found[way] - 1);
+    PB(0x89); PB(0x36); PW(far_off);                 // mov [far_off], si
+    PB(0x26); PB(0x8A); PB(0x9D); PW(T_CODE);        // mov bl, es:[di + T_CODE]
+    PB(0x88); PB(0xDF);                              // mov bh, bl
+    PB(0xC0); PB(0xE7); PB(0x04);                    // shl bh, 4
+    PB(0x80); PB(0xC7); PB(DRC_CODE_SEG >> 8);       // add bh, code segment
+    PB(0x30); PB(0xDB);                              // xor bl, bl
+    PB(0x89); PB(0x1E); PW(far_off + 2);             // mov [far_seg], bx
+    PB(0x5B); PB(0x58);                              // pop bx; pop ax
+    PB(0xFF); PB(0x2E); PW(far_off);                 // jmp far [far_off]
 #undef PB
 #undef PW
 #undef REL8
@@ -266,7 +289,6 @@ void drc_rt_init(uint16_t bank) {
 #endif
     env.vram_addr = 0x4000;   // Game Gear VRAM = WS tiles (main.c)
     env.exit_off = STUB_EXIT;
-    env.helper_off = STUB_HELPER;
     drc_st.table_seg = DRC_TABLE_SEG;
     env.ram_delta = 0x8000 - 0xC000;   // Game Gear RAM at IRAM 8000h
 
@@ -275,14 +297,47 @@ void drc_rt_init(uint16_t bank) {
         memset(stub, 0xCC, CACHE_START);
         uint16_t reason = env.state_addr + offsetof(drc_state_t, reason);
         uint16_t resume = env.state_addr + offsetof(drc_state_t, resume);
-        uint8_t *p = put_store_regs(stub + STUB_EXIT);
+        uint16_t cur_seg = env.state_addr + offsetof(drc_state_t, cur_seg);
+        uint8_t *p = stub + STUB_EXIT;
         *p++ = 0xC6; *p++ = 0x06; *p++ = reason; *p++ = reason >> 8; *p++ = 0;   // reason = 0
+        uint8_t *common = p;
+        p = put_store_regs(p);
+        *p++ = 0x8C; *p++ = 0x0E; *p++ = cur_seg; *p++ = cur_seg >> 8;          // mov [cur_seg], cs
         *p++ = 0xCB;                                                             // retf
+#ifdef GGSWAN_HOST
+        if (p > stub + STUB_HELPER) { printf("EXIT stub too long\n"); exit(1); }
+#endif
         p = stub + STUB_HELPER;
         *p++ = 0x8F; *p++ = 0x06; *p++ = resume; *p++ = resume >> 8;             // pop [resume]
-        p = put_store_regs(p);
         *p++ = 0xC6; *p++ = 0x06; *p++ = reason; *p++ = reason >> 8; *p++ = 1;   // reason = 1
-        *p++ = 0xCB;
+        *p++ = 0xEB; *p = (uint8_t) (common - (p + 1)); p++;                     // jmp common
+        // HCALL: store the registers, call the helper, load them, return
+        p = put_store_regs(stub + STUB_HCALL);
+#ifdef GGSWAN_HOST
+        *p++ = 0xCD; *p++ = 0x80;                                                // int 80h (drcsys.py)
+#else
+        *p++ = 0xFF; *p++ = 0x1E; *p++ = (uint16_t) drc_tramp; *p++ = (uint16_t) drc_tramp >> 8;   // call far [drc_tramp]
+#endif
+        {
+            uint16_t z = env.z80_addr, sp = z + offsetof(z80_t, sp);
+            *p++ = 0xA1; *p++ = z; *p++ = z >> 8;                                // mov ax, [a]
+            *p++ = 0x8B; *p++ = 0x0E; *p++ = z + 2; *p++ = (z + 2) >> 8;         // mov cx, [c]
+            *p++ = 0x8B; *p++ = 0x16; *p++ = z + 4; *p++ = (z + 4) >> 8;         // mov dx, [e]
+            *p++ = 0x8B; *p++ = 0x1E; *p++ = z + 6; *p++ = (z + 6) >> 8;         // mov bx, [l]
+            *p++ = 0x8B; *p++ = 0x2E; *p++ = sp; *p++ = sp >> 8;                 // mov bp, [sp]
+            *p++ = 0xC3;                                                         // ret
+        }
+#ifdef GGSWAN_HOST
+        if (p > stub + CACHE_START) { printf("HCALL stub too long\n"); exit(1); }
+#endif
+        env.helper_off = STUB_HCALL;
+        env.ctl_off = STUB_CTL;
+        uint16_t l5 = drc_emit_ctl_stub(&env, stub + STUB_CTL, STUB_CTL);
+#ifdef GGSWAN_HOST
+        if (STUB_CTL + l5 > CACHE_START) { printf("CTL stub too long\n"); exit(1); }
+#else
+        (void) l5;
+#endif
         env.dyn_off = put_dyn(stub, cache_bank);   // (the same in every bank)
         env.nt_stub_off = STUB_NT;
         uint16_t end = put_nt(stub, STUB_NT);
@@ -380,12 +435,13 @@ uint8_t drc_no_links;
 
 uint32_t drc_stat_helper[5], drc_stat_dispatch, drc_stat_nolink;
 static void drc_helper(void) {
-    drc_stat_helper[drc_st.op < 5 ? drc_st.op : 0]++;
+    drc_stat_helper[drc_st.op == DRC_H_WRITE_MAP ? DRC_H_WRITE : drc_st.op < 5 ? drc_st.op : 0]++;
     prof_phase = drc_st.op == DRC_H_STEP ? PROF_STEP : PROF_HELPER;
     uint8_t m0 = gg.mapper[0], m1 = gg.mapper[1], m2 = gg.mapper[2], m3 = gg.mapper[3];
+    uint8_t safe = drc_st.op == DRC_H_WRITE_MAP;
     drc_helper_op();
-    if (!remapped && (z80_break || m0 != gg.mapper[0] || m1 != gg.mapper[1]
-                      || m2 != gg.mapper[2] || m3 != gg.mapper[3])) {
+    if (!remapped && (z80_break || m1 != gg.mapper[1]
+                      || (!safe && (m0 != gg.mapper[0] || m2 != gg.mapper[2] || m3 != gg.mapper[3])))) {
         // the mapping changed: the rest of the block must not follow links
         // to blocks translated for the old mapping (cycles <= 0 stops them);
         // or the timing must be planned again (z80_break): stop too
@@ -395,11 +451,26 @@ static void drc_helper(void) {
     }
 }
 
+// the helper stub calls this (through drc_helper_tramp, drc_asm.s)
+uint16_t drc_tramp[2];
+void drc_helper_direct(void) {
+    drc_helper();
+    prof_phase = PROF_CODE;
+}
+
 static void drc_helper_op(void) {
     switch (drc_st.op) {
-    case DRC_H_WRITE: z80_write(drc_st.arg, drc_st.val); break;
-    case DRC_H_OUT: z80_out(drc_st.arg, drc_st.val); break;
-    case DRC_H_IN: drc_st.val = z80_in(drc_st.arg); break;
+    case DRC_H_WRITE: case DRC_H_WRITE_MAP: z80_write(drc_st.arg, drc_st.val); break;
+    case DRC_H_OUT:
+#ifdef GGSWAN_HOST
+        { extern uint32_t hs_out[256]; hs_out[drc_st.arg & 255]++; }
+#endif
+        z80_out(drc_st.arg, drc_st.val); break;
+    case DRC_H_IN:
+#ifdef GGSWAN_HOST
+        { extern uint32_t hs_in[256]; hs_in[drc_st.arg & 255]++; }
+#endif
+        drc_st.val = z80_in(drc_st.arg); break;
     case DRC_H_STEP: {
         // the interpreter counts down the real cycles left in z80.cycles
         int32_t block_left = z80.cycles;
@@ -445,6 +516,7 @@ uint8_t drc_rt_test_banks(void) {
 
 uint8_t drc_check;
 static z80_t check_z;
+static gg_vdp_t check_vdp;   // (the VDP ports are partly handled natively)
 
 #define CHECK_SEG (DRC_TABLE_SEG + 0x1000)   // PSRAM bank code_bank + DRC_CODE_BANKS + 1
 
@@ -458,6 +530,7 @@ static uint16_t ram_sum(void) {
 
 static void check_begin(void) {
     check_z = z80;
+    check_vdp = gg.vdp;
     psram_write(DRC_CODE_BANKS + 1, 0, (const uint8_t*) IRAM(0x8000), 0x2000);
 }
 
@@ -468,6 +541,7 @@ static void check_end(uint16_t pc, int16_t used) {
     int32_t left = z80.cycles;
     // back to the state before the block
     z80 = check_z;
+    gg.vdp = check_vdp;
     const uint8_t __far *src = MK_FP(CHECK_SEG, 0);
     uint8_t *dst = (uint8_t*) IRAM(0x8000);
     for (uint16_t i = 0; i < 0x2000; i++)
@@ -567,8 +641,13 @@ int32_t drc_z80_run(int32_t cycles) {
         }
         drc_entry[1] = DRC_CODE_SEG + ((uint16_t) tb[T_CODE + h] << 12);
         // the previous block can jump straight here from now on
-        if (pending_link && pending_seg == drc_entry[1] && !drc_no_links)
-            link_patch(pending_seg, pending_link, off);
+        if (pending_link && !drc_no_links) {
+            // (a guarded exit has "cmp byte [key], bank; jne X" just before
+            // L; any other has "jmp" there: see drc.c)
+            const uint8_t __far *g = MK_FP(pending_seg, pending_link - 3);
+            link_patch(pending_seg, pending_link, drc_entry[1], off,
+                       g[0] != 0xE9, bank);
+        }
         pending_link = 0;
         int16_t start = z80.cycles > 30000 ? 30000 : (int16_t) z80.cycles;
         drc_st.cycles = start;
@@ -583,10 +662,12 @@ int32_t drc_z80_run(int32_t cycles) {
         prof_phase = PROF_CODE;
         drc_enter(off);
         while (drc_st.reason) {
+            drc_entry[1] = drc_st.cur_seg;   // (blocks may jump far)
             drc_helper();
             prof_phase = PROF_CODE;
             drc_enter(drc_st.resume);
         }
+        drc_entry[1] = drc_st.cur_seg;
         prof_phase = PROF_DISPATCH;
         in_block = 0;
         if (remapped) {
@@ -597,6 +678,11 @@ int32_t drc_z80_run(int32_t cycles) {
             pending_seg = drc_entry[1];
         } else {
             drc_stat_nolink++;
+#ifdef GGSWAN_HOST
+            { extern void hs_nolink_pc(uint16_t, int16_t); hs_nolink_pc(z80.pc, drc_st.cycles); }
+            { extern uint32_t hs_nolink_kind[8]; uint8_t a = pc >> 14, b = z80.pc >> 14;
+              hs_nolink_kind[b >= 3 ? 3 : (a == b ? 0 : (b == 0 ? 1 : 2))]++; }
+#endif
         }
         drc_stat_dispatch++;
         // (blocks that used helpers are not checked: running their I/O

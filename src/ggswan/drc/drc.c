@@ -155,6 +155,12 @@ static int linkable(uint16_t target) {
     return (target >> 14) == 0 || (target >> 14) == (block_pc >> 14);
 }
 
+// to another ROM slot: linked behind a check of the slot's bank
+static int guarded(uint16_t target) {
+    return !force_nolink && target < 0xC000 && (target >> 14) != 0
+        && (target >> 14) != (block_pc >> 14) && env->ldi_off;
+}
+
 static void set_link(uint16_t v) { B(0xC7); B(0x06); W(SA(link)); W(v); }
 
 static void sub_cycles(uint16_t n) {
@@ -170,7 +176,28 @@ static void exit_const(uint16_t target, uint16_t extra) {
         set_link(here() + 6 + 2 + 3);         // L
         B(0x7F); B(0x03);                     // jg L
         jmp_near(env->exit_off);
-        jmp_near(env->exit_off);              // L: (the runtime may change it)
+        jmp_near(env->exit_off);              // L: (the runtime may change it:
+        B(0x90); B(0x90);                     // near or far jump)
+    } else if (guarded(target)) {
+        uint8_t slot = target >> 14;
+        uint8_t *u = 0;
+        if (slot == 2) {
+            B(0x80); B(0x3E); W(SA(keys)); B(0);          // cmp byte [keys], 0
+            u = jcc8(0x75);                               // jne: cartridge RAM
+        }
+        // (the cycle check first: the CMP replaces the flags of the SUB)
+        set_link(here() + 6 + 2 + 5 + 2);                 // L
+        B(0x7E); B(0x0C);                                 // jle X
+        B(0x80); B(0x3E); W(SA(keys) + 1 + slot); B(0xFF);   // cmp byte [key], bank (L-3)
+        B(0x75); B(0x05);                                 // jne X
+        jmp_near(env->exit_off);                          // L: (the runtime links it
+        B(0x90); B(0x90);                                 // and sets the bank)
+        jmp_near(env->exit_off);                          // X
+        if (u) {
+            land8(u);
+            set_link(0);
+            jmp_near(env->exit_off);
+        }
     } else {
         set_link(0);
         jmp_near(env->exit_off);
@@ -251,6 +278,18 @@ static void write_byte(uint8_t addr_reg, uint8_t src, uint8_t imm, uint8_t live)
     if (addr_reg == X_BX) hl_es = 0;
 }
 
+/*
+ * A mapper register write that leaves the block's own slot (and slot 0)
+ * alone: the block may go on and its exits stay linked (links to the
+ * other slots check the bank anyway). FFFC (cartridge RAM) and FFFF
+ * change slot 2, FFFE slot 1, FFFD slot 0.
+ */
+static int map_write_safe(uint16_t addr) {
+    if (addr < 0xFFFC) return 1;
+    uint8_t slot = addr == 0xFFFD ? 0 : addr == 0xFFFE ? 1 : 2;
+    return slot != 0 && slot != (block_pc >> 14);
+}
+
 static void write_const(uint16_t addr, uint8_t src, uint8_t live) {
     if (addr >= 0xC000 && addr < 0xE000) {
         if (src == X_AX) { B(0xA2); }
@@ -261,7 +300,7 @@ static void write_const(uint16_t addr, uint8_t src, uint8_t live) {
     clobber(live);
     B(0x88); B(0x06 | (src << 3)); W(SA(val));
     B(0xC7); B(0x06); W(SA(arg)); W(addr);
-    helper(DRC_H_WRITE);
+    helper(addr >= 0xFFFC && map_write_safe(addr) ? DRC_H_WRITE_MAP : DRC_H_WRITE);
 }
 
 // Read a byte from a constant address into an 8-bit register
@@ -465,6 +504,52 @@ uint16_t drc_emit_ldi_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
     return (uint16_t) (o - o_start);
 }
 
+/*
+ * Routine for OUT (BFh),A: the VDP control port. AL = byte. The first byte
+ * is latched; the second sets address and code (and for a read, the
+ * prefetch). Register writes (code 2): CF = 1, the caller uses the helper.
+ * Uses SI; AL, AH kept.
+ */
+uint16_t drc_emit_ctl_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) {
+    env = e;
+    o = o_start = out; o_base = out_off;
+    B(0x80); B(0x3E); W(VA(latch_full)); B(0);       // cmp byte [latch_full], 0
+    uint8_t *second = jcc8(0x75);                    // jne second
+    B(0xA2); W(VA(latch));                           // mov [latch], al
+    B(0xA2); W(VA(addr));                            // mov [addr], al (low byte)
+    B(0xC6); B(0x06); W(VA(latch_full)); B(1);       // latch_full = 1
+    B(0xF8); B(0xC3);                                // clc; ret
+    uint8_t *slow = o;
+    B(0xF9); B(0xC3);                                // stc; ret
+    land8(second);
+    B(0x89); B(0xC6);                                // mov si, ax
+    B(0x81); B(0xE6); W(0x00C0);                     // and si, C0h
+    B(0x81); B(0xFE); W(0x0080);                     // cmp si, 80h (register)
+    B(0x74); B((uint8_t) (slow - (o + 1)));          // je slow
+    B(0x50);                                         // push ax
+    B(0xC6); B(0x06); W(VA(latch_full)); B(0);       // latch_full = 0
+    B(0x88); B(0xC4);                                // mov ah, al
+    B(0xC0); B(0xEC); B(0x06);                       // shr ah, 6
+    B(0x88); B(0x26); W(VA(code));                   // mov [code], ah
+    B(0x88); B(0xC4);                                // mov ah, al
+    B(0x80); B(0xE4); B(0x3F);                       // and ah, 3Fh
+    B(0x88); B(0x26); W(VA(addr) + 1);               // mov [addr + 1], ah
+    B(0x8A); B(0x26); W(VA(latch));                  // mov ah, [latch]
+    B(0x88); B(0x26); W(VA(addr));                   // mov [addr], ah
+    B(0xA8); B(0xC0);                                // test al, C0h
+    uint8_t *done = jcc8(0x75);                      // jnz done (not a read)
+    B(0x8B); B(0x36); W(VA(addr));                   // mov si, [addr]
+    B(0x8A); B(0xA4); W(env->vram_addr);             // mov ah, [si + vram]
+    B(0x88); B(0x26); W(VA(read_buffer));            // mov [read_buffer], ah
+    B(0x46);                                         // inc si
+    B(0x81); B(0xE6); W(0x3FFF);                     // and si, 3FFFh
+    B(0x89); B(0x36); W(VA(addr));                   // mov [addr], si
+    land8(done);
+    B(0x58);                                         // pop ax
+    B(0xF8); B(0xC3);                                // clc; ret
+    return (uint16_t) (o - o_start);
+}
+
 /* === Decoder === */
 
 static uint8_t rd(uint16_t a) { return z80_read(a); }
@@ -528,6 +613,10 @@ static void decode(uint16_t pc, ins_t *I) {
             return;
         }
         if ((op & 0xC7) == 0x41 && op != 0x71) return;                      // OUT (C),r
+        if ((op == 0xB0 || op == 0xB8) && env->ldi_off) {
+            // LDIR, LDDR to work RAM: native, 64 bytes per turn
+            I->term = T_END; I->fwrite = FH | FP | FN; return;
+        }
         if (op >= 0xB0 && op <= 0xBB && !(op & 4)) {
             // LDIR, CPIR, INIR, OTIR...: the interpreter runs them between
             // blocks, so that long ones still let interrupts happen
@@ -648,7 +737,7 @@ static void decode(uint16_t pc, ins_t *I) {
             case 2: case 3: I->nn = rd(pc + 1); I->len = 2; return;   // OUT (n),A / IN A,(n)
             case 4: case 5: return;                                   // EX (SP),HL / EX DE,HL
             case 6: return;                                           // DI
-            case 7: I->term = T_END_AFTER; return;                    // EI
+            case 7: I->fread = FALL; return;   // EI (flags all live: the block may exit there)
             }
             return;
         case 5:
@@ -885,7 +974,7 @@ static int emit(int i) {
         case 0x41: case 0x49: case 0x51: case 0x59: case 0x61: case 0x69: case 0x79: {   // OUT (C),r
             clobber(live);
             uint8_t src = r8x[(op >> 3) & 7];
-            uint8_t *s0 = 0, *s1 = 0, *done = 0;
+            uint8_t *s0 = 0, *s1 = 0, *s2 = 0, *done = 0, *done2 = 0;
             if (env->vdp_addr) {
                 B(0x89); B(0xCE);                        // mov si, cx
                 B(0x81); B(0xE6); W(0x00C1);             // and si, C1h
@@ -893,12 +982,23 @@ static int emit(int i) {
                 s0 = jcc8(0x75);
                 vram_fast(src, &s1);
                 done = jcc8(0xEB);
-                land8(s0); land8(s1);
+                land8(s0);
+                if (env->ctl_off) {
+                    B(0x81); B(0xFE); W(0x0081);         // cmp si, 81h (VDP control)
+                    s2 = jcc8(0x75);
+                    if (src) { B(0x50); B(0x88); B(0xC0 | (src << 3)); }   // push ax; mov al, r
+                    call_near(env->ctl_off);
+                    if (src) B(0x58);                    // pop ax
+                    done2 = jcc8(0x73);                  // jnc done
+                    land8(s2);
+                }
+                land8(s1);
             }
             B(0x88); B(0x06 | (src << 3)); W(SA(val));
             B(0x88); B(0x0E); W(SA(arg));
             helper(DRC_H_OUT);
             if (done) land8(done);
+            if (done2) land8(done2);
             cyc += 12;
             return 1;
         }
@@ -938,6 +1038,43 @@ static int emit(int i) {
             land8(done);
             fkind = K_AH; hl_es = 0;
             cyc += 16 * I->count;
+            return 1;
+        }
+        case 0xB0: case 0xB8: {   // LDIR / LDDR (the LDI routine, up to 64 per turn)
+            materialize();
+            B(0x89); B(0xCF);                                // mov di, cx
+            B(0x4F);                                         // dec di
+            B(0x83); B(0xFF); B(63);                         // cmp di, 63
+            B(0x72); B(0x03); B(0xBF); W(63);                // jb +3; mov di, 63
+            B(0x47);                                         // inc di (BC = 0: 64)
+            B(0x57);                                         // push di (k)
+            B(0xBE); W(I->pc);                               // mov si, pc
+            call_near(op == 0xB0 ? env->ldi_off : env->ldi_off + DRC_LDD_DELTA);
+            B(0x5E);                                         // pop si (k)
+            uint8_t *slow = jcc8(0x72);                      // jc slow
+            B(0x6B); B(0xF6); B(21);                         // imul si, si, 21
+            B(0x29); B(0x36); W(SA(cycles));                 // sub [cycles], si
+            fkind = K_AH;
+            B(0x85); B(0xC9);                                // test cx, cx
+            uint8_t *fin = jcc8(0x74);                       // jz fin
+            exit_const(I->pc, 0);                            // more to copy
+            land8(fin);
+            B(0x83); B(0x06); W(SA(cycles)); B(5);           // add [cycles], 5 (the last: 16)
+            exit_const(I->pc + 2, 0);
+            // destination outside work RAM: the ones done, then one turn
+            // with the interpreter, then this instruction again
+            land8(slow);
+            B(0x2B); B(0x36); W(SA(val));                    // sub si, [val] (done)
+            B(0x6B); B(0xF6); B(21);                         // imul si, si, 21
+            B(0x8B); B(0x3E); W(SA(val));                    // mov di, [val]
+            B(0xC1); B(0xE7); B(0x04);                       // shl di, 4
+            B(0x01); B(0xFE);                                // add si, di (undo the routine's)
+            B(0x29); B(0x36); W(SA(cycles));                 // sub [cycles], si
+            B(0xC7); B(0x06); W(SA(val)); W(1);              // val = 1
+            B(0xC7); B(0x06); W(SA(arg)); W(I->pc);          // arg = pc
+            helper(DRC_H_STEP);
+            fkind = K_AH;
+            exit_const(I->pc, 0);
             return 1;
         }
         case 0xA3: case 0xAB: {   // a run of OUTI / OUTD (routine in the stubs)
@@ -1242,7 +1379,10 @@ static int emit(int i) {
                     write_const(I->nn + 1, 7, live);
                 }
                 cyc += 16;
-                if (I->term == T_END_AFTER) { force_nolink = 1; exit_const(next, 0); }
+                if (I->term == T_END_AFTER) {
+                    force_nolink = !(map_write_safe(I->nn) && map_write_safe(I->nn + 1));
+                    exit_const(next, 0);
+                }
                 return 1;
             case 5:   // LD HL,(nn)
                 read_const16(I->nn, X_BX);
@@ -1252,7 +1392,7 @@ static int emit(int i) {
             case 6:   // LD (nn),A
                 write_const(I->nn, X_AX, live);
                 cyc += 13;
-                if (I->term == T_END_AFTER) { force_nolink = 1; exit_const(next, 0); }
+                if (I->term == T_END_AFTER) { force_nolink = !map_write_safe(I->nn); exit_const(next, 0); }
                 return 1;
             case 7:   // LD A,(nn)
                 read_const(I->nn, X_AX);
@@ -1412,6 +1552,9 @@ static int emit(int i) {
                     vram_fast(X_AX, &s1);
                     done = jcc8(0xEB);
                     land8(s1);
+                } else if (env->ctl_off && (I->nn & 0xC1) == 0x81) {
+                    call_near(env->ctl_off);              // VDP control port
+                    done = jcc8(0x73);                    // jnc done
                 }
                 B(0xA2); W(SA(val));
                 B(0xC7); B(0x06); W(SA(arg)); W(I->nn);
@@ -1422,6 +1565,18 @@ static int emit(int i) {
             }
             case 3:   // IN A,(n)
                 clobber(live);
+                if (env->vdp_addr && env->ctl_off && (I->nn & 0xC1) == 0x80) {
+                    // VDP data port: the prefetched byte, prefetch the next
+                    B(0x8B); B(0x36); W(VA(addr));                  // mov si, [addr]
+                    B(0x8A); B(0x84); W(env->vram_addr);            // mov al, [si + vram]
+                    B(0x86); B(0x06); W(VA(read_buffer));           // xchg al, [read_buffer]
+                    B(0x46);                                        // inc si
+                    B(0x81); B(0xE6); W(0x3FFF);                    // and si, 3FFFh
+                    B(0x89); B(0x36); W(VA(addr));                  // mov [addr], si
+                    B(0xC6); B(0x06); W(VA(latch_full)); B(0);      // latch_full = 0
+                    cyc += 11;
+                    return 1;
+                }
                 B(0xC7); B(0x06); W(SA(arg)); W(I->nn);
                 helper(DRC_H_IN);
                 B(0xA0); W(SA(val));
@@ -1431,13 +1586,23 @@ static int emit(int i) {
                 B(0xC7); B(0x06); W(ZA(iff1)); W(0);   // iff1 = iff2 = 0
                 cyc += 4;
                 return 1;
-            case 7:   // EI (the runtime takes a pending interrupt after the next instruction)
+            case 7: {   // EI
+                // an interrupt waiting: exit, the runtime takes it after the
+                // next instruction; otherwise none can arrive before the
+                // end of the block (only between runs): go on
                 B(0xC7); B(0x06); W(ZA(iff1)); W(0x0101);
-                B(0xC6); B(0x06); W(ZA(ei_pending)); B(1);
                 cyc += 4;
+                materialize();
+                B(0x80); B(0x3E); W(ZA(irq)); B(0);       // cmp byte [irq], 0
+                uint8_t *go = jcc8(0x74);                 // je go
+                B(0xC6); B(0x06); W(ZA(ei_pending)); B(1);
                 force_nolink = 1;
                 exit_const(next, 0);
+                force_nolink = 0;
+                land8(go);
+                fkind = K_AH;
                 return 1;
+            }
             case 4:   // EX (SP),HL
                 B(0x87); B(0x9E); W(env->ram_delta);
                 hl_es = 0;

@@ -29,6 +29,9 @@ drc_enter:
     push dx
 
     mov [drc_entry], ax
+    // far address of drc_helper_tramp, for the helper stub
+    mov word ptr [drc_tramp], offset drc_helper_tramp
+    mov word ptr [drc_tramp + 2], cs
     mov ax, [z80]
     mov cx, [z80 + 2]
     mov dx, [z80 + 4]
@@ -45,3 +48,9 @@ drc_enter:
     pop di
     pop si
     IA16_RET
+
+    // Far-called by the helper stub of a code bank (registers already
+    // stored in z80): runs the helper in C and returns to the stub.
+drc_helper_tramp:
+    IA16_CALL drc_helper_direct
+    retf

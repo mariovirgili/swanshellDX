@@ -47,6 +47,8 @@ class X86:
         self.windows = {}
         self.code_version = None
         self.cb = ctypes.CFUNCTYPE(None, ctypes.c_uint16)(self.run)
+        from unicorn import UC_HOOK_INTR
+        self.uc.hook_add(UC_HOOK_INTR, self.helper)
         lib.sys_set_callback(self.cb)
         self.x86_instr = 0
         self.calls = 0
@@ -62,7 +64,16 @@ class X86:
         self.uc.mem_map_ptr(base, 0x10000, 7, ptr)
         self.windows[base] = ptr
 
-    def run(self, offset):
+    def helper(self, uc, intno, ud):
+        # int 80h in the HCALL stub: the helper, then the windows again
+        self.lib.sys_helper_direct()
+        self.map_windows()
+        v = self.lib.sys_code_version()
+        if v != self.code_version:
+            uc.ctl_flush_tb()
+            self.code_version = v
+
+    def map_windows(self):
         p = self.ports
         ram_bank = p[0xC1] | (p[0xC2] << 8)
         if p[0xCE] & 1:
@@ -71,6 +82,9 @@ class X86:
             self.map_window(0x10000, self.sram + (ram_bank & 7) * 0x10000)
         self.map_window(0x20000, self.psram + ((p[0xC2] | p[0xC3] << 8) & 31) * 0x10000)
         self.map_window(0x30000, self.psram + ((p[0xC3] | p[0xC4] << 8) & 31) * 0x10000)
+
+    def run(self, offset):
+        self.map_windows()
         v = self.lib.sys_code_version()
         if v != self.code_version:
             self.uc.ctl_flush_tb()
@@ -167,5 +181,6 @@ def main():
     drc.sys_tr_report()
     sys.stdout.flush()
     drc.sys_step_report()
+    sys.stdout.flush(); drc.sys_hs_report()
 
 main()
