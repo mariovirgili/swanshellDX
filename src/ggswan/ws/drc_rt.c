@@ -467,7 +467,8 @@ uint8_t drc_no_links;
 
 uint32_t drc_stat_helper[5], drc_stat_dispatch, drc_stat_nolink;
 static void drc_helper(void) {
-    drc_stat_helper[drc_st.op == DRC_H_WRITE_MAP ? DRC_H_WRITE : drc_st.op < 5 ? drc_st.op : 0]++;
+    drc_stat_helper[drc_st.op == DRC_H_WRITE_MAP ? DRC_H_WRITE
+                    : drc_st.op >= DRC_H_OUTI_RUN ? DRC_H_OUT : drc_st.op]++;
     prof_phase = drc_st.op == DRC_H_STEP ? PROF_STEP : PROF_HELPER;
     uint8_t m0 = gg.mapper[0], m1 = gg.mapper[1], m2 = gg.mapper[2], m3 = gg.mapper[3];
     uint8_t safe = drc_st.op == DRC_H_WRITE_MAP;
@@ -497,6 +498,23 @@ static void drc_helper_op(void) {
         { extern uint32_t hs_out[256]; hs_out[drc_st.arg & 255]++; }
 #endif
         z80_out(drc_st.arg, drc_st.val); break;
+    case DRC_H_OUTI_RUN: case DRC_H_OUTD_RUN: {
+        // the OUTIs the routine left (palette, other ports): straight in C,
+        // not instruction by instruction; flags as the routine's
+        uint16_t hl = (z80.h << 8) | z80.l;
+        int8_t d = drc_st.op == DRC_H_OUTI_RUN ? 1 : -1;
+        uint8_t n = drc_st.val, v = 0;
+        drc_st.cycles -= 16 * n;   // (the routine gave them back)
+        while (n--) {
+            v = z80_read(hl);
+            hl += d;
+            z80.b--;
+            z80_out(z80.c, v);
+        }
+        z80.h = hl >> 8; z80.l = hl;
+        z80.f = (z80.b & 0x80) | (z80.b ? 0 : 0x40) | ((v & 0x80) ? 0x02 : 0);
+        break;
+    }
     case DRC_H_IN:
 #ifdef GGSWAN_HOST
         { extern uint32_t hs_in[256]; hs_in[drc_st.arg & 255]++; }

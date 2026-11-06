@@ -1095,7 +1095,7 @@ static int emit(int i) {
             B(0xBE); W(I->pc);                               // mov si, pc
             call_near(op == 0xA3 ? env->outi_off : env->outi_off + DRC_OUTD_DELTA);
             uint8_t *done = jcc8(0x73);                      // jnc done
-            helper(DRC_H_STEP);                              // the OUTIs left
+            helper(op == 0xA3 ? DRC_H_OUTI_RUN : DRC_H_OUTD_RUN);   // the OUTIs left (CRAM, other ports)
             land8(done);
             fkind = K_AH; hl_es = 0;
             cyc += 16 * I->count;

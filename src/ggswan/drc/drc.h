@@ -74,6 +74,8 @@ enum {
     DRC_H_IN,          // val = IN (arg)
     DRC_H_STEP,        // interpret val instructions from arg (no jumps);
                        // the helper subtracts their cycles
+    DRC_H_OUTI_RUN,    // val OUTIs (OUTD: DRC_H_OUTD_RUN) left by the run
+    DRC_H_OUTD_RUN,    // routine (not VRAM): z80 registers in and out
     DRC_H_WRITE_MAP,   // write to a mapper register that changes neither
                        // slot 0 nor the slot of the block: it may go on
 };
