@@ -85,9 +85,12 @@ typedef struct {
                            // table write (SI = VRAM address written)
     uint16_t outi_off;     // routine for runs of OUTI (drc_emit_run_stub),
                            // OUTD's at outi_off + DRC_OUTD_DELTA
+    uint16_t ldi_off;      // routine for runs of LDI (drc_emit_ldi_stub),
+                           // LDD's at ldi_off + DRC_LDD_DELTA (0: interpreted)
 } drc_env_t;
 
 #define DRC_OUTD_DELTA 0x100
+#define DRC_LDD_DELTA 0x80
 
 typedef struct {
     uint16_t length;       // bytes of x86 code written
@@ -100,6 +103,9 @@ typedef struct {
 /// the first instruction can not be translated (the caller interprets it).
 /// Write the routine for runs of OUTI (dec = 0) or OUTD; returns its length
 uint16_t drc_emit_run_stub(const drc_env_t *env, uint8_t *out, uint16_t out_off, uint8_t dec);
+
+/// Write the routine for runs of LDI (dec = 0) or LDD; returns its length
+uint16_t drc_emit_ldi_stub(const drc_env_t *env, uint8_t *out, uint16_t out_off, uint8_t dec);
 
 int drc_translate(const drc_env_t *env, uint16_t pc, uint8_t *out,
                   uint16_t out_off, uint16_t out_max, drc_result_t *res);

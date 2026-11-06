@@ -400,6 +400,71 @@ uint16_t drc_emit_run_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
     return (uint16_t) (o - o_start);
 }
 
+/*
+ * Routine for a run of LDI (dec: LDD) copying to work RAM. In: DI = k,
+ * SI = Z80 address of the run, AH = F. Returns CF = 0 with the flags of
+ * the last LDI in AH; a destination outside work RAM: CF = 1 as for
+ * OUTI (the LDIs left for the STEP helper). Uses SI, DI, ES.
+ */
+uint16_t drc_emit_ldi_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, uint8_t dec) {
+    env = e;
+    o = o_start = out; o_base = out_off;
+    B(0x56);                                         // push si (address)
+    B(0x57);                                         // push di (k)
+    B(0x50);                                         // push ax
+    B(0x89); B(0xDE);                                // mov si, bx
+    B(0xC1); B(0xC6); B(0x04);                       // rol si, 4
+    B(0x83); B(0xE6); B(0x0E);                       // and si, 14
+    B(0x8E); B(0x84); W(SA(segtab));                 // mov es, [si + segtab]
+    uint8_t *loop = o;
+    B(0x80); B(0xFE); B(0xC0); uint8_t *s0 = jcc8(0x72);   // cmp dh, C0h; jb slow
+    B(0x80); B(0xFE); B(0xE0); uint8_t *s1 = jcc8(0x73);   // cmp dh, E0h; jae slow
+    B(0x26); B(0x8A); B(0x27);                       // mov ah, es:[bx]
+    B(0x89); B(0xD6);                                // mov si, dx
+    B(0x88); B(0xA4); W(env->ram_delta);             // mov [si + ram], ah
+    B(0x8D); B(0x5F); B(dec ? 0xFF : 0x01);          // lea bx, [bx +- 1]
+    B(dec ? 0x4A : 0x42);                            // dec/inc dx
+    B(0x49);                                         // dec cx
+    B(0xF7); B(0xC3); W(0x1FFF);                     // test bx, 1FFFh
+    uint8_t *noseg = jcc8(0x75);                     // jnz: same ES
+    B(0x89); B(0xDE);                                // mov si, bx
+    B(0xC1); B(0xC6); B(0x04);                       // rol si, 4
+    B(0x83); B(0xE6); B(0x0E);                       // and si, 14
+    B(0x8E); B(0x84); W(SA(segtab));                 // mov es, [si + segtab]
+    land8(noseg);
+    B(0x4F);                                         // dec di
+    {
+        int16_t back = (int16_t) (loop - (o + 2));
+#ifdef GGSWAN_HOST
+        if (back < -128) { extern void abort(void); abort(); }
+#endif
+        B(0x75); B((uint8_t) back);                  // jnz loop
+    }
+    // flags: S Z C kept, H = N = 0, P/V = BC != 0
+    B(0x58);                                         // pop ax
+    B(0x80); B(0xE4); B(0xC1);                       // and ah, C1h
+    B(0x85); B(0xC9);                                // test cx, cx
+    B(0x74); B(0x03); B(0x80); B(0xCC); B(0x04);     // jz +3; or ah, 4
+    B(0x83); B(0xC4); B(0x04);                       // add sp, 4
+    B(0xF8);                                         // clc
+    B(0xC3);                                         // ret
+    land8(s0); land8(s1);
+    B(0x58);                                         // pop ax
+    B(0x89); B(0x3E); W(SA(val));                    // mov [val], di (count)
+    B(0x5E);                                         // pop si (k)
+    B(0x29); B(0xFE);                                // sub si, di
+    B(0xD1); B(0xE6);                                // shl si, 1
+    B(0x89); B(0x36); W(SA(arg));                    // mov [arg], si
+    B(0x5E);                                         // pop si (address)
+    B(0x01); B(0x36); W(SA(arg));                    // add [arg], si
+    B(0x89); B(0xFE);                                // mov si, di
+    B(0xC1); B(0xE6); B(0x04);                       // shl si, 4
+    B(0x01); B(0x36); W(SA(cycles));                 // add [cycles], si
+    B(0xF9);                                         // stc
+    B(0xC3);                                         // ret
+    return (uint16_t) (o - o_start);
+}
+
 /* === Decoder === */
 
 static uint8_t rd(uint16_t a) { return z80_read(a); }
@@ -445,6 +510,9 @@ static void decode(uint16_t pc, ins_t *I) {
         case 0x65: case 0x6D: case 0x75: case 0x7D:                 // RETN, RETI
             I->term = T_END; return;
         }
+        if ((op & 0xC7) == 0x42) {                                  // SBC/ADC HL,rr
+            I->fwrite = FALL; I->fread = FC; return;
+        }
         if (op == 0xA0 || op == 0xA8 || op == 0xA3 || op == 0xAB) {
             // LDI LDD OUTI OUTD: games unroll long runs of them (VRAM
             // uploads); a run is one interpreted step of n instructions
@@ -453,6 +521,8 @@ static void decode(uint16_t pc, ins_t *I) {
             I->len = k * 2; I->count = k;
             if ((op == 0xA3 || op == 0xAB) && env->vdp_addr)
                 I->fwrite = FALL;   // native loop (VRAM uploads), see emit
+            else if ((op == 0xA0 || op == 0xA8) && env->ldi_off)
+                I->fwrite = FH | FP | FN;   // native loop (to work RAM)
             else
                 I->step = 1;
             return;
@@ -496,7 +566,7 @@ static void decode(uint16_t pc, ins_t *I) {
         case 0x36:                                                    // LD (IX+d),n
             I->d = (int8_t) rd(pc + 2); I->nn = rd(pc + 3); I->len = 4; return;
         case 0x34: case 0x35:                                         // INC/DEC (IX+d)
-            I->d = (int8_t) rd(pc + 2); I->len = 3; I->step = 1; return;
+            I->d = (int8_t) rd(pc + 2); I->len = 3; return;
         }
         if ((op2 >= 0x46 && op2 <= 0x7E && (op2 & 7) == 6 && op2 != 0x76)    // LD r,(IX+d)
             || (op2 >= 0x70 && op2 <= 0x77 && op2 != 0x76)) {              // LD (IX+d),r
@@ -832,6 +902,44 @@ static int emit(int i) {
             cyc += 12;
             return 1;
         }
+        case 0x42: case 0x52: case 0x62: case 0x72:     // SBC HL,rr
+        case 0x4A: case 0x5A: case 0x6A: case 0x7A: {   // ADC HL,rr
+            uint8_t rr = (op >> 4) & 3, sbc = !(op & 8);
+            materialize();
+            B(0x9E);                                         // sahf (CF = C)
+            B(0x89); B(0xDE);                                // mov si, bx
+            B(sbc ? 0x19 : 0x11); B(0xC3 | (r16x[rr] << 3));  // sbb/adc bx, rr
+            B(0x9F);                                         // lahf (S Z C)
+            B(0x70); B(0x05);                                // jo +5
+            B(0x80); B(0xE4); B(0xC1);                       // and ah, C1h (V = 0)
+            B(0xEB); B(0x06);                                // jmp +6
+            B(0x80); B(0xE4); B(0xC1);                       // and ah, C1h
+            B(0x80); B(0xCC); B(0x04);                       // or ah, 4 (V = 1)
+            if (sbc) { B(0x80); B(0xCC); B(0x02); }          // N
+            if (rr == 2) {
+                B(0xF7); B(0xC3); W(0x1000);                 // test bx, 1000h
+            } else {
+                B(0x31); B(0xC6 | (r16x[rr] << 3));          // xor si, rr
+                B(0x31); B(0xDE);                            // xor si, bx
+                B(0xF7); B(0xC6); W(0x1000);                 // test si, 1000h
+            }
+            B(0x74); B(0x03); B(0x80); B(0xCC); B(0x10);     // jz +3; or ah, 10h (H)
+            fkind = K_AH; hl_es = 0;
+            cyc += 15;
+            return 1;
+        }
+        case 0xA0: case 0xA8: {   // a run of LDI / LDD (routine in the stubs)
+            materialize();
+            B(0xBF); W(I->count);                            // mov di, k
+            B(0xBE); W(I->pc);                               // mov si, pc
+            call_near(op == 0xA0 ? env->ldi_off : env->ldi_off + DRC_LDD_DELTA);
+            uint8_t *done = jcc8(0x73);                      // jnc done
+            helper(DRC_H_STEP);                              // the LDIs left
+            land8(done);
+            fkind = K_AH; hl_es = 0;
+            cyc += 16 * I->count;
+            return 1;
+        }
         case 0xA3: case 0xAB: {   // a run of OUTI / OUTD (routine in the stubs)
             clobber(0);
             B(0xBF); W(I->count);                            // mov di, k
@@ -961,6 +1069,26 @@ static int emit(int i) {
             B(0x89); B(0x3E); W(ixa);
             fkind = K_AH;
             cyc += 15;
+            return 1;
+        }
+        case 0x34: case 0x35: {   // INC/DEC (IX+d): work RAM directly
+            uint8_t dec = op == 0x35;
+            materialize();
+            ix_addr(I->pre, I->d);
+            B(0x81); B(0xFE); W(0xC000); uint8_t *j1 = jcc8(0x72);
+            B(0x81); B(0xFE); W(0xE000); uint8_t *j2 = jcc8(0x73);
+            B(0x9E);                                              // sahf
+            B(0xFE); B(0x84 | (dec ? 0x08 : 0)); W(env->ram_delta);   // inc/dec byte [si+d]
+            fkind = dec ? K_DEC : K_INC; cf_valid = 1;
+            materialize();
+            B(0x83); B(0x2E); W(SA(cycles)); B(23);
+            uint8_t *j3 = jcc8(0xEB);
+            land8(j1); land8(j2);
+            B(0xC7); B(0x06); W(SA(arg)); W(I->pc);
+            B(0xC6); B(0x06); W(SA(val)); B(1);
+            helper(DRC_H_STEP);
+            land8(j3);
+            fkind = K_AH;
             return 1;
         }
         case 0x36:   // LD (IX+d),n

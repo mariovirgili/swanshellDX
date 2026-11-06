@@ -38,7 +38,8 @@ uint16_t drc_entry[2];   // far pointer used by drc_enter: offset, segment
 #define STUB_DYN    0x0040
 #define STUB_NT     0x0140
 #define STUB_OUTI   0x0240   // (OUTD: + DRC_OUTD_DELTA)
-#define CACHE_START 0x0440
+#define STUB_LDI    0x0440   // (LDD: + DRC_LDD_DELTA)
+#define CACHE_START 0x0540
 // translation buffer in free IRAM (between the font tiles and the mask tile)
 #define BUF_ADDR    0xA600
 #define BUF_SIZE    0x1900
@@ -288,10 +289,14 @@ void drc_rt_init(uint16_t bank) {
         env.outi_off = STUB_OUTI;
         uint16_t l1 = drc_emit_run_stub(&env, stub + STUB_OUTI, STUB_OUTI, 0);
         uint16_t l2 = drc_emit_run_stub(&env, stub + STUB_OUTI + DRC_OUTD_DELTA, STUB_OUTI + DRC_OUTD_DELTA, 1);
+        env.ldi_off = STUB_LDI;
+        uint16_t l3 = drc_emit_ldi_stub(&env, stub + STUB_LDI, STUB_LDI, 0);
+        uint16_t l4 = drc_emit_ldi_stub(&env, stub + STUB_LDI + DRC_LDD_DELTA, STUB_LDI + DRC_LDD_DELTA, 1);
 #ifdef GGSWAN_HOST
-        if (end > STUB_OUTI || l1 > DRC_OUTD_DELTA || STUB_OUTI + DRC_OUTD_DELTA + l2 > CACHE_START) { printf("stubs too long\n"); exit(1); }
+        if (end > STUB_OUTI || l1 > DRC_OUTD_DELTA || STUB_OUTI + DRC_OUTD_DELTA + l2 > STUB_LDI
+            || l3 > DRC_LDD_DELTA || STUB_LDI + DRC_LDD_DELTA + l4 > CACHE_START) { printf("stubs too long\n"); exit(1); }
 #else
-        (void) end; (void) l1; (void) l2;
+        (void) end; (void) l1; (void) l2; (void) l3; (void) l4;
 #endif
         code_write(0, stub, CACHE_START);
     }
@@ -551,7 +556,15 @@ int32_t drc_z80_run(int32_t cycles) {
                 h = h0 + (victim++ & 3);
             off = translate(pc, bank, h);
         }
-        if (off == DRC_NOT_TRANSLATED) { pending_link = 0; drc_last_interp_pc = pc; interp_one(); continue; }
+        if (off == DRC_NOT_TRANSLATED) {
+            // (repeated instructions, LDIR, OTIR...: all their turns here)
+            pending_link = 0;
+            drc_last_interp_pc = pc;
+            do interp_one();
+            while (z80.pc == pc && z80.cycles > 0 && !z80_break && !z80.halted
+                   && !(z80.irq && z80.iff1) && !drc_flush_request);
+            continue;
+        }
         drc_entry[1] = DRC_CODE_SEG + ((uint16_t) tb[T_CODE + h] << 12);
         // the previous block can jump straight here from now on
         if (pending_link && pending_seg == drc_entry[1] && !drc_no_links)
