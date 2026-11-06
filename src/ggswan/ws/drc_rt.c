@@ -37,7 +37,8 @@ uint16_t drc_entry[2];   // far pointer used by drc_enter: offset, segment
 #define STUB_HELPER 0x0020
 #define STUB_DYN    0x0040
 #define STUB_NT     0x0140
-#define CACHE_START 0x0240
+#define STUB_OUTI   0x0240   // (OUTD: + DRC_OUTD_DELTA)
+#define CACHE_START 0x0440
 // translation buffer in free IRAM (between the font tiles and the mask tile)
 #define BUF_ADDR    0xA600
 #define BUF_SIZE    0x1900
@@ -62,7 +63,8 @@ static uint16_t cache_top;
 static uint8_t victim;
 static uint16_t pending_link, pending_seg;   // exit to link to the next block
 static drc_env_t env;
-uint32_t drc_stat_blocks, drc_stat_flushes, drc_stat_interp;
+uint32_t drc_stat_blocks, drc_stat_flushes, drc_stat_interp, drc_stat_irq;
+uint16_t drc_last_interp_pc;
 
 // Write to PSRAM bank code_bank + which through the RAM window
 static void psram_write(uint8_t which, uint16_t off, const uint8_t *src, uint16_t len) {
@@ -268,8 +270,8 @@ void drc_rt_init(uint16_t bank) {
     env.ram_delta = 0x8000 - 0xC000;   // Game Gear RAM at IRAM 8000h
 
     for (cache_bank = 0; cache_bank < DRC_CODE_BANKS; cache_bank++) {
-        uint8_t stub[CACHE_START];
-        memset(stub, 0xCC, sizeof(stub));
+        uint8_t *stub = (uint8_t*) IRAM(BUF_ADDR);   // (translation buffer)
+        memset(stub, 0xCC, CACHE_START);
         uint16_t reason = env.state_addr + offsetof(drc_state_t, reason);
         uint16_t resume = env.state_addr + offsetof(drc_state_t, resume);
         uint8_t *p = put_store_regs(stub + STUB_EXIT);
@@ -283,12 +285,15 @@ void drc_rt_init(uint16_t bank) {
         env.dyn_off = put_dyn(stub, cache_bank);   // (the same in every bank)
         env.nt_stub_off = STUB_NT;
         uint16_t end = put_nt(stub, STUB_NT);
+        env.outi_off = STUB_OUTI;
+        uint16_t l1 = drc_emit_run_stub(&env, stub + STUB_OUTI, STUB_OUTI, 0);
+        uint16_t l2 = drc_emit_run_stub(&env, stub + STUB_OUTI + DRC_OUTD_DELTA, STUB_OUTI + DRC_OUTD_DELTA, 1);
 #ifdef GGSWAN_HOST
-        if (end > CACHE_START) { printf("stubs too long\n"); exit(1); }
+        if (end > STUB_OUTI || l1 > DRC_OUTD_DELTA || STUB_OUTI + DRC_OUTD_DELTA + l2 > CACHE_START) { printf("stubs too long\n"); exit(1); }
 #else
-        (void) end;
+        (void) end; (void) l1; (void) l2;
 #endif
-        code_write(0, stub, sizeof(stub));
+        code_write(0, stub, CACHE_START);
     }
     drc_st.segtab[6] = (uint16_t) (0x0800 - 0x0C00);
     drc_st.segtab[7] = (uint16_t) (0x0800 - 0x0E00);
@@ -475,11 +480,15 @@ static void check_end(uint16_t pc, int16_t used) {
         // (the recompiler leaves the undocumented bits 3 and 5 of F at 0)
         if (z80.f != f0 && op0 != 0xF1 && op0 != 0x08)
             z80.f &= 0xD7;
-        if ((z80.pc == d.pc && c >= used) || c > used + 100 || steps > 2000)
+        if ((z80.pc == d.pc && c >= used) || c > used + 100 || steps > 20000)
             break;
     }
     z80.irq = irq;
     uint16_t sum_r = ram_sum();
+    // (a wait loop ends the run at once: the interpreter spins until the
+    // cycles run out, a few more)
+    if (d.pc == pc && c > used && c < used + 30)
+        c = used;
     if (z80.pc != d.pc || c != used || z80.a != d.a || (z80.f & 0xD7) != (d.f & 0xD7)
         || z80.b != d.b || z80.c != d.c || z80.d != d.d || z80.e != d.e
         || z80.h != d.h || z80.l != d.l || z80.sp != d.sp
@@ -498,14 +507,25 @@ int32_t drc_z80_run(int32_t cycles) {
         if (drc_flush_request) { drc_flush_request = 0; flush(); }
         if (z80.halted) {
             pending_link = 0;
-            if (z80.irq && z80.iff1) { interp_one(); continue; }
+            if (z80.irq && z80.iff1) { drc_stat_irq++; interp_one(); continue; }
             z80.cycles = 0;
             break;
         }
-        if ((z80.irq && z80.iff1) || z80.ei_pending
-            || pc >= 0xC000 || (pc >= 0x8000 && (drc_st.keys[0] & 0x08))) {
-            // interrupts, and code in RAM (it may change): interpreter
+        if (z80.irq && z80.iff1) {
+            // interrupt: taken by the interpreter (or, just after EI,
+            // the one instruction before it)
             pending_link = 0;
+            if (!z80.ei_pending) drc_stat_irq++;
+            interp_one();
+            continue;
+        }
+        // (no interrupt waiting: the instruction after EI needs nothing
+        // special, an interrupt can only arrive after the block)
+        z80.ei_pending = 0;
+        if (pc >= 0xC000 || (pc >= 0x8000 && (drc_st.keys[0] & 0x08))) {
+            // code in RAM (it may change): interpreter
+            pending_link = 0;
+            drc_last_interp_pc = pc;
             interp_one();
             continue;
         }
@@ -531,7 +551,7 @@ int32_t drc_z80_run(int32_t cycles) {
                 h = h0 + (victim++ & 3);
             off = translate(pc, bank, h);
         }
-        if (off == DRC_NOT_TRANSLATED) { pending_link = 0; interp_one(); continue; }
+        if (off == DRC_NOT_TRANSLATED) { pending_link = 0; drc_last_interp_pc = pc; interp_one(); continue; }
         drc_entry[1] = DRC_CODE_SEG + ((uint16_t) tb[T_CODE + h] << 12);
         // the previous block can jump straight here from now on
         if (pending_link && pending_seg == drc_entry[1] && !drc_no_links)

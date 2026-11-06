@@ -785,8 +785,9 @@ static void show_fps(uint8_t fps) {
         return;
     // per second: T translations; D returns to the dispatcher, helpers
     // W (write) O (out) I (in) S (interpreted step), N interpreted
-    // instructions, all in hundreds; X cache flushes (total)
-    static uint32_t l_blocks, l_disp, l_help[5], l_interp;
+    // instructions, Q interrupts taken, all in hundreds; X cache flushes
+    // (total); bottom right: last instruction interpreted (not interrupts)
+    static uint32_t l_blocks, l_disp, l_help[5], l_interp, l_irq;
     put_value(4, 0, 'T', drc_stat_blocks - l_blocks);
     put_value(6, 0, 'D', (drc_stat_dispatch - l_disp) / 100);
     put_value(8, 0, 'W', (drc_stat_helper[1] - l_help[1]) / 100);
@@ -794,9 +795,10 @@ static void show_fps(uint8_t fps) {
     put_value(12, 0, 'I', (drc_stat_helper[3] - l_help[3]) / 100);
     put_value(14, 0, 'S', (drc_stat_helper[4] - l_help[4]) / 100);
     put_value(16, 0, 'N', (drc_stat_interp - l_interp) / 100);
-    put_hex(17, 24, z80.pc);
+    put_value(17, 0, 'Q', (drc_stat_irq - l_irq) / 100);
+    put_hex(17, 24, drc_last_interp_pc);
     put_value(0, 0, 'X', drc_stat_flushes);
-    l_blocks = drc_stat_blocks; l_disp = drc_stat_dispatch; l_interp = drc_stat_interp;
+    l_blocks = drc_stat_blocks; l_disp = drc_stat_dispatch; l_interp = drc_stat_interp; l_irq = drc_stat_irq;
     for (uint8_t i = 0; i < 5; i++) l_help[i] = drc_stat_helper[i];
 }
 

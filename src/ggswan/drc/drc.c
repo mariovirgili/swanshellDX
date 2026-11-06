@@ -323,6 +323,83 @@ static void vram_fast(uint8_t src, uint8_t **slow1) {
     B(0xC6); B(0x06); W(VA(latch_full)); B(0);           // mov byte [latch_full], 0
 }
 
+/*
+ * Routine for a run of OUTI (dec: OUTD), shared by the blocks of a code
+ * bank. In: DI = k (OUTIs), SI = Z80 address of the run. VRAM uploads
+ * through the fast path; returns CF = 0 with the flags of the last OUTI
+ * in AH. Anything else (CRAM, another port): CF = 1, with val = OUTIs
+ * left, arg = address of the first one left, their cycles added back to
+ * the counter (the block calls the STEP helper). Uses SI, DI, ES.
+ */
+uint16_t drc_emit_run_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, uint8_t dec) {
+    env = e;
+    o = o_start = out; o_base = out_off;
+    uint8_t inc = dec ? 0xFF : 0x01;
+    B(0x56);                                         // push si (address)
+    B(0x57);                                         // push di (k)
+    B(0x89); B(0xDE);                                // mov si, bx
+    B(0xC1); B(0xC6); B(0x04);                       // rol si, 4
+    B(0x83); B(0xE6); B(0x0E);                       // and si, 14
+    B(0x8E); B(0x84); W(SA(segtab));                 // mov es, [si + segtab]
+    B(0x89); B(0xCE);                                // mov si, cx
+    B(0x81); B(0xE6); W(0x00C1);                     // and si, C1h
+    B(0x81); B(0xFE); W(0x0080);                     // cmp si, 80h (port BEh)
+    uint8_t *s0 = jcc8(0x75);                        // jne slow
+    uint8_t *to_loop = jcc8(0xEB);                   // jmp loop
+    // slow (before the loop, in reach of its short jumps): the OUTIs
+    // left (DI of them) for the interpreter
+    uint8_t *slow1 = o;
+    B(0x5F);                                         // pop di
+    land8(s0);
+    B(0x89); B(0x3E); W(SA(val));                    // mov [val], di (count)
+    B(0x5E);                                         // pop si (k)
+    B(0x29); B(0xFE);                                // sub si, di
+    B(0xD1); B(0xE6);                                // shl si, 1
+    B(0x89); B(0x36); W(SA(arg));                    // mov [arg], si
+    B(0x5E);                                         // pop si (address)
+    B(0x01); B(0x36); W(SA(arg));                    // add [arg], si
+    B(0x89); B(0xFE);                                // mov si, di
+    B(0xC1); B(0xE6); B(0x04);                       // shl si, 4
+    B(0x01); B(0x36); W(SA(cycles));                 // add [cycles], si
+    B(0xF9);                                         // stc
+    B(0xC3);                                         // ret
+    land8(to_loop);
+    uint8_t *loop = o;
+    B(0x57);                                         // push di
+    uint8_t *s1;
+    B(0x26); B(0x8A); B(0x27);                       // mov ah, es:[bx]
+    vram_fast(4 /* AH */, &s1);
+    *s1 = (uint8_t) (int8_t) (slow1 - (s1 + 1));     // (backwards)
+    B(0x5F);                                         // pop di
+    B(0xFE); B(0xCD);                                // dec ch
+    B(0x8D); B(0x5F); B(inc);                        // lea bx, [bx +- 1]
+    B(0xF7); B(0xC3); W(0x1FFF);                     // test bx, 1FFFh
+    uint8_t *noseg = jcc8(0x75);                     // jnz: same ES
+    B(0x89); B(0xDE);                                // mov si, bx
+    B(0xC1); B(0xC6); B(0x04);                       // rol si, 4
+    B(0x83); B(0xE6); B(0x0E);                       // and si, 14
+    B(0x8E); B(0x84); W(SA(segtab));                 // mov es, [si + segtab]
+    land8(noseg);
+    B(0x4F);                                         // dec di
+    uint8_t *end = jcc8(0x74);                       // jz end
+    B(0xE9); W((uint16_t) (loop - (o + 2)));         // jmp loop
+    land8(end);
+    // flags of the last OUTI: S, Z from B; N from bit 7 of the byte
+    B(0x88); B(0x26); W(SA(val));                    // mov [val], ah
+    B(0x84); B(0xED);                                // test ch, ch
+    B(0x9F);                                         // lahf
+    B(0x80); B(0xE4); B(0xC0);                       // and ah, C0h
+    B(0xF6); B(0x06); W(SA(val)); B(0x80);           // test byte [val], 80h
+    B(0x74); B(0x03); B(0x80); B(0xCC); B(0x02);     // jz +3; or ah, 2
+    B(0x83); B(0xC4); B(0x04);                       // add sp, 4
+    B(0xF8);                                         // clc
+    B(0xC3);                                         // ret
+#ifdef GGSWAN_HOST
+    if (s1 - slow1 > 128) { extern void abort(void); abort(); }
+#endif
+    return (uint16_t) (o - o_start);
+}
+
 /* === Decoder === */
 
 static uint8_t rd(uint16_t a) { return z80_read(a); }
@@ -555,8 +632,55 @@ static void inc_dec_flags(uint8_t dec, uint8_t live_c) {
 }
 
 
+/*
+ * Wait loops: a block that only reads memory into registers and tests it,
+ * then jumps back to its start (waiting for an interrupt to change a
+ * variable, or JR $). Every turn does the same as the one before until
+ * an interrupt, and interrupts only arrive between runs: the loop can end
+ * the run at once, as if it had spun until then.
+ */
+static uint8_t idle_block;
+
+static int idle_body(const ins_t *I) {
+    uint8_t op = I->op;
+    if (I->pre == 0xCB) return op >= 0x40 && op < 0x80;          // BIT b,r / (HL)
+    if (I->pre) return 0;
+    return op == 0x00                                            // NOP
+        || op == 0x3A || op == 0x7E || op == 0x0A || op == 0x1A  // LD A,(nn) (HL) (BC) (DE)
+        || op == 0x46 || op == 0x4E || op == 0x56 || op == 0x5E  // LD B/C/D/E,(HL)
+        || (op >= 0xA0 && op <= 0xA7) || op == 0xE6              // AND (x & m twice = once)
+        || (op >= 0xB0 && op <= 0xBF) || op == 0xF6 || op == 0xFE;   // OR, CP
+}
+
+static int is_idle(int n, uint16_t pc) {
+    const ins_t *L = &ins[n - 1];
+    uint16_t target;
+    if (L->pre) return 0;
+    if (L->op == 0x18 || (L->op >= 0x20 && L->op <= 0x38 && !(L->op & 7)))
+        target = (uint16_t) (L->pc + 2 + (int8_t) L->nn);       // JR, JR cc
+    else if (L->op == 0xC3 || (L->op & 0xC7) == 0xC2)
+        target = L->nn;                                          // JP, JP cc
+    else
+        return 0;
+    if (target != pc) return 0;
+    for (int i = 0; i < n - 1; i++)
+        if (!idle_body(&ins[i])) return 0;
+    return 1;
+}
+
 // Taken branch to target: loop back inside the block when possible
 static void branch_to(uint16_t target, uint16_t extra) {
+    if (target == block_pc && idle_block) {
+        // wait loop: end the run (cycles left: none)
+        materialize();
+        sub_cycles(cyc + extra);
+        B(0x7E); B(0x06);                         // jle +6
+        B(0xC7); B(0x06); W(SA(cycles)); W(0);    // mov word [cycles], 0
+        B(0xC7); B(0x06); W(ZA(pc)); W(target);
+        set_link(0);
+        jmp_near(env->exit_off);
+        return;
+    }
     if (target == block_pc) {
         materialize();
         sub_cycles(cyc + extra);
@@ -708,61 +832,16 @@ static int emit(int i) {
             cyc += 12;
             return 1;
         }
-        case 0xA3: case 0xAB: {   // a run of OUTI / OUTD (fast VRAM path)
-            uint8_t inc = op == 0xA3 ? 0x01 : 0xFF;
-            uint8_t k = I->count;
+        case 0xA3: case 0xAB: {   // a run of OUTI / OUTD (routine in the stubs)
             clobber(0);
-            seg_hl(0);
-            B(0xBF); W(k);                                   // mov di, k (left)
-            B(0x89); B(0xCE);                                // mov si, cx
-            B(0x81); B(0xE6); W(0x00C1);                     // and si, C1h
-            B(0x81); B(0xFE); W(0x0080);                     // cmp si, 80h
-            uint8_t *s0 = jcc8(0x75);                        // jne slow
-            uint8_t *loop = o;
-            B(0x57);                                         // push di
-            uint8_t *s1;
-            // the byte is read into AH (F is rewritten by OUTI anyway)
-            B(0x26); B(0x8A); B(0x27);                       // mov ah, es:[bx]
-            vram_fast(4 /* AH */, &s1);
-            B(0x5F);                                         // pop di
-            B(0xFE); B(0xCD);                                // dec ch
-            B(0x8D); B(0x5F); B(inc);                        // lea bx, [bx +- 1]
-            B(0xF7); B(0xC3); W(0x1FFF);                     // test bx, 1FFFh
-            uint8_t *noseg = jcc8(0x75);                     // jnz: same ES
-            B(0x89); B(0xDE);                                // mov si, bx
-            B(0xC1); B(0xC6); B(0x04);                       // rol si, 4
-            B(0x83); B(0xE6); B(0x0E);                       // and si, 14
-            B(0x8E); B(0x84); W(SA(segtab));                 // mov es, [si + segtab]
-            land8(noseg);
-            B(0x4F);                                         // dec di
-            int16_t back = (int16_t) (loop - (o + 2));
-            if (back < -128) return 0;
-            B(0x75); B((uint8_t) back);                      // jnz loop
-            // flags of the last OUTI: S, Z from B; N from bit 7 of the byte
-            B(0x88); B(0x26); W(SA(val));                    // mov [val], ah
-            B(0x84); B(0xED);                                // test ch, ch
-            B(0x9F);                                         // lahf
-            B(0x80); B(0xE4); B(0xC0);                       // and ah, C0h
-            B(0xF6); B(0x06); W(SA(val)); B(0x80);           // test byte [val], 80h
-            B(0x74); B(0x03); B(0x80); B(0xCC); B(0x02);     // jz +3; or ah, 2
-            uint8_t *done = jcc8(0xEB);
-            // slow: the OUTIs left (DI of them) with the interpreter
-            land8(s1);
-            B(0x5F);                                         // pop di
-            land8(s0);
-            B(0xBE); W(k);                                   // mov si, k
-            B(0x29); B(0xFE);                                // sub si, di
-            B(0xD1); B(0xE6);                                // shl si, 1
-            B(0x81); B(0xC6); W(I->pc);                      // add si, pc
-            B(0x89); B(0x3E); W(SA(val));                    // mov [val], di (count)
-            B(0x89); B(0x36); W(SA(arg));                    // mov [arg], si
-            B(0x89); B(0xFE);                                // mov si, di
-            B(0xC1); B(0xE6); B(0x04);                       // shl si, 4
-            B(0x01); B(0x36); W(SA(cycles));                 // add [cycles], si (counted below)
-            helper(DRC_H_STEP);
+            B(0xBF); W(I->count);                            // mov di, k
+            B(0xBE); W(I->pc);                               // mov si, pc
+            call_near(op == 0xA3 ? env->outi_off : env->outi_off + DRC_OUTD_DELTA);
+            uint8_t *done = jcc8(0x73);                      // jnc done
+            helper(DRC_H_STEP);                              // the OUTIs left
             land8(done);
             fkind = K_AH; hl_es = 0;
-            cyc += 16 * k;
+            cyc += 16 * I->count;
             return 1;
         }
         case 0x43: case 0x53: case 0x73: {   // LD (nn),rr
@@ -1319,6 +1398,7 @@ int drc_translate(const drc_env_t *e, uint16_t pc, uint8_t *out,
     block_start_off = out_off; block_pc = pc;
     fkind = K_AH; cf_valid = 0; hl_es = 0; cyc = 0;
     force_nolink = 0;
+    idle_block = is_idle(n, pc);
     int i;
     for (i = 0; i < n; i++) {
         // emit() can only refuse an instruction that decode() accepted by
