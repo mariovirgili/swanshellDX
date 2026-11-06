@@ -137,8 +137,12 @@ void drc_rt_init(uint16_t bank) {
     *p++ = 0xCB;
     for (cache_bank = 0; cache_bank < DRC_CODE_BANKS; cache_bank++)
         code_write(0, stub, sizeof(stub));
-    drc_st.segtab[6] = (uint16_t) ((0x8000 - 0xC000) >> 4);   // C000-DFFF -> IRAM 8000h
-    drc_st.segtab[7] = (uint16_t) ((0x8000 - 0xE000) >> 4);   // E000-FFFF (mirror)
+    // C000-DFFF -> IRAM 8000h, E000-FFFF (mirror) too: the segments are
+    // "negative" (FC00h, FA00h), the 1 MiB address space wraps around.
+    // (Computed in segment units: with 16-bit ints, (8000h - C000h) >> 4
+    // would be 0C00h.)
+    drc_st.segtab[6] = (uint16_t) (0x0800 - 0x0C00);
+    drc_st.segtab[7] = (uint16_t) (0x0800 - 0x0E00);
     flush();
 }
 
