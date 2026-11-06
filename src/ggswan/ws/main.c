@@ -81,6 +81,7 @@ static char rom_path[0x400 - 0xE0 + 1];
 /* === Debug text (on screen 2, before the emulation starts) === */
 
 static uint8_t text_y;
+static uint8_t text_step = 2;   // rows per line (1 on the crowded screens)
 
 static void text_init(void) {
     // font: color 1 of palette FONT_PALETTE
@@ -122,8 +123,9 @@ static void text_print(const char __far *s) {
         map2[text_y * 32 + x] = TILE_ENTRY(FONT_TILE + g) | PAL_ENTRY(FONT_PALETTE);
         x++;
     }
-    if (text_y < 17)
-        text_y++;
+    text_y += text_step;
+    if (text_y > 17)
+        text_y = 17;   // (the last row is overwritten)
 }
 
 static void text_hex(const char __far *label, uint32_t v) {
@@ -139,6 +141,7 @@ static void text_hex(const char __far *label, uint32_t v) {
 }
 
 static void fail(const char __far *what, uint32_t code) {
+    if (text_y > 15) text_y = 15;   // (both lines on screen)
     text_print("ERROR");
     text_hex(what, code);
     while (1) {}
@@ -674,6 +677,7 @@ void drc_check_failed(uint16_t pc, const z80_t *before, const z80_t *drc,
     ia16_disable_irq();
     outportb(WS_DISPLAY_CTRL_PORT, 0);
     text_init();
+    text_step = 1;   // (more lines than spaced rows)
     text_print("SELF-CHECK: DIFFERENCE");
     uint16_t v[6];
     v[0] = pc;
