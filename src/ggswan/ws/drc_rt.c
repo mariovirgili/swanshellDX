@@ -314,6 +314,13 @@ static void flush(void) {
     drc_stat_flushes++;
 }
 
+// diagnostics: switch off parts of the block building (before the first
+// translation)
+void drc_rt_options(uint8_t no_trace, uint8_t no_inline) {
+    env.no_trace = no_trace;
+    env.no_inline = no_inline;
+}
+
 void drc_rt_init(uint16_t bank) {
     code_bank = bank;
 #ifdef GGSWAN_HOST

@@ -98,6 +98,8 @@ typedef struct {
                            // OUTD's at outi_off + DRC_OUTD_DELTA
     uint16_t ctl_off;      // routine for OUT (BFh),A (drc_emit_ctl_stub; 0: helper)
     uint16_t ram_blocks;   // translate code in work RAM too (runtime)
+    uint8_t no_trace;      // diagnostics: do not follow JP nn / JR e in a block
+    uint8_t no_inline;     // diagnostics: do not inline CALLed routines
     uint16_t ldi_off;      // routine for runs of LDI (drc_emit_ldi_stub),
                            // LDD's at ldi_off + DRC_LDD_DELTA (0: interpreted)
 } drc_env_t;

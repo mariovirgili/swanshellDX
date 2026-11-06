@@ -34,6 +34,8 @@ void drc_check_failed(uint16_t pc, const z80_t *before, const z80_t *drc,
 
 /// bank: PSRAM bank behind linear segment DRC_CODE_SEG
 void drc_rt_init(uint16_t bank);
+/// diagnostics: do not follow JP/JR in blocks, do not inline CALLs
+void drc_rt_options(uint8_t no_trace, uint8_t no_inline);
 /// set when slot 0 changes bank: links into it are no longer valid
 extern uint8_t drc_flush_request;
 /// Profiler: what the plugin is doing now (sampled by an interrupt)

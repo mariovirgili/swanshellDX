@@ -926,6 +926,12 @@ int main(void) {
         } else if (ws_keypad_scan() & WS_KEY_Y2) {
             drc_no_links = 1;
             text_print("CPU: RECOMPILER, NO LINKS");
+        } else if (ws_keypad_scan() & WS_KEY_X1) {
+            drc_rt_options(0, 1);
+            text_print("CPU: RECOMPILER, NO CALL INLINE");
+        } else if (ws_keypad_scan() & WS_KEY_X2) {
+            drc_rt_options(1, 0);
+            text_print("CPU: RECOMPILER, NO JP/JR FOLLOW");
         } else {
             text_print("CPU: RECOMPILER");
         }

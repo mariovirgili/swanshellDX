@@ -1847,7 +1847,7 @@ int drc_translate(const drc_env_t *e, uint16_t pc, uint8_t *out,
         p += ins[n].len;
         n++;
         const ins_t *J = &ins[n - 1];
-        if (!ram && J->pre == 0 && (J->op == 0xC3 || J->op == 0x18) && n < max_n - 1) {
+        if (!ram && !env->no_trace && J->pre == 0 && (J->op == 0xC3 || J->op == 0x18) && n < max_n - 1) {
             // JP nn / JR e: go on at the target, unless it leaves slot 0 and
             // the block's slot, or is already in the block (a loop)
             uint16_t t = J->op == 0xC3 ? J->nn : (uint16_t) (J->pc + 2 + (int8_t) J->nn);
@@ -1861,7 +1861,7 @@ int drc_translate(const drc_env_t *e, uint16_t pc, uint8_t *out,
                 continue;
             }
         }
-        if (!ram && J->pre == 0 && J->op == 0xCD && !inlined && n + CALL_INLINE_MAX + 2 < max_n
+        if (!ram && !env->no_inline && J->pre == 0 && J->op == 0xCD && !inlined && n + CALL_INLINE_MAX + 2 < max_n
             && !(((J->nn ^ pc) & 0xC000) && J->nn >= 0x4000) && J->nn < 0xC000) {
             // CALL nn to a short routine (no jumps out of it, ends with RET):
             // its instructions follow inline (once per block)
