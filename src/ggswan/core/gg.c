@@ -356,7 +356,7 @@ void gg_run_frame(void) {
             vdp_lines(started, reached);
             if (reached > started) started = reached;
         }
-        if (started >= GG_LINES && pos >= (uint16_t) (GG_LINES * GG_CYCLES_PER_LINE))
+        if (started >= GG_LINES && pos >= GG_FRAME_CYCLES)
             break;
         uint16_t e = next_event(started);
         // (cycles already given but not run yet, after an early stop, count)
@@ -367,6 +367,6 @@ void gg_run_frame(void) {
         z80_break = 0;
         gg_cpu_run(want);
     }
-    frame_carry = frame_pos() - GG_LINES * GG_CYCLES_PER_LINE;
+    frame_carry = frame_pos() - GG_FRAME_CYCLES;
     gg.frame++;
 }

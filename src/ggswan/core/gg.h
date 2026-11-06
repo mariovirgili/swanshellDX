@@ -19,6 +19,8 @@
 
 #define GG_LINES 262
 #define GG_CYCLES_PER_LINE 228
+/// cycles of a frame (unsigned: past the 16-bit int range)
+#define GG_FRAME_CYCLES ((uint16_t) (GG_LINES * 228u))
 #define GG_ACTIVE_LINES 192
 // the Game Gear shows a 160x144 window of the 256x192 picture
 #define GG_VIEW_X 48
