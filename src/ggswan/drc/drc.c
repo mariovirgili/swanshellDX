@@ -1591,6 +1591,10 @@ static int emit(int i) {
             switch (y) {
             case 0: branch_to(I->nn, 10); return 1;   // JP nn
             case 2: {   // OUT (n),A
+                if (env->ctl_off && I->nn < 0x40 && I->nn != 0x06) {
+                    cyc += 11;   // (ports 00-3F but 06: nothing to do, see z80_out)
+                    return 1;
+                }
                 clobber(live);
                 uint8_t *s1 = 0, *done = 0;
                 if (env->vdp_addr && (I->nn & 0xC1) == 0x80) {
@@ -1609,6 +1613,13 @@ static int emit(int i) {
                 return 1;
             }
             case 3:   // IN A,(n)
+                if (env->ctl_off && I->nn >= 0x01 && I->nn < 0x40) {
+                    // fixed values (z80_in): 01 7F, 03 and 05 00, the others FF
+                    uint8_t n = I->nn;
+                    B(0xB0); B(n == 1 ? 0x7F : (n == 3 || n == 5) ? 0x00 : 0xFF);   // mov al, value
+                    cyc += 11;
+                    return 1;
+                }
                 clobber(live);
                 if (env->vdp_addr && env->ctl_off && (I->nn & 0xC1) == 0x80) {
                     // VDP data port: the prefetched byte, prefetch the next
@@ -1619,6 +1630,17 @@ static int emit(int i) {
                     B(0x81); B(0xE6); W(0x3FFF);                    // and si, 3FFFh
                     B(0x89); B(0x36); W(VA(addr));                  // mov [addr], si
                     B(0xC6); B(0x06); W(VA(latch_full)); B(0);      // latch_full = 0
+                    cyc += 11;
+                    return 1;
+                }
+                if (env->vdp_addr && env->ctl_off && (I->nn & 0xC1) == 0x81) {
+                    // VDP status: read it, then the interrupt requests clear
+                    B(0xA0); W(VA(status));                         // mov al, [status]
+                    B(0x0C); B(0x1F);                               // or al, 1Fh
+                    B(0xC6); B(0x06); W(VA(status)); B(0);          // status = 0
+                    B(0xC6); B(0x06); W(VA(line_pending)); B(0);    // line_pending = 0
+                    B(0xC6); B(0x06); W(VA(latch_full)); B(0);      // latch_full = 0
+                    B(0xC6); B(0x06); W(ZA(irq)); B(0);             // (no request left)
                     cyc += 11;
                     return 1;
                 }
