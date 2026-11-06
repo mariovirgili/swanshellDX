@@ -18,11 +18,16 @@
 extern drc_state_t drc_st;
 extern uint16_t drc_entry[2];
 extern uint32_t drc_stat_blocks, drc_stat_flushes, drc_stat_interp;
+extern uint32_t drc_stat_helper[5], drc_stat_dispatch, drc_stat_nolink;
+/// diagnostics: do not link blocks
+extern uint8_t drc_no_links;
 
 /// bank: PSRAM bank behind linear segment DRC_CODE_SEG
 void drc_rt_init(uint16_t bank);
 /// set when slot 0 changes bank: links into it are no longer valid
 extern uint8_t drc_flush_request;
+/// main.c: put the RAM window back as Game Gear slot 2 needs it
+void ws_ram_window_restore(void);
 /// z80_run() equivalent using the recompiler
 int32_t drc_z80_run(int32_t cycles);
 /// Run translated code at DRC_CODE_SEG:offset (drc_asm.s)

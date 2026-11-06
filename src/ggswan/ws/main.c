@@ -148,6 +148,22 @@ static void fail(const char __far *what, uint32_t code) {
 
 /* === ROM banks, cartridge RAM === */
 
+// the RAM window as Game Gear slot 2 needs it (the ports may not read back)
+static uint16_t ram_window_bank;
+static uint8_t ram_window_flash;
+
+static void ram_window_set(uint8_t flash, uint16_t bank) {
+    ram_window_flash = flash;
+    ram_window_bank = bank;
+    outportb(WS_CART_BANK_FLASH_PORT, flash);
+    outportw(WS_CART_EXTBANK_RAM_PORT, bank);
+}
+
+void ws_ram_window_restore(void) {
+    outportb(WS_CART_BANK_FLASH_PORT, ram_window_flash);
+    outportw(WS_CART_EXTBANK_RAM_PORT, ram_window_bank);
+}
+
 const uint8_t __far *gg_platform_bank(uint8_t slot, uint16_t bank) {
     uint16_t ws_bank = GG_PSRAM_FIRST_BANK + (bank >> 2);
     uint16_t offset = (bank & 3) << 14;
@@ -171,8 +187,7 @@ const uint8_t __far *gg_platform_bank(uint8_t slot, uint16_t bank) {
         return MK_FP(0x3000, offset);
     default:
         // slot 2: the RAM window, on PSRAM
-        outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_ENABLE);
-        outportw(WS_CART_EXTBANK_RAM_PORT, ws_bank);
+        ram_window_set(WS_CART_BANK_FLASH_ENABLE, ws_bank);
         drc_st.segtab[4] = drc_st.segtab[5] = 0x1000 + (offset >> 4) - 0x800;
         return MK_FP(0x1000, offset);
     }
@@ -180,8 +195,7 @@ const uint8_t __far *gg_platform_bank(uint8_t slot, uint16_t bank) {
 
 uint8_t __far *gg_platform_cart_ram(uint8_t page) {
     // the RAM window, on SRAM (first 32 KiB)
-    outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_DISABLE);
-    outportw(WS_CART_EXTBANK_RAM_PORT, 0);
+    ram_window_set(WS_CART_BANK_FLASH_DISABLE, 0);
     drc_st.segtab[4] = drc_st.segtab[5] = 0x1000 + ((uint16_t) page << 10) - 0x800;
     return MK_FP(0x1000, (uint16_t) page << 14);
 }
@@ -611,13 +625,45 @@ static uint16_t font_entry(char c) {
     return TILE_ENTRY(FONT_TILE + g) | PAL_ENTRY(FONT_PALETTE);
 }
 
+// screen 2, columns 0-3 (outside the Game Gear view): a label and a value
+static void show_value(uint8_t row, char label, uint32_t v) {
+    map2[row * 32] = font_entry(label);
+    if (v > 999) v = 999;
+    map2[row * 32 + 1] = font_entry('0' + v / 100);
+    map2[row * 32 + 2] = font_entry('0' + (v / 10) % 10);
+    map2[row * 32 + 3] = font_entry('0' + v % 10);
+}
+
+static void show_hex(uint8_t row, uint16_t v) {
+    for (uint8_t i = 0; i < 4; i++)
+        map2[row * 32 + i] = font_entry("0123456789ABCDEF"[(v >> (12 - i * 4)) & 15]);
+}
+
+static bool show_stats;
+
 static void show_fps(uint8_t fps) {
-    // screen 2, rows 1-2, columns 0-3 (outside the Game Gear view)
     map2[1 * 32 + 0] = font_entry('F');
     map2[1 * 32 + 1] = font_entry('P');
     map2[1 * 32 + 2] = font_entry('S');
     map2[2 * 32 + 1] = font_entry('0' + (fps / 10) % 10);
     map2[2 * 32 + 2] = font_entry('0' + fps % 10);
+    if (!show_stats)
+        return;
+    // per second: T translations, D dispatches/100, W O I S helpers
+    // (write, out, in, step)/100, N interpreted/100; X flushes; Z80 PC
+    static uint32_t l_blocks, l_disp, l_help[5], l_interp;
+    show_value(4, 'T', drc_stat_blocks - l_blocks);
+    show_value(5, 'D', (drc_stat_dispatch - l_disp) / 100);
+    show_value(6, 'W', (drc_stat_helper[1] - l_help[1]) / 100);
+    show_value(7, 'O', (drc_stat_helper[2] - l_help[2]) / 100);
+    show_value(8, 'I', (drc_stat_helper[3] - l_help[3]) / 100);
+    show_value(9, 'S', (drc_stat_helper[4] - l_help[4]) / 100);
+    show_value(10, 'N', (drc_stat_interp - l_interp) / 100);
+    show_value(11, 'X', drc_stat_flushes);
+    show_hex(13, z80.pc);
+    show_hex(14, drc_entry[1]);
+    l_blocks = drc_stat_blocks; l_disp = drc_stat_dispatch; l_interp = drc_stat_interp;
+    for (uint8_t i = 0; i < 5; i++) l_help[i] = drc_stat_helper[i];
 }
 
 int main(void) {
@@ -678,7 +724,13 @@ int main(void) {
         if (*((const uint8_t __far*) MK_FP(DRC_CODE_SEG, 0)) != 0xA3)
             fail("CODE READ", code_bank);
         gg_cpu_run = drc_z80_run;
-        text_print("CPU: RECOMPILER");
+        show_stats = true;
+        if (ws_keypad_scan() & WS_KEY_Y2) {
+            drc_no_links = 1;
+            text_print("CPU: RECOMPILER, NO LINKS");
+        } else {
+            text_print("CPU: RECOMPILER");
+        }
     }
 
     // give time to read the text

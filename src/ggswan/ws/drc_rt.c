@@ -62,8 +62,6 @@ uint32_t drc_stat_blocks, drc_stat_flushes, drc_stat_interp;
 
 // Write to PSRAM bank code_bank + which through the RAM window
 static void psram_write(uint8_t which, uint16_t off, const uint8_t *src, uint16_t len) {
-    uint8_t flash = inportb(WS_CART_BANK_FLASH_PORT);
-    uint16_t bank = inportw(WS_CART_EXTBANK_RAM_PORT);
     outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_ENABLE);
     outportw(WS_CART_EXTBANK_RAM_PORT, code_bank + which);
     uint8_t __far *dst = MK_FP(0x1000, off);
@@ -74,8 +72,7 @@ static void psram_write(uint8_t which, uint16_t off, const uint8_t *src, uint16_
         for (uint16_t i = 0; i < len; i++)
             dst[i] = 0;
     }
-    outportw(WS_CART_EXTBANK_RAM_PORT, bank);
-    outportb(WS_CART_BANK_FLASH_PORT, flash);
+    ws_ram_window_restore();   // back to Game Gear slot 2 (main.c)
 }
 
 static void code_write(uint16_t off, const uint8_t *src, uint16_t len) {
@@ -206,6 +203,7 @@ static void drc_helper_op(void);
 static int16_t remap_saved;   // cycles left when the mapping changed
 static uint8_t remapped;
 uint8_t drc_flush_request;
+uint8_t drc_no_links;
 
 uint32_t drc_stat_helper[5], drc_stat_dispatch, drc_stat_nolink;
 static void drc_helper(void) {
@@ -287,7 +285,7 @@ int32_t drc_z80_run(int32_t cycles) {
         if (off == DRC_NOT_TRANSLATED) { pending_link = 0; interp_one(); continue; }
         drc_entry[1] = DRC_CODE_SEG + ((uint16_t) tb[T_CODE + h] << 12);
         // the previous block can jump straight here from now on
-        if (pending_link && pending_seg == drc_entry[1])
+        if (pending_link && pending_seg == drc_entry[1] && !drc_no_links)
             link_patch(pending_seg, pending_link, off);
         pending_link = 0;
         int16_t start = z80.cycles > 30000 ? 30000 : (int16_t) z80.cycles;
