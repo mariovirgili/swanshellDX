@@ -64,7 +64,7 @@ static uint16_t map1[32 * 32] __attribute__((aligned(2048)));
 static uint16_t map2[32 * 32] __attribute__((aligned(2048)));
 static uint8_t sprite_table[128 * 4] __attribute__((aligned(512)));
 static uint8_t wave_table[64] __attribute__((aligned(64)));
-#define MAP_SIZE MAP_SIZE
+#define MAP_SIZE 2048
 
 static FATFS fs;
 static char rom_path[0x400 - 0xE0 + 1];
@@ -571,8 +571,12 @@ static uint16_t load_rom(void) {
 
     // check: the last 8 KiB read must be visible through ROM window 0
     outportw(WS_CART_EXTBANK_ROM0_PORT, GG_PSRAM_FIRST_BANK + ((done - 0x2000) >> 16));
-    if (_fmemcmp(MK_FP(0x2000, (uint16_t) (done - 0x2000)), buf, 0x2000))
-        fail("PSRAM MAP", done);
+    {
+        const uint8_t __far *chk = MK_FP(0x2000, (uint16_t) (done - 0x2000));
+        for (uint16_t i = 0; i < 0x2000; i++)
+            if (chk[i] != buf[i])
+                fail("PSRAM MAP", done);
+    }
 
     uint16_t banks16 = (size + 0x3FFF) >> 14;
     return banks16;
