@@ -30,13 +30,21 @@ void *MK_FP(uint16_t seg, uint16_t off) {
         return sram + (uint32_t) (b & 7) * 65536 + off;
     case 0x2000: return psram + (uint32_t) (inportw(0xC2) & 31) * 65536 + off;
     case 0x3000: return psram + (uint32_t) (inportw(0xC3) & 31) * 65536 + off;
-    case 0x4000: case 0x5000: case 0x6000: case 0x7000: case 0x8000:
+    case 0x4000: case 0x5000: case 0x6000: case 0x7000: case 0x8000: case 0x9000:
         return psram + (20 + ((seg - 0x4000) >> 12)) * 65536 + off;
     default: return iram + seg * 16 + off;
     }
 }
 uint16_t ws_keypad_scan(void) { return 0; }
 void host_code_changed(void) { code_version++; }
+void drc_check_failed(uint16_t pc, const z80_t *before, const z80_t *drc,
+                      const z80_t *ref, int16_t used, int16_t used_ref,
+                      uint16_t sum_drc, uint16_t sum_ref) {
+    printf("SELF-CHECK difference at block %04X: pc drc %04X ref %04X, cycles %d/%d, ram %04X/%04X\n",
+           pc, drc->pc, ref->pc, used, used_ref, sum_drc, sum_ref);
+    exit(1);
+}
+void sys_check(int on) { drc_check = on; drc_no_links = on; }
 int trace_on;
 static uint32_t miss_empty, miss_evict;
 void host_miss(int e) { if (e) miss_evict++; else miss_empty++; }

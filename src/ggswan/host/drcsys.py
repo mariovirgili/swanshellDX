@@ -108,6 +108,8 @@ def main():
     ref = load(tmp + "/a.so")
     drc = load(tmp + "/b.so")
     assert ref.sys_init(ROM.encode(), 0) and drc.sys_init(ROM.encode(), 1)
+    if "--selfcheck" in sys.argv:
+        drc.sys_check(1)
     x86 = X86(drc)
     t0 = time.time()
     same = 0

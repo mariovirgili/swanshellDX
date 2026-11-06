@@ -611,6 +611,54 @@ static uint16_t load_rom(void) {
     return banks16;
 }
 
+static void hex_line(const char __far *label, const uint16_t *v, uint8_t n) {
+    char buf[29];
+    uint8_t k = 0;
+    while (*label && k < 4) buf[k++] = *(label++);
+    for (uint8_t i = 0; i < n && k < 24; i++) {
+        buf[k++] = ' ';
+        for (int8_t s = 12; s >= 0; s -= 4)
+            buf[k++] = "0123456789ABCDEF"[(v[i] >> s) & 15];
+    }
+    buf[k] = 0;
+    text_print(buf);
+}
+
+static void regs_lines(const char __far *label, const z80_t *z) {
+    uint16_t v[4];
+    v[0] = (z->a << 8) | z->f; v[1] = (z->b << 8) | z->c;
+    v[2] = (z->d << 8) | z->e; v[3] = (z->h << 8) | z->l;
+    hex_line(label, v, 4);
+    v[0] = z->sp; v[1] = z->pc; v[2] = (z->ixh << 8) | z->ixl; v[3] = (z->iyh << 8) | z->iyl;
+    hex_line("", v, 4);
+}
+
+void drc_check_failed(uint16_t pc, const z80_t *before, const z80_t *drc,
+                      const z80_t *ref, int16_t used, int16_t used_ref,
+                      uint16_t sum_drc, uint16_t sum_ref) {
+    ia16_disable_irq();
+    outportb(WS_DISPLAY_CTRL_PORT, 0);
+    text_init();
+    text_print("SELF-CHECK: DIFFERENCE");
+    uint16_t v[6];
+    v[0] = pc;
+    hex_line("PC", v, 1);
+    for (uint8_t i = 0; i < 6; i++)
+        v[i] = (z80_read(pc + i * 2) << 8) | z80_read(pc + i * 2 + 1);
+    hex_line("Z80", v, 4);
+    hex_line("", v + 4, 2);
+    text_print("AF BC DE HL / SP PC IX IY");
+    regs_lines("BEF", before);
+    regs_lines("DRC", drc);
+    regs_lines("REF", ref);
+    v[0] = used; v[1] = used_ref; v[2] = sum_drc; v[3] = sum_ref;
+    hex_line("CYC", v, 2);
+    hex_line("RAM", v + 2, 2);
+    v[0] = gg.mapper[0]; v[1] = gg.mapper[1]; v[2] = gg.mapper[2]; v[3] = gg.mapper[3];
+    hex_line("MAP", v, 4);
+    while (1) {}
+}
+
 static volatile uint8_t vblanks;
 
 static void __attribute__((interrupt, assume_ss_data)) vblank_irq(void) {
@@ -723,9 +771,16 @@ int main(void) {
         // the stubs written through the RAM window must be visible there
         if (*((const uint8_t __far*) MK_FP(DRC_CODE_SEG, 0)) != 0xA3)
             fail("CODE READ", code_bank);
+        uint8_t bad = drc_rt_test_banks();
+        if (bad)
+            fail("BANK TEST", bad);
         gg_cpu_run = drc_z80_run;
         show_stats = true;
-        if (ws_keypad_scan() & WS_KEY_Y2) {
+        if (ws_keypad_scan() & WS_KEY_Y3) {
+            drc_no_links = 1;
+            drc_check = 1;
+            text_print("CPU: RECOMPILER, SELF-CHECK");
+        } else if (ws_keypad_scan() & WS_KEY_Y2) {
             drc_no_links = 1;
             text_print("CPU: RECOMPILER, NO LINKS");
         } else {

@@ -242,6 +242,78 @@ static void drc_helper_op(void) {
     }
 }
 
+/// Check that every PSRAM bank used is the one seen through the linear
+/// area: returns 0, or 1 + the index of the first bad bank.
+uint8_t drc_rt_test_banks(void) {
+    for (uint8_t i = 0; i <= DRC_CODE_BANKS + 1; i++) {
+        uint8_t pattern[2] = { 0x5A, i };
+        psram_write(i, 0xFFF0, pattern, 2);
+        const uint8_t __far *p = MK_FP(DRC_CODE_SEG + ((uint16_t) i << 12), 0xFFF0);
+        if (p[0] != 0x5A || p[1] != i)
+            return i + 1;
+        if (i < DRC_CODE_BANKS && *((const uint8_t __far*) MK_FP(DRC_CODE_SEG + ((uint16_t) i << 12), 0)) != 0xA3)
+            return i + 1;
+    }
+    return 0;
+}
+
+/* === Self-check (diagnostics): every block is also run by the interpreter === */
+
+uint8_t drc_check;
+static z80_t check_z;
+
+#define CHECK_SEG (DRC_TABLE_SEG + 0x1000)   // PSRAM bank code_bank + DRC_CODE_BANKS + 1
+
+static uint16_t ram_sum(void) {
+    const uint8_t *p = (const uint8_t*) IRAM(0x8000);
+    uint16_t s = 0;
+    for (uint16_t i = 0; i < 0x2000; i++)
+        s = (uint16_t) ((s << 1) | (s >> 15)) + p[i];
+    return s;
+}
+
+static void check_begin(void) {
+    check_z = z80;
+    psram_write(DRC_CODE_BANKS + 1, 0, (const uint8_t*) IRAM(0x8000), 0x2000);
+}
+
+// after a block: run the interpreter from the saved state and compare
+static void check_end(uint16_t pc, int16_t used) {
+    z80_t d = z80;
+    uint16_t sum_d = ram_sum();
+    int32_t left = z80.cycles;
+    // back to the state before the block
+    z80 = check_z;
+    const uint8_t __far *src = MK_FP(CHECK_SEG, 0);
+    uint8_t *dst = (uint8_t*) IRAM(0x8000);
+    for (uint16_t i = 0; i < 0x2000; i++)
+        dst[i] = src[i];
+    uint8_t irq = z80.irq;
+    z80.irq = 0;
+    int16_t c = 0;
+    uint16_t steps = 0;
+    while (1) {
+        uint8_t f0 = z80.f, op0 = z80_read(z80.pc);
+        z80.cycles = 0;
+        c += 1 - z80_run(1);
+        steps++;
+        // (the recompiler leaves the undocumented bits 3 and 5 of F at 0)
+        if (z80.f != f0 && op0 != 0xF1 && op0 != 0x08)
+            z80.f &= 0xD7;
+        if ((z80.pc == d.pc && c >= used) || c > used + 100 || steps > 2000)
+            break;
+    }
+    z80.irq = irq;
+    uint16_t sum_r = ram_sum();
+    if (z80.pc != d.pc || c != used || z80.a != d.a || (z80.f & 0xD7) != (d.f & 0xD7)
+        || z80.b != d.b || z80.c != d.c || z80.d != d.d || z80.e != d.e
+        || z80.h != d.h || z80.l != d.l || z80.sp != d.sp
+        || z80.ixl != d.ixl || z80.ixh != d.ixh || z80.iyl != d.iyl || z80.iyh != d.iyh
+        || sum_r != sum_d)
+        drc_check_failed(pc, &check_z, &d, &z80, used, c, sum_d, sum_r);
+    z80.cycles = left;
+}
+
 int32_t drc_z80_run(int32_t cycles) {
     z80.cycles += cycles;
     while (z80.cycles > 0) {
@@ -290,6 +362,9 @@ int32_t drc_z80_run(int32_t cycles) {
         pending_link = 0;
         int16_t start = z80.cycles > 30000 ? 30000 : (int16_t) z80.cycles;
         drc_st.cycles = start;
+        uint32_t io_before = drc_stat_helper[1] + drc_stat_helper[2] + drc_stat_helper[3] + drc_stat_helper[4];
+        if (drc_check)
+            check_begin();
 #ifdef GGSWAN_HOST
         host_trace(pc, z80.b, z80.h << 8 | z80.l);
 #endif
@@ -308,6 +383,10 @@ int32_t drc_z80_run(int32_t cycles) {
             drc_stat_nolink++;
         }
         drc_stat_dispatch++;
+        // (blocks that used helpers are not checked: running their I/O
+        // twice would not give the same results)
+        if (drc_check && io_before == drc_stat_helper[1] + drc_stat_helper[2] + drc_stat_helper[3] + drc_stat_helper[4])
+            check_end(pc, start - drc_st.cycles);
         z80.cycles -= start - drc_st.cycles;
     }
     return z80.cycles;

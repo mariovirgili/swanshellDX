@@ -7,6 +7,7 @@
 
 #include <stdint.h>
 #include "../drc/drc.h"
+#include "z80.h"
 
 /// Segments of the linear ROM area where the code cache is executed
 /// (DRC_CODE_BANKS banks of 64 KiB)...
@@ -21,6 +22,12 @@ extern uint32_t drc_stat_blocks, drc_stat_flushes, drc_stat_interp;
 extern uint32_t drc_stat_helper[5], drc_stat_dispatch, drc_stat_nolink;
 /// diagnostics: do not link blocks
 extern uint8_t drc_no_links;
+/// diagnostics: run every block with the interpreter too, compare
+extern uint8_t drc_check;
+/// main.c: show a difference found by the self-check (does not return)
+void drc_check_failed(uint16_t pc, const z80_t *before, const z80_t *drc,
+                      const z80_t *ref, int16_t used, int16_t used_ref,
+                      uint16_t sum_drc, uint16_t sum_ref);
 
 /// bank: PSRAM bank behind linear segment DRC_CODE_SEG
 void drc_rt_init(uint16_t bank);
@@ -28,6 +35,8 @@ void drc_rt_init(uint16_t bank);
 extern uint8_t drc_flush_request;
 /// main.c: put the RAM window back as Game Gear slot 2 needs it
 void ws_ram_window_restore(void);
+/// check the PSRAM banks of the recompiler (0: all right)
+uint8_t drc_rt_test_banks(void);
 /// z80_run() equivalent using the recompiler
 int32_t drc_z80_run(int32_t cycles);
 /// Run translated code at DRC_CODE_SEG:offset (drc_asm.s)
