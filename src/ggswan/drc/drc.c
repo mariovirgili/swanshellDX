@@ -542,7 +542,7 @@ uint16_t drc_emit_ctl_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) {
     B(0x89); B(0xC6);                                // mov si, ax
     B(0x81); B(0xE6); W(0x00C0);                     // and si, C0h
     B(0x81); B(0xFE); W(0x0080);                     // cmp si, 80h (register)
-    B(0x74); B((uint8_t) (slow - (o + 1)));          // je slow
+    uint8_t *regw = jcc8(0x74);                      // je reg
     B(0x50);                                         // push ax
     B(0xC6); B(0x06); W(VA(latch_full)); B(0);       // latch_full = 0
     B(0x88); B(0xC4);                                // mov ah, al
@@ -564,6 +564,29 @@ uint16_t drc_emit_ctl_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) {
     land8(done);
     B(0x58);                                         // pop ax
     B(0xF8); B(0xC3);                                // clc; ret
+    // register write: register 8 (horizontal scroll) with the value of the
+    // last split recorded changes nothing else: done here; others: C
+    land8(regw);
+    B(0x89); B(0xC6);                                // mov si, ax
+    B(0x83); B(0xE6); B(0x0F);                       // and si, 0Fh
+    B(0x83); B(0xFE); B(0x08);                       // cmp si, 8
+    B(0x75); B((uint8_t) (slow - (o + 1)));          // jne slow
+    B(0x50);                                         // push ax
+    B(0x8A); B(0x26); W(VA(latch));                  // mov ah, [latch]
+    B(0x3A); B(0x26); W(SA(hs_last));                // cmp ah, [hs_last]
+    uint8_t *diff = jcc8(0x75);                      // jne differ
+    B(0x88); B(0x26); W(VA(reg) + 8);                // mov [reg + 8], ah
+    B(0x88); B(0x26); W(VA(addr));                   // mov [addr], ah
+    B(0x88); B(0xC4);                                // mov ah, al
+    B(0x80); B(0xE4); B(0x3F);                       // and ah, 3Fh
+    B(0x88); B(0x26); W(VA(addr) + 1);               // mov [addr + 1], ah
+    B(0xC6); B(0x06); W(VA(code)); B(2);             // code = 2
+    B(0xC6); B(0x06); W(VA(latch_full)); B(0);       // latch_full = 0
+    B(0x58);                                         // pop ax
+    B(0xF8); B(0xC3);                                // clc; ret
+    land8(diff);
+    B(0x58);                                         // pop ax
+    B(0xF9); B(0xC3);                                // stc; ret
     return (uint16_t) (o - o_start);
 }
 

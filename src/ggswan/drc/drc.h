@@ -62,7 +62,8 @@ typedef struct {
     uint16_t cur_seg;     // code segment of the last exit (set by the stubs)
     uint16_t l0_slot;     // DYN: L0 entry being filled
     uint8_t ram_fail;     // a block in RAM found its code changed
-    uint8_t pad3;
+    uint8_t hs_last;      // main.c: VDP register 8 value of the last scroll
+                          // split recorded (an equal write changes nothing)
 } drc_state_t;
 
 /// Helper operations: generated code sets drc_state.op (and arg/val),

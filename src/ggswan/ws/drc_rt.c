@@ -41,7 +41,7 @@ uint16_t drc_entry[2];   // far pointer used by drc_enter: offset, segment
 #define STUB_LDI    0x0480   // (LDD: + DRC_LDD_DELTA)
 #define STUB_HCALL  0x0580   // helpers called without leaving the block
 #define STUB_CTL    0x05C0   // OUT (BFh),A
-#define CACHE_START 0x0620
+#define CACHE_START 0x0660
 // translation buffer in free IRAM (between the font tiles and the mask tile)
 #define BUF_ADDR    0xA600
 /// DYN L0 cache: 512 direct-mapped entries of 8 bytes in free IRAM (in the

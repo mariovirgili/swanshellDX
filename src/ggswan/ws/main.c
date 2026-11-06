@@ -323,11 +323,16 @@ void gg_platform_line(uint16_t line) {
 // A write to the horizontal scroll register: it takes effect from the next
 // line. WS x shows Game Gear picture column x + 16.
 static void hscroll_write(uint8_t value) {
-    uint16_t line = gg_current_line() + 1;
     uint8_t v = 16 - value;
+    // the same value as the last split: nothing changes (and the line, which
+    // takes some work to find, is not needed)
+    if (v == rec_val[rec_n - 1])
+        return;
+    uint16_t line = gg_current_line() + 1;
     if (line <= GG_VIEW_Y) {
         rec_val[0] = v;   // before the view: the value for its first line
         rec_n = 1;
+        drc_st.hs_last = value;
         return;
     }
     uint16_t y = line - GG_VIEW_Y;
@@ -339,7 +344,10 @@ static void hscroll_write(uint8_t value) {
         rec_line[rec_n] = y;
         rec_val[rec_n] = v;
         rec_n++;
+    } else {
+        return;
     }
+    drc_st.hs_last = value;
 }
 
 #ifndef GGSWAN_HOST
@@ -488,6 +496,7 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
     // record the next frame: it starts with the current value
     rec_val[0] = 16 - gg.vdp.reg[8];
     rec_n = 1;
+    drc_st.hs_last = gg.vdp.reg[8];
     if (!(gg.frame & 7))
         update_backdrop();
 
@@ -707,11 +716,18 @@ static int32_t interp_run(int32_t cycles) {
 }
 
 static volatile uint8_t vblanks;
+// frame limiter: the Game Gear shows 59.92 frames a second, the WS 75.47:
+// every WS frame earns 5992, a Game Gear frame costs 7547
+#define FRAME_EARN 5992
+#define FRAME_COST 7547
+static volatile uint16_t frame_credit;
 static volatile uint16_t prof_count[PROF_COUNT];
 static volatile uint16_t prof_total;
 
 static void __attribute__((interrupt, assume_ss_data)) vblank_irq(void) {
     vblanks++;
+    if (frame_credit < 3 * FRAME_COST)   // (no catching up after slow parts)
+        frame_credit += FRAME_EARN;
     // profiler: one sample of what the plugin is doing, 75 times a second
     prof_count[prof_phase]++;
     prof_total++;
@@ -759,10 +775,12 @@ static bool show_stats;
 // VI end of frame video, AL the rest
 static void show_profile(void) {
     static const char __far labels[] = "ALCDDIPOSTINTRVI";   // (enum order)
-    uint16_t total = prof_total;
-    if (total < 600)
+    uint16_t total = prof_total - prof_count[PROF_IDLE];   // (time spent busy)
+    if (prof_total < 600)
         return;
-    for (uint8_t i = 0; i < PROF_COUNT; i++) {
+    if (total == 0)
+        total = 1;
+    for (uint8_t i = 0; i < PROF_IDLE; i++) {
         uint32_t pct = (uint32_t) prof_count[i] * 100 / total;
         if (pct > 99) pct = 99;
         char t[5];
@@ -890,6 +908,7 @@ int main(void) {
     }
 
     memset(gg_ram, 0, 0x2000);
+    drc_st.hs_last = 16;   // (rec_val[0] = 0: register value 16)
     video_init();
     sound_init();
     gg_init(banks);
@@ -901,6 +920,14 @@ int main(void) {
 
     uint8_t frames = 0;
     while (1) {
+        // never faster than the Game Gear (waiting time is not in the profile)
+        prof_phase = PROF_IDLE;
+        while (frame_credit < FRAME_COST)
+            __asm__ volatile ("hlt");
+        ia16_disable_irq();
+        frame_credit -= FRAME_COST;
+        ia16_enable_irq();
+        prof_phase = PROF_OTHER;
         read_keys();
         gg_run_frame();
         video_present();

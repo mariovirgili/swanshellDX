@@ -46,6 +46,7 @@ enum {
     PROF_INTERP,      // interpreter (interrupts, RAM code, interpreter mode)
     PROF_TRANSLATE,   // translating blocks
     PROF_VIDEO,       // end of frame: scroll, sprites, colors
+    PROF_IDLE,        // waiting: never faster than the Game Gear (not shown)
     PROF_COUNT
 };
 extern volatile uint8_t prof_phase;
