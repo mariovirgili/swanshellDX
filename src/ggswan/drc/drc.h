@@ -83,8 +83,20 @@ typedef struct {
                           // entry bits 9-11 (h flip, v flip, palette)
     uint8_t vram_class[65]; // main.c: for each 256-byte VRAM page, bit 0:
                           // in the name table, bit 1: the sprite table;
-                          // [64] (past the end, a run that wraps): 1
+                          // [64] (past the end, a run that wraps): 1;
+                          // bit 3: tile data written now goes to the log
+                          // (main.c: deferred tile writes, see there)
+    uint8_t vram_class_defer[64]; // main.c: vram_class with bit 3 on the
+                          // tile data pages
+    uint8_t defer;        // main.c: tile writes deferred (from the frame
+                          // interrupt to the end of the frame)
+    uint16_t log_top;     // main.c: end of the log of deferred writes
 } drc_state_t;
+
+// the log of deferred tile writes (IRAM): entries of VRAM address (word),
+// length (byte), the bytes
+#define DRC_LOG_ADDR 0xF200
+#define DRC_LOG_END  0xFC00
 
 /// Helper operations: generated code sets drc_state.op (and arg/val),
 /// then calls the helper routine. The helper routine stores AX, CX, DX,
@@ -99,6 +111,7 @@ enum {
     DRC_H_OUTD_RUN,    // routine (not VRAM): z80 registers in and out
     DRC_H_WRITE_MAP,   // write to a mapper register that changes neither
                        // slot 0 nor the slot of the block: it may go on
+    DRC_H_SYNC,        // write the deferred tile writes now, stop deferring
 };
 
 typedef struct {
@@ -119,6 +132,7 @@ typedef struct {
     uint16_t ctl_off;      // routine for OUT (BFh),A (drc_emit_ctl_stub; 0: helper)
     uint16_t ram_blocks;   // translate code in work RAM too (runtime)
     uint16_t cram_off;     // routine for a byte to CRAM (val; 0: the helper)
+    uint16_t cls_off;      // routine for a VRAM byte outside tile data (0: inline)
     uint8_t no_trace;      // diagnostics: do not follow JP nn / JR e in a block
     uint8_t no_inline;     // diagnostics: do not inline CALLed routines
     uint8_t no_fast;       // diagnostics: no rep movsb runs, all flags built
@@ -140,6 +154,7 @@ typedef struct {
 /// which will be placed at code-segment offset out_off. Returns false if
 /// the first instruction can not be translated (the caller interprets it).
 /// Write the routine for runs of OUTI (dec = 0) or OUTD; returns its length
+uint16_t drc_emit_cls_stub(const drc_env_t *env, uint8_t *out, uint16_t out_off);
 uint16_t drc_emit_run_stub(const drc_env_t *env, uint8_t *out, uint16_t out_off, uint8_t dec);
 
 /// Write the routine for runs of LDI (dec = 0) or LDD; returns its length

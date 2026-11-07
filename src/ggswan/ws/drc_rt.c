@@ -41,6 +41,7 @@ uint16_t drc_entry[2];   // far pointer used by drc_enter: offset, segment
 #define STUB_HELPER 0x0020
 #define STUB_DYN    0x0040
 #define STUB_NT     0x0180
+#define STUB_CLS    0x0970   // a VRAM byte outside tile data (drc.c)
 #define STUB_CRAM   0x01E0   // a byte to CRAM
 #define STUB_OUTI   0x0240   // (OUTD: + DRC_OUTD_DELTA)
 #define STUB_LDI    0x04C0   // (LDD: + DRC_LDD_DELTA)
@@ -581,6 +582,7 @@ void drc_rt_init(uint16_t bank) {
         drc_st.nt_flags[i] = (i & 1 ? 0x4000 : 0) | (i & 2 ? 0x8000 : 0) | (i & 4 ? 0x0200 : 0);
     env.no_fast = drc_no_fast;
     env.cram_off = drc_no_fast ? 0 : STUB_CRAM;   // (X4: CRAM through the helper)
+    env.cls_off = drc_no_fast ? 0 : STUB_CLS;     // (X4: inline, no deferred tile writes)
     // following JP/JR inside a block is off by default: it breaks the
     // scroll and the status bar of Wonder Boy III on the WonderSwan (not
     // on the PC tests, cause not found) and gained under 1%
@@ -637,6 +639,13 @@ void drc_rt_init(uint16_t bank) {
 #endif
         env.nt_stub_off = STUB_NT;
         uint16_t end = put_nt(stub, STUB_NT);
+        uint16_t l6 = drc_emit_cls_stub(&env, stub + STUB_CLS, STUB_CLS);
+#ifdef GGSWAN_HOST
+        if (STUB_CTL + l5 > STUB_CLS || STUB_CLS + l6 > CACHE_START) { printf("CLS stub: no room\n"); exit(1); }
+        if (getenv("GGSWAN_STUBS")) printf("CLS stub %X bytes\n", l6);
+#else
+        (void) l6;
+#endif
         uint16_t cram_end = put_cram(stub, STUB_CRAM);
         env.outi_off = STUB_OUTI;
         uint16_t l1 = drc_emit_run_stub(&env, stub + STUB_OUTI, STUB_OUTI, 0);
@@ -728,6 +737,12 @@ uint8_t drc_no_fast;
 
 uint32_t drc_stat_helper[5], drc_stat_dispatch, drc_stat_nolink;
 static void drc_helper(void) {
+    if (drc_st.op == DRC_H_SYNC) {
+        // deferred tile writes (main.c): nothing else changes
+        prof_phase = PROF_VIDEO;
+        gg_platform_vram_sync();
+        return;
+    }
     if (drc_st.op == DRC_H_OUT || drc_st.op == DRC_H_IN) {
         // ports: they never change the mapping, only the timing plan
         // (z80_break): no mapper snapshot

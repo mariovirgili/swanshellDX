@@ -92,6 +92,7 @@ static inline void update_irq(void) {
 }
 
 static uint8_t vdp_read_data(void) {
+    gg_platform_vram_sync();   // (tile writes the platform deferred)
     uint8_t v = gg.vdp.read_buffer;
     gg.vdp.read_buffer = gg_vram[gg.vdp.addr & 0x3FFF];
     gg.vdp.addr = (gg.vdp.addr + 1) & 0x3FFF;
@@ -114,8 +115,11 @@ static void vdp_write_data(uint8_t v) {
         }
     } else {
         uint16_t va = gg.vdp.addr & 0x3FFF;
-        gg_vram[va] = v;
-        gg_platform_vram_write(va, v);
+        // (the platform may keep the byte for later: deferred tile writes)
+        if (!gg_platform_vram_defer(va, v)) {
+            gg_vram[va] = v;
+            gg_platform_vram_write(va, v);
+        }
     }
     gg.vdp.read_buffer = v;
     gg.vdp.addr = (gg.vdp.addr + 1) & 0x3FFF;
@@ -143,6 +147,7 @@ static void vdp_write_control(uint8_t v) {
     switch (gg.vdp.code) {
     case 0:
         // VRAM read: prefetch
+        gg_platform_vram_sync();
         gg.vdp.read_buffer = gg_vram[gg.vdp.addr];
         gg.vdp.addr = (gg.vdp.addr + 1) & 0x3FFF;
         break;
@@ -292,8 +297,10 @@ static void vdp_line(uint16_t line) {
     }
 
     // frame interrupt
-    if (line == GG_ACTIVE_LINES + 1)
+    if (line == GG_ACTIVE_LINES + 1) {
         gg.vdp.status |= 0x80;
+        gg_platform_vblank();
+    }
 
     update_irq();
 }
@@ -325,8 +332,10 @@ static void vdp_lines(uint16_t from, uint16_t to) {
         c = r;
     gg.vdp.line_counter = c;
     // frame interrupt
-    if (from <= GG_ACTIVE_LINES + 1 && to > GG_ACTIVE_LINES + 1)
+    if (from <= GG_ACTIVE_LINES + 1 && to > GG_ACTIVE_LINES + 1) {
         gg.vdp.status |= 0x80;
+        gg_platform_vblank();
+    }
     gg.vdp.vcounter = to - 1;
     update_irq();
 }

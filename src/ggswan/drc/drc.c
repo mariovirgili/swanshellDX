@@ -396,6 +396,19 @@ static void vram_fast(uint8_t src, uint8_t **slow1) {
     // the page class (main.c): 1 name table, 2 sprite table, 0 tile data
     B(0x89); B(0xF7);                                    // mov di, si
     B(0xC1); B(0xEF); B(0x08);                           // shr di, 8
+    if (env->cls_off) {
+        // (8: a deferred tile page) all in the routine
+        B(0xF6); B(0x85); W(SA(vram_class)); B(0x0B);    // test byte [di + class], 0Bh
+        uint8_t *plain = jcc8(0x74);                     // jz (tile data)
+        call_near(env->cls_off);
+        land8(plain);
+        B(0x46);                                         // inc si
+        B(0x81); B(0xE6); W(0x3FFF);                     // and si, 3FFFh
+        B(0x89); B(0x36); W(VA(addr));                   // mov [addr], si
+        B(0xC6); B(0x06); W(VA(latch_full)); B(0);       // mov byte [latch_full], 0
+        land8(cram_end);
+        return;
+    }
     B(0xF6); B(0x85); W(SA(vram_class)); B(3);           // test byte [di + class], 3
     uint8_t *plain = jcc8(0x74);                         // jz (tile data)
     B(0xF6); B(0x85); W(SA(vram_class)); B(1);           // test byte [di + class], 1
@@ -411,6 +424,40 @@ static void vram_fast(uint8_t src, uint8_t **slow1) {
     B(0x89); B(0x36); W(VA(addr));                       // mov [addr], si
     B(0xC6); B(0x06); W(VA(latch_full)); B(0);           // mov byte [latch_full], 0
     land8(cram_end);
+}
+
+/*
+ * Routine for a VRAM byte outside tile data (at env->cls_off), called
+ * by the VRAM paths after the byte is stored, with SI = VRAM address, DI =
+ * its page: the name table routine; the sprite table: sprites_dirty = 1;
+ * a tile page while tile writes are deferred (class bit 3, main.c): a
+ * single byte does not go to the log: the log is written now and
+ * deferring stops (helper SYNC), then the byte again (the log may have
+ * had an older one). Keeps SI, DI.
+ */
+uint16_t drc_emit_cls_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) {
+    env = e;
+    o = o_start = out; o_base = out_off;
+    B(0xF6); B(0x85); W(SA(vram_class)); B(8);       // test byte [di + class], 8
+    uint8_t *c1 = jcc8(0x74);                        // jz
+    B(0xC6); B(0x06); W(SA(val)); B(2);              // (val: why, for the tests)
+    B(0xC6); B(0x06); W(SA(op)); B(DRC_H_SYNC);      // mov byte [op], SYNC
+    call_near(e->helper_off);                        // (keeps SI, DI, ES, the registers)
+    B(0x50);                                         // push ax
+    B(0xA0); W(VA(read_buffer));                     // mov al, [read_buffer] (the byte)
+    B(0x88); B(0x84); W(e->vram_addr);               // mov [si + vram], al
+    B(0x58);                                         // pop ax
+    B(0xF6); B(0x85); W(SA(vram_class)); B(3);       // test byte [di + class], 3
+    uint8_t *c2 = jcc8(0x75);                        // jnz
+    B(0xC3);                                         // ret (tile data)
+    land8(c1); land8(c2);
+    B(0xF6); B(0x85); W(SA(vram_class)); B(1);       // test byte [di + class], 1
+    uint8_t *sat = jcc8(0x74);                       // jz sat
+    B(0xE9); W((uint16_t) (e->nt_stub_off - (o_base + (uint16_t) (o - o_start) + 2)));   // jmp NT
+    land8(sat);
+    B(0xC6); B(0x06); W(SA(sprites_dirty)); B(1);    // sprites_dirty = 1
+    B(0xC3);                                         // ret
+    return (uint16_t) (o - o_start);
 }
 
 /*
@@ -533,6 +580,56 @@ uint16_t drc_emit_run_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
         land8(cram);
         B(0xE9); W((uint16_t) (loop - (o + 2)));     // jmp loop
         land8(go);
+        if (e->cls_off) {
+            /*
+             * Tile writes deferred (class bit 3, main.c): the run goes to
+             * the log instead of VRAM (same results otherwise). A run that
+             * also touches the sprite table, or no room in the log: the
+             * log is written now and deferring stops (helper SYNC).
+             */
+            B(0xF6); B(0xC2); B(0x08);               // test dl, 8
+            uint8_t *live = jcc8(0x74);              // jz live
+            B(0xF6); B(0xC2); B(0x03);               // test dl, 3
+            uint8_t *s1 = jcc8(0x75);                // jnz sync
+            B(0x89); B(0xFA);                        // mov dx, di (k)
+            B(0x03); B(0x16); W(SA(log_top));        // add dx, [log_top]
+            B(0x83); B(0xC2); B(0x03);               // add dx, 3
+            B(0x81); B(0xFA); W(DRC_LOG_END);        // cmp dx, log end
+            uint8_t *s2 = jcc8(0x77);                // ja sync
+            B(0x57);                                 // push di (k)
+            B(0x8B); B(0x3E); W(SA(log_top));        // mov di, [log_top]
+            B(0x89); B(0x16); W(SA(log_top));        // mov [log_top], dx
+            B(0x89); B(0x35);                        // mov [di], si (VRAM address)
+            B(0x5A);                                 // pop dx (k)
+            B(0x88); B(0x55); B(0x02);               // mov [di + 2], dl (length)
+            B(0x83); B(0xC7); B(0x03);               // add di, 3
+            B(0x28); B(0xD5);                        // sub ch, dl (B -= k)
+            B(0x51);                                 // push cx
+            B(0x89); B(0xD1);                        // mov cx, dx (k)
+            B(0x56);                                 // push si (VRAM start)
+            B(0x89); B(0xDE);                        // mov si, bx
+            B(0x1E); B(0x06); B(0x1F); B(0x07);      // push ds; push es; pop ds; pop es
+            B(0xFC);                                 // cld
+            B(0xF3); B(0xA4);                        // rep movsb
+            B(0x06); B(0x1F);                        // push es; pop ds (DS, ES: data)
+            B(0x8A); B(0x65); B(0xFF);               // mov ah, [di - 1] (last byte)
+            B(0x88); B(0x26); W(VA(read_buffer));    // mov [read_buffer], ah
+            B(0xC6); B(0x06); W(VA(latch_full)); B(0);   // mov byte [latch_full], 0
+            B(0x5F);                                 // pop di (VRAM start)
+            B(0x01); B(0xF7);                        // add di, si
+            B(0x29); B(0xDF);                        // sub di, bx (+ k)
+            B(0x81); B(0xE7); W(0x3FFF);             // and di, 3FFFh
+            B(0x89); B(0x3E); W(VA(addr));           // mov [addr], di
+            B(0x89); B(0xF3);                        // mov bx, si (HL + k)
+            B(0x59);                                 // pop cx
+            B(0x5A);                                 // pop dx
+            B(0xE9); W((uint16_t) (flags - (o + 2)));    // jmp flags
+            land8(s1); land8(s2);
+            B(0xC6); B(0x06); W(SA(val)); B(1);      // sync: (val: why, for the tests)
+            B(0xC6); B(0x06); W(SA(op)); B(DRC_H_SYNC);  // mov byte [op], SYNC
+            call_near(e->helper_off);                // (keeps SI, DI, ES, the registers)
+            land8(live);
+        }
         // sprite table touched: rebuild the sprites
         B(0xF6); B(0xC2); B(0x02);                   // test dl, 2
         uint8_t *clean = jcc8(0x74);                 // jz clean
@@ -710,6 +807,15 @@ uint16_t drc_emit_ctl_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) {
     B(0x88); B(0x26); W(VA(addr));                   // mov [addr], ah
     B(0xA8); B(0xC0);                                // test al, C0h
     uint8_t *done = jcc8(0x75);                      // jnz done (not a read)
+    if (e->cls_off) {
+        // deferred tile writes (main.c): written first
+        B(0x80); B(0x3E); W(SA(defer)); B(0);        // cmp byte [defer], 0
+        uint8_t *nd = jcc8(0x74);                    // je
+        B(0xC6); B(0x06); W(SA(val)); B(3);          // (val: why, for the tests)
+        B(0xC6); B(0x06); W(SA(op)); B(DRC_H_SYNC);  // mov byte [op], SYNC
+        call_near(e->helper_off);
+        land8(nd);
+    }
     B(0x8B); B(0x36); W(VA(addr));                   // mov si, [addr]
     B(0x8A); B(0xA4); W(env->vram_addr);             // mov ah, [si + vram]
     B(0x88); B(0x26); W(VA(read_buffer));            // mov [read_buffer], ah
@@ -1964,6 +2070,16 @@ static int emit(int i) {
                 clobber(live);
                 if (env->vdp_addr && env->ctl_off && (I->nn & 0xC1) == 0x80) {
                     // VDP data port: the prefetched byte, prefetch the next
+                    if (env->cls_off) {
+                        // deferred tile writes (main.c): written first
+                        B(0x80); B(0x3E); W(SA(defer)); B(0);       // cmp byte [defer], 0
+                        uint8_t *nd = jcc8(0x74);                   // je
+                        B(0xC6); B(0x06); W(SA(val)); B(4);         // (val: why, for the tests)
+                        B(0xC6); B(0x06); W(SA(op)); B(DRC_H_SYNC); // mov byte [op], SYNC
+                        call_near(env->helper_off);
+                        land8(nd);
+                        hl_es = 0;
+                    }
                     B(0x8B); B(0x36); W(VA(addr));                  // mov si, [addr]
                     B(0x8A); B(0x84); W(env->vram_addr);            // mov al, [si + vram]
                     B(0x86); B(0x06); W(VA(read_buffer));           // xchg al, [read_buffer]
