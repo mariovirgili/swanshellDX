@@ -114,16 +114,24 @@ static uint8_t fkind;      // where the flags are (K_AH: in AH)
 static uint8_t cf_valid;   // K_INC / K_DEC: x86 CF holds Z80 C
 static uint8_t hl_es;      // ES is set up for the slot of HL
 
-static void materialize(void) {
+// The flags in AH; need: the ones read later (the others may be left
+// wrong: nobody reads them before they are written again)
+static void materialize_need(uint8_t need) {
     switch (fkind) {
     case K_ADD: case K_INC: case K_SUB: case K_DEC: {
         uint8_t mask = (fkind == K_SUB || fkind == K_DEC) ? 0xD3 : 0xD1;
         B(0x9F);                         // lahf
-        B(0x70); B(0x05);                // jo +5
-        B(0x80); B(0xE4); B(mask);       // and ah, mask (P/V = 0)
-        B(0xEB); B(0x06);                // jmp +6
-        B(0x80); B(0xE4); B(mask);       // and ah, mask
-        B(0x80); B(0xCC); B(0x04);       // or ah, 4 (P/V = 1)
+        if (need & FP) {
+            // P/V = overflow
+            B(0x70); B(0x05);            // jo +5
+            B(0x80); B(0xE4); B(mask);   // and ah, mask (P/V = 0)
+            B(0xEB); B(0x06);            // jmp +6
+            B(0x80); B(0xE4); B(mask);   // and ah, mask
+            B(0x80); B(0xCC); B(0x04);   // or ah, 4 (P/V = 1)
+        } else if (need & ~FC) {
+            B(0x80); B(0xE4); B(mask);   // and ah, mask (P/V not read)
+        }
+        // (only C: as LAHF leaves it)
         break;
     }
     case K_AND:
@@ -139,11 +147,13 @@ static void materialize(void) {
     fkind = K_AH;
 }
 
+static void materialize(void) { materialize_need(FALL); }
+
 // x86 flags are about to be destroyed: save the Z80 flags if needed
 static void clobber(uint8_t live) {
     if (fkind != K_AH) {
         if (live)
-            materialize();
+            materialize_need(live);
         else
             fkind = K_AH;   // dead: AH holds stale flags nobody reads
     }
