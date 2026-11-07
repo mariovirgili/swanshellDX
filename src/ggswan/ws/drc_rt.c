@@ -90,12 +90,26 @@ static void psram_write(uint8_t which, uint16_t off, const uint8_t *src, uint16_
     outportw(WS_CART_EXTBANK_RAM_PORT, code_bank + which);
     uint8_t __far *dst = MK_FP(0x1000, off);
     if (src) {
-        for (uint16_t i = 0; i < len; i++)
-            dst[i] = src[i];
+        _fmemcpy(dst, src, len);
     } else {
         for (uint16_t i = 0; i < len; i++)
             dst[i] = 0;
     }
+    ws_ram_window_restore();   // back to Game Gear slot 2 (main.c)
+}
+
+// a block table entry (code == 0xFF: leave T_CODE alone), in one window
+// switch instead of one per field
+static void table_put(uint16_t h, uint16_t pc, uint16_t off, uint8_t bank, uint8_t code) {
+    outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_ENABLE);
+    outportw(WS_CART_EXTBANK_RAM_PORT, code_bank + DRC_CODE_BANKS);
+    uint16_t __far *w = MK_FP(0x1000, 0);
+    uint8_t __far *b = MK_FP(0x1000, 0);
+    w[(T_PC / 2) + h] = pc;
+    w[(T_OFF / 2) + h] = off;
+    b[T_BANK + h] = bank;
+    if (code != 0xFF)
+        b[T_CODE + h] = code;
     ws_ram_window_restore();   // back to Game Gear slot 2 (main.c)
 }
 
@@ -118,9 +132,15 @@ static void link_patch(uint16_t seg, uint16_t link, uint16_t target_seg, uint16_
     } else {
         j[0] = 0xEA; j[1] = target; j[2] = target >> 8; j[3] = target_seg; j[4] = target_seg >> 8;
     }
-    psram_write((seg - DRC_CODE_SEG) >> 12, link, j, 5);
+    // (one window switch for the jump and the guard byte)
+    outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_ENABLE);
+    outportw(WS_CART_EXTBANK_RAM_PORT, code_bank + ((seg - DRC_CODE_SEG) >> 12));
+    uint8_t __far *dst = MK_FP(0x1000, link);
+    for (uint8_t i = 0; i < 5; i++)
+        dst[i] = j[i];
     if (guard)
-        psram_write((seg - DRC_CODE_SEG) >> 12, link - 3, &bank, 1);
+        dst[-3] = bank;
+    ws_ram_window_restore();
 #ifdef GGSWAN_HOST
     host_code_changed();
 #endif
@@ -607,19 +627,13 @@ static uint16_t translate(uint16_t pc, uint8_t bank, uint16_t h) {
     uint8_t *buf = (uint8_t*) IRAM(BUF_ADDR);
     if (!drc_translate(&env, pc, buf, cache_top, BUF_SIZE, &r)) {
         // remember that this one is left to the interpreter
-        uint16_t marker = DRC_NOT_TRANSLATED;
-        psram_write(DRC_CODE_BANKS, T_PC + h * 2, (const uint8_t*) &pc, 2);
-        psram_write(DRC_CODE_BANKS, T_OFF + h * 2, (const uint8_t*) &marker, 2);
-        psram_write(DRC_CODE_BANKS, T_BANK + h, &bank, 1);
+        table_put(h, pc, DRC_NOT_TRANSLATED, bank, 0xFF);
         return DRC_NOT_TRANSLATED;
     }
     uint16_t off = cache_top;
     code_write(off, buf, r.length);
     cache_top = (cache_top + r.length + 1) & ~1;
-    psram_write(DRC_CODE_BANKS, T_PC + h * 2, (const uint8_t*) &pc, 2);
-    psram_write(DRC_CODE_BANKS, T_OFF + h * 2, (const uint8_t*) &off, 2);
-    psram_write(DRC_CODE_BANKS, T_BANK + h, &bank, 1);
-    psram_write(DRC_CODE_BANKS, T_CODE + h, &cache_bank, 1);
+    table_put(h, pc, off, bank, cache_bank);
 #ifdef GGSWAN_HOST
     {
         const uint16_t __far *tw = MK_FP(DRC_TABLE_SEG, 0);
