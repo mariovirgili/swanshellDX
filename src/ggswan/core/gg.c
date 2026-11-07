@@ -157,6 +157,11 @@ static void vdp_write_control(uint8_t v) {
             uint8_t old = gg.vdp.reg[r];
             gg.vdp.reg[r] = gg.vdp.latch;
             gg_platform_vdp_reg(r, gg.vdp.latch);
+            // display turned on before the end of the view: shown this
+            // frame even if off again at the end (Sonic, slow frames: off
+            // at line 0 and at the end, on in between; see video_present)
+            if (r == 1 && (gg.vdp.latch & 0x40) && gg_current_line() < GG_VIEW_Y + GG_VIEW_H)
+                gg.vdp.reg1_frame |= 0x40;
             update_irq();
             // interrupt settings changed: plan the timing again (the same
             // value again changes nothing)
