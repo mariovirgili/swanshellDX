@@ -67,6 +67,12 @@ typedef struct {
     uint16_t nt_rows[56]; // main.c: for each Game Gear name table row, the
                           // byte offset of its first and (at 28 +) second
                           // row in the WS screen map, FFFFh: none
+    // the line routine at the block exits (drc_rt.c, LINE stub):
+    uint8_t fl_off;       // nonzero: not now (diagnostics, self-check, the
+                          // per-line test mode, a helper stopped the run)
+    uint8_t fast38_bank;  // block table key of the block at 0038h
+    int16_t left_base;    // z80.cycles - the run's start in drc_st.cycles
+    uint16_t fast38[2];   // the block at 0038h: offset, segment (0: none)
 } drc_state_t;
 
 /// Helper operations: generated code sets drc_state.op (and arg/val),

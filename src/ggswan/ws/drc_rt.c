@@ -45,7 +45,8 @@ uint16_t drc_entry[2];   // far pointer used by drc_enter: offset, segment
 #define STUB_LDI    0x04C0   // (LDD: + DRC_LDD_DELTA)
 #define STUB_HCALL  0x05F0   // helpers called without leaving the block
 #define STUB_CTL    0x0640   // OUT (BFh),A
-#define CACHE_START 0x0700
+#define STUB_LINE   0x0700   // the exits' common part, the line routine
+#define CACHE_START 0x0900
 // translation buffer in free IRAM (between the font tiles and the mask tile)
 #define BUF_ADDR    0xA600
 /// DYN L0 cache: 512 direct-mapped entries of 8 bytes in free IRAM (in the
@@ -134,6 +135,177 @@ static uint8_t *put_store_regs(uint8_t *p) {
     uint16_t sp = z + offsetof(z80_t, sp);
     *p++ = 0x89; *p++ = 0x2E; *p++ = sp; *p++ = sp >> 8;                    // mov [sp], bp
     return p;
+}
+
+/*
+ * LINE (at STUB_LINE; EXIT jumps here): the common part of the exits, and
+ * before it the line routine. A block that ran out of cycles at the start
+ * of the line of the next line interrupt (the common case in games with
+ * line interrupts on many lines: Super Monaco GP) does not go back to C:
+ * the line starts here (as gg_fast_line), the interrupt is taken (IM 1, as
+ * the dispatcher) and the code goes on at the block of 0038h, or through
+ * DYN at pc if the Z80 does not take it now. Anything else: the usual exit
+ * (registers stored, back to drc_enter). The same conditions and the same
+ * results as drc_fast_reentry (C), with the Z80 registers still in the x86
+ * ones. Returns the offset of the common part (for HELPER).
+ */
+static uint16_t put_line(uint8_t *stub) {
+    uint8_t *p = stub + STUB_LINE;
+    uint16_t a;
+#define PB(x) (*p++ = (x))
+#define PW(x) (a = (x), *p++ = a, *p++ = a >> 8)
+#define S_(f) ((uint16_t) (env.state_addr + offsetof(drc_state_t, f)))
+#define Z_(f) ((uint16_t) (env.z80_addr + offsetof(z80_t, f)))
+#define V_(f) ((uint16_t) (env.vdp_addr + offsetof(gg_vdp_t, f)))
+    uint8_t *bail[4]; uint8_t nb = 0;
+    uint8_t *common, *tramp;
+    // a conditional jump to common: backwards, through a "jmp common" put
+    // in reach when common is too far
+#define BAIL(op) do { \
+        if (p + 2 - tramp > 120) { \
+            uint16_t r_ = (uint16_t) (common - (p + 5)); \
+            PB(0xEB); PB(3); tramp = p; PB(0xE9); PW(r_); \
+        } \
+        uint8_t b_ = (uint8_t) (tramp - (p + 2)); \
+        PB(op); PB(b_); \
+    } while (0)
+    // EXIT2: out of cycles, line routine on?
+    PB(0x83); PB(0x3E); PW(S_(cycles)); PB(0);       // cmp word [cycles], 0
+    PB(0x7F); bail[nb++] = p++;                      // jg common
+    PB(0x80); PB(0x3E); PW(S_(fl_off)); PB(0);       // cmp byte [fl_off], 0
+    PB(0x74); uint8_t *to_line = p++;                // je LINE
+    common = tramp = p;
+    for (uint8_t i = 0; i < nb; i++) *bail[i] = (uint8_t) (common - (bail[i] + 1));
+    p = put_store_regs(p);
+    uint16_t cur_seg = S_(cur_seg);
+    PB(0x8C); PB(0x0E); PW(cur_seg);                 // mov [cur_seg], cs
+    PB(0xCB);                                        // retf
+    *to_line = (uint8_t) (p - (to_line + 1));
+    // LINE: the checks (nothing changed yet)
+    PB(0x80); PB(0x3E); PW(S_(ram_fail)); PB(0);     // cmp byte [ram_fail], 0
+    BAIL(0x75);                                      // jne common
+    PB(0x8B); PB(0x36); PW(S_(cycles));              // mov si, [cycles]
+    PB(0x03); PB(0x36); PW(S_(left_base));           // add si, [left_base] (left)
+    PB(0x83); PB(0xFE); PB(0x00);                    // cmp si, 0
+    BAIL(0x7F);                                      // jg common
+    PB(0x81); PB(0xFE); PW((uint16_t) -GG_CYCLES_PER_LINE);   // cmp si, -228
+    BAIL(0x7E);                                      // jle common
+    PB(0xF6); PB(0x06); PW(V_(reg)); PB(0x10);       // test byte [reg0], 10h
+    BAIL(0x74);                                      // jz common (no line interrupt)
+    PB(0x80); PB(0x3E); PW(V_(line_counter)); PB(0); // cmp byte [line_counter], 0
+    BAIL(0x75);                                      // jne common
+    PB(0x8B); PB(0x36); PW(V_(started));             // mov si, [started] (e)
+    PB(0x85); PB(0xF6);                              // test si, si
+    BAIL(0x74);                                      // jz common (line 0)
+    PB(0x8B); PB(0x3E); PW(V_(reg) + 10);            // mov di, [reg10]
+    PB(0x81); PB(0xE7); PW(0x00FF);                  // and di, FFh (r)
+    PB(0x81); PB(0xFF); PW(128);                     // cmp di, 128
+    BAIL(0x73);                                      // jae common
+    PB(0x01); PB(0xF7);                              // add di, si
+    PB(0x47);                                        // inc di (e + r + 1)
+    PB(0x81); PB(0xFF); PW(GG_ACTIVE_LINES - 1);     // cmp di, 191
+    BAIL(0x73);                                      // jae common (next not in the picture)
+    PB(0x83); PB(0x3E); PW(V_(frame_given) + 2); PB(0);   // cmp word [frame_given + 2], 0
+    BAIL(0x75);                                      // jne common
+    PB(0x8B); PB(0x3E); PW(V_(line_pos));            // mov di, [line_pos] (e * 228)
+    PB(0x3B); PB(0x3E); PW(V_(frame_given));         // cmp di, [frame_given]
+    BAIL(0x75);                                      // jne common
+    PB(0x80); PB(0x3E); PW(Z_(ei_pending)); PB(0);   // cmp byte [ei_pending], 0
+    BAIL(0x75);                                      // jne common
+    PB(0x80); PB(0x3E); PW(Z_(halted)); PB(0);       // cmp byte [halted], 0
+    BAIL(0x75);                                      // jne common
+    PB(0x80); PB(0x3E); PW(Z_(iff1)); PB(0);         // cmp byte [iff1], 0
+    PB(0x74); uint8_t *no_irq = p++;                 // je NOIRQ
+    PB(0x80); PB(0x3E); PW(Z_(im)); PB(2);           // cmp byte [im], 2
+    BAIL(0x74);                                      // je common
+    PB(0x8D); PB(0x7E); PB(0xFE);                    // lea di, [bp - 2]
+    PB(0x81); PB(0xFF); PW(0xC000);                  // cmp di, C000h
+    BAIL(0x72);                                      // jb common
+    PB(0x81); PB(0xFF); PW(0xDFFF);                  // cmp di, DFFFh
+    BAIL(0x73);                                      // jae common
+    // start the line, take the interrupt
+    PB(0xE8); uint8_t *call1 = p; PW(0);             // call START
+    PB(0xC6); PB(0x06); PW(Z_(iff1)); PB(0);         // iff1 = 0
+    PB(0xC6); PB(0x06); PW(Z_(iff2)); PB(0);         // iff2 = 0
+    PB(0x50);                                        // push ax
+    PB(0xA0); PW(Z_(r));                             // mov al, [r]
+    PB(0x88); PB(0xC4);                              // mov ah, al
+    PB(0xFE); PB(0xC0);                              // inc al
+    PB(0x25); PW(0x807F);                            // and ax, 807Fh
+    PB(0x08); PB(0xE0);                              // or al, ah
+    PB(0xA2); PW(Z_(r));                             // mov [r], al
+    PB(0x8D); PB(0x6E); PB(0xFE);                    // lea bp, [bp - 2]
+    PB(0x8B); PB(0x36); PW(Z_(pc));                  // mov si, [pc]
+    PB(0x89); PB(0xB6); PW((uint16_t) env.ram_delta);   // mov [bp + RAM], si (push pc)
+    PB(0xC7); PB(0x06); PW(Z_(pc)); PW(0x0038);      // pc = 0038h
+    PB(0x83); PB(0x2E); PW(S_(cycles)); PB(13);      // sub word [cycles], 13
+#ifndef GGSWAN_HOST
+    PB(0x83); PB(0x06); PW((uint16_t) &drc_stat_irq); PB(1);          // add word [stat_irq], 1
+    PB(0x83); PB(0x16); PW((uint16_t) &drc_stat_irq + 2); PB(0);      // adc word [stat_irq + 2], 0
+#endif
+    // the block at 0038h, if known for this slot 0 bank; else DYN
+    PB(0x83); PB(0x3E); PW(S_(fast38) + 2); PB(0);   // cmp word [fast38 + 2], 0
+    PB(0x74); uint8_t *to_dyn1 = p++;                // je DYN
+    PB(0xA0); PW(S_(keys) + 1);                      // mov al, [keys + 1] (slot 0)
+    PB(0x3A); PB(0x06); PW(S_(fast38_bank));         // cmp al, [fast38_bank]
+    PB(0x58);                                        // pop ax
+    PB(0x75); uint8_t *to_dyn2 = p++;                // jne DYN
+    PB(0xFF); PB(0x2E); PW(S_(fast38));              // jmp far [fast38]
+    // NOIRQ: start the line, on at pc through DYN
+    *no_irq = (uint8_t) (p - (no_irq + 1));
+    PB(0xE8); uint8_t *call2 = p; PW(0);             // call START
+    PB(0x50);                                        // push ax (as above)
+    *to_dyn1 = (uint8_t) (p - (to_dyn1 + 1));        // (DYN with ax pushed)
+    PB(0x58);                                        // pop ax
+    *to_dyn2 = (uint8_t) (p - (to_dyn2 + 1));
+    {
+        uint16_t r_ = (uint16_t) (env.dyn_off - (uint16_t) (p + 3 - stub));
+        PB(0xE9); PW(r_);                            // jmp DYN
+    }
+    // START: the line starts (as gg_fast_line); SI, DI only
+    uint8_t *start = p;
+    {
+        uint16_t r1 = (uint16_t) (start - (call1 + 2)), r2 = (uint16_t) (start - (call2 + 2));
+        call1[0] = (uint8_t) r1; call1[1] = (uint8_t) (r1 >> 8);
+        call2[0] = (uint8_t) r2; call2[1] = (uint8_t) (r2 >> 8);
+    }
+    PB(0xC6); PB(0x06); PW(V_(line_pending)); PB(1); // line_pending = 1
+    PB(0x8B); PB(0x36); PW(V_(reg) + 10);            // mov si, [reg10]
+    PB(0x81); PB(0xE6); PW(0x00FF);                  // and si, FFh (r)
+    PB(0x50);                                        // push ax
+    PB(0xA0); PW(V_(reg) + 10);                      // mov al, [reg10]
+    PB(0xA2); PW(V_(line_counter));                  // mov [line_counter], al
+    PB(0x58);                                        // pop ax
+    PB(0x8B); PB(0x3E); PW(V_(started));             // mov di, [started]
+    PB(0x89); PB(0x3E); PW(V_(vcounter));            // mov [vcounter], di
+    PB(0x47);                                        // inc di
+    PB(0x89); PB(0x3E); PW(V_(started));             // mov [started], di
+    PB(0x81); PB(0x06); PW(V_(line_pos)); PW(GG_CYCLES_PER_LINE);   // add word [line_pos], 228
+    PB(0xC6); PB(0x06); PW(Z_(irq)); PB(1);          // irq = 1 (update_irq: line, on)
+    // want = (r + 1) * 228 = 256x + 4x - 32x
+    PB(0x46);                                        // inc si (x)
+    PB(0x89); PB(0xF7);                              // mov di, si
+    PB(0xC1); PB(0xE6); PB(0x08);                    // shl si, 8
+    PB(0xC1); PB(0xE7); PB(0x02);                    // shl di, 2
+    PB(0x01); PB(0xFE);                              // add si, di
+    PB(0xC1); PB(0xE7); PB(0x03);                    // shl di, 3
+    PB(0x29); PB(0xFE);                              // sub si, di
+    PB(0x01); PB(0x36); PW(V_(frame_given));         // add [frame_given], si
+    PB(0x83); PB(0x16); PW(V_(frame_given) + 2); PB(0);   // adc word [frame_given + 2], 0
+    PB(0x01); PB(0x36); PW(S_(cycles));              // add [cycles], si
+    PB(0xC7); PB(0x06); PW(S_(link)); PW(0);         // link = 0
+    PB(0xC3);                                        // ret
+#ifdef GGSWAN_HOST
+    if (p > stub + CACHE_START) { printf("LINE stub too long\n"); exit(1); }
+    if (getenv("GGSWAN_STUBS")) printf("LINE stub %X bytes\n", (unsigned) (p - stub - STUB_LINE));
+#endif
+#undef PB
+#undef PW
+#undef S_
+#undef Z_
+#undef V_
+#undef BAIL
+    return (uint16_t) (common - stub);
 }
 
 /*
@@ -296,10 +468,11 @@ static uint16_t put_nt(uint8_t *stub, uint16_t at) {
     return (uint16_t) (p - stub);
 }
 
-// the block at 0038h (IM 1 interrupts), for drc_fast_reentry: offset,
-// segment (0: unknown), block table key
-static uint16_t fast38_off, fast38_seg;
-static uint8_t fast38_bank;
+// the block at 0038h (IM 1 interrupts), for the line routine and
+// drc_fast_reentry: drc_st.fast38 (offset, segment: 0 unknown), fast38_bank
+#define fast38_off drc_st.fast38[0]
+#define fast38_seg drc_st.fast38[1]
+#define fast38_bank drc_st.fast38_bank
 
 static void flush(void) {
     pending_link = 0;
@@ -342,22 +515,21 @@ void drc_rt_init(uint16_t bank) {
     for (cache_bank = 0; cache_bank < DRC_CODE_BANKS; cache_bank++) {
         uint8_t *stub = (uint8_t*) IRAM(BUF_ADDR);   // (translation buffer)
         memset(stub, 0xCC, CACHE_START);
+        env.dyn_off = put_dyn(stub, cache_bank);   // (the same in every bank)
         uint16_t reason = env.state_addr + offsetof(drc_state_t, reason);
         uint16_t resume = env.state_addr + offsetof(drc_state_t, resume);
-        uint16_t cur_seg = env.state_addr + offsetof(drc_state_t, cur_seg);
         uint8_t *p = stub + STUB_EXIT;
         *p++ = 0xC6; *p++ = 0x06; *p++ = reason; *p++ = reason >> 8; *p++ = 0;   // reason = 0
-        uint8_t *common = p;
-        p = put_store_regs(p);
-        *p++ = 0x8C; *p++ = 0x0E; *p++ = cur_seg; *p++ = cur_seg >> 8;          // mov [cur_seg], cs
-        *p++ = 0xCB;                                                             // retf
-#ifdef GGSWAN_HOST
-        if (p > stub + STUB_HELPER) { printf("EXIT stub too long\n"); exit(1); }
-#endif
+        *p++ = 0xE9; *p++ = (uint8_t) (STUB_LINE - (STUB_EXIT + 8));            // jmp LINE stub
+        *p++ = (uint8_t) ((STUB_LINE - (STUB_EXIT + 8)) >> 8);
+        uint16_t common = put_line(stub);
         p = stub + STUB_HELPER;
         *p++ = 0x8F; *p++ = 0x06; *p++ = resume; *p++ = resume >> 8;             // pop [resume]
         *p++ = 0xC6; *p++ = 0x06; *p++ = reason; *p++ = reason >> 8; *p++ = 1;   // reason = 1
-        *p++ = 0xEB; *p = (uint8_t) (common - (p + 1)); p++;                     // jmp common
+        {
+            uint16_t rel = common - (uint16_t) (p + 3 - stub);
+            *p++ = 0xE9; *p++ = (uint8_t) rel; *p++ = (uint8_t) (rel >> 8);     // jmp common
+        }
         // HCALL: store the registers, call the helper, load them, return
         p = put_store_regs(stub + STUB_HCALL);
 #ifdef GGSWAN_HOST
@@ -386,7 +558,6 @@ void drc_rt_init(uint16_t bank) {
 #else
         (void) l5;
 #endif
-        env.dyn_off = put_dyn(stub, cache_bank);   // (the same in every bank)
         env.nt_stub_off = STUB_NT;
         uint16_t end = put_nt(stub, STUB_NT);
         env.outi_off = STUB_OUTI;
@@ -491,6 +662,8 @@ static void drc_helper(void) {
     uint8_t m0 = gg.mapper[0], m1 = gg.mapper[1], m2 = gg.mapper[2], m3 = gg.mapper[3];
     uint8_t safe = drc_st.op == DRC_H_WRITE_MAP;
     drc_helper_op();
+    if (z80_break || drc_flush_request)
+        drc_st.fl_off = 1;   // (the line routine: back to C now)
     if (!remapped && (z80_break || m1 != gg.mapper[1]
                       || (!safe && (m0 != gg.mapper[0] || m2 != gg.mapper[2] || m3 != gg.mapper[3])))) {
         // the mapping changed: the rest of the block must not follow links
@@ -821,6 +994,12 @@ int32_t drc_z80_run(int32_t cycles) {
         int16_t start = z80.cycles > 30000 ? 30000 : (int16_t) z80.cycles;
         drc_st.cycles = start;
         block_start = start;
+        // the line routine at the exits (LINE stub): left = left_base +
+        // [cycles], as drc_cycles_left
+        int32_t lb = z80.cycles - start;
+        drc_st.left_base = (int16_t) lb;
+        drc_st.fl_off = drc_no_fast || drc_check || gg_every_line || lb > 30000
+            || z80_break || drc_flush_request;
         uint32_t io_before = 0;
         if (drc_check) {
             io_before = drc_stat_helper[1] + drc_stat_helper[2] + drc_stat_helper[3] + drc_stat_helper[4];

@@ -178,7 +178,7 @@ static void vdp_write_control(uint8_t v) {
 
 int32_t (*gg_cpu_left)(void);   // cycles left in the current CPU run
 uint8_t gg_every_line;          // stop at every line, call gg_platform_line
-static int32_t frame_given;     // cycles given to the CPU in this frame
+#define frame_given gg.vdp.frame_given   // cycles given to the CPU in this frame
 static uint16_t frame_carry;    // cycles run past the end of the last frame
 
 // cycles run since the start of the frame
@@ -345,7 +345,13 @@ static uint16_t next_event(uint16_t l) {
     return e;
 }
 
-static uint16_t started;   // lines of this frame started
+#define started gg.vdp.started   // lines of this frame started
+
+// (line_pos = started * 228 always: the recompiler's line routine)
+static inline void set_started(uint16_t s) {
+    started = s;
+    gg.vdp.line_pos = s * (uint16_t) GG_CYCLES_PER_LINE;
+}
 
 // One step of the frame loop below without the per-line mode, at frame
 // position pos: start the lines the CPU has reached, then the cycles to run
@@ -354,7 +360,7 @@ static int32_t event_step(uint16_t pos) {
     uint16_t reached = pos / GG_CYCLES_PER_LINE + 1;
     if (reached > GG_LINES) reached = GG_LINES;
     vdp_lines(started, reached);
-    if (reached > started) started = reached;
+    if (reached > started) set_started(reached);
     if (started >= GG_LINES && pos >= GG_FRAME_CYCLES)
         return -1;
     uint16_t e = next_event(started);
@@ -395,14 +401,14 @@ int16_t gg_fast_line(int16_t left) {
     gg.vdp.line_counter = r;
     gg.vdp.vcounter = e;
     update_irq();
-    started = e + 1;
+    set_started(e + 1);
     int16_t want = (int16_t) ((r + 1u) * GG_CYCLES_PER_LINE);   // (r < 128: fits)
     frame_given += want;
     return want;
 }
 
 void gg_run_frame(void) {
-    started = 0;
+    set_started(0);
     // (left = z80.cycles, so the frame starts frame_carry cycles in)
     frame_given = (int32_t) frame_carry + (gg_cpu_left ? gg_cpu_left() : z80.cycles);
     if (gg_every_line) {
@@ -412,7 +418,7 @@ void gg_run_frame(void) {
             while (started < GG_LINES && (uint16_t) (started * GG_CYCLES_PER_LINE) <= pos) {
                 vdp_line(started);
                 gg_platform_line(started);
-                started++;
+                set_started(started + 1);
             }
             if (started >= GG_LINES && pos >= GG_FRAME_CYCLES)
                 break;

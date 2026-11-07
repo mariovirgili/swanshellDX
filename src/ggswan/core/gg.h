@@ -50,6 +50,12 @@ typedef struct {
     uint8_t cram_latch;
     uint16_t vcounter;      // current line
     uint8_t vscroll_frame;  // vertical scroll latched at the start of the frame
+    // frame timing (gg.c; here so that the recompiler's line routine can
+    // reach it): lines of the frame started, started * 228, cycles given
+    // to the CPU in the frame
+    uint16_t started;
+    uint16_t line_pos;
+    int32_t frame_given;
 } gg_vdp_t;
 
 typedef struct {
