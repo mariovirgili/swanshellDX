@@ -371,20 +371,19 @@ static void vram_fast(uint8_t src, uint8_t **slow1) {
     B(0x81); B(0xE6); W(0x3FFF);                         // and si, 3FFFh
     B(0x88); B(0x84 | (src << 3)); W(env->vram_addr);    // mov [si + vram], src
     B(0x88); B(0x06 | (src << 3)); W(VA(read_buffer));   // mov [read_buffer], src
+    // the page class (main.c): 1 name table, 2 sprite table, 0 tile data
     B(0x89); B(0xF7);                                    // mov di, si
-    B(0x2B); B(0x3E); W(SA(nt_base));                    // sub di, [nt_base]
-    B(0x81); B(0xFF); W(0x0700);                         // cmp di, 700h
-    uint8_t *not_nt = jcc8(0x73);                        // jae
+    B(0xC1); B(0xEF); B(0x08);                           // shr di, 8
+    B(0xF6); B(0x85); W(SA(vram_class)); B(3);           // test byte [di + class], 3
+    uint8_t *plain = jcc8(0x74);                         // jz (tile data)
+    B(0xF6); B(0x85); W(SA(vram_class)); B(1);           // test byte [di + class], 1
+    uint8_t *not_nt = jcc8(0x74);                        // jz
     call_near(env->nt_stub_off);                         // name table
     uint8_t *after = jcc8(0xEB);
     land8(not_nt);
-    B(0x89); B(0xF7);                                    // mov di, si
-    B(0x2B); B(0x3E); W(SA(sat_base));                   // sub di, [sat_base]
-    B(0x81); B(0xFF); W(0x0100);                         // cmp di, 100h
-    uint8_t *not_sat = jcc8(0x73);                       // jae
     B(0xC6); B(0x06); W(SA(sprites_dirty)); B(1);        // sprites_dirty = 1
-    land8(not_sat);
     land8(after);
+    land8(plain);
     B(0x46);                                             // inc si
     B(0x81); B(0xE6); W(0x3FFF);                         // and si, 3FFFh
     B(0x89); B(0x36); W(VA(addr));                       // mov [addr], si
