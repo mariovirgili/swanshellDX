@@ -588,6 +588,9 @@ static void hscroll_write(uint8_t value) {
     uint16_t y = line - GG_VIEW_Y;
     if (y >= GG_VIEW_H || v == rec_val[rec_n - 1])
         return;
+    // (diagnostics, as the generated routine)
+    drc_st.diag_fg = (uint16_t) gg.vdp.frame_given;
+    drc_st.diag_left = gg_cpu_left ? (int16_t) gg_cpu_left() : (int16_t) z80.cycles;
     if (rec_n > 1 && rec_line[rec_n - 1] == y) {
         rec_val[rec_n - 1] = v;
     } else if (rec_n < MAX_SPLITS) {
@@ -606,7 +609,8 @@ static void hscroll_write(uint8_t value) {
 static volatile uint8_t diag_late, diag_commit, diag_ends, diag_splits, diag_split_line;
 static volatile uint16_t diag_calls;
 static uint16_t diag_regs, diag_ram;   // (at the last frame with a split)
-static uint16_t diag_irq_line, diag_vbl_pc;
+static uint16_t diag_irq_line, diag_vbl_pc, diag_fg;
+static int16_t diag_left;
 static uint8_t diag_vbl_st;
 static bool diag_mode;   // Y4 (Y left) held at the start: the right column
 extern uint16_t drc_diag_irq_line, gg_diag_vbl_pc;
@@ -698,6 +702,8 @@ static void splits_commit(void) {
         diag_irq_line = drc_diag_irq_line;
         diag_vbl_pc = gg_diag_vbl_pc;
         diag_vbl_st = gg_diag_vbl_st;
+        diag_fg = drc_st.diag_fg;
+        diag_left = drc_st.diag_left;
     }
     if (act_i > act_n)
         act_i = act_n;
@@ -1166,25 +1172,27 @@ static void show_fps(uint8_t fps) {
         put_hex(17, 24, drc_last_interp_pc);
     } else {
         // the right column instead of the profile (Y4 held at the start),
-        // one value a row: L how many lines after line 144 the end of the
-        // screen was served at worst, K lines its VRAM writes took, M most
-        // scroll values in a frame (1: no splits), Y the first split's
-        // line, J line interrupts served, G Game Gear interrupts taken;
-        // from the last frame with a split: A the Game Gear line of the
-        // last interrupt taken in C, then (hex) the Z80 PC when the frame
-        // interrupt was requested, and its state (IFF1 1, halted 2, just
-        // after EI 4) with VDP register 0
-        put_value(1, 24, 'L', diag_late);
-        put_value(3, 24, 'K', diag_commit);
-        put_value(5, 24, 'M', diag_splits);
-        put_value(7, 24, 'Y', diag_split_line);
-        put_value(9, 24, 'J', diag_calls);
-        put_value(11, 24, 'G', drc_stat_irq - l_irq);
-        put_value(13, 24, 'A', diag_irq_line);
+        // one value a row: K lines the VRAM writes took at the end of the
+        // screen, M most scroll values in a frame (1: no splits), Y the
+        // first split's line, G Game Gear interrupts taken; from the last
+        // frame with a split: A the Game Gear line of the last interrupt
+        // taken in C, then (hex) frame_given (low word) and the cycles left
+        // when the split was recorded, the Z80 PC when the frame interrupt
+        // was requested, and its state (IFF1 1, halted 2, just after EI 4)
+        // with VDP register 0
+        put_value(1, 24, 'K', diag_commit);
+        put_value(3, 24, 'M', diag_splits);
+        put_value(5, 24, 'Y', diag_split_line);
+        put_value(7, 24, 'G', drc_stat_irq - l_irq);
+        put_value(9, 24, 'A', diag_irq_line);
+        put_hex(11, 24, diag_fg);
+        put_hex(13, 24, (uint16_t) diag_left);
         put_hex(15, 24, diag_vbl_pc);
         put_hex(17, 24, (diag_vbl_st << 8) | (diag_regs >> 8));
     }
     diag_irq_line = 0;
+    diag_fg = 0;
+    diag_left = 0;
     diag_vbl_pc = 0;
     diag_vbl_st = 0;
     diag_regs = 0;

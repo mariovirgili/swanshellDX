@@ -974,6 +974,14 @@ uint16_t drc_emit_ctl_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) {
         B(0x88); B(0x94); W(SA(rec_val) - 1);        // mov [si + rec_val - 1], dl (same line)
         uint8_t *last2 = jcc8(0xEB);                 // jmp set_last
         land8(app1); land8(app2);
+        // (diagnostics: frame_given and the cycles left, as above)
+        B(0x50);                                     // push ax
+        B(0xA1); W(VA(frame_given));                 // mov ax, [frame_given]
+        B(0xA3); W(SA(diag_fg));                     // mov [diag_fg], ax
+        B(0xA1); W(SA(left_base));                   // mov ax, [left_base]
+        B(0x03); B(0x06); W(SA(cycles));             // add ax, [cycles]
+        B(0xA3); W(SA(diag_left));                   // mov [diag_left], ax
+        B(0x58);                                     // pop ax
         B(0x83); B(0xFE); B(DRC_MAX_SPLITS);         // cmp si, MAX_SPLITS
         uint8_t *full = jcc8(0x73);                  // jae done (no room)
         B(0x88); B(0x84); W(SA(rec_line));           // mov [si + rec_line], al

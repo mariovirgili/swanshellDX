@@ -90,6 +90,8 @@ typedef struct {
     uint16_t log_top;     // main.c: the log being filled (IRAM): end,
     uint16_t log_end;     // limit, last entry (0: none); entries of VRAM
     uint16_t log_last;    // address (word), length (byte), the bytes
+    uint16_t diag_fg;     // diagnostics: at the last scroll split recorded,
+    int16_t diag_left;    // frame_given (low word) and the cycles left
 } drc_state_t;
 
 /// Helper operations: generated code sets drc_state.op (and arg/val),

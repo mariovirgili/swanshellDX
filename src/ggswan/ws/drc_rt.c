@@ -41,7 +41,7 @@ uint16_t drc_entry[2];   // far pointer used by drc_enter: offset, segment
 #define STUB_HELPER 0x0020
 #define STUB_DYN    0x0040
 #define STUB_NT     0x0180
-#define STUB_CLS    0x0958   // a VRAM byte outside tile data (drc.c)
+#define STUB_CLS    0x0969   // a VRAM byte outside tile data (drc.c)
 #define STUB_CRAM   0x01E0   // a byte to CRAM
 #define STUB_OUTI   0x0240   // (OUTD: + DRC_OUTD_DELTA)
 #define STUB_LDI    0x04C0   // (LDD: + DRC_LDD_DELTA)
