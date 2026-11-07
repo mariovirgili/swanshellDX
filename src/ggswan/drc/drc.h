@@ -37,6 +37,8 @@
 #include <stdint.h>
 
 /// Runtime state shared by translated code and the dispatcher (in IRAM).
+#define DRC_MAX_SPLITS 24
+
 typedef struct {
     uint16_t segtab[8];   // ES value for each 8 KiB of the Z80 address space
     int16_t cycles;       // cycles left; blocks subtract their cycles
@@ -73,6 +75,10 @@ typedef struct {
     uint8_t fast38_bank;  // block table key of the block at 0038h
     int16_t left_base;    // z80.cycles - the run's start in drc_st.cycles
     uint16_t fast38[2];   // the block at 0038h: offset, segment (0: none)
+    // main.c: the horizontal scroll splits recorded in this frame (here so
+    // that the VDP control routine can record them)
+    uint8_t rec_n;
+    uint8_t rec_line[DRC_MAX_SPLITS], rec_val[DRC_MAX_SPLITS];
 } drc_state_t;
 
 /// Helper operations: generated code sets drc_state.op (and arg/val),

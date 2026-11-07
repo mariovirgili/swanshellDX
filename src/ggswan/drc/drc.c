@@ -725,6 +725,89 @@ uint16_t drc_emit_ctl_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) {
     B(0x58);                                         // pop ax
     B(0xF8); B(0xC3);                                // clc; ret
     land8(diff);
+    if (!env->no_fast) {
+        /*
+         * A new value: the register write as above, then main.c's
+         * hscroll_write here: the split is recorded at the line after the
+         * current one (frame position = frame_given - left, left =
+         * left_base + [cycles]; as gg_current_line). AH = the value.
+         */
+        // (C when the frame position is not plain: fl_off is set after a
+        // remap, whose [cycles] = -30000 make it overflow, and the like)
+        B(0x80); B(0x3E); W(SA(fl_off)); B(0);       // cmp byte [fl_off], 0
+        uint8_t *c1 = jcc8(0x75);                    // jne C
+        B(0x83); B(0x3E); W(VA(frame_given) + 2); B(0);   // cmp word [frame_given + 2], 0
+        uint8_t *small = jcc8(0x74);                 // je go
+        land8(c1);
+        B(0x58);                                     // pop ax
+        B(0xF9); B(0xC3);                            // stc; ret (C)
+        land8(small);
+        B(0x52);                                     // push dx
+        B(0xB2); B(16);                              // mov dl, 16
+        B(0x28); B(0xE2);                            // sub dl, ah (v = 16 - value)
+        B(0x88); B(0x26); W(VA(reg) + 8);            // mov [reg + 8], ah
+        B(0x88); B(0x26); W(VA(addr));               // mov [addr], ah
+        B(0x88); B(0xC4);                            // mov ah, al
+        B(0x80); B(0xE4); B(0x3F);                   // and ah, 3Fh
+        B(0x88); B(0x26); W(VA(addr) + 1);           // mov [addr + 1], ah
+        B(0xC6); B(0x06); W(VA(code)); B(2);         // code = 2
+        B(0xC6); B(0x06); W(VA(latch_full)); B(0);   // latch_full = 0
+        // (AX is free now: popped at the end)
+        B(0xA0); W(SA(rec_n));                       // mov al, [rec_n]
+        B(0x30); B(0xE4);                            // xor ah, ah
+        B(0x89); B(0xC6);                            // mov si, ax (n)
+        B(0x3A); B(0x94); W(SA(rec_val) - 1);        // cmp dl, [si + rec_val - 1]
+        uint8_t *same = jcc8(0x74);                  // je done (the last split's value)
+        // frame position (0 if left > frame_given: frame_pos)
+        B(0x8B); B(0x3E); W(SA(left_base));          // mov di, [left_base]
+        B(0x03); B(0x3E); W(SA(cycles));             // add di, [cycles] (left)
+        B(0xA1); W(VA(frame_given));                 // mov ax, [frame_given]
+        B(0x85); B(0xFF);                            // test di, di
+        B(0x7E); B(0x08);                            // jle +8 (sub)
+        B(0x39); B(0xC7);                            // cmp di, ax
+        B(0x76); B(0x04);                            // jbe +4 (sub)
+        B(0x31); B(0xC0);                            // xor ax, ax
+        B(0xEB); B(0x02);                            // jmp +2
+        B(0x29); B(0xF8);                            // sub ax, di (pos)
+        B(0x52);                                     // push dx
+        B(0x31); B(0xD2);                            // xor dx, dx
+        B(0xBF); W(GG_CYCLES_PER_LINE);              // mov di, 228
+        B(0xF7); B(0xF7);                            // div di (ax = line)
+        B(0x5A);                                     // pop dx
+        B(0x3D); W(GG_LINES - 1);                    // cmp ax, 261
+        B(0x76); B(0x03);                            // jbe +3
+        B(0xB8); W(GG_LINES - 1);                    // mov ax, 261
+        B(0x40);                                     // inc ax (the next line)
+        B(0x3D); W(GG_VIEW_Y);                       // cmp ax, VIEW_Y
+        uint8_t *inview = jcc8(0x77);                // ja inview
+        // before the view: the value for its first line
+        B(0x88); B(0x16); W(SA(rec_val));            // mov [rec_val], dl
+        B(0xC6); B(0x06); W(SA(rec_n)); B(1);        // rec_n = 1
+        uint8_t *last1 = jcc8(0xEB);                 // jmp set_last
+        land8(inview);
+        B(0x2D); W(GG_VIEW_Y);                       // sub ax, VIEW_Y (y)
+        B(0x3D); W(GG_VIEW_H);                       // cmp ax, VIEW_H
+        uint8_t *out = jcc8(0x73);                   // jae done (below the view)
+        B(0x83); B(0xFE); B(1);                      // cmp si, 1
+        uint8_t *app1 = jcc8(0x76);                  // jbe append
+        B(0x3A); B(0x84); W(SA(rec_line) - 1);       // cmp al, [si + rec_line - 1]
+        uint8_t *app2 = jcc8(0x75);                  // jne append
+        B(0x88); B(0x94); W(SA(rec_val) - 1);        // mov [si + rec_val - 1], dl (same line)
+        uint8_t *last2 = jcc8(0xEB);                 // jmp set_last
+        land8(app1); land8(app2);
+        B(0x83); B(0xFE); B(DRC_MAX_SPLITS);         // cmp si, MAX_SPLITS
+        uint8_t *full = jcc8(0x73);                  // jae done (no room)
+        B(0x88); B(0x84); W(SA(rec_line));           // mov [si + rec_line], al
+        B(0x88); B(0x94); W(SA(rec_val));            // mov [si + rec_val], dl
+        B(0xFE); B(0x06); W(SA(rec_n));              // inc byte [rec_n]
+        land8(last1); land8(last2);
+        B(0x8A); B(0x26); W(VA(latch));              // mov ah, [latch] (value)
+        B(0x88); B(0x26); W(SA(hs_last));            // mov [hs_last], ah
+        land8(same); land8(out); land8(full);
+        B(0x5A);                                     // pop dx
+        B(0x58);                                     // pop ax
+        B(0xF8); B(0xC3);                            // clc; ret
+    }
     B(0x58);                                         // pop ax
     B(0xF9); B(0xC3);                                // stc; ret
     return (uint16_t) (o - o_start);

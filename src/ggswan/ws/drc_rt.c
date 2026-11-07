@@ -44,9 +44,9 @@ uint16_t drc_entry[2];   // far pointer used by drc_enter: offset, segment
 #define STUB_OUTI   0x0240   // (OUTD: + DRC_OUTD_DELTA)
 #define STUB_LDI    0x04C0   // (LDD: + DRC_LDD_DELTA)
 #define STUB_HCALL  0x05F0   // helpers called without leaving the block
-#define STUB_CTL    0x0640   // OUT (BFh),A
-#define STUB_LINE   0x0700   // the exits' common part, the line routine
-#define CACHE_START 0x0900
+#define STUB_LINE   0x0640   // the exits' common part, the line routine
+#define STUB_CTL    0x0800   // OUT (BFh),A
+#define CACHE_START 0x0A00
 // translation buffer in free IRAM (between the font tiles and the mask tile)
 #define BUF_ADDR    0xA600
 /// DYN L0 cache: 512 direct-mapped entries of 8 bytes in free IRAM (in the
@@ -296,7 +296,7 @@ static uint16_t put_line(uint8_t *stub) {
     PB(0xC7); PB(0x06); PW(S_(link)); PW(0);         // link = 0
     PB(0xC3);                                        // ret
 #ifdef GGSWAN_HOST
-    if (p > stub + CACHE_START) { printf("LINE stub too long\n"); exit(1); }
+    if (p > stub + STUB_CTL) { printf("LINE stub too long\n"); exit(1); }
     if (getenv("GGSWAN_STUBS")) printf("LINE stub %X bytes\n", (unsigned) (p - stub - STUB_LINE));
 #endif
 #undef PB
@@ -547,7 +547,7 @@ void drc_rt_init(uint16_t bank) {
             *p++ = 0xC3;                                                         // ret
         }
 #ifdef GGSWAN_HOST
-        if (p > stub + STUB_CTL) { printf("HCALL stub too long\n"); exit(1); }
+        if (p > stub + STUB_LINE) { printf("HCALL stub too long\n"); exit(1); }
 #endif
         env.helper_off = STUB_HCALL;
         env.ram_blocks = 1;
@@ -555,6 +555,7 @@ void drc_rt_init(uint16_t bank) {
         uint16_t l5 = drc_emit_ctl_stub(&env, stub + STUB_CTL, STUB_CTL);
 #ifdef GGSWAN_HOST
         if (STUB_CTL + l5 > CACHE_START) { printf("CTL stub too long\n"); exit(1); }
+        if (getenv("GGSWAN_STUBS")) printf("CTL stub %X bytes\n", l5);
 #else
         (void) l5;
 #endif

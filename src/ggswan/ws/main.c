@@ -237,8 +237,11 @@ static uint8_t backdrop_palette;
  * screen 1 X scroll); at the end of the frame they are handed to a line
  * interrupt that replays them while the WS draws the screen.
  */
-#define MAX_SPLITS 24
-static uint8_t rec_line[MAX_SPLITS], rec_val[MAX_SPLITS], rec_n = 1;
+#define MAX_SPLITS DRC_MAX_SPLITS
+// (in drc_st: the VDP control routine records splits too)
+#define rec_line drc_st.rec_line
+#define rec_val drc_st.rec_val
+#define rec_n drc_st.rec_n
 static void hscroll_write(uint8_t value);
 GGSWAN_HOST_VISIBLE volatile uint8_t act_line[MAX_SPLITS], act_val[MAX_SPLITS], act_n = 1;
 static volatile uint8_t act_i;
@@ -478,6 +481,7 @@ static void build_sprites(void) {
 }
 
 GGSWAN_HOST_VISIBLE void video_init(void) {
+    rec_n = 1;   // (no split yet: rec_val[0] only)
     drc_st.sprites_dirty = 1;
     drc_st.nt_base = nt_base;
     drc_st.sat_base = sat_base;
@@ -959,6 +963,7 @@ int main(void) {
 
     memset(gg_ram, 0, 0x2000);
     drc_st.hs_last = 16;   // (rec_val[0] = 0: register value 16)
+    rec_n = 1;
     video_init();
     sound_init();
     gg_init(banks);
