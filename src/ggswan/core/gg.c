@@ -150,11 +150,14 @@ static void vdp_write_control(uint8_t v) {
     case 2: {
         uint8_t r = v & 0x0F;
         if (r < 11) {
+            uint8_t old = gg.vdp.reg[r];
             gg.vdp.reg[r] = gg.vdp.latch;
             gg_platform_vdp_reg(r, gg.vdp.latch);
             update_irq();
-            if (r == 0 || r == 1 || r == 10)
-                z80_break = 1;   // interrupt settings: plan the timing again
+            // interrupt settings changed: plan the timing again (the same
+            // value again changes nothing)
+            if ((r == 0 || r == 1 || r == 10) && old != gg.vdp.latch)
+                z80_break = 1;
         }
         break;
     }
@@ -372,6 +375,30 @@ int32_t gg_line_event(int32_t left) {
     if (gg_every_line || pos >= (uint16_t) (GG_ACTIVE_LINES * (unsigned) GG_CYCLES_PER_LINE))
         return -1;
     return event_step(pos);
+}
+
+int16_t gg_fast_line(int16_t left) {
+    // the event waited for is the start of line e = started, reached with
+    // frame_given = e * 228 exactly (left: 0 down to -227), where the line
+    // counter (0) reloads and requests the interrupt; the next one is r + 1
+    // lines later (r: register 10), still inside the picture (and r below
+    // 128, so that the cycles fit the 16-bit run budget)
+    uint16_t e = started;
+    uint8_t r = gg.vdp.reg[10];
+    if (gg_every_line || left > 0 || left <= -GG_CYCLES_PER_LINE
+        || e == 0 || r >= 128 || e + r + 1 >= GG_ACTIVE_LINES - 1
+        || gg.vdp.line_counter || !(gg.vdp.reg[0] & 0x10)
+        || frame_given != (int32_t) (uint16_t) (e * (unsigned) GG_CYCLES_PER_LINE))
+        return 0;
+    // vdp_lines(e, e + 1) for this case, then next_event(e + 1) = e + 1 + r
+    gg.vdp.line_pending = 1;
+    gg.vdp.line_counter = r;
+    gg.vdp.vcounter = e;
+    update_irq();
+    started = e + 1;
+    int16_t want = (int16_t) ((r + 1u) * GG_CYCLES_PER_LINE);   // (r < 128: fits)
+    frame_given += want;
+    return want;
 }
 
 void gg_run_frame(void) {

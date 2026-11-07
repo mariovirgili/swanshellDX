@@ -305,8 +305,14 @@ static uint16_t put_nt(uint8_t *stub, uint16_t at) {
     return (uint16_t) (p - stub);
 }
 
+// the block at 0038h (IM 1 interrupts), for drc_fast_reentry: offset,
+// segment (0: unknown), block table key
+static uint16_t fast38_off, fast38_seg;
+static uint8_t fast38_bank;
+
 static void flush(void) {
     pending_link = 0;
+    fast38_seg = 0;
     memset(IRAM(L0_ADDR), 0xFF, L0_SIZE);
     psram_write(DRC_CODE_BANKS, T_OFF, NULL, HASH_SIZE * 2);
     cache_bank = 0;
@@ -645,20 +651,74 @@ static void check_end(uint16_t pc, int16_t used) {
     z80.cycles = left;
 }
 
+/*
+ * Called by drc_enter each time the translated code returns: the most
+ * common reason in games with line interrupts (Super Monaco GP: on every
+ * line) is a block that ran out of cycles at the start of the line of the
+ * next interrupt. Then the line starts here (gg_fast_line), the interrupt
+ * is taken at once if the Z80 accepts it, and drc_enter goes on with the
+ * block at 0038h (or, through DYN, with the block at pc), without the
+ * dispatcher and the frame loop. Returns 1 with drc_entry set, 0 when
+ * anything differs (the dispatcher does it all as usual).
+ */
+uint8_t drc_fast_reentry(void) {
+    if (drc_st.reason || drc_st.cycles > 0 || drc_check || z80_break
+        || drc_flush_request || drc_st.ram_fail || remapped
+        || z80.ei_pending || z80.halted)
+        return 0;
+    // an interrupt accepted at once: IM 1 with the stack in work RAM only
+    uint16_t sp = z80.sp - 2;
+    uint8_t take = z80.iff1;
+    if (take && (z80.im == 2 || sp < 0xC000 || sp >= 0xDFFF))
+        return 0;
+    int32_t left = drc_cycles_left();
+    if (left > 0 || left <= -GG_CYCLES_PER_LINE)
+        return 0;
+    prof_phase = PROF_DISPATCH;
+    int16_t want = gg_fast_line((int16_t) left);
+    if (!want) {
+        prof_phase = PROF_CODE;
+        return 0;
+    }
+    // (the line interrupt is now requested: z80.irq)
+    drc_st.cycles += want;
+    drc_st.link = 0;
+    // on through DYN (it looks the block of pc up, or exits to the
+    // dispatcher): the same in every code bank
+    drc_entry[0] = env.dyn_off;
+    drc_entry[1] = DRC_CODE_SEG;
+    if (take) {
+        // IM 1, the same as the dispatcher
+        z80.iff1 = z80.iff2 = 0;
+        z80.r = (z80.r & 0x80) | ((z80.r + 1) & 0x7F);
+        z80.sp = sp;
+        gg_ram[sp & 0x1FFF] = (uint8_t) z80.pc;
+        gg_ram[(sp + 1) & 0x1FFF] = z80.pc >> 8;
+        z80.pc = 0x38;
+        drc_st.cycles -= 13;
+        drc_stat_irq++;
+        if (fast38_seg && fast38_bank == bank_key(0x38)) {
+            drc_entry[0] = fast38_off;
+            drc_entry[1] = fast38_seg;
+        }
+    }
+    prof_phase = PROF_CODE;
+    return 1;
+}
+
 int32_t drc_z80_run(int32_t cycles) {
     prof_phase = PROF_DISPATCH;
     z80.cycles += cycles;
     drc_st.nolink = drc_no_links;
     for (;;) {
         if (z80.cycles <= 0 || z80_break) {
-            // out of cycles: the next line event without going back to the
-            // frame loop (the same work: gg_line_event); the end of the
-            // frame and early stops still return
-            if (z80_break)
-                break;
+            // out of cycles, or the timing to plan again (z80_break): the
+            // next event without going back to the frame loop (the same
+            // work: gg_line_event); the end of the frame still returns
             int32_t want = gg_line_event(z80.cycles);
             if (want < 0)
                 break;
+            z80_break = 0;
             z80.cycles += want;
             continue;
         }
@@ -750,6 +810,9 @@ int32_t drc_z80_run(int32_t cycles) {
         drc_entry[1] = DRC_CODE_SEG + ((uint16_t) tb[T_CODE + h] << 12);
         l0[0] = pc; l0[1] = bank; l0[2] = off; l0[3] = drc_entry[1];
     have_block:
+        if (pc == 0x38) {
+            fast38_off = off; fast38_seg = drc_entry[1]; fast38_bank = bank;
+        }
         // the previous block can jump straight here from now on
         if (pending_link && !drc_no_links) {
             // (a guarded exit has "cmp byte [key], bank; jne X" just before

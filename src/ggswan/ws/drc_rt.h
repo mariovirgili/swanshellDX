@@ -61,6 +61,9 @@ void ws_ram_window_restore(void);
 uint8_t drc_rt_test_banks(void);
 /// cycles left in the current run (for gg_cpu_left)
 int32_t drc_cycles_left(void);
+/// drc_enter: after the code returns, a line event handled at once (see
+/// drc_rt.c); 1: run again from drc_entry
+uint8_t drc_fast_reentry(void);
 /// z80_run() equivalent using the recompiler
 int32_t drc_z80_run(int32_t cycles);
 /// Run translated code at DRC_CODE_SEG:offset (drc_asm.s)

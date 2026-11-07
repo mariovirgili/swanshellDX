@@ -120,7 +120,10 @@ void host_translated(uint16_t pc, uint16_t len, uint16_t n) {
     tr_op[op]++; tr_op_bytes[op] += len;
 }
 extern uint32_t drc_stat_helper[5], drc_stat_dispatch, drc_stat_nolink;
+extern uint32_t host_fast_reentries;
+extern uint32_t drc_stat_irq;
 void sys_tr_report(void) {
+    printf("line events with their interrupt in drc_enter: %u (interrupts: %u)\n", host_fast_reentries, drc_stat_irq);
     printf("dispatches %u (exits that can not be linked: %u), helpers: write %u out %u in %u step %u\n",
            drc_stat_dispatch, drc_stat_nolink, drc_stat_helper[1], drc_stat_helper[2], drc_stat_helper[3], drc_stat_helper[4]);
     printf("retranslated without a flush: %u\n", retr_same);
@@ -206,14 +209,19 @@ void host_line_hook(uint16_t line) { if (line < GG_ACTIVE_LINES) render_line(lin
 typedef void (*run_cb_t)(uint16_t offset);
 static run_cb_t run_cb;
 void sys_set_callback(run_cb_t cb) { run_cb = cb; }
+extern uint16_t drc_entry[2];
+uint32_t host_fast_reentries;
 void drc_enter(uint16_t offset) {
-    memcpy(iram + HOST_Z80_ADDR, &z80, sizeof(z80));
-    memcpy(iram + HOST_ST_ADDR, &drc_st, sizeof(drc_st));
-    memcpy(iram + HOST_VDP_ADDR, &gg.vdp, sizeof(gg.vdp));
-    run_cb(offset);
-    memcpy(&z80, iram + HOST_Z80_ADDR, sizeof(z80));
-    memcpy(&drc_st, iram + HOST_ST_ADDR, sizeof(drc_st));
-    memcpy(&gg.vdp, iram + HOST_VDP_ADDR, sizeof(gg.vdp));
+    do {
+        memcpy(iram + HOST_Z80_ADDR, &z80, sizeof(z80));
+        memcpy(iram + HOST_ST_ADDR, &drc_st, sizeof(drc_st));
+        memcpy(iram + HOST_VDP_ADDR, &gg.vdp, sizeof(gg.vdp));
+        run_cb(offset);
+        memcpy(&z80, iram + HOST_Z80_ADDR, sizeof(z80));
+        memcpy(&drc_st, iram + HOST_ST_ADDR, sizeof(drc_st));
+        memcpy(&gg.vdp, iram + HOST_VDP_ADDR, sizeof(gg.vdp));
+        // (as drc_asm.s: a line event with its interrupt, then 0038h)
+    } while (drc_fast_reentry() && (host_fast_reentries++, offset = drc_entry[0], 1));
 }
 
 void sys_helper_direct(void) {

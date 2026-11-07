@@ -107,6 +107,12 @@ void gg_run_frame(void);
 /// next event, exactly as the frame loop would (without returning to it);
 /// -1 near or at the end of the frame (the CPU core must then return).
 int32_t gg_line_event(int32_t left);
+/// The most common line event at once (left: the CPU's cycles left, 0 or
+/// less): the line interrupt, inside the picture, with the next event
+/// being the next line interrupt. Returns the cycles to run up to that one
+/// (the line started) or 0 if it was not the case (nothing changed: use
+/// gg_line_event).
+int16_t gg_fast_line(int16_t left);
 
 /* VDP helpers */
 

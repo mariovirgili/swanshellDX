@@ -32,6 +32,7 @@ drc_enter:
     // far address of drc_helper_tramp, for the helper stub
     mov word ptr [drc_tramp], offset drc_helper_tramp
     mov word ptr [drc_tramp + 2], cs
+.Ldrc_again:
     mov ax, [z80]
     mov cx, [z80 + 2]
     mov dx, [z80 + 4]
@@ -39,6 +40,14 @@ drc_enter:
     mov bp, [z80 + 20]
     .byte 0xFF, 0x1E        // call far [drc_entry]
     .word drc_entry
+
+    // a line event with an interrupt taken at once: on with the block at
+    // 0038h (drc_fast_reentry sets drc_entry), else back to the dispatcher
+    push ds
+    pop es
+    IA16_CALL drc_fast_reentry
+    test al, al
+    jnz .Ldrc_again
 
     pop dx
     pop cx
