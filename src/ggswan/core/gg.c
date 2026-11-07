@@ -13,7 +13,6 @@
 gg_t gg;
 // the CPU core: the interpreter, or the recompiler's z80_run equivalent
 int32_t (*gg_cpu_run)(int32_t cycles) = z80_run;
-uint8_t gg_cram[64];
 const uint8_t GGFAR *gg_slot[3];
 static uint8_t GGFAR *cart_ram;   // at $8000 when enabled, else NULL
 // the first KiB of the ROM (always visible at $0000: interrupt vectors)

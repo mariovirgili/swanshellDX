@@ -79,6 +79,7 @@ static inline uint16_t here(void) { return o_base + (uint16_t) (o - o_start); }
 // short forward jumps: returns the position of the rel8 byte
 static uint8_t *jcc8(uint8_t opcode) { B(opcode); B(0); return o - 1; }
 static void land8(uint8_t *p) {
+    if (!p) return;   // (a jump that was not needed)
 #ifdef GGSWAN_HOST
     if (o - p - 1 > 127) { extern void abort(void); abort(); }   // (short jump too far)
 #endif
@@ -366,7 +367,18 @@ static void read_const16(uint16_t addr, uint8_t dst) {
  */
 static void vram_fast(uint8_t src, uint8_t **slow1) {
     B(0x80); B(0x3E); W(VA(code)); B(3);                 // cmp byte [code], 3
-    *slow1 = jcc8(0x74);                                 // je slow (CRAM)
+    uint8_t *cram_end = 0;
+    if (env->cram_off) {
+        // CRAM: the routine (no slow path left)
+        uint8_t *not_cram = jcc8(0x75);                  // jne
+        B(0x88); B(0x06 | (src << 3)); W(SA(val));       // mov [val], src
+        call_near(env->cram_off);
+        cram_end = jcc8(0xEB);
+        land8(not_cram);
+        *slow1 = 0;
+    } else {
+        *slow1 = jcc8(0x74);                             // je slow (CRAM)
+    }
     B(0x8B); B(0x36); W(VA(addr));                       // mov si, [addr]
     B(0x81); B(0xE6); W(0x3FFF);                         // and si, 3FFFh
     B(0x88); B(0x84 | (src << 3)); W(env->vram_addr);    // mov [si + vram], src
@@ -388,6 +400,7 @@ static void vram_fast(uint8_t src, uint8_t **slow1) {
     B(0x81); B(0xE6); W(0x3FFF);                         // and si, 3FFFh
     B(0x89); B(0x36); W(VA(addr));                       // mov [addr], si
     B(0xC6); B(0x06); W(VA(latch_full)); B(0);           // mov byte [latch_full], 0
+    land8(cram_end);
 }
 
 /*
@@ -441,7 +454,7 @@ uint16_t drc_emit_run_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
     uint8_t *s1;
     B(0x26); B(0x8A); B(0x27);                       // mov ah, es:[bx]
     vram_fast(4 /* AH */, &s1);
-    *s1 = (uint8_t) (int8_t) (slow1 - (s1 + 1));     // (backwards)
+    if (s1) *s1 = (uint8_t) (int8_t) (slow1 - (s1 + 1));   // (backwards)
     B(0x5F);                                         // pop di
     B(0xFE); B(0xCD);                                // dec ch
     B(0x8D); B(0x5F); B(inc);                        // lea bx, [bx +- 1]
@@ -468,7 +481,7 @@ uint16_t drc_emit_run_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
     B(0xF8);                                         // clc
     B(0xC3);                                         // ret
 #ifdef GGSWAN_HOST
-    if (s1 - slow1 > 128) { extern void abort(void); abort(); }
+    if (s1 && s1 - slow1 > 128) { extern void abort(void); abort(); }
 #endif
     if (to_fast) {
         /*

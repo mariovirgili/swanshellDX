@@ -118,6 +118,7 @@ typedef struct {
                            // OUTD's at outi_off + DRC_OUTD_DELTA
     uint16_t ctl_off;      // routine for OUT (BFh),A (drc_emit_ctl_stub; 0: helper)
     uint16_t ram_blocks;   // translate code in work RAM too (runtime)
+    uint16_t cram_off;     // routine for a byte to CRAM (val; 0: the helper)
     uint8_t no_trace;      // diagnostics: do not follow JP nn / JR e in a block
     uint8_t no_inline;     // diagnostics: do not inline CALLed routines
     uint8_t no_fast;       // diagnostics: no rep movsb runs, all flags built

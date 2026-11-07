@@ -41,6 +41,7 @@ uint16_t drc_entry[2];   // far pointer used by drc_enter: offset, segment
 #define STUB_HELPER 0x0020
 #define STUB_DYN    0x0040
 #define STUB_NT     0x0180
+#define STUB_CRAM   0x01E0   // a byte to CRAM
 #define STUB_OUTI   0x0240   // (OUTD: + DRC_OUTD_DELTA)
 #define STUB_LDI    0x04C0   // (LDD: + DRC_LDD_DELTA)
 #define STUB_HCALL  0x05F0   // helpers called without leaving the block
@@ -490,6 +491,55 @@ static uint16_t put_nt(uint8_t *stub, uint16_t at) {
     return (uint16_t) (p - stub);
 }
 
+/*
+ * CRAM (at STUB_CRAM): a byte (in val) written to the VDP data port with
+ * code 3, as vdp_write_data and gg_platform_cram_write: the even byte is
+ * latched, the odd one writes the color (Game Gear ----BBBBGGGGRRRR) and
+ * its WS copy (----RRRRGGGGBBBB): palette 0-15 at FE00h, 16-31 at FE20h
+ * and at FF00h (sprites). Read buffer, address + 1, latch. Uses SI.
+ */
+static uint16_t put_cram(uint8_t *stub, uint16_t at) {
+    uint8_t *p = stub + at;
+    uint16_t a;
+#define PB(x) (*p++ = (x))
+#define PW(x) (a = (x), *p++ = a, *p++ = a >> 8)
+#define V_(f) ((uint16_t) (env.vdp_addr + offsetof(gg_vdp_t, f)))
+    uint16_t val = env.state_addr + offsetof(drc_state_t, val);
+    PB(0x50); PB(0x53);                                  // push ax; push bx
+    PB(0xA0); PW(val);                                   // mov al, [val]
+    PB(0xA2); PW(V_(read_buffer));                       // mov [read_buffer], al
+    PB(0xC6); PB(0x06); PW(V_(latch_full)); PB(0);       // mov byte [latch_full], 0
+    PB(0x8B); PB(0x1E); PW(V_(addr));                    // mov bx, [addr]
+    PB(0x8D); PB(0x77); PB(0x01);                        // lea si, [bx + 1]
+    PB(0x81); PB(0xE6); PW(0x3FFF);                      // and si, 3FFFh
+    PB(0x89); PB(0x36); PW(V_(addr));                    // mov [addr], si
+    PB(0x83); PB(0xE3); PB(0x3F);                        // and bx, 3Fh
+    PB(0xF6); PB(0xC3); PB(0x01);                        // test bl, 1
+    PB(0x75); PB(0x06);                                  // jnz odd
+    PB(0xA2); PW(V_(cram_latch));                        // mov [cram_latch], al
+    PB(0x5B); PB(0x58); PB(0xC3);                        // pop bx; pop ax; ret
+    // odd:
+    PB(0x24); PB(0x0F);                                  // and al, 0Fh
+    PB(0x8A); PB(0x26); PW(V_(cram_latch));              // mov ah, [cram_latch]
+    PB(0x88); PB(0xA7); PW(V_(cram) - 1);                // mov [bx + cram - 1], ah
+    PB(0x88); PB(0x87); PW(V_(cram));                    // mov [bx + cram], al
+    PB(0x89); PB(0xC6);                                  // mov si, ax
+    PB(0x25); PW(0x0F0F);                                // and ax, 0F0Fh (R, B)
+    PB(0x81); PB(0xE6); PW(0xF000);                      // and si, F000h (G)
+    PB(0xC1); PB(0xEE); PB(0x08);                        // shr si, 8
+    PB(0x09); PB(0xF0);                                  // or ax, si
+    PB(0x80); PB(0xE3); PB(0x3E);                        // and bl, 3Eh (color * 2)
+    PB(0x89); PB(0x87); PW(0xFE00);                      // mov [bx + FE00h], ax
+    PB(0x80); PB(0xFB); PB(0x20);                        // cmp bl, 20h
+    PB(0x72); PB(0x04);                                  // jb +4
+    PB(0x89); PB(0x87); PW(0xFEE0);                      // mov [bx + FEE0h], ax (FF00h + color * 2 - 20h)
+    PB(0x5B); PB(0x58); PB(0xC3);                        // pop bx; pop ax; ret
+#undef PB
+#undef PW
+#undef V_
+    return (uint16_t) (p - stub);
+}
+
 // the block at 0038h (IM 1 interrupts), for the line routine and
 // drc_fast_reentry: drc_st.fast38 (offset, segment: 0 unknown), fast38_bank
 #define fast38_off drc_st.fast38[0]
@@ -530,6 +580,7 @@ void drc_rt_init(uint16_t bank) {
     for (uint8_t i = 0; i < 8; i++)
         drc_st.nt_flags[i] = (i & 1 ? 0x4000 : 0) | (i & 2 ? 0x8000 : 0) | (i & 4 ? 0x0200 : 0);
     env.no_fast = drc_no_fast;
+    env.cram_off = drc_no_fast ? 0 : STUB_CRAM;   // (X4: CRAM through the helper)
     // following JP/JR inside a block is off by default: it breaks the
     // scroll and the status bar of Wonder Boy III on the WonderSwan (not
     // on the PC tests, cause not found) and gained under 1%
@@ -586,6 +637,7 @@ void drc_rt_init(uint16_t bank) {
 #endif
         env.nt_stub_off = STUB_NT;
         uint16_t end = put_nt(stub, STUB_NT);
+        uint16_t cram_end = put_cram(stub, STUB_CRAM);
         env.outi_off = STUB_OUTI;
         uint16_t l1 = drc_emit_run_stub(&env, stub + STUB_OUTI, STUB_OUTI, 0);
         uint16_t l2 = drc_emit_run_stub(&env, stub + STUB_OUTI + DRC_OUTD_DELTA, STUB_OUTI + DRC_OUTD_DELTA, 1);
@@ -593,11 +645,11 @@ void drc_rt_init(uint16_t bank) {
         uint16_t l3 = drc_emit_ldi_stub(&env, stub + STUB_LDI, STUB_LDI, 0);
         uint16_t l4 = drc_emit_ldi_stub(&env, stub + STUB_LDI + DRC_LDD_DELTA, STUB_LDI + DRC_LDD_DELTA, 1);
 #ifdef GGSWAN_HOST
-        if (getenv("GGSWAN_STUBS")) printf("stubs: NT end %X, OUTI %X, OUTD %X, LDI %X, LDD %X\n", end, l1, l2, l3, l4);
-        if (end > STUB_OUTI || l1 > DRC_OUTD_DELTA || STUB_OUTI + DRC_OUTD_DELTA + l2 > STUB_LDI
+        if (getenv("GGSWAN_STUBS")) printf("stubs: NT end %X, CRAM end %X, OUTI %X, OUTD %X, LDI %X, LDD %X\n", end, cram_end, l1, l2, l3, l4);
+        if (end > STUB_CRAM || cram_end > STUB_OUTI || l1 > DRC_OUTD_DELTA || STUB_OUTI + DRC_OUTD_DELTA + l2 > STUB_LDI
             || l3 > DRC_LDD_DELTA || STUB_LDI + DRC_LDD_DELTA + l4 > STUB_HCALL) { printf("stubs too long\n"); exit(1); }
 #else
-        (void) end; (void) l1; (void) l2; (void) l3; (void) l4;
+        (void) end; (void) cram_end; (void) l1; (void) l2; (void) l3; (void) l4;
 #endif
         code_write(0, stub, CACHE_START);
     }

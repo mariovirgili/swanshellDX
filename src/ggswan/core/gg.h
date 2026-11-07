@@ -57,6 +57,9 @@ typedef struct {
     uint16_t started;
     uint16_t line_pos;
     int32_t frame_given;
+    // 32 colors of 2 bytes, 12 bits (in gg.vdp: the recompiler's CRAM
+    // routine reaches it at a known address)
+    uint8_t cram[64];
 } gg_vdp_t;
 
 typedef struct {
@@ -71,7 +74,7 @@ extern gg_t gg;
 // 8 KiB of work RAM, 16 KiB of VRAM, 64 bytes of CRAM (32 colors, 12 bits)
 extern uint8_t *gg_ram;
 extern uint8_t *gg_vram;
-extern uint8_t gg_cram[64];
+#define gg_cram gg.vdp.cram
 // the three 16 KiB ROM slots ($0000, $4000, $8000)
 extern const uint8_t GGFAR *gg_slot[3];
 
