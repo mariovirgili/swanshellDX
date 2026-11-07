@@ -530,6 +530,7 @@ uint16_t drc_emit_run_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
         B(0x8D); B(0xBC); W(env->vram_addr);         // lea di, [si + vram]
         B(0x89); B(0xDE);                            // mov si, bx
         B(0x1E); B(0x06); B(0x1F); B(0x07);          // push ds; push es; pop ds; pop es
+        B(0xFC);                                     // cld (forwards, whatever came before)
         B(0xF3); B(0xA4);                            // rep movsb
         B(0x06); B(0x1F);                            // push es; pop ds (DS, ES: data)
         B(0x59);                                     // pop cx
@@ -641,6 +642,7 @@ uint16_t drc_emit_ldi_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
         B(0x81); B(0xC7); W(env->ram_delta);         // add di, ram
         B(0x89); B(0xDE);                            // mov si, bx
         B(0x1E); B(0x06); B(0x1F); B(0x07);          // push ds; push es; pop ds; pop es
+        B(0xFC);                                     // cld (forwards, whatever came before)
         B(0xF3); B(0xA4);                            // rep movsb
         B(0x06); B(0x1F);                            // push es; pop ds (DS, ES: data)
         B(0x89); B(0xF0);                            // mov ax, si
