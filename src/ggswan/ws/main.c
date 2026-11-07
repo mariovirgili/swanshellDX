@@ -270,6 +270,14 @@ static inline uint16_t gg_entry(uint8_t row, uint8_t col) {
 static void map_relayout(uint8_t top) {
     map_top = top;
     drc_st.map_top = top;
+    // where each row goes (as map_put), for the name table routine
+    for (uint8_t r = 0; r < 28; r++) {
+        uint8_t k = 0;
+        drc_st.nt_rows[r] = drc_st.nt_rows[28 + r] = 0xFFFF;
+        for (uint8_t v = r; v < top + 32; v += 28)
+            if (v >= top)
+                drc_st.nt_rows[k++ * 28 + r] = (v & 31) * 64;
+    }
     for (uint8_t w = 0; w < 32; w++) {
         uint8_t v = top + ((w - top) & 31);
         uint8_t r = v % 28;

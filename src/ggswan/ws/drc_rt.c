@@ -31,6 +31,10 @@
 #include "drc_rt.h"
 
 drc_state_t drc_st;
+#ifdef GGSWAN_HOST
+// (the PC tests mirror it at HOST_ST_ADDR, 100h bytes before the VDP)
+_Static_assert(sizeof(drc_state_t) <= HOST_VDP_ADDR - HOST_ST_ADDR, "drc_state_t too big");
+#endif
 uint16_t drc_entry[2];   // far pointer used by drc_enter: offset, segment
 
 #define STUB_EXIT   0x0000
@@ -262,8 +266,8 @@ static uint16_t put_nt(uint8_t *stub, uint16_t at) {
 #define PW(x) (a = (x), *p++ = a, *p++ = a >> 8)
     uint16_t map1 = ws_map1_iram();
     uint16_t nt = env.state_addr + offsetof(drc_state_t, nt_base);
-    uint16_t top = env.state_addr + offsetof(drc_state_t, map_top);
-    PB(0x50); PB(0x53); PB(0x51); PB(0x52); PB(0x57);   // push ax bx cx dx di
+    uint16_t rows = env.state_addr + offsetof(drc_state_t, nt_rows);
+    PB(0x50); PB(0x53); PB(0x52); PB(0x57);             // push ax bx dx di
     PB(0x89); PB(0xF3);                                  // mov bx, si
     PB(0x81); PB(0xE3); PW(0x3FFE);                      // and bx, 3FFEh
     PB(0x8B); PB(0x87); PW(env.vram_addr);               // mov ax, [bx + vram]
@@ -275,30 +279,17 @@ static uint16_t put_nt(uint8_t *stub, uint16_t at) {
     PB(0x89); PB(0xF0);                                  // mov ax, si
     PB(0x2B); PB(0x06); PW(nt);                          // sub ax, [nt_base]
     PB(0x89); PB(0xC3);                                  // mov bx, ax
-    PB(0xD1); PB(0xEB);                                  // shr bx, 1
-    PB(0x83); PB(0xE3); PB(0x1F);                        // and bx, 31 (column)
-    PB(0xC1); PB(0xE8); PB(0x06);                        // shr ax, 6 (row)
-    PB(0x8A); PB(0x0E); PW(top);                         // mov cl, [map_top]
-    PB(0x30); PB(0xED);                                  // xor ch, ch
-    for (uint8_t i = 0; i < 3; i++) {
-        uint8_t *s1, *s2;
-        PB(0x39); PB(0xC8);                              // cmp ax, cx
-        PB(0x72); s1 = p++;                              // jb skip
-        PB(0x89); PB(0xCF);                              // mov di, cx
-        PB(0x83); PB(0xC7); PB(0x20);                    // add di, 32
-        PB(0x39); PB(0xF8);                              // cmp ax, di
-        PB(0x73); s2 = p++;                              // jae skip
+    PB(0x83); PB(0xE3); PB(0x3E);                        // and bx, 3Eh (column * 2)
+    PB(0xC1); PB(0xE8); PB(0x05);                        // shr ax, 5
+    PB(0x24); PB(0xFE);                                  // and al, FEh (row * 2)
+    for (uint8_t i = 0; i < 2; i++) {
         PB(0x89); PB(0xC7);                              // mov di, ax
-        PB(0x83); PB(0xE7); PB(0x1F);                    // and di, 31
-        PB(0xC1); PB(0xE7); PB(0x05);                    // shl di, 5
-        PB(0x01); PB(0xDF);                              // add di, bx
-        PB(0xD1); PB(0xE7);                              // shl di, 1
-        PB(0x89); PB(0x95); PW(map1);                    // mov [di + map1], dx
-        *s1 = (uint8_t) (p - s1 - 1);
-        *s2 = (uint8_t) (p - s2 - 1);
-        PB(0x83); PB(0xC0); PB(28);                      // add ax, 28
+        PB(0x8B); PB(0xBD); PW(rows + i * 56);           // mov di, [di + rows]
+        PB(0x83); PB(0xFF); PB(0xFF);                    // cmp di, -1
+        PB(0x74); PB(0x04);                              // je +4 (none)
+        PB(0x89); PB(0x91); PW(map1);                    // mov [bx + di + map1], dx
     }
-    PB(0x5F); PB(0x5A); PB(0x59); PB(0x5B); PB(0x58);   // pop di dx cx bx ax
+    PB(0x5F); PB(0x5A); PB(0x5B); PB(0x58);             // pop di dx bx ax
     PB(0xC3);                                            // ret
 #undef PB
 #undef PW
