@@ -445,9 +445,11 @@ static uint16_t put_nt(uint8_t *stub, uint16_t at) {
     PB(0x8B); PB(0x87); PW(env.vram_addr);               // mov ax, [bx + vram]
     PB(0x89); PB(0xC2);                                  // mov dx, ax
     PB(0x81); PB(0xE2); PW(0x01FF);                      // and dx, 1FFh
-    PB(0xA9); PW(0x0800); PB(0x74); PB(0x04); PB(0x81); PB(0xCA); PW(0x0200);   // palette
-    PB(0xA9); PW(0x0200); PB(0x74); PB(0x04); PB(0x81); PB(0xCA); PW(0x4000);   // h flip
-    PB(0xA9); PW(0x0400); PB(0x74); PB(0x04); PB(0x81); PB(0xCA); PW(0x8000);   // v flip
+    // palette, h flip, v flip: bits 11, 9, 10 -> a table of 8
+    PB(0x89); PB(0xC3);                                  // mov bx, ax
+    PB(0xC1); PB(0xEB); PB(0x08);                        // shr bx, 8
+    PB(0x83); PB(0xE3); PB(0x0E);                        // and bx, 0Eh
+    PB(0x0B); PB(0x97); PW(env.state_addr + offsetof(drc_state_t, nt_flags));   // or dx, [bx + nt_flags]
     PB(0x89); PB(0xF0);                                  // mov ax, si
     PB(0x2B); PB(0x06); PW(nt);                          // sub ax, [nt_base]
     PB(0x89); PB(0xC3);                                  // mov bx, ax
@@ -504,6 +506,9 @@ void drc_rt_init(uint16_t bank) {
 #endif
     env.vram_addr = 0x4000;   // Game Gear VRAM = WS tiles (main.c)
     env.exit_off = STUB_EXIT;
+    // the name table routine's table (as conv_entry, main.c)
+    for (uint8_t i = 0; i < 8; i++)
+        drc_st.nt_flags[i] = (i & 1 ? 0x4000 : 0) | (i & 2 ? 0x8000 : 0) | (i & 4 ? 0x0200 : 0);
     env.no_fast = drc_no_fast;
     // following JP/JR inside a block is off by default: it breaks the
     // scroll and the status bar of Wonder Boy III on the WonderSwan (not

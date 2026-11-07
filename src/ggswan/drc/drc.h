@@ -79,6 +79,8 @@ typedef struct {
     // that the VDP control routine can record them)
     uint8_t rec_n;
     uint8_t rec_line[DRC_MAX_SPLITS], rec_val[DRC_MAX_SPLITS];
+    uint16_t nt_flags[8]; // name table routine: WS bits for the Game Gear
+                          // entry bits 9-11 (h flip, v flip, palette)
 } drc_state_t;
 
 /// Helper operations: generated code sets drc_state.op (and arg/val),
