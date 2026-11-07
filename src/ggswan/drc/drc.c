@@ -2154,6 +2154,18 @@ int drc_translate(const drc_env_t *e, uint16_t pc, uint8_t *out,
         decode(p, &ins[n]);
         ins[n].dyn = 0;
         ins[n].trace = 0;
+        if (ram && p + ins[n].len - pc > RAM_BLOCK_MAX) {
+            // a run of LDI/OUTI... (up to 128 bytes) longer than a block
+            // in RAM may be (ram_check checks at most RAM_BLOCK_MAX
+            // bytes): only the part that fits, the rest in the next block
+            uint8_t room = (uint8_t) (RAM_BLOCK_MAX - (p - pc));
+            if (ins[n].count > 1 && room >= 2) {
+                ins[n].count = room / 2;
+                ins[n].len = ins[n].count * 2;
+            } else {
+                break;
+            }
+        }
         if (ins[n].term == T_STOP) break;
         p += ins[n].len;
         n++;
