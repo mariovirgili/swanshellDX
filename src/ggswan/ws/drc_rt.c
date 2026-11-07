@@ -331,6 +331,7 @@ void drc_rt_init(uint16_t bank) {
 #endif
     env.vram_addr = 0x4000;   // Game Gear VRAM = WS tiles (main.c)
     env.exit_off = STUB_EXIT;
+    env.no_fast = drc_no_fast;
     // following JP/JR inside a block is off by default: it breaks the
     // scroll and the status bar of Wonder Boy III on the WonderSwan (not
     // on the PC tests, cause not found) and gained under 1%
@@ -480,6 +481,7 @@ static uint8_t remapped;
 uint8_t drc_flush_request;
 volatile uint8_t prof_phase;
 uint8_t drc_no_links;
+uint8_t drc_no_fast;
 
 uint32_t drc_stat_helper[5], drc_stat_dispatch, drc_stat_nolink;
 static void drc_helper(void) {
@@ -654,7 +656,7 @@ static void check_end(uint16_t pc, int16_t used) {
  * anything differs (the dispatcher does it all as usual).
  */
 uint8_t drc_fast_reentry(void) {
-    if (drc_st.reason || drc_st.cycles > 0 || drc_check || z80_break
+    if (drc_no_fast || drc_st.reason || drc_st.cycles > 0 || drc_check || z80_break
         || drc_flush_request || drc_st.ram_fail || remapped
         || z80.ei_pending || z80.halted)
         return 0;
@@ -707,6 +709,8 @@ int32_t drc_z80_run(int32_t cycles) {
             // out of cycles, or the timing to plan again (z80_break): the
             // next event without going back to the frame loop (the same
             // work: gg_line_event); the end of the frame still returns
+            if (drc_no_fast)
+                break;
             int32_t want = gg_line_event(z80.cycles);
             if (want < 0)
                 break;

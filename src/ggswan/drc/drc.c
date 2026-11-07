@@ -414,7 +414,7 @@ uint16_t drc_emit_run_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
     B(0x81); B(0xFE); W(0x0080);                     // cmp si, 80h (port BEh)
     uint8_t *s0 = jcc8(0x75);                        // jne slow
     uint8_t *to_fast = 0, *to_loop = 0;
-    if (!dec) {
+    if (!dec && !env->no_fast) {
         B(0xE9); W(0); to_fast = o - 2;              // jmp FAST (at the end)
     } else {
         to_loop = jcc8(0xEB);                        // jmp loop
@@ -564,7 +564,7 @@ uint16_t drc_emit_ldi_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
     B(0x83); B(0xE6); B(0x0E);                       // and si, 14
     B(0x8E); B(0x84); W(SA(segtab));                 // mov es, [si + segtab]
     uint8_t *to_fast = 0;
-    if (!dec) {
+    if (!dec && !env->no_fast) {
         B(0xE9); W(0); to_fast = o - 2;              // jmp FAST (at the end)
     }
     uint8_t *loop = o;
@@ -1092,7 +1092,7 @@ static int emit(int i) {
                     if (fkind == K_AH) B(0x9E);   // sahf: CF = C
                 }
                 B(0xD0); B(0xC0 | (y << 3) | xr);
-                if (!(live_out[i] & (FS | FZ | FP | FH | FN))) {
+                if (!env->no_fast && !(live_out[i] & (FS | FZ | FP | FH | FN))) {
                     // only C is read after it (a chain of rotates through
                     // carry, 16/32-bit shifts): it stays in x86 CF
                     fkind = K_CARRY; cf_valid = 1;
@@ -1108,6 +1108,12 @@ static int emit(int i) {
             } else {
                 static const uint8_t sh[8] = { 0, 0, 0, 0, 4, 7, 0, 5 };   // SLA SRA - SRL
                 B(0xD0); B(0xC0 | (sh[y] << 3) | xr);
+                if (env->no_fast) {
+                    B(0x9F); B(0x80); B(0xE4); B(0xC5);   // lahf; and ah, C5h
+                    fkind = K_AH;
+                    cyc += 8;
+                    return 1;
+                }
                 // x86 shl/sar/shr by 1 set S, Z, P, C as the Z80 (H = N
                 // = 0): the flags of an OR, kept in the x86 flags
                 fkind = K_OR; cf_valid = 1;
@@ -1674,7 +1680,7 @@ static int emit(int i) {
             switch (y) {
             case 0: case 1: case 2: case 3: {
                 static const uint8_t rot[4] = { 0xC0, 0xC8, 0xD0, 0xD8 };   // rol ror rcl rcr al
-                if (!(live_out[i] & (FS | FZ | FP | FH | FN))) {
+                if (!env->no_fast && !(live_out[i] & (FS | FZ | FP | FH | FN))) {
                     // only C is read after it: it stays in x86 CF
                     if (y >= 2) need_cf();
                     B(0xD0); B(rot[y]);

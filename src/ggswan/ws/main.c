@@ -916,6 +916,10 @@ int main(void) {
         text_hex("CODE BANK", code_bank);
         if (code_bank < GG_PSRAM_FIRST_BANK + 8)
             fail("CODE BANK", code_bank);
+        // X4 (X left) held: diagnostics, the recompiler without patches
+        // 29-32 (see drc_rt.h)
+        if (ws_keypad_scan() & WS_KEY_X4)
+            drc_no_fast = 1;
         drc_rt_init(code_bank);
         // the stubs written through the RAM window must be visible there
         // (the EXIT stub starts with mov byte [reason], 0: C6h)
@@ -940,6 +944,8 @@ int main(void) {
         } else if (ws_keypad_scan() & WS_KEY_X2) {
             drc_rt_options(0, 0);
             text_print("CPU: RECOMPILER, JP/JR FOLLOW (TEST)");
+        } else if (drc_no_fast) {
+            text_print("CPU: RECOMPILER, NO FAST PATHS");
         } else {
             text_print("CPU: RECOMPILER");
         }

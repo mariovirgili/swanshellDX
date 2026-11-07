@@ -248,6 +248,7 @@ int sys_init(const char *path, int use_drc, int every_line) {
     video_init();
     sound_init();
     if (use_drc) {
+        drc_no_fast = getenv("GGSWAN_NOFAST") != NULL;   // (X4 at start on the WS)
         drc_rt_init(20);
         // the same start-up checks as main.c
         if (*((const uint8_t __far*) MK_FP(DRC_CODE_SEG, 0)) != 0xC6) { printf("CODE READ failed\n"); return 0; }

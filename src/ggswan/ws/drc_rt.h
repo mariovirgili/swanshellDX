@@ -25,6 +25,9 @@ extern uint16_t drc_last_interp_pc;
 extern uint32_t drc_stat_helper[5], drc_stat_dispatch, drc_stat_nolink;
 /// diagnostics: do not link blocks
 extern uint8_t drc_no_links;
+/// diagnostics (set before drc_rt_init): none of patches 29-32 (line events
+/// in the dispatcher, the fast reentry, rep movsb runs, rotate flags)
+extern uint8_t drc_no_fast;
 /// diagnostics: run every block with the interpreter too, compare
 extern uint8_t drc_check;
 /// main.c: show a difference found by the self-check (does not return)
