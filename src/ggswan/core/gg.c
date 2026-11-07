@@ -302,10 +302,8 @@ static void vdp_line(uint16_t line) {
     }
 
     // frame interrupt
-    if (line == GG_ACTIVE_LINES + 1) {
+    if (line == GG_ACTIVE_LINES + 1)
         gg.vdp.status |= 0x80;
-        gg_platform_vblank();
-    }
 
     update_irq();
 }
@@ -337,10 +335,8 @@ static void vdp_lines(uint16_t from, uint16_t to) {
         c = r;
     gg.vdp.line_counter = c;
     // frame interrupt
-    if (from <= GG_ACTIVE_LINES + 1 && to > GG_ACTIVE_LINES + 1) {
+    if (from <= GG_ACTIVE_LINES + 1 && to > GG_ACTIVE_LINES + 1)
         gg.vdp.status |= 0x80;
-        gg_platform_vblank();
-    }
     gg.vdp.vcounter = to - 1;
     update_irq();
 }

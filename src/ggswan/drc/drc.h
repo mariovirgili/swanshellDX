@@ -83,20 +83,14 @@ typedef struct {
                           // entry bits 9-11 (h flip, v flip, palette)
     uint8_t vram_class[65]; // main.c: for each 256-byte VRAM page, bit 0:
                           // in the name table, bit 1: the sprite table;
-                          // [64] (past the end, a run that wraps): 1;
-                          // bit 3: tile data written now goes to the log
-                          // (main.c: deferred tile writes, see there)
-    uint8_t vram_class_defer[64]; // main.c: vram_class with bit 3 on the
-                          // tile data pages
-    uint8_t defer;        // main.c: tile writes deferred (from the frame
-                          // interrupt to the end of the frame)
-    uint16_t log_top;     // main.c: end of the log of deferred writes
+                          // bit 3: the write goes to the log (main.c:
+                          // deferred VRAM writes, see there); bit 4: [64],
+                          // past the end (a run that wraps)
+    uint8_t defer;        // main.c: VRAM writes deferred (not with X4)
+    uint16_t log_top;     // main.c: the log being filled (IRAM): end,
+    uint16_t log_end;     // limit, last entry (0: none); entries of VRAM
+    uint16_t log_last;    // address (word), length (byte), the bytes
 } drc_state_t;
-
-// the log of deferred tile writes (IRAM): entries of VRAM address (word),
-// length (byte), the bytes
-#define DRC_LOG_ADDR 0xF200
-#define DRC_LOG_END  0xFC00
 
 /// Helper operations: generated code sets drc_state.op (and arg/val),
 /// then calls the helper routine. The helper routine stores AX, CX, DX,

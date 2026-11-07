@@ -15,6 +15,8 @@
 #ifdef GGSWAN_HOST
 // PC build of this file, to test the video translation (host/wssim.c)
 #include "wsshim.h"
+#include <stdlib.h>
+#include <stdio.h>
 #else
 #include <ws.h>
 #include <nile.h>
@@ -245,28 +247,39 @@ static uint8_t backdrop_palette;
 static void hscroll_write(uint8_t value);
 
 /*
- * The VRAM page classes: the pages the OUTI routine must leave to its loop
- * (name table: the WS map follows it) or after which the sprites are
- * rebuilt (sprite table); both tables start on a page.
+ * The VRAM page classes (drc_st.vram_class, used by the generated VRAM
+ * routines and by C): bit 0 the name table, bit 1 the sprite table (both
+ * start on a page), bit 3 deferred (below), bit 4 past the end of VRAM
+ * ([64]: a run that wraps).
  *
- * Deferred tile writes: the Game Gear VRAM is the WS tile memory, so a
- * tile the game writes shows at once, while the WS sprite table is built
- * at the end of the frame. A game that writes its sprite table and then
- * the tiles of the new poses in the frame interrupt (Aladdin: lines
- * 196-212 and 211-252) showed new tiles with the old sprite table, or the
- * other way round, until the end of the frame: pieces of the wrong pose.
- * So from the frame interrupt to the end of the frame, writes to the tile
- * pages the sprites use (class bit 3) go to a log in IRAM (DRC_LOG_ADDR),
- * written to VRAM at the end of the frame just before the sprites are
- * built. (Only those pages: the background shows its tiles and its map
- * entries as they are written, both at once, as before.) A
- * single byte to a tile page, a VRAM read, a run that touches the sprite
- * table or a full log: the log is written at once and deferring stops for
- * the frame (gg_platform_vram_sync): the game always reads what it wrote.
+ * Deferred VRAM writes. The Game Gear VRAM is the WS tile memory and the
+ * name table feeds the WS map, so whatever the game writes shows at once,
+ * in the middle of the WS frame being drawn, while the scroll and the
+ * sprites change only between WS frames; and one Game Gear frame takes
+ * two or three WS frames to emulate. Pieces of two frames showed together
+ * for a WS frame: Aladdin's new poses with the old sprite table, Sonic's
+ * animated sunflowers torn in half.
+ *
+ * So every write to tile data and to the name table (class bit 3) goes to
+ * a log in IRAM instead: entries of VRAM address (word), length (byte),
+ * the bytes; a byte that follows the last entry joins it. At the end of
+ * the Game Gear frame (video_present) the log is closed and handed to the
+ * WS line interrupt at the end of the screen (line 144, when the WS also
+ * copies the sprite table and the new scroll is set): there it is written
+ * to VRAM and the WS map, all at once, for the next WS frame. Two logs
+ * take turns (one filling, one waiting for the interrupt).
+ *
+ * A VRAM read (the game must read what it wrote) or a full log: the logs
+ * are written at once (gg_platform_vram_sync). X4 writes everything at
+ * once, as before (no class bit 3).
  */
+#define LOG_A 0xC400        // (IRAM, free; the PC tests' mirrors end below)
+#define LOG_B 0xF200
+#define LOG_SIZE 0x0C00
 static uint8_t vram_class_norm[64];
-static uint8_t sprite_page[64];   // pages with tiles the WS sprites use (build_sprites)
-static uint8_t *log_last;   // the last entry of the log (C appends to it)
+static uint16_t log_start;                    // the log being filled
+static volatile uint16_t pend_start, pend_top; // the log waiting (0: none)
+void log_commit_tramp(void);   // drc_asm.s: log_commit_pending with DS = ES = SS
 
 static void vram_class_update(void) {
     for (uint8_t i = 0; i < 64; i++) {
@@ -274,66 +287,151 @@ static void vram_class_update(void) {
         uint8_t c = ((uint16_t) (a - nt_base) < 0x700 ? 1 : 0)
                   | ((uint16_t) (a - sat_base) < 0x100 ? 2 : 0);
         vram_class_norm[i] = c;
-        drc_st.vram_class_defer[i] = c ? c : sprite_page[i] ? 8 : 0;
-        drc_st.vram_class[i] = drc_st.defer ? drc_st.vram_class_defer[i] : c;
+        drc_st.vram_class[i] = (drc_st.defer && !(c & 2)) ? c | 8 : c;
     }
-    drc_st.vram_class[64] = 1;
+    drc_st.vram_class[64] = 0x11;
 }
 
-// the frame interrupt (gg.c): defer the tile writes (only with the
-// generated VRAM routines: X4 leaves everything in C)
-void gg_platform_vblank(void) {
-    if (drc_no_fast || drc_st.defer)
-        return;
-    drc_st.defer = 1;
-    drc_st.log_top = DRC_LOG_ADDR;
-    log_last = 0;
-    memcpy(drc_st.vram_class, drc_st.vram_class_defer, 64);
-}
+static void map_put(uint8_t row, uint8_t col, uint16_t w);
+static inline uint16_t conv_entry(uint16_t e);
+static inline uint16_t gg_entry(uint8_t row, uint8_t col);
 
-// a VRAM byte from C (helpers, interpreter: Aladdin uploads its tiles from
-// code in RAM, run by the interpreter): to the log if its page is deferred,
-// added to the last entry when it follows it; 1: kept (not in VRAM yet)
-uint8_t gg_platform_vram_defer(uint16_t a, uint8_t value) {
-    if (!(drc_st.vram_class[a >> 8] & 8))
-        return 0;
-    uint8_t *top = IRAM(drc_st.log_top);
-    if (log_last && log_last[2] < 255 && log_last + 3 + log_last[2] == top
-            && (uint16_t) (log_last[0] | (log_last[1] << 8)) + log_last[2] == a) {
-        if (drc_st.log_top + 1 > DRC_LOG_END)
-            goto full;
-        *top = value;
-        log_last[2]++;
-        drc_st.log_top++;
-        return 1;
-    }
-    if (drc_st.log_top + 4 > DRC_LOG_END)
-        goto full;
-    top[0] = a;
-    top[1] = a >> 8;
-    top[2] = 1;
-    top[3] = value;
-    log_last = top;
-    drc_st.log_top += 4;
-    return 1;
-full:
-    gg_platform_vram_sync();   // (the log first, then this byte to VRAM)
-    return 0;
-}
-
-// the deferred tile writes to VRAM, in order; deferring stops
-void gg_platform_vram_sync(void) {
-    if (!drc_st.defer)
-        return;
-    const uint8_t *p = IRAM(DRC_LOG_ADDR), *end = IRAM(drc_st.log_top);
-    while (p < end) {
+// a log to VRAM, in order, and the name table entries it touched to the
+// WS map (also called from the line interrupt, through
+// log_commit_tramp: drc_asm.s sets DS and ES)
+static void log_apply(uint16_t start, uint16_t end) {
+    const uint8_t *p = IRAM(start), *e = IRAM(end);
+    while (p < e) {
         uint16_t a = p[0] | (p[1] << 8);
         uint8_t n = p[2];
         memcpy(gg_vram + a, p + 3, n);
+        uint16_t off = a - nt_base;
+        if (off < 0x700 || (uint16_t) (a + n - 1 - nt_base) < 0x700) {
+            // name table: the words touched
+            for (uint16_t k = 0; k < n; k++) {
+                uint16_t o = (uint16_t) (a + k - nt_base);
+                if (o < 0x700 && (!(o & 1) || k == 0))
+                    map_put(o >> 6, (o >> 1) & 31, conv_entry(gg_entry(o >> 6, (o >> 1) & 31)));
+            }
+        }
         p += 3 + n;
     }
-    drc_st.defer = 0;
-    memcpy(drc_st.vram_class, vram_class_norm, 64);
+}
+
+// interrupts off, and back as they were (not on: the callers may already
+// run with them off)
+static inline uint16_t irq_save(void) {
+#ifndef GGSWAN_HOST
+    uint16_t f;
+    __asm__ volatile ("pushf\n\tpop %0\n\tcli" : "=r" (f) :: "memory");
+    return f;
+#else
+    return 0;
+#endif
+}
+static inline void irq_restore(uint16_t f) {
+#ifndef GGSWAN_HOST
+    __asm__ volatile ("push %0\n\tpopf" :: "r" (f) : "memory");
+#else
+    (void) f;
+#endif
+}
+
+// the line interrupt at the end of the screen: the waiting log
+void log_commit_pending(void) {
+    if (pend_start) {
+        log_apply(pend_start, pend_top);
+        pend_start = 0;
+    }
+}
+
+// all the deferred writes to VRAM now (in order), the log empty again
+void gg_platform_vram_sync(void) {
+    if (!drc_st.defer)
+        return;
+    uint16_t f = irq_save();
+    log_commit_pending();
+    log_apply(log_start, drc_st.log_top);
+    drc_st.log_top = log_start;
+    drc_st.log_last = 0;
+    irq_restore(f);
+}
+
+// the end of the Game Gear frame: the log waits for the end of the WS
+// screen; the other one fills (if the last one still waits, as when two
+// frames end in one WS frame: written now)
+static void log_present(void) {
+    if (!drc_st.defer)
+        return;
+    uint16_t f = irq_save();
+    log_commit_pending();
+    if (drc_st.log_top != log_start) {
+        pend_top = drc_st.log_top;
+        pend_start = log_start;
+        log_start = log_start == LOG_A ? LOG_B : LOG_A;
+        drc_st.log_top = log_start;
+        drc_st.log_end = log_start + LOG_SIZE;
+        drc_st.log_last = 0;
+#ifdef GGSWAN_HOST
+        if (getenv("GGSWAN_LOGSTAT"))
+            fprintf(stderr, "LOGSZ %u\n", (unsigned) (pend_top - pend_start));
+#endif
+    }
+    irq_restore(f);
+#ifdef GGSWAN_HOST
+    // (no WS raster on the PC: at once; with GGSWAN_LATE_COMMIT the PC
+    // tests commit it later, from drc_z80_run, as the interrupt would)
+    if (!getenv("GGSWAN_LATE_COMMIT"))
+        log_commit_pending();
+#endif
+}
+
+#ifdef GGSWAN_HOST
+// the PC tests: the line interrupt now and then (GGSWAN_LATE_COMMIT)
+void host_late_commit(void) {
+    static unsigned n;
+    if (getenv("GGSWAN_LATE_COMMIT") && pend_start && (++n % 3) == 0)
+        log_commit_pending();
+}
+#endif
+
+static void log_init(void) {
+    drc_st.defer = !drc_no_fast;
+    log_start = LOG_A;
+    drc_st.log_top = LOG_A;
+    drc_st.log_end = LOG_A + LOG_SIZE;
+    drc_st.log_last = 0;
+    pend_start = 0;
+}
+
+// a VRAM byte from C (helpers, interpreter: Aladdin uploads its tiles from
+// code in RAM, run by the interpreter): to the log if its page is deferred
+// (joined to the last entry when it follows it); 1: kept, not in VRAM yet
+uint8_t gg_platform_vram_defer(uint16_t a, uint8_t value) {
+    if (!(drc_st.vram_class[a >> 8] & 8))
+        return 0;
+    for (;;) {
+        uint8_t *top = IRAM(drc_st.log_top);
+        uint8_t *last = drc_st.log_last ? IRAM(drc_st.log_last) : 0;
+        if (last && last[2] < 255 && last + 3 + last[2] == top
+                && (uint16_t) (last[0] | (last[1] << 8)) + last[2] == a) {
+            if (drc_st.log_top + 1 <= drc_st.log_end) {
+                *top = value;
+                last[2]++;
+                drc_st.log_top++;
+                return 1;
+            }
+        } else if (drc_st.log_top + 4 <= drc_st.log_end) {
+            top[0] = a;
+            top[1] = a >> 8;
+            top[2] = 1;
+            top[3] = value;
+            drc_st.log_last = drc_st.log_top;
+            drc_st.log_top += 4;
+            return 1;
+        }
+        gg_platform_vram_sync();   // full: written now, then again
+    }
 }
 GGSWAN_HOST_VISIBLE volatile uint8_t act_line[MAX_SPLITS], act_val[MAX_SPLITS], act_n = 1;
 // screen 1 Y scroll for the next WS frame (set by the line interrupt at the
@@ -495,7 +593,11 @@ static void __attribute__((interrupt, assume_ss_data)) line_irq(void) {
         i = 0;   // end of the screen
     for (;;) {
         if (i == 0) {
-            // values for the first line of the next screen
+            // values for the first line of the next screen; the VRAM
+            // writes of the frame presented (the WS copies the sprite table
+            // on this line too)
+            if (pend_start)
+                log_commit_tramp();
             outportb(WS_SCR1_SCRL_X_PORT, act_val[0]);
             outportb(0x11, act_vy);                   // screen 1 Y scroll
             i = 1;
@@ -570,7 +672,6 @@ static void build_sprites(void) {
     uint8_t hide_y = 113 - (tall ? 16 : 8);
     const uint8_t *sat = gg_vram + sat_base;
     uint8_t *s = sprite_table, *end = sprite_table + 127 * 4;
-    memset(sprite_page, 0, sizeof(sprite_page));
     for (uint8_t i = 0; i < 64 && s < end; i++) {
         uint8_t y = sat[i];
         if (y == 0xD0)
@@ -584,8 +685,6 @@ static void build_sprites(void) {
         if ((uint8_t) (wx - (32 + GG_VIEW_W)) < 89)
             continue;
         uint8_t t = sat[0x81 + i * 2];
-        // (8 tiles a page; t | 1 is in the same one)
-        sprite_page[(tbase | t) >> 3] = 1;
         // tile (bit 8: s[1] bit 0); palette 0 (= WS palette 8); behind screen 2
         if (tall) {
             s[0] = t & ~1; s[1] = tbase >> 8; s[2] = wy; s[3] = wx;
@@ -599,8 +698,6 @@ static void build_sprites(void) {
     outportb(0x05, 0);        // first sprite
     outportb(0x06, (uint8_t) ((s - sprite_table) >> 2));   // sprite count
     drc_st.sprites_dirty = false;
-    for (uint8_t i = 0; i < 64; i++)
-        drc_st.vram_class_defer[i] = vram_class_norm[i] ? vram_class_norm[i] : sprite_page[i] ? 8 : 0;
 }
 
 GGSWAN_HOST_VISIBLE void video_init(void) {
@@ -608,6 +705,7 @@ GGSWAN_HOST_VISIBLE void video_init(void) {
     drc_st.sprites_dirty = 1;
     drc_st.nt_base = nt_base;
     drc_st.sat_base = sat_base;
+    log_init();
     vram_class_update();
     memset(gg_vram, 0, 0x4000);
     memset(map1, 0, MAP_SIZE);
@@ -646,8 +744,6 @@ GGSWAN_HOST_VISIBLE void video_init(void) {
 
 GGSWAN_HOST_VISIBLE void video_present(void) {
     prof_phase = PROF_VIDEO;
-    // the tile writes deferred since the frame interrupt, then the sprites
-    gg_platform_vram_sync();
     const uint8_t *reg = gg.vdp.reg;
 
     // vertical: the Game Gear view starts at row (24 + vscroll) mod 224
@@ -657,6 +753,7 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
         vy += 224;
     act_vy = vy & 0xFF;
     if (vy > map_top * 8u + (256 - GG_VIEW_H - 8)) {
+        gg_platform_vram_sync();   // (the name table up to date first)
         map_relayout(s >> 3);
         vy = s;
         // (the map changed now: its scroll too)
@@ -666,6 +763,9 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
 #ifdef GGSWAN_HOST
     outportb(0x11, act_vy);   // (the PC tests have no WS raster)
 #endif
+    // this frame's VRAM writes: at the end of the WS screen, with the
+    // scroll (splits_commit) and the sprites (the WS copies them there)
+    log_present();
     splits_commit();
     // record the next frame: it starts with the current value
     rec_val[0] = 16 - gg.vdp.reg[8];

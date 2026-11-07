@@ -264,6 +264,7 @@ void sys_frame(int keys) {
     gg.keys = keys;
     gg_run_frame();
     video_present();
+    if (getenv("GGSWAN_LATE_COMMIT")) gg_platform_vram_sync();   // (to compare the VRAM)
     // the whole frame drawn again from the final state (comparable between
     // runs that stop at every line and runs that do not)
     uint8_t save[GG_VIEW_H][GG_VIEW_W][3];

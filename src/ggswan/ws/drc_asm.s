@@ -68,3 +68,23 @@ drc_helper_tramp:
     IA16_CALL drc_helper_direct
     pop es
     retf
+
+    // void log_commit_tramp(void);
+    //
+    // Called by the WS line interrupt (main.c, end of the screen): writes
+    // the waiting log of deferred VRAM writes (log_commit_pending, C) with
+    // DS = ES = SS: the interrupted code may have had DS elsewhere (the
+    // OUTI and LDI routines copy with DS = the Z80 source).
+    .global log_commit_tramp
+log_commit_tramp:
+    push ds
+    push es
+    push ss
+    pop ds
+    push ss
+    pop es
+    cld
+    IA16_CALL log_commit_pending
+    pop es
+    pop ds
+    IA16_RET

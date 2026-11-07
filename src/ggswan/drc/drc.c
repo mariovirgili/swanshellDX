@@ -391,17 +391,20 @@ static void vram_fast(uint8_t src, uint8_t **slow1) {
     }
     B(0x8B); B(0x36); W(VA(addr));                       // mov si, [addr]
     B(0x81); B(0xE6); W(0x3FFF);                         // and si, 3FFFh
-    B(0x88); B(0x84 | (src << 3)); W(env->vram_addr);    // mov [si + vram], src
-    B(0x88); B(0x06 | (src << 3)); W(VA(read_buffer));   // mov [read_buffer], src
-    // the page class (main.c): 1 name table, 2 sprite table, 0 tile data
-    B(0x89); B(0xF7);                                    // mov di, si
-    B(0xC1); B(0xEF); B(0x08);                           // shr di, 8
     if (env->cls_off) {
-        // (8: a deferred tile page) all in the routine
+        // the page class (main.c) first: tile data written here; the name
+        // table, the sprite table, deferred writes (the log): the routine,
+        // which stores the byte itself (from read_buffer)
+        B(0x88); B(0x06 | (src << 3)); W(VA(read_buffer));   // mov [read_buffer], src
+        B(0x89); B(0xF7);                                // mov di, si
+        B(0xC1); B(0xEF); B(0x08);                       // shr di, 8
         B(0xF6); B(0x85); W(SA(vram_class)); B(0x0B);    // test byte [di + class], 0Bh
         uint8_t *plain = jcc8(0x74);                     // jz (tile data)
         call_near(env->cls_off);
+        uint8_t *done = jcc8(0xEB);
         land8(plain);
+        B(0x88); B(0x84 | (src << 3)); W(env->vram_addr);    // mov [si + vram], src
+        land8(done);
         B(0x46);                                         // inc si
         B(0x81); B(0xE6); W(0x3FFF);                     // and si, 3FFFh
         B(0x89); B(0x36); W(VA(addr));                   // mov [addr], si
@@ -409,6 +412,11 @@ static void vram_fast(uint8_t src, uint8_t **slow1) {
         land8(cram_end);
         return;
     }
+    B(0x88); B(0x84 | (src << 3)); W(env->vram_addr);    // mov [si + vram], src
+    B(0x88); B(0x06 | (src << 3)); W(VA(read_buffer));   // mov [read_buffer], src
+    // the page class (main.c): 1 name table, 2 sprite table, 0 tile data
+    B(0x89); B(0xF7);                                    // mov di, si
+    B(0xC1); B(0xEF); B(0x08);                           // shr di, 8
     B(0xF6); B(0x85); W(SA(vram_class)); B(3);           // test byte [di + class], 3
     uint8_t *plain = jcc8(0x74);                         // jz (tile data)
     B(0xF6); B(0x85); W(SA(vram_class)); B(1);           // test byte [di + class], 1
@@ -427,30 +435,70 @@ static void vram_fast(uint8_t src, uint8_t **slow1) {
 }
 
 /*
- * Routine for a VRAM byte outside tile data (at env->cls_off), called
- * by the VRAM paths after the byte is stored, with SI = VRAM address, DI =
- * its page: the name table routine; the sprite table: sprites_dirty = 1;
- * a tile page while tile writes are deferred (class bit 3, main.c): a
- * single byte does not go to the log: the log is written now and
- * deferring stops (helper SYNC), then the byte again (the log may have
- * had an older one). Keeps SI, DI.
+ * Routine for a VRAM byte that is not plain tile data (at env->cls_off),
+ * called by the VRAM paths before the byte is stored, with SI = VRAM
+ * address, DI = its page, the byte in read_buffer. Deferred (class bit 3,
+ * main.c): the byte goes to the log, joined to the last entry when it
+ * follows it; a full log is written now (helper SYNC) and the byte goes to
+ * the empty one. Otherwise (the sprite table, or X4 classes): stored, then
+ * the name table routine or sprites_dirty = 1. Keeps SI and the registers.
  */
 uint16_t drc_emit_cls_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) {
     env = e;
     o = o_start = out; o_base = out_off;
     B(0xF6); B(0x85); W(SA(vram_class)); B(8);       // test byte [di + class], 8
-    uint8_t *c1 = jcc8(0x74);                        // jz
-    B(0xC6); B(0x06); W(SA(val)); B(2);              // (val: why, for the tests)
-    B(0xC6); B(0x06); W(SA(op)); B(DRC_H_SYNC);      // mov byte [op], SYNC
-    call_near(e->helper_off);                        // (keeps SI, DI, ES, the registers)
-    B(0x50);                                         // push ax
+    uint8_t *live = jcc8(0x74);                      // jz live
+    uint8_t *retry = o;
+    B(0x50); B(0x53); B(0x51); B(0x57);              // push ax, bx, cx, di
     B(0xA0); W(VA(read_buffer));                     // mov al, [read_buffer] (the byte)
+    B(0x8B); B(0x1E); W(SA(log_last));               // mov bx, [log_last]
+    B(0x09); B(0xDB);                                // or bx, bx
+    uint8_t *n1 = jcc8(0x74);                        // jz new
+    B(0x8A); B(0x4F); B(0x02);                       // mov cl, [bx + 2] (length)
+    B(0x30); B(0xED);                                // xor ch, ch
+    B(0x80); B(0xF9); B(0xFF);                       // cmp cl, 255
+    uint8_t *n2 = jcc8(0x74);                        // je new
+    B(0x89); B(0xDF);                                // mov di, bx
+    B(0x01); B(0xCF);                                // add di, cx
+    B(0x83); B(0xC7); B(0x03);                       // add di, 3
+    B(0x3B); B(0x3E); W(SA(log_top));                // cmp di, [log_top] (the last entry?)
+    uint8_t *n3 = jcc8(0x75);                        // jne new
+    B(0x8B); B(0x3F);                                // mov di, [bx] (its address)
+    B(0x01); B(0xCF);                                // add di, cx
+    B(0x39); B(0xF7);                                // cmp di, si (this byte follows it?)
+    uint8_t *n4 = jcc8(0x75);                        // jne new
+    B(0x8B); B(0x3E); W(SA(log_top));                // mov di, [log_top]
+    B(0x3B); B(0x3E); W(SA(log_end));                // cmp di, [log_end]
+    uint8_t *f1 = jcc8(0x73);                        // jae full
+    B(0x88); B(0x05);                                // mov [di], al
+    B(0x47);                                         // inc di
+    B(0x89); B(0x3E); W(SA(log_top));                // mov [log_top], di
+    B(0xFE); B(0x47); B(0x02);                       // inc byte [bx + 2]
+    uint8_t *out1 = jcc8(0xEB);                      // jmp out
+    land8(n1); land8(n2); land8(n3); land8(n4);
+    B(0x8B); B(0x3E); W(SA(log_top));                // new: mov di, [log_top]
+    B(0x89); B(0xFB);                                // mov bx, di
+    B(0x83); B(0xC3); B(0x04);                       // add bx, 4
+    B(0x3B); B(0x1E); W(SA(log_end));                // cmp bx, [log_end]
+    uint8_t *f2 = jcc8(0x77);                        // ja full
+    B(0x89); B(0x35);                                // mov [di], si (address)
+    B(0xC6); B(0x45); B(0x02); B(0x01);              // mov byte [di + 2], 1
+    B(0x88); B(0x45); B(0x03);                       // mov [di + 3], al
+    B(0x89); B(0x3E); W(SA(log_last));               // mov [log_last], di
+    B(0x89); B(0x1E); W(SA(log_top));                // mov [log_top], bx
+    land8(out1);
+    B(0x5F); B(0x59); B(0x5B); B(0x58);              // out: pop di, cx, bx, ax
+    B(0xC3);                                         // ret
+    land8(f1); land8(f2);
+    B(0x5F); B(0x59); B(0x5B); B(0x58);              // full: pop di, cx, bx, ax
+    B(0xC6); B(0x06); W(SA(op)); B(DRC_H_SYNC);      // mov byte [op], SYNC (the log to VRAM)
+    call_near(e->helper_off);                        // (keeps SI, DI, ES, the registers)
+    B(0xEB); B((uint8_t) (retry - (o + 1)));         // jmp retry
+    land8(live);
+    B(0x50);                                         // push ax
+    B(0xA0); W(VA(read_buffer));                     // mov al, [read_buffer]
     B(0x88); B(0x84); W(e->vram_addr);               // mov [si + vram], al
     B(0x58);                                         // pop ax
-    B(0xF6); B(0x85); W(SA(vram_class)); B(3);       // test byte [di + class], 3
-    uint8_t *c2 = jcc8(0x75);                        // jnz
-    B(0xC3);                                         // ret (tile data)
-    land8(c1); land8(c2);
     B(0xF6); B(0x85); W(SA(vram_class)); B(1);       // test byte [di + class], 1
     uint8_t *sat = jcc8(0x74);                       // jz sat
     B(0xE9); W((uint16_t) (e->nt_stub_off - (o_base + (uint16_t) (o - o_start) + 2)));   // jmp NT
@@ -572,33 +620,35 @@ uint16_t drc_emit_run_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
         B(0xC1); B(0xEF); B(0x08);                   // shr di, 8
         B(0x0A); B(0x95); W(SA(vram_class));         // or dl, [di + class]
         B(0x5F);                                     // pop di
-        B(0xF6); B(0xC2); B(0x01);                   // test dl, 1
-        uint8_t *n1 = jcc8(0x75);                    // jnz nofast (name table, wrap)
-        uint8_t *go = jcc8(0xEB);                    // jmp go
-        land8(n1); land8(n2);
-        B(0x5A);                                     // nofast: pop dx
-        land8(cram);
-        B(0xE9); W((uint16_t) (loop - (o + 2)));     // jmp loop
-        land8(go);
+        uint8_t *n1, *n3 = 0, *n4 = 0, *logged = 0;
         if (e->cls_off) {
             /*
-             * Tile writes deferred (class bit 3, main.c): the run goes to
-             * the log instead of VRAM (same results otherwise). A run that
-             * also touches the sprite table, or no room in the log: the
-             * log is written now and deferring stops (helper SYNC).
+             * Deferred writes (class bit 3, main.c): the run goes to the
+             * log instead of VRAM (the same results otherwise). Wrapping
+             * at the end of VRAM, also touching the sprite table, or no
+             * room in the log: the loop, byte by byte (the class routine).
              */
+            B(0xF6); B(0xC2); B(0x10);               // test dl, 10h
+            n1 = jcc8(0x75);                         // jnz nofast (wrap)
             B(0xF6); B(0xC2); B(0x08);               // test dl, 8
             uint8_t *live = jcc8(0x74);              // jz live
-            B(0xF6); B(0xC2); B(0x03);               // test dl, 3
-            uint8_t *s1 = jcc8(0x75);                // jnz sync
+            B(0xF6); B(0xC2); B(0x02);               // test dl, 2
+            n3 = jcc8(0x75);                         // jnz nofast (sprite table)
             B(0x89); B(0xFA);                        // mov dx, di (k)
             B(0x03); B(0x16); W(SA(log_top));        // add dx, [log_top]
             B(0x83); B(0xC2); B(0x03);               // add dx, 3
-            B(0x81); B(0xFA); W(DRC_LOG_END);        // cmp dx, log end
-            uint8_t *s2 = jcc8(0x77);                // ja sync
+            B(0x3B); B(0x16); W(SA(log_end));        // cmp dx, [log_end]
+            uint8_t *dolog = jcc8(0x76);             // jbe dolog
+            land8(n1); land8(n2); land8(n3);
+            uint8_t *nofast = o;
+            B(0x5A);                                 // nofast: pop dx
+            land8(cram);
+            B(0xE9); W((uint16_t) (loop - (o + 2)));     // jmp loop
+            land8(dolog);
             B(0x57);                                 // push di (k)
             B(0x8B); B(0x3E); W(SA(log_top));        // mov di, [log_top]
             B(0x89); B(0x16); W(SA(log_top));        // mov [log_top], dx
+            B(0x89); B(0x3E); W(SA(log_last));       // mov [log_last], di (this entry)
             B(0x89); B(0x35);                        // mov [di], si (VRAM address)
             B(0x5A);                                 // pop dx (k)
             B(0x88); B(0x55); B(0x02);               // mov [di + 2], dl (length)
@@ -624,11 +674,19 @@ uint16_t drc_emit_run_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
             B(0x59);                                 // pop cx
             B(0x5A);                                 // pop dx
             B(0xE9); W((uint16_t) (flags - (o + 2)));    // jmp flags
-            land8(s1); land8(s2);
-            B(0xC6); B(0x06); W(SA(val)); B(1);      // sync: (val: why, for the tests)
-            B(0xC6); B(0x06); W(SA(op)); B(DRC_H_SYNC);  // mov byte [op], SYNC
-            call_near(e->helper_off);                // (keeps SI, DI, ES, the registers)
             land8(live);
+            B(0xF6); B(0xC2); B(0x01);               // test dl, 1 (name table without the log)
+            B(0x75); B((uint8_t) (nofast - (o + 1)));    // jnz nofast (backwards)
+            (void) n4; (void) logged;
+        } else {
+            B(0xF6); B(0xC2); B(0x01);               // test dl, 1
+            n1 = jcc8(0x75);                         // jnz nofast (name table, wrap)
+            uint8_t *go = jcc8(0xEB);                // jmp go
+            land8(n1); land8(n2);
+            B(0x5A);                                 // nofast: pop dx
+            land8(cram);
+            B(0xE9); W((uint16_t) (loop - (o + 2)));     // jmp loop
+            land8(go);
         }
         // sprite table touched: rebuild the sprites
         B(0xF6); B(0xC2); B(0x02);                   // test dl, 2
