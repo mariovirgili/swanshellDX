@@ -606,6 +606,11 @@ static void hscroll_write(uint8_t value) {
 static volatile uint8_t diag_late, diag_commit, diag_ends, diag_splits, diag_split_line;
 static volatile uint16_t diag_calls;
 static uint16_t diag_regs, diag_ram;   // (at the last frame with a split)
+static uint16_t diag_irq_line, diag_vbl_pc;
+static uint8_t diag_vbl_st;
+static bool diag_mode;   // Y4 (Y left) held at the start: the right column
+extern uint16_t drc_diag_irq_line, gg_diag_vbl_pc;
+extern uint8_t gg_diag_vbl_st;
 
 #ifndef GGSWAN_HOST
 static void __attribute__((interrupt, assume_ss_data)) line_irq(void) {
@@ -690,6 +695,9 @@ static void splits_commit(void) {
         diag_regs = (gg.vdp.reg[0] << 8) | gg.vdp.reg[10];
         // (Sonic: D2DC the line-interrupt line, D241 its state)
         diag_ram = (gg_ram[0x12DC] << 8) | gg_ram[0x1241];
+        diag_irq_line = drc_diag_irq_line;
+        diag_vbl_pc = gg_diag_vbl_pc;
+        diag_vbl_st = gg_diag_vbl_st;
     }
     if (act_i > act_n)
         act_i = act_n;
@@ -1153,24 +1161,32 @@ static void show_fps(uint8_t fps) {
     put_value(14, 0, 'S', (drc_stat_helper[4] - l_help[4]) / 100);
     put_value(16, 0, 'N', (drc_stat_interp - l_interp) / 100);
     put_value(17, 0, 'Q', (drc_stat_irq - l_irq) / 100);
-    put_hex(17, 24, drc_last_interp_pc);
     put_value(0, 0, 'X', drc_stat_flushes);
-    // right: L how many lines after line 144 the end of the screen was
-    // served at worst, K lines its VRAM writes took at worst, E ends of
-    // the screen served (75 a second expected)
-    put_value(0, 24, 'L', diag_late);
-    put_value(2, 24, 'K', diag_commit);
-    put_value(16, 24, 'E', diag_ends);
-    // M most scroll values in a frame (1: no splits), Y the line of the
-    // last first split, J line interrupts served (all of them)
-    put_value(4, 24, 'M', diag_splits);
-    put_value(6, 24, 'Y', diag_split_line);
-    put_value(8, 24, 'J', diag_calls);
-    // G Game Gear interrupts taken (not in hundreds); in a frame with a
-    // split: registers 0 and 10, and two RAM bytes (hex)
-    put_value(10, 24, 'G', drc_stat_irq - l_irq);
-    put_hex(12, 24, diag_regs);
-    put_hex(14, 24, diag_ram);
+    if (!diag_mode) {
+        put_hex(17, 24, drc_last_interp_pc);
+    } else {
+        // the right column instead of the profile (Y4 held at the start),
+        // one value a row: L how many lines after line 144 the end of the
+        // screen was served at worst, K lines its VRAM writes took, M most
+        // scroll values in a frame (1: no splits), Y the first split's
+        // line, J line interrupts served, G Game Gear interrupts taken;
+        // from the last frame with a split: A the Game Gear line of the
+        // last interrupt taken in C, then (hex) the Z80 PC when the frame
+        // interrupt was requested, and its state (IFF1 1, halted 2, just
+        // after EI 4) with VDP register 0
+        put_value(1, 24, 'L', diag_late);
+        put_value(3, 24, 'K', diag_commit);
+        put_value(5, 24, 'M', diag_splits);
+        put_value(7, 24, 'Y', diag_split_line);
+        put_value(9, 24, 'J', diag_calls);
+        put_value(11, 24, 'G', drc_stat_irq - l_irq);
+        put_value(13, 24, 'A', diag_irq_line);
+        put_hex(15, 24, diag_vbl_pc);
+        put_hex(17, 24, (diag_vbl_st << 8) | (diag_regs >> 8));
+    }
+    diag_irq_line = 0;
+    diag_vbl_pc = 0;
+    diag_vbl_st = 0;
     diag_regs = 0;
     diag_ram = 0;
     diag_splits = 0;
@@ -1252,6 +1268,9 @@ int main(void) {
         gg_cpu_run = drc_z80_run;
         gg_cpu_left = drc_cycles_left;
         show_stats = true;
+        // Y4 (Y left) held: the diagnostics column instead of the profile
+        if (ws_keypad_scan() & WS_KEY_Y4)
+            diag_mode = true;
         if (ws_keypad_scan() & WS_KEY_Y3) {
             drc_no_links = 1;
             drc_check = 1;
@@ -1308,7 +1327,8 @@ int main(void) {
         if (vblanks >= 75) {
             vblanks -= 75;
             show_fps(frames);
-            show_profile();
+            if (!diag_mode)
+                show_profile();
             frames = 0;
         }
     }

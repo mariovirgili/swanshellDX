@@ -81,6 +81,7 @@ static uint8_t victim;
 static uint16_t pending_link, pending_seg;   // exit to link to the next block
 static drc_env_t env;
 uint32_t drc_stat_blocks, drc_stat_flushes, drc_stat_interp, drc_stat_irq;
+uint16_t drc_diag_irq_line;   // (diagnostics: the line of the last interrupt taken in C)
 uint16_t drc_last_interp_pc;
 /// far address of drc_helper_tramp (drc_asm.s fills it in), called by the
 /// HCALL stub
@@ -1000,7 +1001,7 @@ int32_t drc_z80_run(int32_t cycles) {
         if (drc_flush_request) { drc_flush_request = 0; flush(); }
         if (z80.halted) {
             pending_link = 0;
-            if (z80.irq && z80.iff1) { drc_stat_irq++; interp_one(); continue; }
+            if (z80.irq && z80.iff1) { drc_stat_irq++; drc_diag_irq_line = gg_current_line(); interp_one(); continue; }
             z80.cycles = 0;   // (nothing to do up to the next event)
             continue;
         }
@@ -1018,11 +1019,12 @@ int32_t drc_z80_run(int32_t cycles) {
                 z80.pc = 0x38;
                 z80.cycles -= 13;
                 drc_stat_irq++;
+                drc_diag_irq_line = gg_current_line();
                 continue;
             }
             // interrupt: taken by the interpreter (or, just after EI,
             // the one instruction before it)
-            if (!z80.ei_pending) drc_stat_irq++;
+            if (!z80.ei_pending) { drc_stat_irq++; drc_diag_irq_line = gg_current_line(); }
             interp_one();
             continue;
         }

@@ -190,6 +190,15 @@ uint8_t gg_every_line;          // stop at every line, call gg_platform_line
 #define frame_given gg.vdp.frame_given   // cycles given to the CPU in this frame
 static uint16_t frame_carry;    // cycles run past the end of the last frame
 
+// diagnostics (main.c): where the CPU was when the frame interrupt was
+// requested, and its state (bit 0 IFF1, 1 halted, 2 just after EI)
+uint16_t gg_diag_vbl_pc;
+uint8_t gg_diag_vbl_st;
+static void gg_diag_vbl(void) {
+    gg_diag_vbl_pc = z80.pc;
+    gg_diag_vbl_st = (z80.iff1 ? 1 : 0) | (z80.halted ? 2 : 0) | (z80.ei_pending ? 4 : 0);
+}
+
 // cycles run since the start of the frame
 static uint16_t frame_pos(void) {
     int32_t left = gg_cpu_left ? gg_cpu_left() : z80.cycles;
@@ -302,8 +311,10 @@ static void vdp_line(uint16_t line) {
     }
 
     // frame interrupt
-    if (line == GG_ACTIVE_LINES + 1)
+    if (line == GG_ACTIVE_LINES + 1) {
         gg.vdp.status |= 0x80;
+        gg_diag_vbl();
+    }
 
     update_irq();
 }
@@ -335,8 +346,10 @@ static void vdp_lines(uint16_t from, uint16_t to) {
         c = r;
     gg.vdp.line_counter = c;
     // frame interrupt
-    if (from <= GG_ACTIVE_LINES + 1 && to > GG_ACTIVE_LINES + 1)
+    if (from <= GG_ACTIVE_LINES + 1 && to > GG_ACTIVE_LINES + 1) {
         gg.vdp.status |= 0x80;
+        gg_diag_vbl();
+    }
     gg.vdp.vcounter = to - 1;
     update_irq();
 }
