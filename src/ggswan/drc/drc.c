@@ -840,6 +840,8 @@ static void decode(uint16_t pc, ins_t *I) {
         I->pre = 0xED; I->op = op = rd(pc + 1); I->len = 2;
         switch (op) {
         case 0x44: I->fwrite = FALL; return;                        // NEG
+        case 0x47: return;                                          // LD I,A
+        case 0x57: I->fwrite = FALL & ~FC; I->fread = FC; return;   // LD A,I
         case 0x43: case 0x53: case 0x73:                            // LD (nn),rr
             I->nn = rd(pc + 2) | (rd(pc + 3) << 8); I->len = 4;
             if (I->nn < 0xC000 || I->nn >= 0xDFFF) I->step = 1;
@@ -1266,6 +1268,27 @@ static int emit(int i) {
             B(0x89); B(0x36); W(ZA(pc));              // mov [pc], si
             set_link(0);
             jmp_near(env->exit_off);
+            return 1;
+        case 0x47:   // LD I,A (Wonder Boy III keeps a value in I)
+            B(0xA2); W(ZA(i));                        // mov [i], al
+            cyc += 9;
+            return 1;
+        case 0x57:   // LD A,I: S Z (and bits 5, 3) from I, P/V = IFF2, C kept
+            clobber(live);
+            B(0xA0); W(ZA(i));                        // mov al, [i]
+            B(0x80); B(0xE4); B(0x01);                // and ah, 1 (C)
+            B(0x89); B(0xC6);                         // mov si, ax
+            B(0x81); B(0xE6); W(0x00A8);              // and si, 0A8h (S, 5, 3)
+            B(0xC1); B(0xE6); B(0x08);                // shl si, 8
+            B(0x09); B(0xF0);                         // or ax, si
+            B(0x84); B(0xC0);                         // test al, al
+            B(0x75); B(0x03);                         // jnz +3
+            B(0x80); B(0xCC); B(0x40);                // or ah, 40h (Z)
+            B(0x80); B(0x3E); W(ZA(iff2)); B(0);      // cmp byte [iff2], 0
+            B(0x74); B(0x03);                         // je +3
+            B(0x80); B(0xCC); B(0x04);                // or ah, 4 (P/V)
+            fkind = K_AH;
+            cyc += 9;
             return 1;
         case 0x44:   // NEG
             B(0xF6); B(0xD8);
