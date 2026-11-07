@@ -243,6 +243,18 @@ static uint8_t backdrop_palette;
 #define rec_val drc_st.rec_val
 #define rec_n drc_st.rec_n
 static void hscroll_write(uint8_t value);
+
+// the VRAM pages the OUTI routine must leave to its loop (name table: the
+// WS map follows it) or after which the sprites are rebuilt (sprite table);
+// both tables start on a page
+static void vram_class_update(void) {
+    for (uint8_t i = 0; i < 64; i++) {
+        uint16_t a = (uint16_t) i << 8;
+        drc_st.vram_class[i] = ((uint16_t) (a - nt_base) < 0x700 ? 1 : 0)
+                             | ((uint16_t) (a - sat_base) < 0x100 ? 2 : 0);
+    }
+    drc_st.vram_class[64] = 1;
+}
 GGSWAN_HOST_VISIBLE volatile uint8_t act_line[MAX_SPLITS], act_val[MAX_SPLITS], act_n = 1;
 static volatile uint8_t act_i;
 
@@ -336,11 +348,13 @@ void gg_platform_vdp_reg(uint8_t r, uint8_t v) {
     case 2:
         nt_base = (v & 0x0E) << 10;
         drc_st.nt_base = nt_base;
+        vram_class_update();
         map_relayout(map_top);
         break;
     case 5:
         sat_base = (v & 0x7E) << 7;
         drc_st.sat_base = sat_base;
+        vram_class_update();
         drc_st.sprites_dirty = true;
         break;
     case 0: case 1: case 6:
@@ -485,6 +499,7 @@ GGSWAN_HOST_VISIBLE void video_init(void) {
     drc_st.sprites_dirty = 1;
     drc_st.nt_base = nt_base;
     drc_st.sat_base = sat_base;
+    vram_class_update();
     memset(gg_vram, 0, 0x4000);
     memset(map1, 0, MAP_SIZE);
     // border mask: tile 1022 opaque (color 1 of MASK_PALETTE = black)

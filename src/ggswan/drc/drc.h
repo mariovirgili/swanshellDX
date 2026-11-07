@@ -81,6 +81,9 @@ typedef struct {
     uint8_t rec_line[DRC_MAX_SPLITS], rec_val[DRC_MAX_SPLITS];
     uint16_t nt_flags[8]; // name table routine: WS bits for the Game Gear
                           // entry bits 9-11 (h flip, v flip, palette)
+    uint8_t vram_class[65]; // main.c: for each 256-byte VRAM page, bit 0:
+                          // in the name table, bit 1: the sprite table;
+                          // [64] (past the end, a run that wraps): 1
 } drc_state_t;
 
 /// Helper operations: generated code sets drc_state.op (and arg/val),

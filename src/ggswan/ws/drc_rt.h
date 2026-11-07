@@ -77,7 +77,7 @@ void drc_helper_direct(void);
 #ifdef GGSWAN_HOST
 #define HOST_Z80_ADDR 0xC000
 #define HOST_ST_ADDR  0xC100
-#define HOST_VDP_ADDR 0xC200
+#define HOST_VDP_ADDR 0xC300
 void host_code_changed(void);
 void host_miss(int evict);
 void host_step(uint16_t pc);

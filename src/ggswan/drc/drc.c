@@ -488,41 +488,34 @@ uint16_t drc_emit_run_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
         B(0x52);                                     // push dx
         B(0x8B); B(0x36); W(VA(addr));               // mov si, [addr]
         B(0x81); B(0xE6); W(0x3FFF);                 // and si, 3FFFh (start)
-        B(0x89); B(0xF2);                            // mov dx, si
-        B(0x01); B(0xFA);                            // add dx, di
-        B(0x81); B(0xFA); W(0x4000);                 // cmp dx, 4000h
-        uint8_t *n1 = jcc8(0x77);                    // ja nofast (wraps)
-        B(0x89); B(0xF2);                            // mov dx, si
-        B(0x2B); B(0x16); W(SA(nt_base));            // sub dx, [nt_base]
-        B(0x81); B(0xFA); W(0x0700);                 // cmp dx, 700h
-        uint8_t *n3 = jcc8(0x72);                    // jb nofast (starts in it)
-        B(0x8B); B(0x16); W(SA(nt_base));            // mov dx, [nt_base]
-        B(0x29); B(0xF2);                            // sub dx, si
-        B(0x39); B(0xFA);                            // cmp dx, di
-        uint8_t *n4 = jcc8(0x72);                    // jb nofast (reaches it)
         B(0x89); B(0xDA);                            // mov dx, bx
         B(0x81); B(0xE2); W(0x1FFF);                 // and dx, 1FFFh
         B(0x01); B(0xFA);                            // add dx, di
         B(0x81); B(0xFA); W(0x2000);                 // cmp dx, 2000h
         uint8_t *n2 = jcc8(0x77);                    // ja nofast (next page)
+        // the classes of the first and last VRAM page (64: it wraps)
+        B(0x57);                                     // push di (k)
+        B(0x01); B(0xF7);                            // add di, si
+        B(0x4F);                                     // dec di (last byte)
+        B(0xC1); B(0xEF); B(0x08);                   // shr di, 8
+        B(0x8A); B(0x95); W(SA(vram_class));         // mov dl, [di + class]
+        B(0x89); B(0xF7);                            // mov di, si
+        B(0xC1); B(0xEF); B(0x08);                   // shr di, 8
+        B(0x0A); B(0x95); W(SA(vram_class));         // or dl, [di + class]
+        B(0x5F);                                     // pop di
+        B(0xF6); B(0xC2); B(0x01);                   // test dl, 1
+        uint8_t *n1 = jcc8(0x75);                    // jnz nofast (name table, wrap)
         uint8_t *go = jcc8(0xEB);                    // jmp go
-        land8(n1); land8(n2); land8(n3); land8(n4);
+        land8(n1); land8(n2);
         B(0x5A);                                     // nofast: pop dx
         land8(cram);
         B(0xE9); W((uint16_t) (loop - (o + 2)));     // jmp loop
         land8(go);
         // sprite table touched: rebuild the sprites
-        B(0x89); B(0xF2);                            // mov dx, si
-        B(0x2B); B(0x16); W(SA(sat_base));           // sub dx, [sat_base]
-        B(0x81); B(0xFA); W(0x0100);                 // cmp dx, 100h
-        uint8_t *d1 = jcc8(0x72);                    // jb dirty
-        B(0x8B); B(0x16); W(SA(sat_base));           // mov dx, [sat_base]
-        B(0x29); B(0xF2);                            // sub dx, si
-        B(0x39); B(0xFA);                            // cmp dx, di
-        uint8_t *d2 = jcc8(0x73);                    // jae clean
-        land8(d1);
+        B(0xF6); B(0xC2); B(0x02);                   // test dl, 2
+        uint8_t *clean = jcc8(0x74);                 // jz clean
         B(0xC6); B(0x06); W(SA(sprites_dirty)); B(1);   // sprites_dirty = 1
-        land8(d2);
+        land8(clean);
         B(0x89); B(0xFA);                            // mov dx, di (k)
         B(0x28); B(0xD5);                            // sub ch, dl (B -= k)
         B(0x51);                                     // push cx
