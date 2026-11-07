@@ -342,35 +342,67 @@ static uint16_t next_event(uint16_t l) {
     return e;
 }
 
+static uint16_t started;   // lines of this frame started
+
+// One step of the frame loop below without the per-line mode, at frame
+// position pos: start the lines the CPU has reached, then the cycles to run
+// up to the next event (or -1: the end of the frame, left to gg_run_frame)
+static int32_t event_step(uint16_t pos) {
+    uint16_t reached = pos / GG_CYCLES_PER_LINE + 1;
+    if (reached > GG_LINES) reached = GG_LINES;
+    vdp_lines(started, reached);
+    if (reached > started) started = reached;
+    if (started >= GG_LINES && pos >= GG_FRAME_CYCLES)
+        return -1;
+    uint16_t e = next_event(started);
+    // (cycles already given but not run yet, after an early stop, count)
+    int32_t want = (int32_t) e * GG_CYCLES_PER_LINE - frame_given;
+    if (want < 0)
+        want = 0;
+    frame_given += want;
+    return want;
+}
+
+int32_t gg_line_event(int32_t left) {
+    // (frame_pos with the cycles left given)
+    int32_t p = frame_given - left;
+    uint16_t pos = p < 0 ? 0 : p > 0xFFFF ? 0xFFFF : (uint16_t) p;
+    // only the lines of the picture (the frame interrupt, the lines after
+    // it and the end of the frame stay in gg_run_frame)
+    if (gg_every_line || pos >= (uint16_t) (GG_ACTIVE_LINES * (unsigned) GG_CYCLES_PER_LINE))
+        return -1;
+    return event_step(pos);
+}
+
 void gg_run_frame(void) {
-    uint16_t started = 0;   // lines started
+    started = 0;
     // (left = z80.cycles, so the frame starts frame_carry cycles in)
     frame_given = (int32_t) frame_carry + (gg_cpu_left ? gg_cpu_left() : z80.cycles);
-    while (1) {
-        uint16_t pos = frame_pos();
-        // start the lines the CPU has reached
-        if (gg_every_line) {
+    if (gg_every_line) {
+        while (1) {
+            uint16_t pos = frame_pos();
+            // start the lines the CPU has reached
             while (started < GG_LINES && (uint16_t) (started * GG_CYCLES_PER_LINE) <= pos) {
                 vdp_line(started);
                 gg_platform_line(started);
                 started++;
             }
-        } else {
-            uint16_t reached = pos / GG_CYCLES_PER_LINE + 1;
-            if (reached > GG_LINES) reached = GG_LINES;
-            vdp_lines(started, reached);
-            if (reached > started) started = reached;
+            if (started >= GG_LINES && pos >= GG_FRAME_CYCLES)
+                break;
+            uint16_t e = next_event(started);
+            int32_t want = (int32_t) e * GG_CYCLES_PER_LINE - frame_given;
+            if (want < 0)
+                want = 0;
+            frame_given += want;
+            z80_break = 0;
+            gg_cpu_run(want);
         }
-        if (started >= GG_LINES && pos >= GG_FRAME_CYCLES)
-            break;
-        uint16_t e = next_event(started);
-        // (cycles already given but not run yet, after an early stop, count)
-        int32_t want = (int32_t) e * GG_CYCLES_PER_LINE - frame_given;
-        if (want < 0)
-            want = 0;
-        frame_given += want;
-        z80_break = 0;
-        gg_cpu_run(want);
+    } else {
+        int32_t want;
+        while ((want = event_step(frame_pos())) >= 0) {
+            z80_break = 0;
+            gg_cpu_run(want);
+        }
     }
     frame_carry = frame_pos() - GG_FRAME_CYCLES;
     gg.frame++;

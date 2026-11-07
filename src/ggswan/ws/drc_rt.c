@@ -649,14 +649,26 @@ int32_t drc_z80_run(int32_t cycles) {
     prof_phase = PROF_DISPATCH;
     z80.cycles += cycles;
     drc_st.nolink = drc_no_links;
-    while (z80.cycles > 0 && !z80_break) {
+    for (;;) {
+        if (z80.cycles <= 0 || z80_break) {
+            // out of cycles: the next line event without going back to the
+            // frame loop (the same work: gg_line_event); the end of the
+            // frame and early stops still return
+            if (z80_break)
+                break;
+            int32_t want = gg_line_event(z80.cycles);
+            if (want < 0)
+                break;
+            z80.cycles += want;
+            continue;
+        }
         uint16_t pc = z80.pc;
         if (drc_flush_request) { drc_flush_request = 0; flush(); }
         if (z80.halted) {
             pending_link = 0;
             if (z80.irq && z80.iff1) { drc_stat_irq++; interp_one(); continue; }
-            z80.cycles = 0;
-            break;
+            z80.cycles = 0;   // (nothing to do up to the next event)
+            continue;
         }
         if (z80.irq && z80.iff1) {
             pending_link = 0;

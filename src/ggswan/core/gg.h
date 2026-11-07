@@ -102,6 +102,11 @@ uint16_t gg_current_line(void);
 void gg_remap(void);
 /// Run one frame (262 lines).
 void gg_run_frame(void);
+/// For a CPU core that ran out of cycles inside a frame (left: its cycles
+/// left, 0 or less): start the lines reached and return the cycles to the
+/// next event, exactly as the frame loop would (without returning to it);
+/// -1 near or at the end of the frame (the CPU core must then return).
+int32_t gg_line_event(int32_t left);
 
 /* VDP helpers */
 

@@ -120,13 +120,16 @@ def main():
     import shutil, os, tempfile
     # two independent copies of the library: interpreter and recompiler
     tmp = tempfile.mkdtemp()
-    shutil.copy(LIB, tmp + "/a.so"); shutil.copy(LIB, tmp + "/b.so")
+    # --ref-lib PATH: the reference is another build (with the recompiler,
+    # without links: the two must give the same results)
+    REF_LIB = sys.argv[sys.argv.index("--ref-lib") + 1] if "--ref-lib" in sys.argv else None
+    shutil.copy(REF_LIB or LIB, tmp + "/a.so"); shutil.copy(LIB, tmp + "/b.so")
     ref = load(tmp + "/a.so")
     drc = load(tmp + "/b.so")
     # reference: interpreter stopping at every line; tested: the recompiler
     # (or with --interp the interpreter) stopping only where timing matters
     every = 1 if "--every-line" in sys.argv else 0
-    ref_drc = "--ref-drc" in sys.argv
+    ref_drc = "--ref-drc" in sys.argv or REF_LIB is not None
     assert ref.sys_init(ROM.encode(), 1 if ref_drc else 0, 0 if ref_drc else 1)
     assert drc.sys_init(ROM.encode(), 0 if "--interp" in sys.argv else 1, every)
     if ref_drc:
