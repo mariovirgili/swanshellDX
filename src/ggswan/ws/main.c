@@ -260,13 +260,14 @@ static void hscroll_write(uint8_t value);
  * for a WS frame: Aladdin's new poses with the old sprite table, Sonic's
  * animated sunflowers torn in half.
  *
- * So every write to tile data and to the name table (class bit 3) goes to
- * a log in IRAM instead: entries of VRAM address (word), length (byte),
+ * So every write to tile data (class bit 3; the name table and the
+ * sprite table stay live: the name table applied from C was too slow in
+ * the interrupt) goes to a log in IRAM instead: entries of VRAM address (word), length (byte),
  * the bytes; a byte that follows the last entry joins it. At the end of
  * the Game Gear frame (video_present) the log is closed and handed to the
  * WS line interrupt at the end of the screen (line 144, when the WS also
  * copies the sprite table and the new scroll is set): there it is written
- * to VRAM and the WS map, all at once, for the next WS frame. Two logs
+ * to VRAM (after the scroll), all at once, for the next WS frame. Two logs
  * take turns (one filling, one waiting for the interrupt).
  *
  * A VRAM read (the game must read what it wrote) or a full log: the logs
@@ -299,7 +300,20 @@ static inline uint16_t gg_entry(uint8_t row, uint8_t col);
 // a log to VRAM, in order, and the name table entries it touched to the
 // WS map (also called from the line interrupt, through
 // log_commit_tramp: drc_asm.s sets DS and ES)
+#ifndef GGSWAN_HOST
+uint16_t log_copy_start, log_copy_end;
+void log_copy(void);   // drc_asm.s: the copies with REP MOVSW
+#endif
 static void log_apply(uint16_t start, uint16_t end) {
+#ifndef GGSWAN_HOST
+    // (only tile data is deferred: no name table entries to update; the
+    // C loop below, kept for the PC tests, took about 30 lines on the
+    // device for Sonic's and Aladdin's biggest frames)
+    log_copy_start = start;
+    log_copy_end = end;
+    log_copy();
+    return;
+#endif
     const uint8_t *p = IRAM(start), *e = IRAM(end);
     while (p < e) {
         uint16_t a = p[0] | (p[1] << 8);
@@ -589,13 +603,15 @@ static void hscroll_write(uint8_t value) {
 // diagnostics (X4 screen, right column): the end-of-screen interrupt's
 // worst lateness and VRAM-write time in lines, and how many per second
 #define WS_LINES 159
-static volatile uint8_t diag_late, diag_commit, diag_ends;
+static volatile uint8_t diag_late, diag_commit, diag_ends, diag_splits, diag_split_line;
+static volatile uint16_t diag_calls;
 
 #ifndef GGSWAN_HOST
 static void __attribute__((interrupt, assume_ss_data)) line_irq(void) {
     uint8_t i = act_i;
     uint8_t end = 0;   // (the end of the screen done in this interrupt)
     uint8_t l0 = inportb(WS_DISPLAY_LINE_PORT);
+    diag_calls++;
     if (inportb(WS_DISPLAY_LINE_IRQ_PORT) >= GG_VIEW_H) {
         i = 0;   // end of the screen
         // (diagnostics: how many lines after line 144 it is served)
@@ -666,6 +682,10 @@ static void splits_commit(void) {
         act_val[i] = rec_val[i];
     }
     act_n = rec_n;
+    if (act_n > diag_splits)
+        diag_splits = act_n;
+    if (act_n > 1)
+        diag_split_line = act_line[1];
     if (act_i > act_n)
         act_i = act_n;
 #ifndef GGSWAN_HOST
@@ -1136,6 +1156,14 @@ static void show_fps(uint8_t fps) {
     put_value(0, 24, 'L', diag_late);
     put_value(2, 24, 'K', diag_commit);
     put_value(16, 24, 'E', diag_ends);
+    // M most scroll values in a frame (1: no splits), Y the line of the
+    // last first split, J line interrupts served (all of them)
+    put_value(4, 24, 'M', diag_splits);
+    put_value(6, 24, 'Y', diag_split_line);
+    put_value(8, 24, 'J', diag_calls);
+    diag_splits = 0;
+    diag_split_line = 0;
+    diag_calls = 0;
     diag_late = 0;
     diag_commit = 0;
     diag_ends = 0;

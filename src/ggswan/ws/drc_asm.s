@@ -88,3 +88,45 @@ log_commit_tramp:
     pop es
     pop ds
     IA16_RET
+
+    // void log_copy(void);
+    //
+    // Writes the deferred VRAM writes from log_copy_start to log_copy_end
+    // (main.c: entries of GG VRAM address, length, bytes; tile data only)
+    // to the Game Gear VRAM (IRAM 4000h), with REP MOVSW. DS = the data
+    // segment (IRAM).
+    .global log_copy
+log_copy:
+    push si
+    push di
+    push es
+    push bx
+    push cx
+    push dx
+    push ds
+    pop es
+    cld
+    mov si, [log_copy_start]
+    mov dx, [log_copy_end]
+    xor cx, cx
+.Llog_next:
+    cmp si, dx
+    jae .Llog_done
+    lodsw
+    mov di, ax
+    add di, 0x4000
+    lodsb
+    mov cl, al
+    shr cx, 1
+    rep movsw
+    jnc .Llog_next
+    movsb
+    jmp .Llog_next
+.Llog_done:
+    pop dx
+    pop cx
+    pop bx
+    pop es
+    pop di
+    pop si
+    IA16_RET
