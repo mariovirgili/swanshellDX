@@ -723,14 +723,21 @@ static void interp_one(void) {
 static int16_t block_start;
 static uint8_t in_block;
 
+static int16_t remap_saved;   // cycles left when the mapping changed
+static uint8_t remapped;
 int32_t drc_cycles_left(void) {
-    return in_block ? z80.cycles - (block_start - drc_st.cycles) : z80.cycles;
+    if (!in_block)
+        return z80.cycles;
+    // after a mapping change the block counts down from -30000 (to stop
+    // at its end): the real count is remap_saved, less what ran since;
+    // in 32 bits (block_start - cycles passes the 16-bit int: Sonic's
+    // scroll write after its register 1 write gave line 106, not 193)
+    int16_t c = remapped ? (int16_t) (remap_saved + (drc_st.cycles + 30000)) : drc_st.cycles;
+    return z80.cycles - ((int32_t) block_start - c);
 }
 
 // The helper routine's C side: the registers are in z80
 static void drc_helper_op(void);
-static int16_t remap_saved;   // cycles left when the mapping changed
-static uint8_t remapped;
 uint8_t drc_flush_request;
 volatile uint8_t prof_phase;
 uint8_t drc_no_links;
@@ -756,6 +763,7 @@ static void drc_helper(void) {
             remapped = 1;
             remap_saved = drc_st.cycles;
             drc_st.cycles = -30000;
+            drc_st.fl_off = 1;   // (the generated routines: C, which knows)
         }
         return;
     }
@@ -775,6 +783,7 @@ static void drc_helper(void) {
         remapped = 1;
         remap_saved = drc_st.cycles;
         drc_st.cycles = -30000;
+        drc_st.fl_off = 1;   // (the generated routines: C, which knows)
     }
 }
 
