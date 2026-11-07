@@ -334,6 +334,10 @@ void drc_rt_init(uint16_t bank) {
 #endif
     env.vram_addr = 0x4000;   // Game Gear VRAM = WS tiles (main.c)
     env.exit_off = STUB_EXIT;
+    // following JP/JR inside a block is off by default: it breaks the
+    // scroll and the status bar of Wonder Boy III on the WonderSwan (not
+    // on the PC tests, cause not found) and gained under 1%
+    env.no_trace = 1;
     drc_st.table_seg = DRC_TABLE_SEG;
     env.ram_delta = 0x8000 - 0xC000;   // Game Gear RAM at IRAM 8000h
 

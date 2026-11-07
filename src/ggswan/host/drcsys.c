@@ -287,3 +287,4 @@ uint32_t sys_stat(int i) { return i == 0 ? drc_stat_blocks : i == 1 ? drc_stat_f
 int sys_pc(void) { return z80.pc; }
 
 void sys_nolinks(int on) { drc_no_links = on; }
+void sys_options(int no_trace, int no_inline) { drc_rt_options(no_trace, no_inline); }

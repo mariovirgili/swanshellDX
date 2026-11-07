@@ -133,6 +133,9 @@ def main():
         # reference: the recompiler too, without links (and dynamic lookups)
         ref.sys_nolinks(1)
         x86_ref = X86(ref)
+    if "--follow" in sys.argv:
+        # JP/JR followed inside blocks (off by default): the tested one only
+        drc.sys_options(0, 0)
     if "--selfcheck" in sys.argv:
         drc.sys_check(1)
     if "--nolinks" in sys.argv:

@@ -927,11 +927,11 @@ int main(void) {
             drc_no_links = 1;
             text_print("CPU: RECOMPILER, NO LINKS");
         } else if (ws_keypad_scan() & WS_KEY_X1) {
-            drc_rt_options(0, 1);
+            drc_rt_options(1, 1);
             text_print("CPU: RECOMPILER, NO CALL INLINE");
         } else if (ws_keypad_scan() & WS_KEY_X2) {
-            drc_rt_options(1, 0);
-            text_print("CPU: RECOMPILER, NO JP/JR FOLLOW");
+            drc_rt_options(0, 0);
+            text_print("CPU: RECOMPILER, JP/JR FOLLOW (TEST)");
         } else {
             text_print("CPU: RECOMPILER");
         }
