@@ -408,7 +408,12 @@ uint16_t drc_emit_run_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
     B(0x81); B(0xE6); W(0x00C1);                     // and si, C1h
     B(0x81); B(0xFE); W(0x0080);                     // cmp si, 80h (port BEh)
     uint8_t *s0 = jcc8(0x75);                        // jne slow
-    uint8_t *to_loop = jcc8(0xEB);                   // jmp loop
+    uint8_t *to_fast = 0, *to_loop = 0;
+    if (!dec) {
+        B(0xE9); W(0); to_fast = o - 2;              // jmp FAST (at the end)
+    } else {
+        to_loop = jcc8(0xEB);                        // jmp loop
+    }
     // slow (before the loop, in reach of its short jumps): the OUTIs
     // left (DI of them) for the interpreter
     uint8_t *slow1 = o;
@@ -426,7 +431,7 @@ uint16_t drc_emit_run_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
     B(0x01); B(0x36); W(SA(cycles));                 // add [cycles], si
     B(0xF9);                                         // stc
     B(0xC3);                                         // ret
-    land8(to_loop);
+    if (to_loop) land8(to_loop);
     uint8_t *loop = o;
     B(0x57);                                         // push di
     uint8_t *s1;
@@ -447,6 +452,7 @@ uint16_t drc_emit_run_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
     uint8_t *end = jcc8(0x74);                       // jz end
     B(0xE9); W((uint16_t) (loop - (o + 2)));         // jmp loop
     land8(end);
+    uint8_t *flags = o;
     // flags of the last OUTI: S, Z from B; N from bit 7 of the byte
     B(0x88); B(0x26); W(SA(val));                    // mov [val], ah
     B(0x84); B(0xED);                                // test ch, ch
@@ -460,6 +466,78 @@ uint16_t drc_emit_run_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
 #ifdef GGSWAN_HOST
     if (s1 - slow1 > 128) { extern void abort(void); abort(); }
 #endif
+    if (to_fast) {
+        /*
+         * FAST: the whole run to VRAM at once (rep movsb) when it is tile
+         * data: not CRAM, no byte in the name table, no wrap at the end of
+         * VRAM, the source inside one 8 KiB page. The same results as the
+         * loop: VRAM, read buffer, address, latch, sprites to rebuild if it
+         * touches the sprite table, HL, B, the flags of the last OUTI.
+         */
+        uint16_t fast_at = (uint16_t) (o - o_start);
+        uint16_t rel = (uint16_t) (fast_at - (uint16_t) (to_fast + 2 - o_start));
+        to_fast[0] = (uint8_t) rel;
+        to_fast[1] = (uint8_t) (rel >> 8);
+        B(0x80); B(0x3E); W(VA(code)); B(3);         // cmp byte [code], 3
+        uint8_t *cram = jcc8(0x74);                  // je to_loop (CRAM)
+        B(0x52);                                     // push dx
+        B(0x8B); B(0x36); W(VA(addr));               // mov si, [addr]
+        B(0x81); B(0xE6); W(0x3FFF);                 // and si, 3FFFh (start)
+        B(0x89); B(0xF2);                            // mov dx, si
+        B(0x01); B(0xFA);                            // add dx, di
+        B(0x81); B(0xFA); W(0x4000);                 // cmp dx, 4000h
+        uint8_t *n1 = jcc8(0x77);                    // ja nofast (wraps)
+        B(0x89); B(0xF2);                            // mov dx, si
+        B(0x2B); B(0x16); W(SA(nt_base));            // sub dx, [nt_base]
+        B(0x81); B(0xFA); W(0x0700);                 // cmp dx, 700h
+        uint8_t *n3 = jcc8(0x72);                    // jb nofast (starts in it)
+        B(0x8B); B(0x16); W(SA(nt_base));            // mov dx, [nt_base]
+        B(0x29); B(0xF2);                            // sub dx, si
+        B(0x39); B(0xFA);                            // cmp dx, di
+        uint8_t *n4 = jcc8(0x72);                    // jb nofast (reaches it)
+        B(0x89); B(0xDA);                            // mov dx, bx
+        B(0x81); B(0xE2); W(0x1FFF);                 // and dx, 1FFFh
+        B(0x01); B(0xFA);                            // add dx, di
+        B(0x81); B(0xFA); W(0x2000);                 // cmp dx, 2000h
+        uint8_t *n2 = jcc8(0x77);                    // ja nofast (next page)
+        uint8_t *go = jcc8(0xEB);                    // jmp go
+        land8(n1); land8(n2); land8(n3); land8(n4);
+        B(0x5A);                                     // nofast: pop dx
+        land8(cram);
+        B(0xE9); W((uint16_t) (loop - (o + 2)));     // jmp loop
+        land8(go);
+        // sprite table touched: rebuild the sprites
+        B(0x89); B(0xF2);                            // mov dx, si
+        B(0x2B); B(0x16); W(SA(sat_base));           // sub dx, [sat_base]
+        B(0x81); B(0xFA); W(0x0100);                 // cmp dx, 100h
+        uint8_t *d1 = jcc8(0x72);                    // jb dirty
+        B(0x8B); B(0x16); W(SA(sat_base));           // mov dx, [sat_base]
+        B(0x29); B(0xF2);                            // sub dx, si
+        B(0x39); B(0xFA);                            // cmp dx, di
+        uint8_t *d2 = jcc8(0x73);                    // jae clean
+        land8(d1);
+        B(0xC6); B(0x06); W(SA(sprites_dirty)); B(1);   // sprites_dirty = 1
+        land8(d2);
+        B(0x89); B(0xFA);                            // mov dx, di (k)
+        B(0x28); B(0xD5);                            // sub ch, dl (B -= k)
+        B(0x51);                                     // push cx
+        B(0x89); B(0xF9);                            // mov cx, di (k)
+        B(0x8D); B(0xBC); W(env->vram_addr);         // lea di, [si + vram]
+        B(0x89); B(0xDE);                            // mov si, bx
+        B(0x1E); B(0x06); B(0x1F); B(0x07);          // push ds; push es; pop ds; pop es
+        B(0xF3); B(0xA4);                            // rep movsb
+        B(0x06); B(0x1F);                            // push es; pop ds (DS, ES: data)
+        B(0x59);                                     // pop cx
+        B(0x5A);                                     // pop dx
+        B(0x89); B(0xF3);                            // mov bx, si (HL + k)
+        B(0x8A); B(0x65); B(0xFF);                   // mov ah, [di - 1] (last byte)
+        B(0x88); B(0x26); W(VA(read_buffer));        // mov [read_buffer], ah
+        B(0xC6); B(0x06); W(VA(latch_full)); B(0);   // mov byte [latch_full], 0
+        B(0x81); B(0xEF); W(env->vram_addr);         // sub di, vram
+        B(0x81); B(0xE7); W(0x3FFF);                 // and di, 3FFFh
+        B(0x89); B(0x3E); W(VA(addr));               // mov [addr], di
+        B(0xE9); W((uint16_t) (flags - (o + 2)));    // jmp flags
+    }
     return (uint16_t) (o - o_start);
 }
 
@@ -479,6 +557,10 @@ uint16_t drc_emit_ldi_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
     B(0xC1); B(0xC6); B(0x04);                       // rol si, 4
     B(0x83); B(0xE6); B(0x0E);                       // and si, 14
     B(0x8E); B(0x84); W(SA(segtab));                 // mov es, [si + segtab]
+    uint8_t *to_fast = 0;
+    if (!dec) {
+        B(0xE9); W(0); to_fast = o - 2;              // jmp FAST (at the end)
+    }
     uint8_t *loop = o;
     B(0x80); B(0xFE); B(0xC0); uint8_t *s0 = jcc8(0x72);   // cmp dh, C0h; jb slow
     B(0x80); B(0xFE); B(0xE0); uint8_t *s1 = jcc8(0x73);   // cmp dh, E0h; jae slow
@@ -504,6 +586,7 @@ uint16_t drc_emit_ldi_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
         B(0x75); B((uint8_t) back);                  // jnz loop
     }
     // flags: S Z C kept, H = N = 0, P/V = BC != 0
+    uint8_t *flags = o;
     B(0x58);                                         // pop ax
     B(0x80); B(0xE4); B(0xC1);                       // and ah, C1h
     B(0x85); B(0xC9);                                // test cx, cx
@@ -525,6 +608,46 @@ uint16_t drc_emit_ldi_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
     B(0x01); B(0x36); W(SA(cycles));                 // add [cycles], si
     B(0xF9);                                         // stc
     B(0xC3);                                         // ret
+    if (to_fast) {
+        /*
+         * FAST: the whole run at once (rep movsb copies byte after byte
+         * forwards, as the LDIs do, overlapping or not) when the
+         * destination stays inside work RAM and the source inside one
+         * 8 KiB page. HL, DE += k, BC -= k, flags as the loop's.
+         */
+        uint16_t fast_at = (uint16_t) (o - o_start);
+        uint16_t rel = (uint16_t) (fast_at - (uint16_t) (to_fast + 2 - o_start));
+        to_fast[0] = (uint8_t) rel;
+        to_fast[1] = (uint8_t) (rel >> 8);
+        B(0x80); B(0xFE); B(0xC0);                   // cmp dh, C0h
+        uint8_t *n1 = jcc8(0x72);                    // jb loop (not work RAM)
+        B(0x89); B(0xD6);                            // mov si, dx
+        B(0x01); B(0xFE);                            // add si, di
+        B(0x81); B(0xFE); W(0xE000);                 // cmp si, E000h
+        uint8_t *n2 = jcc8(0x77);                    // ja loop (leaves it)
+        B(0x89); B(0xDE);                            // mov si, bx
+        B(0x81); B(0xE6); W(0x1FFF);                 // and si, 1FFFh
+        B(0x01); B(0xFE);                            // add si, di
+        B(0x81); B(0xFE); W(0x2000);                 // cmp si, 2000h
+        uint8_t *n3 = jcc8(0x77);                    // ja loop (next page)
+        B(0x51);                                     // push cx
+        B(0x89); B(0xF9);                            // mov cx, di (k)
+        B(0x89); B(0xD7);                            // mov di, dx
+        B(0x81); B(0xC7); W(env->ram_delta);         // add di, ram
+        B(0x89); B(0xDE);                            // mov si, bx
+        B(0x1E); B(0x06); B(0x1F); B(0x07);          // push ds; push es; pop ds; pop es
+        B(0xF3); B(0xA4);                            // rep movsb
+        B(0x06); B(0x1F);                            // push es; pop ds (DS, ES: data)
+        B(0x89); B(0xF0);                            // mov ax, si
+        B(0x29); B(0xD8);                            // sub ax, bx (k)
+        B(0x89); B(0xF3);                            // mov bx, si (HL + k)
+        B(0x01); B(0xC2);                            // add dx, ax (DE + k)
+        B(0x59);                                     // pop cx
+        B(0x29); B(0xC1);                            // sub cx, ax (BC - k)
+        B(0xE9); W((uint16_t) (flags - (o + 2)));    // jmp flags
+        land8(n1); land8(n2); land8(n3);
+        B(0xE9); W((uint16_t) (loop - (o + 2)));     // jmp loop
+    }
     return (uint16_t) (o - o_start);
 }
 

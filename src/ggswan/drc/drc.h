@@ -104,8 +104,8 @@ typedef struct {
                            // LDD's at ldi_off + DRC_LDD_DELTA (0: interpreted)
 } drc_env_t;
 
-#define DRC_OUTD_DELTA 0x100
-#define DRC_LDD_DELTA 0x80
+#define DRC_OUTD_DELTA 0x1C0
+#define DRC_LDD_DELTA 0xB0
 
 typedef struct {
     uint16_t length;       // bytes of x86 code written

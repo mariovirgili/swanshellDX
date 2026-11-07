@@ -37,11 +37,11 @@ uint16_t drc_entry[2];   // far pointer used by drc_enter: offset, segment
 #define STUB_HELPER 0x0020
 #define STUB_DYN    0x0040
 #define STUB_NT     0x0180
-#define STUB_OUTI   0x0280   // (OUTD: + DRC_OUTD_DELTA)
-#define STUB_LDI    0x0480   // (LDD: + DRC_LDD_DELTA)
-#define STUB_HCALL  0x0580   // helpers called without leaving the block
-#define STUB_CTL    0x05C0   // OUT (BFh),A
-#define CACHE_START 0x0660
+#define STUB_OUTI   0x0240   // (OUTD: + DRC_OUTD_DELTA)
+#define STUB_LDI    0x04C0   // (LDD: + DRC_LDD_DELTA)
+#define STUB_HCALL  0x05E0   // helpers called without leaving the block
+#define STUB_CTL    0x0630   // OUT (BFh),A
+#define CACHE_START 0x0700
 // translation buffer in free IRAM (between the font tiles and the mask tile)
 #define BUF_ADDR    0xA600
 /// DYN L0 cache: 512 direct-mapped entries of 8 bytes in free IRAM (in the
@@ -383,7 +383,7 @@ void drc_rt_init(uint16_t bank) {
             *p++ = 0xC3;                                                         // ret
         }
 #ifdef GGSWAN_HOST
-        if (p > stub + CACHE_START) { printf("HCALL stub too long\n"); exit(1); }
+        if (p > stub + STUB_CTL) { printf("HCALL stub too long\n"); exit(1); }
 #endif
         env.helper_off = STUB_HCALL;
         env.ram_blocks = 1;
@@ -404,8 +404,9 @@ void drc_rt_init(uint16_t bank) {
         uint16_t l3 = drc_emit_ldi_stub(&env, stub + STUB_LDI, STUB_LDI, 0);
         uint16_t l4 = drc_emit_ldi_stub(&env, stub + STUB_LDI + DRC_LDD_DELTA, STUB_LDI + DRC_LDD_DELTA, 1);
 #ifdef GGSWAN_HOST
+        if (getenv("GGSWAN_STUBS")) printf("stubs: NT end %X, OUTI %X, OUTD %X, LDI %X, LDD %X\n", end, l1, l2, l3, l4);
         if (end > STUB_OUTI || l1 > DRC_OUTD_DELTA || STUB_OUTI + DRC_OUTD_DELTA + l2 > STUB_LDI
-            || l3 > DRC_LDD_DELTA || STUB_LDI + DRC_LDD_DELTA + l4 > CACHE_START) { printf("stubs too long\n"); exit(1); }
+            || l3 > DRC_LDD_DELTA || STUB_LDI + DRC_LDD_DELTA + l4 > STUB_HCALL) { printf("stubs too long\n"); exit(1); }
 #else
         (void) end; (void) l1; (void) l2; (void) l3; (void) l4;
 #endif
@@ -843,6 +844,7 @@ int32_t drc_z80_run(int32_t cycles) {
             drc_enter(drc_st.resume);
         }
         drc_entry[1] = drc_st.cur_seg;
+        uint8_t ram_failed = drc_st.ram_fail;
         if (drc_st.ram_fail) {
             // a block in RAM whose code changed (at z80.pc; entered from
             // here, a link or DYN): the interpreter from now on
@@ -876,7 +878,10 @@ int32_t drc_z80_run(int32_t cycles) {
         drc_stat_dispatch++;
         // (blocks that used helpers are not checked: running their I/O
         // twice would not give the same results)
-        if (drc_check && io_before == drc_stat_helper[1] + drc_stat_helper[2] + drc_stat_helper[3] + drc_stat_helper[4])
+        // (nor blocks in RAM that found their code changed: they ran
+        // nothing, the interpreter goes on from there)
+        if (drc_check && !ram_failed
+            && io_before == drc_stat_helper[1] + drc_stat_helper[2] + drc_stat_helper[3] + drc_stat_helper[4])
             check_end(pc, start - drc_st.cycles);
         z80.cycles -= start - drc_st.cycles;
     }
