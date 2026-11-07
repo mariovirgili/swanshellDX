@@ -685,10 +685,18 @@ int32_t drc_z80_run(int32_t cycles) {
         uint8_t bank = ram_code ? RAM_KEY : bank_key(pc);
         // 4-way: the four slots of the set of h
         uint16_t h0 = hash(pc, bank) & ~3;
+        // L0 first (internal RAM, the same one DYN uses): pc, bank,
+        // offset, code segment
+        uint16_t *l0 = (uint16_t*) IRAM(L0_ADDR + (h0 & 0x7FC) * 2);
         const uint16_t __far *tw = MK_FP(DRC_TABLE_SEG, 0);
         const uint8_t __far *tb = (const uint8_t __far*) tw;
         uint16_t h = h0, off = 0;
         uint8_t i;
+        if (l0[0] == pc && (uint8_t) l0[1] == bank) {
+            off = l0[2];
+            drc_entry[1] = l0[3];
+            goto have_block;
+        }
         for (i = 0; i < 4; i++, h++) {
             off = tw[(T_OFF / 2) + h];
             if (off && tw[(T_PC / 2) + h] == pc && tb[T_BANK + h] == bank)
@@ -714,6 +722,8 @@ int32_t drc_z80_run(int32_t cycles) {
             continue;
         }
         drc_entry[1] = DRC_CODE_SEG + ((uint16_t) tb[T_CODE + h] << 12);
+        l0[0] = pc; l0[1] = bank; l0[2] = off; l0[3] = drc_entry[1];
+    have_block:
         // the previous block can jump straight here from now on
         if (pending_link && !drc_no_links) {
             // (a guarded exit has "cmp byte [key], bank; jne X" just before
@@ -726,9 +736,11 @@ int32_t drc_z80_run(int32_t cycles) {
         int16_t start = z80.cycles > 30000 ? 30000 : (int16_t) z80.cycles;
         drc_st.cycles = start;
         block_start = start;
-        uint32_t io_before = drc_stat_helper[1] + drc_stat_helper[2] + drc_stat_helper[3] + drc_stat_helper[4];
-        if (drc_check)
+        uint32_t io_before = 0;
+        if (drc_check) {
+            io_before = drc_stat_helper[1] + drc_stat_helper[2] + drc_stat_helper[3] + drc_stat_helper[4];
             check_begin();
+        }
 #ifdef GGSWAN_HOST
         host_trace(pc, z80.b, z80.h << 8 | z80.l);
 #endif
