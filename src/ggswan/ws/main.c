@@ -282,7 +282,6 @@ static void hscroll_write(uint8_t value);
 static uint8_t vram_class_norm[64];
 static uint16_t log_start;                    // the log being filled
 static volatile uint16_t pend_start, pend_top; // the log waiting (0: none)
-void log_commit_tramp(void);   // drc_asm.s: log_commit_pending with DS = ES = SS
 
 static void vram_class_update(void) {
     for (uint8_t i = 0; i < 64; i++) {
@@ -301,7 +300,7 @@ static inline uint16_t gg_entry(uint8_t row, uint8_t col);
 
 // a log to VRAM, in order, and the name table entries it touched to the
 // WS map (also called from the line interrupt, through
-// log_commit_tramp: drc_asm.s sets DS and ES)
+// line_irq_entry: drc_asm.s sets DS and ES)
 #ifndef GGSWAN_HOST
 uint16_t log_copy_start, log_copy_end;
 void log_copy(void);   // drc_asm.s: the copies with REP MOVSW
@@ -619,7 +618,9 @@ extern uint16_t drc_diag_irq_line, gg_diag_vbl_pc;
 extern uint8_t gg_diag_vbl_st;
 
 #ifndef GGSWAN_HOST
-static void __attribute__((interrupt, assume_ss_data)) line_irq(void) {
+// (the interrupt itself: line_irq_entry, drc_asm.s)
+void line_irq_entry(void);
+void line_irq(void) {
     uint8_t i = act_i;
     uint8_t end = 0;   // (the end of the screen done in this interrupt)
     uint8_t l0 = inportb(WS_DISPLAY_LINE_PORT);
@@ -641,7 +642,7 @@ static void __attribute__((interrupt, assume_ss_data)) line_irq(void) {
             outportb(0x11, act_vy);                   // screen 1 Y scroll
             if (pend_start) {
                 uint8_t c0 = inportb(WS_DISPLAY_LINE_PORT);
-                log_commit_tramp();
+                log_commit_pending();
                 uint8_t c1 = inportb(WS_DISPLAY_LINE_PORT);
                 // (diagnostics: lines the VRAM writes took)
                 uint8_t dc = c1 >= c0 ? c1 - c0 : c1 + WS_LINES - c0;
@@ -819,7 +820,7 @@ GGSWAN_HOST_VISIBLE void video_init(void) {
     map_relayout(0);
 #ifndef GGSWAN_HOST
     ia16_disable_irq();
-    ws_int_set_handler(WS_INT_LINE_MATCH, (ia16_int_handler_t) line_irq);
+    ws_int_set_handler(WS_INT_LINE_MATCH, (ia16_int_handler_t) line_irq_entry);
     outportb(WS_DISPLAY_LINE_IRQ_PORT, GG_VIEW_H);
     ws_int_enable(WS_INT_ENABLE_LINE_MATCH);
     ia16_enable_irq();
@@ -1096,7 +1097,9 @@ static volatile uint16_t frame_credit;
 static volatile uint16_t prof_count[PROF_COUNT];
 static volatile uint16_t prof_total;
 
-static void __attribute__((interrupt, assume_ss_data)) vblank_irq(void) {
+// (the interrupt itself: vblank_irq_entry, drc_asm.s)
+void vblank_irq_entry(void);
+void vblank_irq(void) {
     vblanks++;
     if (frame_credit < 3 * FRAME_COST)   // (no catching up after slow parts)
         frame_credit += FRAME_EARN;
@@ -1336,7 +1339,7 @@ int main(void) {
     gg_init(banks);
 
     ia16_disable_irq();
-    ws_int_set_handler(WS_INT_VBLANK, (ia16_int_handler_t) vblank_irq);
+    ws_int_set_handler(WS_INT_VBLANK, (ia16_int_handler_t) vblank_irq_entry);
     ws_int_enable(WS_INT_ENABLE_VBLANK);
     ia16_enable_irq();
 

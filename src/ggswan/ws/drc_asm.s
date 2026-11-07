@@ -69,14 +69,27 @@ drc_helper_tramp:
     pop es
     retf
 
-    // void log_commit_tramp(void);
+    // Interrupt entries (main.c's handlers are ordinary C functions).
     //
-    // Called by the WS line interrupt (main.c, end of the screen): writes
-    // the waiting log of deferred VRAM writes (log_commit_pending, C) with
-    // DS = ES = SS: the interrupted code may have had DS elsewhere (the
-    // OUTI and LDI routines copy with DS = the Z80 source).
-    .global log_commit_tramp
-log_commit_tramp:
+    // A WS interrupt can come while translated code runs with DS (and ES)
+    // elsewhere: the OUTI and LDI routines copy with DS = the Z80 source
+    // (a ROM bank, the work RAM). gcc-ia16's interrupt attribute saves the
+    // registers but does not load DS, so the handlers' variables (act_i,
+    // the scroll values, the frame counters) were read from and written to
+    // that segment: wrong scroll values now and then (Super Monaco GP's
+    // status bar), bytes of the ROM copy overwritten (Aladdin's sprites).
+    // Here: every register saved, DS = ES = SS (the data segment), DF
+    // clear, then the C handler, then IRET.
+    .macro IRQ_ENTRY name, handler
+    .global \name
+\name:
+    push ax
+    push bx
+    push cx
+    push dx
+    push si
+    push di
+    push bp
     push ds
     push es
     push ss
@@ -84,10 +97,21 @@ log_commit_tramp:
     push ss
     pop es
     cld
-    IA16_CALL log_commit_pending
+    IA16_CALL \handler
     pop es
     pop ds
-    IA16_RET
+    pop bp
+    pop di
+    pop si
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    iret
+    .endm
+
+    IRQ_ENTRY line_irq_entry, line_irq
+    IRQ_ENTRY vblank_irq_entry, vblank_irq
 
     // void log_copy(void);
     //
