@@ -275,8 +275,10 @@ void gg_reset(void) {
 
 static void vdp_line(uint16_t line) {
     gg.vdp.vcounter = line;
-    if (line == 0)
+    if (line == 0) {
         gg.vdp.vscroll_frame = gg.vdp.reg[9];
+        gg.vdp.reg1_frame = gg.vdp.reg[1];
+    }
 
     // line counter: counts down on lines 0-192, reloaded on the others
     if (line <= GG_ACTIVE_LINES) {
@@ -301,8 +303,10 @@ static void vdp_line(uint16_t line) {
 // order): one pass instead of one call per line
 static void vdp_lines(uint16_t from, uint16_t to) {
     if (from >= to) return;
-    if (from == 0)
+    if (from == 0) {
         gg.vdp.vscroll_frame = gg.vdp.reg[9];
+        gg.vdp.reg1_frame = gg.vdp.reg[1];
+    }
     uint8_t c = gg.vdp.line_counter, r = gg.vdp.reg[10];
     // lines 0-192: the counter counts down, reloading (and requesting an
     // interrupt) on the line after it reached 0

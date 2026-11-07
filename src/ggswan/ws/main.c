@@ -560,7 +560,10 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
     if (drc_st.sprites_dirty)
         build_sprites();
 
-    if (reg[1] & 0x40) {
+    // display on: at the start of the frame or now (games such as Sonic
+    // turn it off in the frame interrupt while they fill the VRAM, and on
+    // again before the next frame: at this point it can still be off)
+    if ((reg[1] | gg.vdp.reg1_frame) & 0x40) {
         outportb(0x01, backdrop_palette << 4);        // backdrop: color 0
         outportb(0x00, 0x01 | 0x02 | 0x04 | 0x10 | 0x20);
     } else {
