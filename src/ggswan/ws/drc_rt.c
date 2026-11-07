@@ -583,7 +583,8 @@ void drc_rt_init(uint16_t bank) {
         drc_st.nt_flags[i] = (i & 1 ? 0x4000 : 0) | (i & 2 ? 0x8000 : 0) | (i & 4 ? 0x0200 : 0);
     env.no_fast = drc_no_fast;
     env.cram_off = drc_no_fast ? 0 : STUB_CRAM;   // (X4: CRAM through the helper)
-    env.cls_off = drc_no_fast ? 0 : STUB_CLS;     // (X4: inline, no deferred tile writes)
+    env.cls_off = drc_no_fast ? 0 : STUB_CLS;
+    env.psg_queue = !drc_no_fast;     // (X4: inline, no deferred tile writes)
     // following JP/JR inside a block is off by default: it breaks the
     // scroll and the status bar of Wonder Boy III on the WonderSwan (not
     // on the PC tests, cause not found) and gained under 1%
@@ -754,6 +755,12 @@ static void drc_helper(void) {
             gg_platform_vram_sync();
         else
             gg_platform_vram_sync_at(gg.vdp.addr & 0x3FFF);
+        return;
+    }
+    if (drc_st.op == DRC_H_PSG) {
+        // the PSG queue full (main.c)
+        prof_phase = PROF_HELPER;
+        gg_platform_psg_flush();
         return;
     }
     if (drc_st.op == DRC_H_OUT || drc_st.op == DRC_H_IN) {

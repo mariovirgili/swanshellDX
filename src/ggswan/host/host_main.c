@@ -35,6 +35,7 @@ void gg_platform_vram_write(uint16_t a, uint8_t v) { (void) a; (void) v; }
 void gg_platform_cram_write(uint8_t i) { (void) i; }
 void gg_platform_vdp_reg(uint8_t r, uint8_t v) { (void) r; (void) v; }
 void gg_platform_vram_sync(void) {}
+void gg_platform_frame_end(void) {}
 void gg_platform_vram_sync_at(uint16_t a) { (void) a; }
 uint8_t gg_platform_vram_defer(uint16_t a, uint8_t v) { (void) a; (void) v; return 0; }
 

@@ -620,6 +620,14 @@ static void hscroll_write(uint8_t value) {
         drc_st.hs_last = value;
         return;
     }
+    if (line > GG_ACTIVE_LINES + 1) {
+        // after the picture (the frame interrupt, the frame was presented):
+        // the value for the next frame's first line
+        rec_val[0] = v;
+        rec_n = 1;
+        drc_st.hs_last = value;
+        return;
+    }
     uint16_t y = line - GG_VIEW_Y;
     if (y >= GG_VIEW_H || v == rec_val[rec_n - 1])
         return;
@@ -769,7 +777,13 @@ static void update_backdrop(void) {
 }
 
 static uint8_t spr_back = 1;   // the table to build next: 1 sprite_table_b
+#ifdef GGSWAN_HOST
+uint32_t host_spr_builds, host_relayouts, host_backdrops;
+#endif
 static void build_sprites(void) {
+#ifdef GGSWAN_HOST
+    host_spr_builds++;
+#endif
     const uint8_t *reg = gg.vdp.reg;
     uint16_t tbase = (reg[6] & 0x04) ? 0x100 : 0;
     bool tall = reg[1] & 0x02;
@@ -862,6 +876,17 @@ GGSWAN_HOST_VISIBLE void video_init(void) {
 #endif
 }
 
+// The frame is shown as the Game Gear drew it: at the end of its picture
+// (line 193, before the frame interrupt), not at the end of the frame
+// (262). What a game writes in the frame interrupt is for the next
+// frame; and some upload more after line 262: Sailor Moon S writes its
+// sprite table at lines 194-208 and the matching sprite tiles at lines
+// 241-261 and 0-84 of the next frame (above its sprites on a Game Gear):
+// shown at line 262 its sprites were half the old pose.
+void gg_platform_frame_end(void) {
+    video_present();
+}
+
 GGSWAN_HOST_VISIBLE void video_present(void) {
 #ifndef GGSWAN_HOST
     // the last frame not shown yet (two Game Gear frames ended in one WS
@@ -880,6 +905,7 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
 #endif
     prof_phase = PROF_VIDEO;
     const uint8_t *reg = gg.vdp.reg;
+    gg_platform_psg_flush();   // (the frame's PSG writes, queued)
 
     // vertical: the Game Gear view starts at row (24 + vscroll) mod 224
     uint16_t s = (GG_VIEW_Y + gg.vdp.vscroll_frame) % 224;
@@ -897,6 +923,9 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
         // (With the view at the top, a camera going up relaid the whole
         // map every 8 pixels, every few frames: Sonic jumping, the
         // background jumping too while the map was rewritten.)
+#ifdef GGSWAN_HOST
+        host_relayouts++;
+#endif
         map_relayout((s >> 3) + 28 - 6);
         vy = s + 224;
         // (the map changed now: its scroll too)
@@ -962,7 +991,10 @@ static void psg_noise_freq(void) {
     outportb(WS_SOUND_CH_CTRL_PORT, (psg_noise & 4) ? 0x8F : 0x0F);
 }
 
-void gg_platform_psg(uint8_t data) {
+// one write to the SN76489: its state only; psg_dirty says which WS
+// registers to update (bits 0-3 volume of channel, 4-6 tone, 7 noise)
+static uint8_t psg_dirty;
+static void psg_apply(uint8_t data) {
     uint8_t target;
     if (data & 0x80) {
         target = data;
@@ -974,27 +1006,61 @@ void gg_platform_psg(uint8_t data) {
     switch ((target >> 4) & 7) {
     case 1: case 3: case 5: case 7:
         psg_vol[ch] = psg_volume_table[data & 0x0F];
-        psg_volume(ch);
+        psg_dirty |= 1 << ch;
         break;
     case 6:
         psg_noise = data & 7;
-        psg_noise_freq();
+        psg_dirty |= 0x80;
         break;
     default:
         if (data & 0x80)
             psg_tone[ch] = (psg_tone[ch] & 0x3F0) | (data & 0x0F);
         else
             psg_tone[ch] = (psg_tone[ch] & 0x00F) | ((data & 0x3F) << 4);
-        // 3072000 * tone / (3579545 >> 1): the wave holds two periods
-        // (a table: no 32-bit multiplication)
-        outportw(0x80 + ch * 2, -psg_divider[psg_tone[ch]]);
+        psg_dirty |= 0x10 << ch;
         if (ch == 2 && (psg_noise & 3) == 3)
-            psg_noise_freq();
+            psg_dirty |= 0x80;
         break;
     }
 }
 
+// the WS sound registers of what changed
+static void psg_output(void) {
+    uint8_t d = psg_dirty;
+    psg_dirty = 0;
+    for (uint8_t ch = 0; ch < 4; ch++)
+        if (d & (1 << ch))
+            psg_volume(ch);
+    for (uint8_t ch = 0; ch < 3; ch++)
+        if (d & (0x10 << ch))
+            // 3072000 * tone / (3579545 >> 1): the wave holds two periods
+            // (a table: no 32-bit multiplication)
+            outportw(0x80 + ch * 2, -psg_divider[psg_tone[ch]]);
+    if (d & 0x80)
+        psg_noise_freq();
+}
+
+// the writes the recompiler queued (OUT (n),A to ports 40-7F), in order,
+// then the WS registers once: a sample played through the volume (Sailor
+// Moon S, hundreds of writes a frame) costs a C loop, not a helper each
+void gg_platform_psg_flush(void) {
+    uint8_t n = (uint8_t) drc_st.psg_n;
+    if (!n)
+        return;
+    drc_st.psg_n = 0;
+    for (uint8_t i = 0; i < n; i++)
+        psg_apply(drc_st.psg_q[i]);
+    psg_output();
+}
+
+void gg_platform_psg(uint8_t data) {
+    gg_platform_psg_flush();   // (the queued ones first)
+    psg_apply(data);
+    psg_output();
+}
+
 void gg_platform_stereo(uint8_t v) {
+    gg_platform_psg_flush();
     psg_stereo = v;
     for (uint8_t ch = 0; ch < 4; ch++)
         psg_volume(ch);
@@ -1404,8 +1470,7 @@ int main(void) {
         ia16_enable_irq();
         prof_phase = PROF_OTHER;
         read_keys();
-        gg_run_frame();
-        video_present();
+        gg_run_frame();   // (video_present at its line 193)
         frames++;
         // frames per second, in the left border (the WS shows 75.47 Hz)
         if (vblanks >= 75) {

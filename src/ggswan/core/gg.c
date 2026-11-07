@@ -314,6 +314,9 @@ static void vdp_line(uint16_t line) {
     if (line == GG_ACTIVE_LINES + 1) {
         gg.vdp.status |= 0x80;
         gg_diag_vbl();
+        update_irq();
+        gg_platform_frame_end();
+        return;
     }
 
     update_irq();
@@ -346,12 +349,15 @@ static void vdp_lines(uint16_t from, uint16_t to) {
         c = r;
     gg.vdp.line_counter = c;
     // frame interrupt
-    if (from <= GG_ACTIVE_LINES + 1 && to > GG_ACTIVE_LINES + 1) {
+    uint8_t end = from <= GG_ACTIVE_LINES + 1 && to > GG_ACTIVE_LINES + 1;
+    if (end) {
         gg.vdp.status |= 0x80;
         gg_diag_vbl();
     }
     gg.vdp.vcounter = to - 1;
     update_irq();
+    if (end)
+        gg_platform_frame_end();
 }
 
 // the next line (from l, the first one not started yet) whose start must

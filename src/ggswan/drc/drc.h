@@ -34,6 +34,8 @@
 #ifndef GGSWAN_DRC_H_
 #define GGSWAN_DRC_H_
 
+#define DRC_PSG_Q 64   // PSG writes queued by the recompiled code
+
 #include <stdint.h>
 
 /// Runtime state shared by translated code and the dispatcher (in IRAM).
@@ -90,6 +92,8 @@ typedef struct {
     uint16_t log_top;     // main.c: the log being filled (IRAM): end,
     uint16_t log_end;     // limit, last entry (0: none); entries of VRAM
     uint16_t log_last;    // address (word), length (byte), the bytes
+    uint16_t psg_n;       // main.c: PSG writes queued by OUT (n),A (ports
+    uint8_t psg_q[DRC_PSG_Q];   // 40-7F), written at the end of the frame
     uint16_t diag_fg;     // diagnostics: at the last scroll split recorded,
     int16_t diag_left;    // frame_given (low word) and the cycles left
 } drc_state_t;
@@ -108,6 +112,7 @@ enum {
     DRC_H_WRITE_MAP,   // write to a mapper register that changes neither
                        // slot 0 nor the slot of the block: it may go on
     DRC_H_SYNC,        // write the deferred tile writes now, stop deferring
+    DRC_H_PSG,         // the queue of PSG writes is full: write them
 };
 
 typedef struct {
@@ -129,6 +134,7 @@ typedef struct {
     uint16_t ram_blocks;   // translate code in work RAM too (runtime)
     uint16_t cram_off;     // routine for a byte to CRAM (val; 0: the helper)
     uint16_t cls_off;      // routine for a VRAM byte outside tile data (0: inline)
+    uint8_t psg_queue;     // OUT (n),A to the PSG: queued in drc_state_t
     uint8_t no_trace;      // diagnostics: do not follow JP nn / JR e in a block
     uint8_t no_inline;     // diagnostics: do not inline CALLed routines
     uint8_t no_fast;       // diagnostics: no rep movsb runs, all flags built

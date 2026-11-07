@@ -966,7 +966,7 @@ uint16_t drc_emit_ctl_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) {
         land8(inview);
         B(0x2D); W(GG_VIEW_Y);                       // sub ax, VIEW_Y (y)
         B(0x3D); W(GG_VIEW_H);                       // cmp ax, VIEW_H
-        uint8_t *out = jcc8(0x73);                   // jae done (below the view)
+        uint8_t *below = jcc8(0x73);                 // jae below
         B(0x83); B(0xFE); B(1);                      // cmp si, 1
         uint8_t *app1 = jcc8(0x76);                  // jbe append
         B(0x3A); B(0x84); W(SA(rec_line) - 1);       // cmp al, [si + rec_line - 1]
@@ -974,23 +974,25 @@ uint16_t drc_emit_ctl_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) {
         B(0x88); B(0x94); W(SA(rec_val) - 1);        // mov [si + rec_val - 1], dl (same line)
         uint8_t *last2 = jcc8(0xEB);                 // jmp set_last
         land8(app1); land8(app2);
-        // (diagnostics: frame_given and the cycles left, as above)
-        B(0x50);                                     // push ax
-        B(0xA1); W(VA(frame_given));                 // mov ax, [frame_given]
-        B(0xA3); W(SA(diag_fg));                     // mov [diag_fg], ax
-        B(0xA1); W(SA(left_base));                   // mov ax, [left_base]
-        B(0x03); B(0x06); W(SA(cycles));             // add ax, [cycles]
-        B(0xA3); W(SA(diag_left));                   // mov [diag_left], ax
-        B(0x58);                                     // pop ax
         B(0x83); B(0xFE); B(DRC_MAX_SPLITS);         // cmp si, MAX_SPLITS
         uint8_t *full = jcc8(0x73);                  // jae done (no room)
         B(0x88); B(0x84); W(SA(rec_line));           // mov [si + rec_line], al
         B(0x88); B(0x94); W(SA(rec_val));            // mov [si + rec_val], dl
         B(0xFE); B(0x06); W(SA(rec_n));              // inc byte [rec_n]
+        uint8_t *out = jcc8(0xEB);                   // (appended: jmp set_last)
+        // below the view: after the picture (line 194 on, the frame was
+        // presented at 193, main.c) the value for the next frame's first
+        // line; before it, nothing
+        land8(below);
+        B(0x3D); W(GG_ACTIVE_LINES + 2 - GG_VIEW_Y); // cmp ax, 194 - VIEW_Y
+        uint8_t *mid = jcc8(0x72);                   // jb done
+        B(0x88); B(0x16); W(SA(rec_val));            // mov [rec_val], dl
+        B(0xC6); B(0x06); W(SA(rec_n)); B(1);        // rec_n = 1
+        land8(out);
         land8(last1); land8(last2);
         B(0x8A); B(0x26); W(VA(latch));              // mov ah, [latch] (value)
         B(0x88); B(0x26); W(SA(hs_last));            // mov [hs_last], ah
-        land8(same); land8(out); land8(full);
+        land8(same); land8(mid); land8(full);
         B(0x5A);                                     // pop dx
         B(0x58);                                     // pop ax
         B(0xF8); B(0xC3);                            // clc; ret
@@ -1037,6 +1039,9 @@ static void decode(uint16_t pc, ins_t *I) {
         case 0x44: I->fwrite = FALL; return;                        // NEG
         case 0x47: return;                                          // LD I,A
         case 0x57: I->fwrite = FALL & ~FC; I->fread = FC; return;   // LD A,I
+        case 0x67: case 0x6F:                                       // RRD, RLD
+            if (env->no_fast) { I->step = 1; return; }
+            I->fwrite = FALL & ~FC; I->fread = FC; return;
         case 0x43: case 0x53: case 0x73:                            // LD (nn),rr
             I->nn = rd(pc + 2) | (rd(pc + 3) << 8); I->len = 4;
             if (I->nn < 0xC000 || I->nn >= 0xDFFF) I->step = 1;
@@ -1464,6 +1469,55 @@ static int emit(int i) {
             set_link(0);
             jmp_near(env->exit_off);
             return 1;
+        case 0x67: case 0x6F: {
+            // RRD / RLD: the 12 bits A low, (HL) rotated by a nibble
+            // (Sailor Moon S unpacks its graphics with them: 160 a frame,
+            // each an interpreted step before). Work RAM directly, anything
+            // else with the interpreter, as SET/RES (HL). Flags: S Z P of
+            // the new A, H = N = 0, C kept; in AH.
+            materialize();
+            B(0x80); B(0xFF); B(0xC0); uint8_t *j1 = jcc8(0x72);   // cmp bh, C0h; jb slow
+            B(0x80); B(0xFF); B(0xE0); uint8_t *j2 = jcc8(0x73);   // cmp bh, E0h; jae slow
+            B(0x89); B(0xC7);                         // mov di, ax (F, A)
+            if (op == 0x67) {
+                // AX = 0 : A low : (HL), rotated right: AL = A low : (HL) high
+                // (the new (HL)), AH high nibble = (HL) low (the new A low)
+                B(0x88); B(0xC4);                     // mov ah, al
+                B(0x80); B(0xE4); B(0x0F);            // and ah, 0Fh
+                B(0x8A); B(0x87); W(env->ram_delta);  // mov al, [bx + ram]
+                B(0xC1); B(0xC8); B(0x04);            // ror ax, 4
+                B(0x88); B(0x87); W(env->ram_delta);  // mov [bx + ram], al
+                B(0x88); B(0xE0);                     // mov al, ah
+                B(0xC0); B(0xE8); B(0x04);            // shr al, 4
+            } else {
+                // AX = (HL) : A low : 0, rotated left: AH = (HL) low : A low
+                // (the new (HL)), AL low nibble = (HL) high (the new A low)
+                B(0x8A); B(0xA7); W(env->ram_delta);  // mov ah, [bx + ram]
+                B(0xC0); B(0xE0); B(0x04);            // shl al, 4
+                B(0xC1); B(0xC0); B(0x04);            // rol ax, 4
+                B(0x88); B(0xA7); W(env->ram_delta);  // mov [bx + ram], ah
+                B(0x24); B(0x0F);                     // and al, 0Fh
+            }
+            B(0x89); B(0xFE);                         // mov si, di
+            B(0x81); B(0xE6); W(0x00F0);              // and si, 00F0h (A high)
+            B(0x09); B(0xF0);                         // or ax, si
+            B(0x89); B(0xFE);                         // mov si, di
+            B(0x81); B(0xE6); W(0x0100);              // and si, 0100h (C)
+            B(0x08); B(0xC0);                         // or al, al (S Z P)
+            B(0x9F);                                  // lahf
+            B(0x80); B(0xE4); B(0xC4);                // and ah, C4h (S Z P)
+            B(0x09); B(0xF0);                         // or ax, si (C)
+            B(0x83); B(0x2E); W(SA(cycles)); B(18);   // sub word [cycles], 18
+            uint8_t *j3 = jcc8(0xEB);
+            land8(j1); land8(j2);
+            B(0xC7); B(0x06); W(SA(arg)); W(I->pc);
+            B(0xC6); B(0x06); W(SA(val)); B(1);
+            helper(DRC_H_STEP);
+            land8(j3);
+            hl_es = 0;
+            fkind = K_AH;
+            return 1;
+        }
         case 0x47:   // LD I,A (Wonder Boy III keeps a value in I)
             B(0xA2); W(ZA(i));                        // mov [i], al
             cyc += 9;
@@ -2109,6 +2163,21 @@ static int emit(int i) {
                     return 1;
                 }
                 clobber(live);
+                if (env->psg_queue && I->nn >= 0x40 && I->nn < 0x80) {
+                    // PSG: queued (main.c writes the queue at the end of the
+                    // frame, or here when full): Sailor Moon S plays samples
+                    // with hundreds of volume writes a frame, each a helper
+                    B(0x8B); B(0x36); W(SA(psg_n));      // mov si, [psg_n]
+                    B(0x88); B(0x84); W(SA(psg_q));      // mov [si + psg_q], al
+                    B(0x46);                             // inc si
+                    B(0x89); B(0x36); W(SA(psg_n));      // mov [psg_n], si
+                    B(0x83); B(0xFE); B(DRC_PSG_Q);      // cmp si, DRC_PSG_Q
+                    uint8_t *room = jcc8(0x72);          // jb room
+                    helper(DRC_H_PSG);
+                    land8(room);
+                    cyc += 11;
+                    return 1;
+                }
                 uint8_t *s1 = 0, *done = 0;
                 if (env->vdp_addr && (I->nn & 0xC1) == 0x80) {
                     vram_fast(X_AX, &s1);

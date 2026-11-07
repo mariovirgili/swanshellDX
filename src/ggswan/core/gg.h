@@ -89,6 +89,11 @@ uint8_t GGFAR *gg_platform_cart_ram(uint8_t page);
 void gg_platform_line(uint16_t line);
 /// A write to the PSG (port $7F) or the stereo register (port $06).
 void gg_platform_psg(uint8_t value);
+/// the end of the picture (line 193, the frame interrupt): the platform
+/// shows the frame as the Game Gear has drawn it
+void gg_platform_frame_end(void);
+/// the PSG writes the recompiler queued (drc_state_t), in order
+void gg_platform_psg_flush(void);
 void gg_platform_stereo(uint8_t value);
 /// VDP writes the platform may need to mirror (VRAM, CRAM, registers).
 void gg_platform_vram_write(uint16_t addr, uint8_t value);

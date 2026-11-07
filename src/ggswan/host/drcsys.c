@@ -262,8 +262,8 @@ int sys_init(const char *path, int use_drc, int every_line) {
 static uint8_t fb_end[GG_VIEW_H][GG_VIEW_W][3];
 void sys_frame(int keys) {
     gg.keys = keys;
-    gg_run_frame();
-    video_present();
+    gg_run_frame();   // (video_present at line 193)
+    gg_platform_vram_sync();   // (to compare the VRAM: what the frame wrote after it)
     if (getenv("GGSWAN_LATE_COMMIT")) gg_platform_vram_sync();   // (to compare the VRAM)
     // the whole frame drawn again from the final state (comparable between
     // runs that stop at every line and runs that do not)
