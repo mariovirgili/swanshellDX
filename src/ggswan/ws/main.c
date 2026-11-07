@@ -541,42 +541,46 @@ static void update_backdrop(void) {
     backdrop_palette = sprite_pal > 45 ? 1 : 0;
 }
 
-static void put_sprite(uint8_t n, uint16_t tile, uint8_t x, uint8_t y) {
-    uint8_t *s = sprite_table + n * 4;
-    s[0] = tile & 0xFF;
-    // bit 8 of the tile; palette 0 (= WS palette 8); behind screen 2
-    s[1] = (tile >> 8) & 1;
-    s[2] = y;
-    s[3] = x;
-}
-
 static void build_sprites(void) {
     const uint8_t *reg = gg.vdp.reg;
     uint16_t tbase = (reg[6] & 0x04) ? 0x100 : 0;
     bool tall = reg[1] & 0x02;
     uint8_t xoff = (reg[0] & 0x08) ? 8 : 0;
-    uint8_t n = 0;
+    // hidden: a sprite outside the 160x144 window (WS 32-191 x 0-143, the
+    // borders are screen 2, in front of the sprites) is not given to the
+    // WS; games park the unused ones out of the picture (Shinobi: most of
+    // its 64)
+    uint8_t hide_y = 113 - (tall ? 16 : 8);
+    const uint8_t *sat = gg_vram + sat_base;
+    uint8_t *s = sprite_table, *end = sprite_table + 127 * 4;
     memset(sprite_page, 0, sizeof(sprite_page));
-    for (uint8_t i = 0; i < 64 && n < 127; i++) {
-        uint8_t y = gg_vram[sat_base + i];
+    for (uint8_t i = 0; i < 64 && s < end; i++) {
+        uint8_t y = sat[i];
         if (y == 0xD0)
             break;
-        uint8_t x = gg_vram[sat_base + 0x80 + i * 2];
-        uint16_t t = tbase | gg_vram[sat_base + 0x81 + i * 2];
         // Game Gear (x, y + 1) in the 256x192 picture; the view starts at
         // (48, 24) and is shown at WS (32, 0)
         uint8_t wy = y + 1 - GG_VIEW_Y;
-        uint8_t wx = x - xoff - (GG_VIEW_X - 32);
-        sprite_page[t >> 3] = 1;   // (8 tiles a page; t | 1 is in the same one)
+        if ((uint8_t) (wy - GG_VIEW_H) < hide_y)
+            continue;
+        uint8_t wx = sat[0x80 + i * 2] - xoff - (GG_VIEW_X - 32);
+        if ((uint8_t) (wx - (32 + GG_VIEW_W)) < 89)
+            continue;
+        uint8_t t = sat[0x81 + i * 2];
+        // (8 tiles a page; t | 1 is in the same one)
+        sprite_page[(tbase | t) >> 3] = 1;
+        // tile (bit 8: s[1] bit 0); palette 0 (= WS palette 8); behind screen 2
         if (tall) {
-            put_sprite(n++, t & ~1, wx, wy);
-            put_sprite(n++, t | 1, wx, wy + 8);
+            s[0] = t & ~1; s[1] = tbase >> 8; s[2] = wy; s[3] = wx;
+            s[4] = t | 1; s[5] = tbase >> 8; s[6] = wy + 8; s[7] = wx;
+            s += 8;
         } else {
-            put_sprite(n++, t, wx, wy);
+            s[0] = t; s[1] = tbase >> 8; s[2] = wy; s[3] = wx;
+            s += 4;
         }
     }
     outportb(0x05, 0);        // first sprite
-    outportb(0x06, n);        // sprite count
+    outportb(0x06, (uint8_t) ((s - sprite_table) >> 2));   // sprite count
     drc_st.sprites_dirty = false;
     for (uint8_t i = 0; i < 64; i++)
         drc_st.vram_class_defer[i] = vram_class_norm[i] ? vram_class_norm[i] : sprite_page[i] ? 8 : 0;
