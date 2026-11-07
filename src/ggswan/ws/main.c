@@ -67,6 +67,7 @@ uint8_t *gg_vram = iram + GG_VRAM_ADDR;
 #define map2 ((uint16_t*) (iram + 0x2800))
 #define sprite_table (iram + 0x3000)
 #define wave_table (iram + 0x3200)
+#define sprite_table_b (iram + 0x3400)
 #define MAP_SIZE 2048
 #else
 uint8_t *gg_ram = (uint8_t*) GG_RAM_ADDR;
@@ -75,6 +76,7 @@ uint8_t *gg_vram = (uint8_t*) GG_VRAM_ADDR;
 static uint16_t map1[32 * 32] __attribute__((aligned(2048)));
 static uint16_t map2[32 * 32] __attribute__((aligned(2048)));
 static uint8_t sprite_table[128 * 4] __attribute__((aligned(512)));
+static uint8_t sprite_table_b[128 * 4] __attribute__((aligned(512)));
 static uint8_t wave_table[64] __attribute__((aligned(64)));
 #define MAP_SIZE 2048
 
@@ -730,6 +732,7 @@ static void update_backdrop(void) {
     backdrop_palette = sprite_pal > 45 ? 1 : 0;
 }
 
+static uint8_t spr_back = 1;   // the table to build next: 1 sprite_table_b
 static void build_sprites(void) {
     const uint8_t *reg = gg.vdp.reg;
     uint16_t tbase = (reg[6] & 0x04) ? 0x100 : 0;
@@ -741,7 +744,12 @@ static void build_sprites(void) {
     // its 64)
     uint8_t hide_y = 113 - (tall ? 16 : 8);
     const uint8_t *sat = gg_vram + sat_base;
-    uint8_t *s = sprite_table, *end = sprite_table + 127 * 4;
+    // two tables: this frame's sprites go to the one the WS is not using,
+    // then the WS is pointed at it (port 04h). Built in place, the table
+    // could be copied by the WS (line 144) half old, half new: Aladdin's
+    // pieces of trousers away from his legs, for a frame now and then.
+    uint8_t *table = spr_back ? sprite_table_b : sprite_table;
+    uint8_t *s = table, *end = table + 127 * 4;
     for (uint8_t i = 0; i < 64 && s < end; i++) {
         uint8_t y = sat[i];
         if (y == 0xD0)
@@ -765,8 +773,12 @@ static void build_sprites(void) {
             s += 4;
         }
     }
+    uint16_t f = irq_save();
+    outportb(0x04, (IRAM_OFF(table) >> 9) & 0x3F);
     outportb(0x05, 0);        // first sprite
-    outportb(0x06, (uint8_t) ((s - sprite_table) >> 2));   // sprite count
+    outportb(0x06, (uint8_t) ((s - table) >> 2));   // sprite count
+    irq_restore(f);
+    spr_back ^= 1;
     drc_st.sprites_dirty = false;
 }
 
@@ -790,6 +802,8 @@ GGSWAN_HOST_VISIBLE void video_init(void) {
         map2[i] = TILE_ENTRY(MASK_TILE) | PAL_ENTRY(MASK_PALETTE);
     WS_DISPLAY_COLOR_MEM(MASK_PALETTE)[1] = 0x000;
     memset(sprite_table, 0, 512);
+    memset(sprite_table_b, 0, 512);
+    spr_back = 1;
 
     uint16_t m1 = IRAM_OFF(map1), m2 = IRAM_OFF(map2);
     outportb(WS_SCR_BASE_PORT, ((m1 >> 11) & 0x0F) | (((m2 >> 11) & 0x0F) << 4));
@@ -819,13 +833,22 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
     // vertical: the Game Gear view starts at row (24 + vscroll) mod 224
     uint16_t s = (GG_VIEW_Y + gg.vdp.vscroll_frame) % 224;
     uint16_t vy = s;
-    if (vy < map_top * 8u)
-        vy += 224;
+    while (vy < map_top * 8u)
+        vy += 224;   // (virtual rows: the same Game Gear row 28 later)
     act_vy = vy & 0xFF;
     if (vy > map_top * 8u + (256 - GG_VIEW_H - 8)) {
         gg_platform_vram_sync();   // (the name table up to date first)
-        map_relayout(s >> 3);
-        vy = s;
+#ifdef GGSWAN_HOST
+        if (getenv("GGSWAN_RELAYSTAT"))
+            fprintf(stderr, "RELAYOUT %u s=%u top=%u\n", (unsigned) gg.frame, (unsigned) s, (unsigned) map_top);
+#endif
+        // the view 6 rows into the new map (virtual row (s >> 3) + 28):
+        // room to move 48 pixels up and 56 down before the next relayout.
+        // (With the view at the top, a camera going up relaid the whole
+        // map every 8 pixels, every few frames: Sonic jumping, the
+        // background jumping too while the map was rewritten.)
+        map_relayout((s >> 3) + 28 - 6);
+        vy = s + 224;
         // (the map changed now: its scroll too)
         act_vy = vy & 0xFF;
         outportb(0x11, act_vy);
