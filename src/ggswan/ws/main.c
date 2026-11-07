@@ -883,6 +883,7 @@ GGSWAN_HOST_VISIBLE void video_init(void) {
 // sprite table at lines 194-208 and the matching sprite tiles at lines
 // 241-261 and 0-84 of the next frame (above its sprites on a Game Gear):
 // shown at line 262 its sprites were half the old pose.
+GGSWAN_HOST_VISIBLE void video_present(void);
 void gg_platform_frame_end(void) {
     video_present();
 }
