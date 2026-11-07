@@ -336,6 +336,9 @@ void gg_platform_vram_sync(void) {
     memcpy(drc_st.vram_class, vram_class_norm, 64);
 }
 GGSWAN_HOST_VISIBLE volatile uint8_t act_line[MAX_SPLITS], act_val[MAX_SPLITS], act_n = 1;
+// screen 1 Y scroll for the next WS frame (set by the line interrupt at the
+// end of the screen, like act_val[0]: no tear while the WS draws)
+static volatile uint8_t act_vy;
 static volatile uint8_t act_i;
 
 uint16_t ws_map1_iram(void) {
@@ -489,8 +492,9 @@ static void hscroll_write(uint8_t value) {
 static void __attribute__((interrupt, assume_ss_data)) line_irq(void) {
     uint8_t i = act_i;
     if (inportb(WS_DISPLAY_LINE_IRQ_PORT) >= GG_VIEW_H) {
-        // end of the screen: value for the first line of the next one
+        // end of the screen: values for the first line of the next one
         outportb(WS_SCR1_SCRL_X_PORT, act_val[0]);
+        outportb(0x11, act_vy);                       // screen 1 Y scroll
         i = 1;
     } else {
         outportb(WS_SCR1_SCRL_X_PORT, act_val[i]);
@@ -630,11 +634,17 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
     uint16_t vy = s;
     if (vy < map_top * 8u)
         vy += 224;
+    act_vy = vy & 0xFF;
     if (vy > map_top * 8u + (256 - GG_VIEW_H - 8)) {
         map_relayout(s >> 3);
         vy = s;
+        // (the map changed now: its scroll too)
+        act_vy = vy & 0xFF;
+        outportb(0x11, act_vy);
     }
-    outportb(0x11, vy & 0xFF);
+#ifdef GGSWAN_HOST
+    outportb(0x11, act_vy);   // (the PC tests have no WS raster)
+#endif
     splits_commit();
     // record the next frame: it starts with the current value
     rec_val[0] = 16 - gg.vdp.reg[8];
