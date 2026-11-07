@@ -287,7 +287,7 @@ static void vram_class_update(void) {
         uint8_t c = ((uint16_t) (a - nt_base) < 0x700 ? 1 : 0)
                   | ((uint16_t) (a - sat_base) < 0x100 ? 2 : 0);
         vram_class_norm[i] = c;
-        drc_st.vram_class[i] = (drc_st.defer && !(c & 2)) ? c | 8 : c;
+        drc_st.vram_class[i] = (drc_st.defer && !c) ? c | 8 : c;
     }
     drc_st.vram_class[64] = 0x11;
 }
@@ -589,17 +589,19 @@ static void hscroll_write(uint8_t value) {
 #ifndef GGSWAN_HOST
 static void __attribute__((interrupt, assume_ss_data)) line_irq(void) {
     uint8_t i = act_i;
+    uint8_t end = 0;   // (the end of the screen done in this interrupt)
     if (inportb(WS_DISPLAY_LINE_IRQ_PORT) >= GG_VIEW_H)
         i = 0;   // end of the screen
     for (;;) {
         if (i == 0) {
-            // values for the first line of the next screen; the VRAM
-            // writes of the frame presented (the WS copies the sprite table
-            // on this line too)
-            if (pend_start)
-                log_commit_tramp();
+            // values for the first line of the next screen, first (the
+            // scroll must not wait for the VRAM writes); then the VRAM
+            // writes of the frame presented
             outportb(WS_SCR1_SCRL_X_PORT, act_val[0]);
             outportb(0x11, act_vy);                   // screen 1 Y scroll
+            if (pend_start)
+                log_commit_tramp();
+            end = 1;
             i = 1;
         } else {
             outportb(WS_SCR1_SCRL_X_PORT, act_val[i]);
@@ -607,20 +609,30 @@ static void __attribute__((interrupt, assume_ss_data)) line_irq(void) {
         }
         // interrupt on the line before the next split (or the end)
         uint8_t next = i < act_n ? act_line[i] - 1 : GG_VIEW_H;
+        if (next > GG_VIEW_H)
+            next = GG_VIEW_H;
         uint8_t cur = inportb(WS_DISPLAY_LINE_PORT);   // (the line being drawn)
-        if (next > cur || (cur >= GG_VIEW_H && next < GG_VIEW_H)) {
+        if (cur >= GG_VIEW_H) {
+            // below the picture: after the end of the screen, every line
+            // of the next one is still to come; before it (splits late
+            // into the bottom border), the end of the screen now
+            if (end) {
+                act_i = i;
+                outportb(WS_DISPLAY_LINE_IRQ_PORT, next);
+                break;
+            }
+            i = 0;
+            continue;
+        }
+        if (next > cur) {
             act_i = i;
             outportb(WS_DISPLAY_LINE_IRQ_PORT, next);
             break;
         }
         // late (consecutive splits, Super Monaco GP's road: one a line, and
-        // an interrupt a line late): that line is already being drawn, a
-        // match on it would come only in the next WS frame, the end of the
-        // screen too would be missed and the top of the next frame would
-        // keep the road's scroll (the status bar moving, with garbage).
-        // Its value now.
-        if (next >= GG_VIEW_H)
-            i = 0;
+        // an interrupt a line late; or VRAM writes past the bottom border):
+        // that line is already being drawn, a match on it would come only
+        // in the next WS frame. Its value now.
     }
     ws_int_ack(WS_INT_ACK_LINE_MATCH);
 }
