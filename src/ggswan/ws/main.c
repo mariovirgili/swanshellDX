@@ -605,6 +605,7 @@ static void hscroll_write(uint8_t value) {
 #define WS_LINES 159
 static volatile uint8_t diag_late, diag_commit, diag_ends, diag_splits, diag_split_line;
 static volatile uint16_t diag_calls;
+static uint16_t diag_regs, diag_ram;   // (at the last frame with a split)
 
 #ifndef GGSWAN_HOST
 static void __attribute__((interrupt, assume_ss_data)) line_irq(void) {
@@ -684,8 +685,12 @@ static void splits_commit(void) {
     act_n = rec_n;
     if (act_n > diag_splits)
         diag_splits = act_n;
-    if (act_n > 1)
+    if (act_n > 1) {
         diag_split_line = act_line[1];
+        diag_regs = (gg.vdp.reg[0] << 8) | gg.vdp.reg[10];
+        // (Sonic: D2DC the line-interrupt line, D241 its state)
+        diag_ram = (gg_ram[0x12DC] << 8) | gg_ram[0x1241];
+    }
     if (act_i > act_n)
         act_i = act_n;
 #ifndef GGSWAN_HOST
@@ -1161,6 +1166,13 @@ static void show_fps(uint8_t fps) {
     put_value(4, 24, 'M', diag_splits);
     put_value(6, 24, 'Y', diag_split_line);
     put_value(8, 24, 'J', diag_calls);
+    // G Game Gear interrupts taken (not in hundreds); in a frame with a
+    // split: registers 0 and 10, and two RAM bytes (hex)
+    put_value(10, 24, 'G', drc_stat_irq - l_irq);
+    put_hex(12, 24, diag_regs);
+    put_hex(14, 24, diag_ram);
+    diag_regs = 0;
+    diag_ram = 0;
     diag_splits = 0;
     diag_split_line = 0;
     diag_calls = 0;
