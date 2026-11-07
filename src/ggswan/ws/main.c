@@ -365,6 +365,11 @@ void gg_platform_vram_sync(void) {
     if (!drc_st.defer)
         return;
     uint16_t f = irq_save();
+#ifdef GGSWAN_HOST
+    if (getenv("GGSWAN_SYNCSTAT") && drc_st.log_top != log_start)
+        fprintf(stderr, "SYNC %u %u line %u\n", (unsigned) gg.frame,
+                (unsigned) (drc_st.log_top - log_start), (unsigned) gg_current_line());
+#endif
     log_commit_pending();
     log_apply(log_start, drc_st.log_top);
     drc_st.log_top = log_start;
@@ -453,6 +458,9 @@ GGSWAN_HOST_VISIBLE volatile uint8_t act_line[MAX_SPLITS], act_val[MAX_SPLITS], 
 // end of the screen, like act_val[0]: no tear while the WS draws)
 static volatile uint8_t act_vy;
 static volatile uint8_t act_i;
+// a Game Gear frame presented (video_present) and not shown yet: the line
+// interrupt at the end of the WS screen clears it
+static volatile uint8_t frame_waiting;
 
 uint16_t ws_map1_iram(void) {
     return IRAM_OFF(map1);
@@ -649,6 +657,7 @@ void line_irq(void) {
                 if (dc > diag_commit)
                     diag_commit = dc;
             }
+            frame_waiting = 0;
             end = 1;
             i = 1;
         } else {
@@ -828,6 +837,21 @@ GGSWAN_HOST_VISIBLE void video_init(void) {
 }
 
 GGSWAN_HOST_VISIBLE void video_present(void) {
+#ifndef GGSWAN_HOST
+    // the last frame not shown yet (two Game Gear frames ended in one WS
+    // frame): wait for the end of the screen, then for the line after it
+    // (the WS copies the sprite table on line 144). Presenting now changed
+    // the scroll values, the sprite table and the VRAM (the waiting log,
+    // written at once) in the middle of a WS frame that shows the frame
+    // before: Aladdin's sprite pieces in the wrong places, Super Monaco
+    // GP's status bar now and then.
+    if (frame_waiting) {
+        prof_phase = PROF_IDLE;
+        while (frame_waiting)
+            __asm__ volatile ("hlt");
+        while (inportb(WS_DISPLAY_LINE_PORT) == GG_VIEW_H) {}
+    }
+#endif
     prof_phase = PROF_VIDEO;
     const uint8_t *reg = gg.vdp.reg;
 
@@ -881,6 +905,7 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
         outportb(0x01, 0x10 | (reg[7] & 0x0F));       // backdrop color
         outportb(0x00, 0x02 | 0x10 | 0x20);
     }
+    frame_waiting = 1;
     prof_phase = PROF_OTHER;
 }
 
