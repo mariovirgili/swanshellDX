@@ -659,9 +659,23 @@ int32_t drc_z80_run(int32_t cycles) {
             break;
         }
         if (z80.irq && z80.iff1) {
+            pending_link = 0;
+            uint16_t sp = z80.sp - 2;
+            if (!z80.ei_pending && z80.im != 2 && sp >= 0xC000 && sp < 0xDFFF) {
+                // IM 1 with the stack in work RAM (the usual case): taken
+                // here, the same as the interpreter's take_irq()
+                z80.iff1 = z80.iff2 = 0;
+                z80.r = (z80.r & 0x80) | ((z80.r + 1) & 0x7F);
+                z80.sp = sp;
+                gg_ram[sp & 0x1FFF] = (uint8_t) z80.pc;
+                gg_ram[(sp + 1) & 0x1FFF] = z80.pc >> 8;
+                z80.pc = 0x38;
+                z80.cycles -= 13;
+                drc_stat_irq++;
+                continue;
+            }
             // interrupt: taken by the interpreter (or, just after EI,
             // the one instruction before it)
-            pending_link = 0;
             if (!z80.ei_pending) drc_stat_irq++;
             interp_one();
             continue;
