@@ -94,6 +94,8 @@ void gg_platform_stereo(uint8_t value);
 void gg_platform_vram_write(uint16_t addr, uint8_t value);
 void gg_platform_cram_write(uint8_t index);
 void gg_platform_vram_sync(void);
+// the deferred writes to one VRAM address only (a read of it)
+void gg_platform_vram_sync_at(uint16_t a);
 uint8_t gg_platform_vram_defer(uint16_t addr, uint8_t value);
 void gg_platform_vdp_reg(uint8_t reg, uint8_t value);
 

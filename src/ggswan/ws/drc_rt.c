@@ -746,9 +746,14 @@ uint8_t drc_no_fast;
 uint32_t drc_stat_helper[5], drc_stat_dispatch, drc_stat_nolink;
 static void drc_helper(void) {
     if (drc_st.op == DRC_H_SYNC) {
-        // deferred tile writes (main.c): nothing else changes
+        // deferred tile writes (main.c): nothing else changes. A full log
+        // (the routines' retry): all of it; a VRAM read (prefetch or data
+        // port, at addr): only that address
         prof_phase = PROF_VIDEO;
-        gg_platform_vram_sync();
+        if ((uint16_t) (drc_st.log_end - drc_st.log_top) < 260)
+            gg_platform_vram_sync();
+        else
+            gg_platform_vram_sync_at(gg.vdp.addr & 0x3FFF);
         return;
     }
     if (drc_st.op == DRC_H_OUT || drc_st.op == DRC_H_IN) {

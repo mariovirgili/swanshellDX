@@ -360,6 +360,32 @@ void log_commit_pending(void) {
     }
 }
 
+// the deferred writes to VRAM address a, in order (the waiting log, then
+// the one filling): the byte a read must see, now in VRAM; the logs stay
+// (their commit writes the same last value). Only that byte shows early:
+// a whole sync at a read made a frame's tiles visible mid-screen, with the
+// previous frame's sprites (Aladdin reads the VRAM in its frame interrupt
+// every 8 frames: pieces of its sprites in the wrong places)
+static void log_apply_at(uint16_t start, uint16_t end, uint16_t a) {
+    const uint8_t *p = IRAM(start), *e = IRAM(end);
+    while (p < e) {
+        uint16_t ea = p[0] | (p[1] << 8);
+        uint8_t n = p[2];
+        if ((uint16_t) (a - ea) < n)
+            gg_vram[a] = p[3 + (a - ea)];
+        p += 3 + n;
+    }
+}
+void gg_platform_vram_sync_at(uint16_t a) {
+    if (!drc_st.defer)
+        return;
+    uint16_t f = irq_save();
+    if (pend_start)
+        log_apply_at(pend_start, pend_top, a);
+    log_apply_at(log_start, drc_st.log_top, a);
+    irq_restore(f);
+}
+
 // all the deferred writes to VRAM now (in order), the log empty again
 void gg_platform_vram_sync(void) {
     if (!drc_st.defer)
@@ -862,7 +888,6 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
         vy += 224;   // (virtual rows: the same Game Gear row 28 later)
     act_vy = vy & 0xFF;
     if (vy > map_top * 8u + (256 - GG_VIEW_H - 8)) {
-        gg_platform_vram_sync();   // (the name table up to date first)
 #ifdef GGSWAN_HOST
         if (getenv("GGSWAN_RELAYSTAT"))
             fprintf(stderr, "RELAYOUT %u s=%u top=%u\n", (unsigned) gg.frame, (unsigned) s, (unsigned) map_top);

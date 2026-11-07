@@ -92,7 +92,7 @@ static inline void update_irq(void) {
 }
 
 static uint8_t vdp_read_data(void) {
-    gg_platform_vram_sync();   // (tile writes the platform deferred)
+    gg_platform_vram_sync_at(gg.vdp.addr & 0x3FFF);   // (tile writes the platform deferred)
     uint8_t v = gg.vdp.read_buffer;
     gg.vdp.read_buffer = gg_vram[gg.vdp.addr & 0x3FFF];
     gg.vdp.addr = (gg.vdp.addr + 1) & 0x3FFF;
@@ -147,7 +147,7 @@ static void vdp_write_control(uint8_t v) {
     switch (gg.vdp.code) {
     case 0:
         // VRAM read: prefetch
-        gg_platform_vram_sync();
+        gg_platform_vram_sync_at(gg.vdp.addr);
         gg.vdp.read_buffer = gg_vram[gg.vdp.addr];
         gg.vdp.addr = (gg.vdp.addr + 1) & 0x3FFF;
         break;
