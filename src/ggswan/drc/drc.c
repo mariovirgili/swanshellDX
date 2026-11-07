@@ -106,7 +106,9 @@ static const uint8_t r16x[4] = { X_CX, X_DX, X_BX, X_BP };
 
 /* === Flag state === */
 
-enum { K_AH = 0, K_ADD, K_SUB, K_AND, K_OR, K_INC, K_DEC };
+enum { K_AH = 0, K_ADD, K_SUB, K_AND, K_OR, K_INC, K_DEC, K_CARRY };
+// K_CARRY: x86 CF holds Z80 C, and C is the only flag still read (the
+// others are dead: the liveness analysis says nobody reads them)
 static uint8_t fkind;      // where the flags are (K_AH: in AH)
 static uint8_t cf_valid;   // K_INC / K_DEC: x86 CF holds Z80 C
 static uint8_t hl_es;      // ES is set up for the slot of HL
@@ -128,6 +130,9 @@ static void materialize(void) {
         break;
     case K_OR:
         B(0x9F); B(0x80); B(0xE4); B(0xC5);
+        break;
+    case K_CARRY:
+        B(0x9F);                         // lahf (C; the rest is dead)
         break;
     }
     fkind = K_AH;
@@ -879,7 +884,9 @@ static void decode(uint16_t pc, ins_t *I) {
         case 7:
             switch (y) {
             case 0: case 1: case 2: case 3:                   // RLCA RRCA RLA RRA
-                I->fwrite = FH | FN | FC; I->fread = FS | FZ | FP | (y >= 2 ? FC : 0); return;
+                // (S, Z, P go through unchanged: live after = live before;
+                // emit reads them from AH only when they are live)
+                I->fwrite = FH | FN | FC; I->fread = y >= 2 ? FC : 0; return;
             case 4: I->step = 1; I->fread = FALL; return;     // DAA
             case 5: I->fwrite = FH | FN; I->fread = FS | FZ | FP | FC; return;   // CPL
             case 6: I->fwrite = FH | FN | FC; I->fread = FS | FZ | FP; return;   // SCF
@@ -1083,6 +1090,13 @@ static int emit(int i) {
                     if (fkind == K_AH) B(0x9E);   // sahf: CF = C
                 }
                 B(0xD0); B(0xC0 | (y << 3) | xr);
+                if (!(live_out[i] & (FS | FZ | FP | FH | FN))) {
+                    // only C is read after it (a chain of rotates through
+                    // carry, 16/32-bit shifts): it stays in x86 CF
+                    fkind = K_CARRY; cf_valid = 1;
+                    cyc += 8;
+                    return 1;
+                }
                 B(0x19); B(0xF6);                 // sbb si, si
                 B(0x84); B(0xC0 | (xr << 3) | xr);// test r, r
                 B(0x9F);                          // lahf
@@ -1092,7 +1106,11 @@ static int emit(int i) {
             } else {
                 static const uint8_t sh[8] = { 0, 0, 0, 0, 4, 7, 0, 5 };   // SLA SRA - SRL
                 B(0xD0); B(0xC0 | (sh[y] << 3) | xr);
-                B(0x9F); B(0x80); B(0xE4); B(0xC5);
+                // x86 shl/sar/shr by 1 set S, Z, P, C as the Z80 (H = N
+                // = 0): the flags of an OR, kept in the x86 flags
+                fkind = K_OR; cf_valid = 1;
+                cyc += 8;
+                return 1;
             }
             fkind = K_AH;
             cyc += 8;
@@ -1654,6 +1672,14 @@ static int emit(int i) {
             switch (y) {
             case 0: case 1: case 2: case 3: {
                 static const uint8_t rot[4] = { 0xC0, 0xC8, 0xD0, 0xD8 };   // rol ror rcl rcr al
+                if (!(live_out[i] & (FS | FZ | FP | FH | FN))) {
+                    // only C is read after it: it stays in x86 CF
+                    if (y >= 2) need_cf();
+                    B(0xD0); B(rot[y]);
+                    fkind = K_CARRY; cf_valid = 1;
+                    cyc += 4;
+                    return 1;
+                }
                 need_ah(live);
                 B(0x80); B(0xE4); B(y >= 2 ? 0xC5 : 0xC4);
                 B(0x9E);
