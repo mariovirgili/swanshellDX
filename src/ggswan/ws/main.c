@@ -491,18 +491,35 @@ static void hscroll_write(uint8_t value) {
 #ifndef GGSWAN_HOST
 static void __attribute__((interrupt, assume_ss_data)) line_irq(void) {
     uint8_t i = act_i;
-    if (inportb(WS_DISPLAY_LINE_IRQ_PORT) >= GG_VIEW_H) {
-        // end of the screen: values for the first line of the next one
-        outportb(WS_SCR1_SCRL_X_PORT, act_val[0]);
-        outportb(0x11, act_vy);                       // screen 1 Y scroll
-        i = 1;
-    } else {
-        outportb(WS_SCR1_SCRL_X_PORT, act_val[i]);
-        i++;
+    if (inportb(WS_DISPLAY_LINE_IRQ_PORT) >= GG_VIEW_H)
+        i = 0;   // end of the screen
+    for (;;) {
+        if (i == 0) {
+            // values for the first line of the next screen
+            outportb(WS_SCR1_SCRL_X_PORT, act_val[0]);
+            outportb(0x11, act_vy);                   // screen 1 Y scroll
+            i = 1;
+        } else {
+            outportb(WS_SCR1_SCRL_X_PORT, act_val[i]);
+            i++;
+        }
+        // interrupt on the line before the next split (or the end)
+        uint8_t next = i < act_n ? act_line[i] - 1 : GG_VIEW_H;
+        uint8_t cur = inportb(WS_DISPLAY_LINE_PORT);   // (the line being drawn)
+        if (next > cur || (cur >= GG_VIEW_H && next < GG_VIEW_H)) {
+            act_i = i;
+            outportb(WS_DISPLAY_LINE_IRQ_PORT, next);
+            break;
+        }
+        // late (consecutive splits, Super Monaco GP's road: one a line, and
+        // an interrupt a line late): that line is already being drawn, a
+        // match on it would come only in the next WS frame, the end of the
+        // screen too would be missed and the top of the next frame would
+        // keep the road's scroll (the status bar moving, with garbage).
+        // Its value now.
+        if (next >= GG_VIEW_H)
+            i = 0;
     }
-    act_i = i;
-    // interrupt on the line before each split
-    outportb(WS_DISPLAY_LINE_IRQ_PORT, i < act_n ? act_line[i] - 1 : GG_VIEW_H);
     ws_int_ack(WS_INT_ACK_LINE_MATCH);
 }
 #endif
