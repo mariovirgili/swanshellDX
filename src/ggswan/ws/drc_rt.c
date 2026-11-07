@@ -43,8 +43,8 @@ uint16_t drc_entry[2];   // far pointer used by drc_enter: offset, segment
 #define STUB_NT     0x0180
 #define STUB_OUTI   0x0240   // (OUTD: + DRC_OUTD_DELTA)
 #define STUB_LDI    0x04C0   // (LDD: + DRC_LDD_DELTA)
-#define STUB_HCALL  0x05E0   // helpers called without leaving the block
-#define STUB_CTL    0x0630   // OUT (BFh),A
+#define STUB_HCALL  0x05F0   // helpers called without leaving the block
+#define STUB_CTL    0x0640   // OUT (BFh),A
 #define CACHE_START 0x0700
 // translation buffer in free IRAM (between the font tiles and the mask tile)
 #define BUF_ADDR    0xA600

@@ -110,7 +110,7 @@ typedef struct {
 } drc_env_t;
 
 #define DRC_OUTD_DELTA 0x1C0
-#define DRC_LDD_DELTA 0xB0
+#define DRC_LDD_DELTA 0xC0
 
 typedef struct {
     uint16_t length;       // bytes of x86 code written

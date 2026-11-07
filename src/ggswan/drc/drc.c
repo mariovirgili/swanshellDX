@@ -627,6 +627,9 @@ uint16_t drc_emit_ldi_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
         to_fast[1] = (uint8_t) (rel >> 8);
         B(0x80); B(0xFE); B(0xC0);                   // cmp dh, C0h
         uint8_t *n1 = jcc8(0x72);                    // jb loop (not work RAM)
+        B(0x80); B(0xFE); B(0xE0);                   // cmp dh, E0h
+        uint8_t *n0 = jcc8(0x73);                    // jae loop (mirror, mapper:
+                                                     // DE + k could also wrap)
         B(0x89); B(0xD6);                            // mov si, dx
         B(0x01); B(0xFE);                            // add si, di
         B(0x81); B(0xFE); W(0xE000);                 // cmp si, E000h
@@ -652,7 +655,7 @@ uint16_t drc_emit_ldi_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
         B(0x59);                                     // pop cx
         B(0x29); B(0xC1);                            // sub cx, ax (BC - k)
         B(0xE9); W((uint16_t) (flags - (o + 2)));    // jmp flags
-        land8(n1); land8(n2); land8(n3);
+        land8(n0); land8(n1); land8(n2); land8(n3);
         B(0xE9); W((uint16_t) (loop - (o + 2)));     // jmp loop
     }
     return (uint16_t) (o - o_start);
