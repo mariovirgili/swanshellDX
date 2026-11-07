@@ -797,6 +797,10 @@ static void decode(uint16_t pc, ins_t *I) {
             // LDIR, LDDR to work RAM: native, 64 bytes per turn
             I->term = T_END; I->fwrite = FH | FP | FN; return;
         }
+        if (op == 0xB3 && env->outi_off && !env->no_fast) {
+            // OTIR: the OUTI routine, 64 bytes per turn
+            I->term = T_END; I->fwrite = FALL; return;
+        }
         if (op >= 0xB0 && op <= 0xBB && !(op & 4)) {
             // LDIR, CPIR, INIR, OTIR...: the interpreter runs them between
             // blocks, so that long ones still let interrupts happen
@@ -1296,6 +1300,32 @@ static int emit(int i) {
             helper(DRC_H_STEP);
             fkind = K_AH;
             exit_const(I->pc, 0);
+            return 1;
+        }
+        case 0xB3: {   // OTIR (the OUTI routine, up to 64 per turn)
+            materialize();
+            B(0x89); B(0xCF);                                // mov di, cx
+            B(0xC1); B(0xEF); B(0x08);                       // shr di, 8 (B)
+            B(0x4F);                                         // dec di
+            B(0x83); B(0xFF); B(63);                         // cmp di, 63
+            B(0x72); B(0x03); B(0xBF); W(63);                // jb +3; mov di, 63
+            B(0x47);                                         // inc di (B = 0: 64)
+            B(0x57);                                         // push di (k)
+            B(0xBE); W(I->pc);                               // mov si, pc
+            call_near(env->outi_off);
+            uint8_t *done = jcc8(0x73);                      // jnc done
+            helper(DRC_H_OUTI_RUN);                          // the ones left (CRAM, other ports)
+            land8(done);
+            B(0x5E);                                         // pop si (k)
+            B(0x6B); B(0xF6); B(21);                         // imul si, si, 21
+            B(0x29); B(0x36); W(SA(cycles));                 // sub [cycles], si
+            fkind = K_AH; hl_es = 0;
+            B(0x84); B(0xED);                                // test ch, ch
+            uint8_t *fin = jcc8(0x74);                       // jz fin
+            exit_const(I->pc, 0);                            // more to send
+            land8(fin);
+            B(0x83); B(0x06); W(SA(cycles)); B(5);           // add [cycles], 5 (the last: 16)
+            exit_const(I->pc + 2, 0);
             return 1;
         }
         case 0xA3: case 0xAB: {   // a run of OUTI / OUTD (routine in the stubs)
