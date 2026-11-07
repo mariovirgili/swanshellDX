@@ -575,6 +575,7 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
 
 /* === Sound: SN76489 to WS === */
 
+#include "psg_table.h"
 static const uint8_t __far psg_volume_table[16] = {
     15, 12, 10, 8, 6, 4, 3, 2, 2, 2, 1, 1, 1, 1, 0, 0
 };
@@ -624,7 +625,8 @@ void gg_platform_psg(uint8_t data) {
         else
             psg_tone[ch] = (psg_tone[ch] & 0x00F) | ((data & 0x3F) << 4);
         // 3072000 * tone / (3579545 >> 1): the wave holds two periods
-        outportw(0x80 + ch * 2, -(uint16_t) (((uint32_t) psg_tone[ch] * 1758) >> 10));
+        // (a table: no 32-bit multiplication)
+        outportw(0x80 + ch * 2, -psg_divider[psg_tone[ch]]);
         if (ch == 2 && (psg_noise & 3) == 3)
             psg_noise_freq();
         break;

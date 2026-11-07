@@ -728,6 +728,21 @@ uint8_t drc_no_fast;
 
 uint32_t drc_stat_helper[5], drc_stat_dispatch, drc_stat_nolink;
 static void drc_helper(void) {
+    if (drc_st.op == DRC_H_OUT || drc_st.op == DRC_H_IN) {
+        // ports: they never change the mapping, only the timing plan
+        // (z80_break): no mapper snapshot
+        drc_stat_helper[drc_st.op]++;
+        prof_phase = PROF_HELPER;
+        drc_helper_op();
+        if (z80_break || drc_flush_request)
+            drc_st.fl_off = 1;
+        if (!remapped && z80_break) {
+            remapped = 1;
+            remap_saved = drc_st.cycles;
+            drc_st.cycles = -30000;
+        }
+        return;
+    }
     drc_stat_helper[drc_st.op == DRC_H_WRITE_MAP ? DRC_H_WRITE
                     : drc_st.op >= DRC_H_OUTI_RUN ? DRC_H_OUT : drc_st.op]++;
     prof_phase = drc_st.op == DRC_H_STEP ? PROF_STEP : PROF_HELPER;
