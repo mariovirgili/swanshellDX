@@ -586,12 +586,24 @@ static void hscroll_write(uint8_t value) {
     drc_st.hs_last = value;
 }
 
+// diagnostics (X4 screen, right column): the end-of-screen interrupt's
+// worst lateness and VRAM-write time in lines, and how many per second
+#define WS_LINES 159
+static volatile uint8_t diag_late, diag_commit, diag_ends;
+
 #ifndef GGSWAN_HOST
 static void __attribute__((interrupt, assume_ss_data)) line_irq(void) {
     uint8_t i = act_i;
     uint8_t end = 0;   // (the end of the screen done in this interrupt)
-    if (inportb(WS_DISPLAY_LINE_IRQ_PORT) >= GG_VIEW_H)
+    uint8_t l0 = inportb(WS_DISPLAY_LINE_PORT);
+    if (inportb(WS_DISPLAY_LINE_IRQ_PORT) >= GG_VIEW_H) {
         i = 0;   // end of the screen
+        // (diagnostics: how many lines after line 144 it is served)
+        uint8_t d = l0 >= GG_VIEW_H ? l0 - GG_VIEW_H : l0 + (WS_LINES - GG_VIEW_H);
+        if (d > diag_late)
+            diag_late = d;
+        diag_ends++;
+    }
     for (;;) {
         if (i == 0) {
             // values for the first line of the next screen, first (the
@@ -599,8 +611,15 @@ static void __attribute__((interrupt, assume_ss_data)) line_irq(void) {
             // writes of the frame presented
             outportb(WS_SCR1_SCRL_X_PORT, act_val[0]);
             outportb(0x11, act_vy);                   // screen 1 Y scroll
-            if (pend_start)
+            if (pend_start) {
+                uint8_t c0 = inportb(WS_DISPLAY_LINE_PORT);
                 log_commit_tramp();
+                uint8_t c1 = inportb(WS_DISPLAY_LINE_PORT);
+                // (diagnostics: lines the VRAM writes took)
+                uint8_t dc = c1 >= c0 ? c1 - c0 : c1 + WS_LINES - c0;
+                if (dc > diag_commit)
+                    diag_commit = dc;
+            }
             end = 1;
             i = 1;
         } else {
@@ -1111,6 +1130,15 @@ static void show_fps(uint8_t fps) {
     put_value(17, 0, 'Q', (drc_stat_irq - l_irq) / 100);
     put_hex(17, 24, drc_last_interp_pc);
     put_value(0, 0, 'X', drc_stat_flushes);
+    // right: L how many lines after line 144 the end of the screen was
+    // served at worst, K lines its VRAM writes took at worst, E ends of
+    // the screen served (75 a second expected)
+    put_value(0, 24, 'L', diag_late);
+    put_value(2, 24, 'K', diag_commit);
+    put_value(16, 24, 'E', diag_ends);
+    diag_late = 0;
+    diag_commit = 0;
+    diag_ends = 0;
     l_blocks = drc_stat_blocks; l_disp = drc_stat_dispatch; l_interp = drc_stat_interp; l_irq = drc_stat_irq;
     for (uint8_t i = 0; i < 5; i++) l_help[i] = drc_stat_helper[i];
 }
