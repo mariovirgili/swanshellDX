@@ -839,7 +839,18 @@ uint8_t drc_no_links;
 uint8_t drc_no_fast;
 
 uint32_t drc_stat_helper[5], drc_stat_dispatch, drc_stat_nolink;
+uint16_t drc_stat_op[16];   // helper calls by DRC_H_* (diagnostics)
+uint16_t drc_stat_op_lines[16];   // ...and the WS lines they took
+static void drc_helper_body(void);
 static void drc_helper(void) {
+    uint8_t op = drc_st.op & 15;
+    uint8_t l0 = inportb(WS_DISPLAY_LINE_PORT);
+    drc_helper_body();
+    uint8_t l1 = inportb(WS_DISPLAY_LINE_PORT);
+    drc_stat_op[op]++;
+    drc_stat_op_lines[op] += (uint8_t) (l1 >= l0 ? l1 - l0 : l1 + 159 - l0);
+}
+static void drc_helper_body(void) {
     drc_map_sync();
     if (drc_st.op == DRC_H_SYNC) {
         // deferred tile writes (main.c): nothing else changes. A full log

@@ -376,9 +376,20 @@ static void log_apply_at(uint16_t start, uint16_t end, uint16_t a) {
         p += 3 + n;
     }
 }
+// (VRAM reads in this Game Gear frame: past a few, all of the log at once)
+static uint8_t sync_reads;
 void gg_platform_vram_sync_at(uint16_t a) {
     if (!drc_st.defer)
         return;
+    if (sync_reads >= 16) {
+        // many reads (Sailor Moon S loads with ~250 a frame, Aladdin has
+        // up to 6): scanning the whole log for each one took most of the
+        // time, the screens black for seconds; written now instead, the
+        // log then holds only the writes since
+        gg_platform_vram_sync();
+        return;
+    }
+    sync_reads++;
     uint16_t f = irq_save();
     if (pend_start)
         log_apply_at(pend_start, pend_top, a);
@@ -407,6 +418,7 @@ void gg_platform_vram_sync(void) {
 // screen; the other one fills (if the last one still waits, as when two
 // frames end in one WS frame: written now)
 static void log_present(void) {
+    sync_reads = 0;
     if (!drc_st.defer)
         return;
     uint16_t f = irq_save();
@@ -1399,19 +1411,23 @@ static void show_fps(uint8_t fps) {
         // parts of video_present (below), G Game Gear interrupts taken
         put_value(1, 24, 'K', diag_commit);
         put_value(3, 24, 'M', diag_splits);
-        // WS lines a second (256 cycles each) in video_present: P PSG
-        // queue, R map relayout, L splits and tile log, B backdrop
-        // guess, S sprites, V all of it
-        put_value(5, 24, 'P', vp_lines[VP_PSG]);
-        put_value(7, 24, 'R', vp_lines[VP_MAP]);
-        put_value(9, 24, 'L', vp_lines[VP_LOG]);
-        put_value(11, 24, 'B', vp_lines[VP_BACK]);
+        // WS lines a second (256 cycles each, interrupts included) in the
+        // helpers: O OUT (and OUTI runs), I IN, Y the tile log written for
+        // a VRAM read, U the PSG queue full; in video_present: S sprites,
+        // V all of it
+        put_value(5, 24, 'O', drc_stat_op_lines[DRC_H_OUT] + drc_stat_op_lines[DRC_H_OUTI_RUN]
+                              + drc_stat_op_lines[DRC_H_OUTD_RUN]);
+        put_value(7, 24, 'I', drc_stat_op_lines[DRC_H_IN]);
+        put_value(9, 24, 'Y', drc_stat_op_lines[DRC_H_SYNC]);
+        put_value(11, 24, 'U', drc_stat_op_lines[DRC_H_PSG]);
         put_value(13, 24, 'S', vp_lines[VP_SPR]);
         put_value(15, 24, 'V', vp_lines[VP_ALL]);
         put_value(17, 24, 'G', drc_stat_irq - l_irq);
     }
     for (uint8_t i = 0; i < VP_N; i++)
         vp_lines[i] = 0;
+    for (uint8_t i = 0; i < 16; i++)
+        drc_stat_op[i] = drc_stat_op_lines[i] = 0;
     diag_irq_line = 0;
     diag_fg = 0;
     diag_left = 0;
