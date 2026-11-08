@@ -607,6 +607,31 @@ void gg_platform_line(uint16_t line) {
 
 // A write to the horizontal scroll register: it takes effect from the next
 // line. WS x shows Game Gear picture column x + 16.
+// no room for another split: the one whose value is closest to the split
+// before it is dropped (its lines take that value), so what comes after
+// is still recorded with the least change. Before, the splits after the
+// 24th were dropped: Super Monaco GP II (a road of about 70 lines, each
+// with its value, then its status bar) had the status bar scrolling with
+// the road's last value. (Dropping every other one instead lost too much
+// of Super Monaco GP's road.)
+static void splits_drop_one(void) {
+    uint8_t best = 1, best_d = 0xFF;
+    for (uint8_t i = 1; i < rec_n; i++) {
+        uint8_t d = rec_val[i] - rec_val[i - 1];
+        if ((int8_t) d < 0)
+            d = -d;
+        if (d < best_d) {
+            best_d = d;
+            best = i;
+        }
+    }
+    for (uint8_t i = best; i + 1 < rec_n; i++) {
+        rec_line[i] = rec_line[i + 1];
+        rec_val[i] = rec_val[i + 1];
+    }
+    rec_n--;
+}
+
 static void hscroll_write(uint8_t value) {
     uint8_t v = 16 - value;
     // the same value as the last split: nothing changes (and the line, which
@@ -636,12 +661,12 @@ static void hscroll_write(uint8_t value) {
     drc_st.diag_left = gg_cpu_left ? (int16_t) gg_cpu_left() : (int16_t) z80.cycles;
     if (rec_n > 1 && rec_line[rec_n - 1] == y) {
         rec_val[rec_n - 1] = v;
-    } else if (rec_n < MAX_SPLITS) {
+    } else {
+        if (rec_n >= MAX_SPLITS)
+            splits_drop_one();
         rec_line[rec_n] = y;
         rec_val[rec_n] = v;
         rec_n++;
-    } else {
-        return;
     }
     drc_st.hs_last = value;
 }

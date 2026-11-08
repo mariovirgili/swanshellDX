@@ -749,8 +749,9 @@ static void drc_helper(void) {
     if (drc_st.op == DRC_H_SYNC) {
         // deferred tile writes (main.c): nothing else changes. A full log
         // (the routines' retry): all of it; a VRAM read (prefetch or data
-        // port, at addr): only that address
-        prof_phase = PROF_VIDEO;
+        // port, at addr): only that address. (Profiled as PO, the helpers:
+        // VI is only the end of the frame, video_present)
+        prof_phase = PROF_HELPER;
         if ((uint16_t) (drc_st.log_end - drc_st.log_top) < 260)
             gg_platform_vram_sync();
         else

@@ -869,7 +869,6 @@ uint16_t drc_emit_ctl_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) {
         // deferred tile writes (main.c): written first
         B(0x80); B(0x3E); W(SA(defer)); B(0);        // cmp byte [defer], 0
         uint8_t *nd = jcc8(0x74);                    // je
-        B(0xC6); B(0x06); W(SA(val)); B(3);          // (val: why, for the tests)
         B(0xC6); B(0x06); W(SA(op)); B(DRC_H_SYNC);  // mov byte [op], SYNC
         call_near(e->helper_off);
         land8(nd);
@@ -915,9 +914,12 @@ uint16_t drc_emit_ctl_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) {
         // remap, whose [cycles] = -30000 make it overflow, and the like)
         B(0x80); B(0x3E); W(SA(fl_off)); B(0);       // cmp byte [fl_off], 0
         uint8_t *c1 = jcc8(0x75);                    // jne C
+        // (no room for another split: C, which makes some)
+        B(0x80); B(0x3E); W(SA(rec_n)); B(DRC_MAX_SPLITS);   // cmp byte [rec_n], MAX
+        uint8_t *c0 = jcc8(0x73);                    // jae C
         B(0x83); B(0x3E); W(VA(frame_given) + 2); B(0);   // cmp word [frame_given + 2], 0
         uint8_t *small = jcc8(0x74);                 // je go
-        land8(c1);
+        land8(c1); land8(c0);
         B(0x58);                                     // pop ax
         B(0xF9); B(0xC3);                            // stc; ret (C)
         land8(small);
@@ -974,8 +976,6 @@ uint16_t drc_emit_ctl_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) {
         B(0x88); B(0x94); W(SA(rec_val) - 1);        // mov [si + rec_val - 1], dl (same line)
         uint8_t *last2 = jcc8(0xEB);                 // jmp set_last
         land8(app1); land8(app2);
-        B(0x83); B(0xFE); B(DRC_MAX_SPLITS);         // cmp si, MAX_SPLITS
-        uint8_t *full = jcc8(0x73);                  // jae done (no room)
         B(0x88); B(0x84); W(SA(rec_line));           // mov [si + rec_line], al
         B(0x88); B(0x94); W(SA(rec_val));            // mov [si + rec_val], dl
         B(0xFE); B(0x06); W(SA(rec_n));              // inc byte [rec_n]
@@ -992,7 +992,7 @@ uint16_t drc_emit_ctl_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) {
         land8(last1); land8(last2);
         B(0x8A); B(0x26); W(VA(latch));              // mov ah, [latch] (value)
         B(0x88); B(0x26); W(SA(hs_last));            // mov [hs_last], ah
-        land8(same); land8(mid); land8(full);
+        land8(same); land8(mid);
         B(0x5A);                                     // pop dx
         B(0x58);                                     // pop ax
         B(0xF8); B(0xC3);                            // clc; ret
@@ -2209,7 +2209,6 @@ static int emit(int i) {
                         // deferred tile writes (main.c): written first
                         B(0x80); B(0x3E); W(SA(defer)); B(0);       // cmp byte [defer], 0
                         uint8_t *nd = jcc8(0x74);                   // je
-                        B(0xC6); B(0x06); W(SA(val)); B(4);         // (val: why, for the tests)
                         B(0xC6); B(0x06); W(SA(op)); B(DRC_H_SYNC); // mov byte [op], SYNC
                         call_near(env->helper_off);
                         land8(nd);
