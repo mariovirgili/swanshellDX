@@ -1104,11 +1104,16 @@ uint16_t drc_emit_ctl_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) {
 // blocks), every byte read several times. Reset at each block.
 static const uint8_t GGFAR *rd_ptr;
 static uint16_t rd_base, rd_len;
-static uint8_t rd(uint16_t a) {
+// (a far call each was still 13% of the time on the WS, patch 77: inline,
+// the refill out of line)
+static __attribute__((noinline)) void rd_refill(uint16_t a) {
+    rd_ptr = z80_read_span(a, &rd_len);
+    rd_base = a;
+}
+static inline __attribute__((always_inline)) uint8_t rd(uint16_t a) {
     uint16_t k = a - rd_base;
     if (k >= rd_len) {
-        rd_ptr = z80_read_span(a, &rd_len);
-        rd_base = a;
+        rd_refill(a);
         k = 0;
     }
     return rd_ptr[k];
