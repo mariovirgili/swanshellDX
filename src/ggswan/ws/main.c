@@ -1533,6 +1533,8 @@ int main(void) {
     video_init();
     sound_init();
     gg_init(banks);
+    if (gg_cpu_run == drc_z80_run)
+        drc_rt_rom_banks(banks);
 
     ia16_disable_irq();
     ws_int_set_handler(WS_INT_VBLANK, (ia16_int_handler_t) vblank_irq_entry);

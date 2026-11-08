@@ -358,8 +358,17 @@ static void write_const(uint16_t addr, uint8_t src, uint8_t live) {
         land8(other); land8(diff);
     }
     B(0x88); B(0x06 | (src << 3)); W(SA(val));
+    uint8_t *mapped = 0;
+    uint16_t map_off = addr == 0xFFFE ? env->map1_off : addr == 0xFFFF ? env->map2_off : 0;
+    if (map_off && map_write_safe(addr)) {
+        // another slot's bank (not slot 0, not the block's own): the
+        // routine maps it (drc_rt.c), the C side later; carry: the helper
+        call_near(map_off);
+        mapped = jcc8(0x73);                         // jnc done
+    }
     B(0xC7); B(0x06); W(SA(arg)); W(addr);
     helper(addr >= 0xFFFC && map_write_safe(addr) ? DRC_H_WRITE_MAP : DRC_H_WRITE);
+    land8(mapped);
     land8(same);
 }
 
@@ -2234,6 +2243,14 @@ static int emit(int i) {
                 return 1;
             }
             case 3:   // IN A,(n)
+                if (env->pad_in && (I->nn == 0x00 || I->nn >= 0xC0)) {
+                    // Start, the joypad (and its odd mirrors: FFh), as
+                    // z80_in, from drc_state_t: no helper
+                    if (I->nn & 1) { B(0xB0); B(0xFF); }                 // mov al, FFh
+                    else { B(0xA0); W(SA(keys_in) + (I->nn != 0x00)); }     // mov al, [keys_in + n]
+                    cyc += 11;
+                    return 1;
+                }
                 if (env->ctl_off && I->nn >= 0x01 && I->nn < 0x40) {
                     // fixed values (z80_in): 01 7F, 03 and 05 00, the others FF
                     uint8_t n = I->nn;

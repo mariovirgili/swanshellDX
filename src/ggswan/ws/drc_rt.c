@@ -48,7 +48,8 @@ uint16_t drc_entry[2];   // far pointer used by drc_enter: offset, segment
 #define STUB_HCALL  0x05F0   // helpers called without leaving the block
 #define STUB_LINE   0x0640   // the exits' common part, the line routine
 #define STUB_CTL    0x0800   // OUT (BFh),A
-#define CACHE_START 0x0A40
+#define STUB_MAP    0x0A18   // a bank change of slot 1 or 2 (put_map)
+#define CACHE_START 0x0AA0
 // translation buffer in free IRAM (between the font tiles and the mask tile)
 #define BUF_ADDR    0xA600
 /// DYN L0 cache: 512 direct-mapped entries of 8 bytes in free IRAM (in the
@@ -542,6 +543,88 @@ static uint16_t put_cram(uint8_t *stub, uint16_t at) {
     return (uint16_t) (p - stub);
 }
 
+/*
+ * LD (FFFE),A / LD (FFFF),A from a block outside that slot (drc.c): the
+ * new bank in [val]. The RAM mirror, the block table key, the WS window
+ * (ROM window 1 for slot 1, the RAM window on PSRAM for slot 2: as
+ * main.c's gg_platform_bank, GG_PSRAM_FIRST_BANK 0), the segments of the
+ * generated code; map_pend tells the C side (drc_map_sync: gg.mapper,
+ * gg_slot) to catch up. Slot 2 with the cartridge RAM enabled (keys[0]):
+ * carry set, the helper. A helper each was ~10 a frame in Sonic, ~6 in
+ * Super Monaco GP II (FFFF). Returns the end.
+ */
+static uint16_t put_map(uint8_t *stub, uint16_t at, uint16_t *map2) {
+    uint8_t *p = stub + at;
+    uint16_t a;
+#define PB(x) (*p++ = (x))
+#define PW(x) (a = (x), *p++ = a, *p++ = a >> 8)
+#define S_(f) ((uint16_t) (env.state_addr + offsetof(drc_state_t, f)))
+    for (uint8_t slot = 1; slot <= 2; slot++) {
+        if (slot == 2) {
+            *map2 = (uint16_t) (p - stub);
+            PB(0x80); PB(0x3E); PW(S_(keys)); PB(0);         // cmp byte [keys], 0
+            PB(0x74); PB(0x02);                              // je +2
+            PB(0xF9); PB(0xC3);                              // stc; ret
+        }
+        PB(0x50);                                            // push ax
+        PB(0xA0); PW(S_(val));                               // mov al, [val]
+        PB(0xA2); PW((uint16_t) (0x1FFD + slot + 0xC000 + env.ram_delta));   // mirror
+        PB(0x80); PB(0x0E); PW(S_(map_pend)); PB(slot == 1 ? 4 : 8);   // or byte [map_pend], bit
+        PB(0x22); PB(0x06); PW(S_(rom_mask));                // and al, [rom_mask]
+        PB(0xA2); PW(S_(keys) + 1 + slot);                   // mov [keys + 1 + slot], al
+        PB(0x88); PB(0xC4);                                  // mov ah, al
+        PB(0xC0); PB(0xE8); PB(0x02);                        // shr al, 2
+        PB(0x86); PB(0xE0);                                  // xchg ah, al
+        PB(0x50);                                            // push ax (AH: WS bank)
+        PB(0x24); PB(0x03);                                  // and al, 3
+        PB(0xC0); PB(0xE0); PB(0x02);                        // shl al, 2
+        PB(0x88); PB(0xC4);                                  // mov ah, al
+        PB(0x30); PB(0xC0);                                  // xor al, al (AX: offset / 16)
+        PB(0x05); PW(slot == 1 ? 0x3000 - 0x400 : 0x1000 - 0x800);   // add ax, window - slot
+        PB(0xA3); PW(S_(segtab) + slot * 4);                 // mov [segtab + 2 * slot * 2], ax
+        PB(0xA3); PW(S_(segtab) + slot * 4 + 2);
+        PB(0x58);                                            // pop ax
+        PB(0x88); PB(0xE0);                                  // mov al, ah
+        PB(0x30); PB(0xE4);                                  // xor ah, ah
+        PB(0xE7); PB(slot == 1 ? 0xC3 : 0xC1);               // out C3h / C1h, ax
+        PB(0x58);                                            // pop ax
+        PB(0xF8); PB(0xC3);                                  // clc; ret
+    }
+#undef PB
+#undef PW
+#undef S_
+    return (uint16_t) (p - stub);
+}
+
+// the mapper routines (put_map), once the ROM size is known (gg_init):
+// only with a power of 2 banks (bank % banks as a mask), not with X4
+static uint16_t map2_at;
+void drc_rt_rom_banks(uint16_t b) {
+    drc_st.rom_mask = (uint8_t) (b - 1);
+    if (!drc_no_fast && b && b <= 256 && !(b & (b - 1))
+#ifdef GGSWAN_HOST
+        && !getenv("GGSWAN_NOMAP")
+#endif
+        ) {
+        env.map1_off = STUB_MAP;
+        env.map2_off = map2_at;
+    }
+}
+
+// the C side of the mapper routines' bank changes (put_map): at every
+// return from the generated code to C, before anything reads gg.mapper or
+// gg_slot
+static void drc_map_sync(void) {
+    uint8_t p = drc_st.map_pend;
+    if (!p)
+        return;
+    drc_st.map_pend = 0;
+    if (p & 4)
+        z80_write(0xFFFE, gg_ram[0x1FFE]);
+    if (p & 8)
+        z80_write(0xFFFF, gg_ram[0x1FFF]);
+}
+
 // the block at 0038h (IM 1 interrupts), for the line routine and
 // drc_fast_reentry: drc_st.fast38 (offset, segment: 0 unknown), fast38_bank
 #define fast38_off drc_st.fast38[0]
@@ -584,7 +667,8 @@ void drc_rt_init(uint16_t bank) {
     env.no_fast = drc_no_fast;
     env.cram_off = drc_no_fast ? 0 : STUB_CRAM;   // (X4: CRAM through the helper)
     env.cls_off = drc_no_fast ? 0 : STUB_CLS;
-    env.psg_queue = !drc_no_fast;     // (X4: inline, no deferred tile writes)
+    env.psg_queue = !drc_no_fast;
+    env.pad_in = !drc_no_fast;     // (X4: inline, no deferred tile writes)
     // following JP/JR inside a block is off by default: it breaks the
     // scroll and the status bar of Wonder Boy III on the WonderSwan (not
     // on the PC tests, cause not found) and gained under 1%
@@ -649,6 +733,15 @@ void drc_rt_init(uint16_t bank) {
         (void) l6;
 #endif
         uint16_t cram_end = put_cram(stub, STUB_CRAM);
+        {
+            uint16_t map_end = put_map(stub, STUB_MAP, &map2_at);
+#ifdef GGSWAN_HOST
+            if (STUB_CLS + l6 > STUB_MAP || map_end > CACHE_START) { printf("MAP stub: no room (%X)\n", map_end); exit(1); }
+            if (getenv("GGSWAN_STUBS")) printf("MAP stubs end %X\n", map_end);
+#else
+            (void) map_end;
+#endif
+        }
         env.outi_off = STUB_OUTI;
         uint16_t l1 = drc_emit_run_stub(&env, stub + STUB_OUTI, STUB_OUTI, 0);
         uint16_t l2 = drc_emit_run_stub(&env, stub + STUB_OUTI + DRC_OUTD_DELTA, STUB_OUTI + DRC_OUTD_DELTA, 1);
@@ -747,6 +840,7 @@ uint8_t drc_no_fast;
 
 uint32_t drc_stat_helper[5], drc_stat_dispatch, drc_stat_nolink;
 static void drc_helper(void) {
+    drc_map_sync();
     if (drc_st.op == DRC_H_SYNC) {
         // deferred tile writes (main.c): nothing else changes. A full log
         // (the routines' retry): all of it; a VRAM read (prefetch or data
@@ -809,7 +903,8 @@ void drc_helper_direct(void) {
 
 static void drc_helper_op(void) {
     switch (drc_st.op) {
-    case DRC_H_WRITE: case DRC_H_WRITE_MAP: z80_write(drc_st.arg, drc_st.val); break;
+    case DRC_H_WRITE: case DRC_H_WRITE_MAP:
+        z80_write(drc_st.arg, drc_st.val); break;
     case DRC_H_OUT:
 #ifdef GGSWAN_HOST
         { extern uint32_t hs_out[256]; hs_out[drc_st.arg & 255]++; }
@@ -955,6 +1050,7 @@ static void check_end(uint16_t pc, int16_t used) {
  * anything differs (the dispatcher does it all as usual).
  */
 uint8_t drc_fast_reentry(void) {
+    drc_map_sync();
     if (drc_no_fast || drc_st.reason || drc_st.cycles > 0 || drc_check || z80_break
         || drc_flush_request || drc_st.ram_fail || remapped
         || z80.ei_pending || z80.halted)
@@ -1006,6 +1102,9 @@ int32_t drc_z80_run(int32_t cycles) {
     prof_phase = PROF_DISPATCH;
     z80.cycles += cycles;
     drc_st.nolink = drc_no_links;
+    // IN from 00h and DCh in the generated code (z80_in's values)
+    drc_st.keys_in[0] = ((gg.keys & GG_KEY_START) ? 0x00 : 0x80) | 0x40;
+    drc_st.keys_in[1] = ~(gg.keys & 0x3F);
     for (;;) {
         if (z80.cycles <= 0 || z80_break) {
             // out of cycles, or the timing to plan again (z80_break): the
@@ -1147,6 +1246,7 @@ int32_t drc_z80_run(int32_t cycles) {
             prof_phase = PROF_CODE;
             drc_enter(drc_st.resume);
         }
+        drc_map_sync();
         drc_entry[1] = drc_st.cur_seg;
         uint8_t ram_failed = drc_st.ram_fail;
         if (drc_st.ram_fail) {

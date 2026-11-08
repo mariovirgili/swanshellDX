@@ -49,6 +49,9 @@ class X86:
         self.cb = ctypes.CFUNCTYPE(None, ctypes.c_uint16)(self.run)
         from unicorn import UC_HOOK_INTR
         self.uc.hook_add(UC_HOOK_INTR, self.helper)
+        # OUT in the generated code (the mapper routines: the WS windows)
+        from unicorn import UC_HOOK_INSN
+        self.uc.hook_add(UC_HOOK_INSN, self.port_out, None, 1, 0, UC_X86_INS_OUT)
         lib.sys_set_callback(self.cb)
         self.x86_instr = 0
         self.calls = 0
@@ -72,6 +75,12 @@ class X86:
         if v != self.code_version:
             uc.ctl_flush_tb()
             self.code_version = v
+
+    def port_out(self, uc, port, size, value, ud):
+        for i in range(size):
+            self.ports[(port + i) & 255] = (value >> (8 * i)) & 255
+        if 0xC0 <= port <= 0xCE:
+            self.map_windows()
 
     def map_windows(self):
         p = self.ports

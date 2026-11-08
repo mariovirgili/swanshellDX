@@ -28,6 +28,7 @@ extern uint8_t drc_no_links;
 /// diagnostics (set before drc_rt_init): none of patches 29-32 (line events
 /// in the dispatcher, the fast reentry, rep movsb runs, rotate flags)
 extern uint8_t drc_no_fast;
+void drc_rt_rom_banks(uint16_t banks);   // after gg_init
 /// diagnostics: run every block with the interpreter too, compare
 extern uint8_t drc_check;
 /// main.c: show a difference found by the self-check (does not return)

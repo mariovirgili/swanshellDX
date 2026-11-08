@@ -257,6 +257,7 @@ int sys_init(const char *path, int use_drc, int every_line) {
         gg_cpu_left = drc_cycles_left;
     }
     gg_init(banks);
+    drc_rt_rom_banks(banks);
     return banks;
 }
 static uint8_t fb_end[GG_VIEW_H][GG_VIEW_W][3];

@@ -94,6 +94,11 @@ typedef struct {
     uint16_t log_last;    // address (word), length (byte), the bytes
     uint16_t psg_n;       // main.c: PSG writes queued by OUT (n),A (ports
     uint8_t psg_q[DRC_PSG_Q];   // 40-7F), written at the end of the frame
+    uint8_t keys_in[2];   // drc_rt.c: IN from port 00h (Start) and DCh (the
+                          // joypad), as z80_in: the keys change between frames
+    uint8_t rom_mask;     // drc_rt.c: ROM banks - 1 (a power of 2), for the
+    uint8_t map_pend;     // mapper routines; bits 2, 3: FFFE, FFFF written by
+                          // them, the C side (gg.mapper, gg_slot) not yet
     uint16_t diag_fg;     // diagnostics: at the last scroll split recorded,
     int16_t diag_left;    // frame_given (low word) and the cycles left
 } drc_state_t;
@@ -134,6 +139,9 @@ typedef struct {
     uint16_t ram_blocks;   // translate code in work RAM too (runtime)
     uint16_t cram_off;     // routine for a byte to CRAM (val; 0: the helper)
     uint16_t cls_off;      // routine for a VRAM byte outside tile data (0: inline)
+    uint8_t pad_in;        // IN from 00h and C0h-FFh: drc_state_t keys_in (0: helper)
+    uint16_t map1_off;     // routines for a bank change of slot 1 (FFFE) and
+    uint16_t map2_off;     // slot 2 (FFFF), [val] the bank (0: the helper)
     uint8_t psg_queue;     // OUT (n),A to the PSG: queued in drc_state_t
     uint8_t no_trace;      // diagnostics: do not follow JP nn / JR e in a block
     uint8_t no_inline;     // diagnostics: do not inline CALLed routines
