@@ -839,6 +839,11 @@ static uint8_t spr_back = 1;   // the table to build next: 1 sprite_table_b
 #ifdef GGSWAN_HOST
 uint32_t host_spr_builds, host_relayouts, host_backdrops;
 #endif
+#ifdef GGSWAN_NILEDBG
+#include "niledbg.h"
+NILEDBG_API_TABLE;   // (filled in by niledebug's injector)
+#endif
+
 #ifndef GGSWAN_HOST
 uint8_t spr_par[4], spr_cnt;   // (spr_build's)
 uint8_t *spr_build(const uint8_t *sat, uint8_t *table);
@@ -1582,6 +1587,13 @@ int main(void) {
         prof_phase = PROF_OTHER;
         read_keys();
         gg_run_frame();   // (video_present at its line 193)
+#ifdef GGSWAN_NILEDBG
+        // niledebug (USB debugger, build with NILEDBG=1, inject with
+        // --hook-offset none --pow read): the link served here, once a
+        // frame, where nothing else uses the cartridge's SPI (the VBlank
+        // hook does not fit: vblank_irq's CS is not the bank's)
+        niledbg_poll();
+#endif
         frames++;
         // frames per second, in the left border (the WS shows 75.47 Hz)
         if (vblanks >= 75) {

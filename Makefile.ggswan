@@ -11,6 +11,10 @@ NAME		:= ggswan
 INCLUDEDIRS	:= src/ggswan/core src/ggswan/ws
 SOURCEDIRS	:= src/ggswan/core src/ggswan/drc src/ggswan/ws
 DEFINES		:= -DLIBWS_USE_EXTBANK
+# make ... NILEDBG=1: the niledebug USB debugger's poll in the frame loop
+ifeq ($(NILEDBG),1)
+DEFINES		+= -DGGSWAN_NILEDBG
+endif
 
 LIBNILE_PATH	?= vendor/libnile
 LIBS		:= -lnilefs -lnile -lwsx -lws
