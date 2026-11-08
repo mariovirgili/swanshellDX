@@ -1413,7 +1413,10 @@ static void show_fps(uint8_t fps) {
     put_value(17, 0, 'Q', (drc_stat_irq - l_irq) / 100);
     put_value(0, 0, 'X', drc_stat_flushes);
     if (!diag_mode) {
-        put_hex(17, 24, drc_last_interp_pc);
+        // the last block translated, when there were some in the last
+        // second (which code keeps being translated), else the last pc
+        // interpreted
+        put_hex(17, 24, drc_stat_blocks != l_blocks ? drc_last_tr_pc : drc_last_interp_pc);
     } else {
         // the right column instead of the profile (Y4 held at the start),
         // one value a row: K lines the VRAM writes took at the end of the

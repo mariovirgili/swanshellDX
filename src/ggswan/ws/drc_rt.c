@@ -85,6 +85,7 @@ static drc_env_t env;
 uint32_t drc_stat_blocks, drc_stat_flushes, drc_stat_interp, drc_stat_irq;
 uint16_t drc_diag_irq_line;   // (diagnostics: the line of the last interrupt taken in C)
 uint16_t drc_last_interp_pc;
+uint16_t drc_last_tr_pc;   // (diagnostics: the last block translated)
 /// far address of drc_helper_tramp (drc_asm.s fills it in), called by the
 /// HCALL stub
 uint16_t drc_tramp[2];
@@ -781,6 +782,7 @@ static inline uint16_t hash(uint16_t pc, uint8_t bank) {
 
 static uint16_t translate(uint16_t pc, uint8_t bank, uint16_t h) {
     prof_phase = PROF_TRANSLATE;
+    drc_last_tr_pc = pc;
     if (cache_top > 0xFFF0 - BUF_SIZE) {
         // this bank is full: the next one, or start again
         if (++cache_bank < DRC_CODE_BANKS)

@@ -22,6 +22,7 @@ extern uint16_t drc_entry[2];
 extern uint32_t drc_stat_blocks, drc_stat_flushes, drc_stat_interp, drc_stat_irq;
 /// last instruction interpreted outside interrupts (RAM, not translatable)
 extern uint16_t drc_last_interp_pc;
+extern uint16_t drc_last_tr_pc;
 extern uint32_t drc_stat_helper[5], drc_stat_dispatch, drc_stat_nolink;
 /// diagnostics: do not link blocks
 extern uint8_t drc_no_links;
