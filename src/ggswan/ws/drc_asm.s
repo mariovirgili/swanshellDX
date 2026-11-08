@@ -110,7 +110,72 @@ drc_helper_tramp:
     iret
     .endm
 
-    IRQ_ENTRY line_irq_entry, line_irq
+    IRQ_ENTRY line_irq_full, line_irq
+
+    // void line_irq_entry(void): the line interrupt.
+    //
+    // A split inside the picture (most of them: Super Monaco GP's road has
+    // one a line): its scroll value, then the next ones that are already
+    // due, then the interrupt line of the next, here with three registers
+    // saved; patch 64's entry saved them all and called C for each, too
+    // slow for a split a line (the status bar below the road drawn late).
+    // The end of the screen, or splits late into the bottom border: the C
+    // handler (line_irq, through line_irq_full). As line_irq: act_line,
+    // act_val, act_n, act_i (main.c); ports 02h line, 03h interrupt line,
+    // 10h screen 1 X scroll, B6h interrupt acknowledge (line match: 10h).
+    .global line_irq_entry
+line_irq_entry:
+    push ax
+    push si
+    push ds
+    push ss
+    pop ds
+    in al, 0x03
+    cmp al, 144
+    jae .Lirq_full              // the end of the screen
+    xor ah, ah
+    mov al, byte ptr [act_i]
+    test al, al
+    jz .Lirq_full               // (no split started yet)
+    mov si, ax
+.Lirq_split:
+    mov al, byte ptr [act_val + si]
+    out 0x10, al
+    inc si
+    mov ax, si
+    cmp al, byte ptr [act_n]
+    jae .Lirq_last
+    mov al, byte ptr [act_line + si]
+    dec al                      // the line before the split
+    cmp al, 144
+    jbe .Lirq_next
+.Lirq_last:
+    mov al, 144                 // no more: the end of the screen
+.Lirq_next:
+    mov ah, al
+    in al, 0x02                 // the line being drawn
+    cmp al, 144
+    jae .Lirq_late              // late into the border: C
+    cmp ah, al
+    jbe .Lirq_split             // already due: its value now
+    mov al, ah
+    out 0x03, al
+    mov ax, si
+    mov byte ptr [act_i], al
+    mov al, 0x10
+    out 0xB6, al
+    pop ds
+    pop si
+    pop ax
+    iret
+.Lirq_late:
+    mov ax, si
+    mov byte ptr [act_i], al
+.Lirq_full:
+    pop ds
+    pop si
+    pop ax
+    jmp line_irq_full
     IRQ_ENTRY vblank_irq_entry, vblank_irq
 
     // void log_copy(void);
@@ -153,4 +218,159 @@ log_copy:
     pop es
     pop di
     pop si
+    IA16_RET
+
+    // uint8_t *spr_build(const uint8_t *sat, uint8_t *table): the WS
+    // sprite table from the Game Gear's (main.c build_sprites, which
+    // computes spr_par: the tile bank byte, 8x16 or not, the X offset, the
+    // hidden rows). The same as the C loop it replaces, there ~35 cycles a
+    // sprite (Sailor Moon S: 9 lines a frame). Returns the end of the
+    // table. GG_VIEW_X/Y/W/H: 48, 24, 160, 144.
+    //   spr_par: +0 tile bank byte, +1 8x16, +2 X offset + 48 - 32,
+    //            +3 hidden rows (113 - sprite height)
+    .global spr_build
+spr_build:
+    push bx
+    push cx
+    push si
+    push di
+    push bp
+    mov si, ax                  // Y bytes
+    mov di, dx                  // the table
+    lea bp, [si + 0x80]         // X, tile pairs (SS = DS)
+    lea bx, [di + 127 * 4]      // (room for 127 WS sprites)
+    mov cx, word ptr [spr_par]  // CL tile bank, CH 8x16
+    mov dx, word ptr [spr_par + 2]  // DL X offset, DH hidden rows
+    mov byte ptr [spr_cnt], 64
+.Lspr_loop:
+    cmp di, bx
+    jae .Lspr_done
+    lodsb                       // y
+    cmp al, 0xD0
+    je .Lspr_done
+    add al, 1 - 24              // the WS row
+    mov ah, al
+    sub ah, 144
+    cmp ah, dh
+    jb .Lspr_skip               // outside the 144 rows
+    mov ah, byte ptr [bp]
+    sub ah, dl                  // the WS column
+    push ax
+    sub ah, 32 + 160
+    cmp ah, 89
+    pop ax
+    jb .Lspr_skip               // outside the 160 columns
+    test ch, ch
+    jnz .Lspr_tall
+    mov ch, byte ptr [bp + 1]   // tile
+    mov byte ptr [di], ch
+    xor ch, ch
+    mov byte ptr [di + 1], cl
+    mov word ptr [di + 2], ax   // row, column
+    add di, 4
+    jmp .Lspr_skip
+.Lspr_tall:
+    mov ch, byte ptr [bp + 1]
+    and ch, 0xFE
+    mov byte ptr [di], ch
+    or ch, 1
+    mov byte ptr [di + 4], ch
+    mov ch, 1
+    mov byte ptr [di + 1], cl
+    mov byte ptr [di + 5], cl
+    mov word ptr [di + 2], ax
+    add al, 8
+    mov word ptr [di + 6], ax
+    add di, 8
+.Lspr_skip:
+    add bp, 2
+    dec byte ptr [spr_cnt]
+    jnz .Lspr_loop
+.Lspr_done:
+    mov ax, di
+    pop bp
+    pop di
+    pop si
+    pop cx
+    pop bx
+    IA16_RET
+
+    // void psg_run(const uint8_t *q, uint8_t n): n (1-255) writes to the
+    // SN76489, into psg_st (main.c: latch, noise, dirty, -, vol[4],
+    // tone[3]); the same as main.c's psg_apply on each, there ~45 cycles a
+    // write (Sailor Moon S: a sample through the volume, hundreds a frame).
+    .global psg_run
+psg_run:
+    push bx
+    push cx
+    push si
+    push di
+    mov si, ax
+    mov di, dx
+    and di, 0xFF
+    mov ah, byte ptr [psg_st]       // the latched register
+    mov ch, byte ptr [psg_st + 2]   // dirty
+.Lpsg_loop:
+    lodsb
+    test al, al
+    jns .Lpsg_data
+    mov ah, al                  // a latch byte
+.Lpsg_data:
+    mov bl, ah
+    shr bl, 5
+    and bx, 3                   // the channel
+    test ah, 0x10
+    jz .Lpsg_tone
+    and al, 0x0F                // volume
+    mov byte ptr [psg_st + 4 + bx], al
+    mov cl, bl
+    mov al, 1
+    shl al, cl
+    or ch, al
+    jmp .Lpsg_next
+.Lpsg_tone:
+    cmp bl, 3
+    je .Lpsg_noise
+    shl bx, 1
+    test al, al
+    js .Lpsg_low
+    and ax, 0xFF3F              // (AH, the latch, kept)
+    push ax
+    xor ah, ah
+    shl ax, 4                   // bits 4-9
+    and word ptr [psg_st + 8 + bx], 0x000F
+    or word ptr [psg_st + 8 + bx], ax
+    pop ax
+    jmp .Lpsg_tone_dirty
+.Lpsg_low:
+    and al, 0x0F                // bits 0-3
+    and word ptr [psg_st + 8 + bx], 0x03F0
+    or byte ptr [psg_st + 8 + bx], al
+.Lpsg_tone_dirty:
+    shr bx, 1
+    mov cl, bl
+    mov al, 0x10
+    shl al, cl
+    or ch, al
+    cmp bl, 2
+    jne .Lpsg_next
+    mov al, byte ptr [psg_st + 1]
+    and al, 3
+    cmp al, 3
+    jne .Lpsg_next
+    or ch, 0x80                 // the noise follows tone 2
+    jmp .Lpsg_next
+.Lpsg_noise:
+    and al, 7
+    mov byte ptr [psg_st + 1], al
+    or ch, 0x80
+.Lpsg_next:
+    dec di
+    jnz .Lpsg_loop
+    mov byte ptr [psg_st], ah
+    mov byte ptr [psg_st + 2], ch
+    pop di
+    pop si
+    pop cx
+    pop bx
     IA16_RET

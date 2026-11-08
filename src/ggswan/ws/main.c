@@ -479,11 +479,12 @@ uint8_t gg_platform_vram_defer(uint16_t a, uint8_t value) {
         gg_platform_vram_sync();   // full: written now, then again
     }
 }
-GGSWAN_HOST_VISIBLE volatile uint8_t act_line[MAX_SPLITS], act_val[MAX_SPLITS], act_n = 1;
+// (not static: the line interrupt's fast path in drc_asm.s reads them)
+volatile uint8_t act_line[MAX_SPLITS], act_val[MAX_SPLITS], act_n = 1;
 // screen 1 Y scroll for the next WS frame (set by the line interrupt at the
 // end of the screen, like act_val[0]: no tear while the WS draws)
 static volatile uint8_t act_vy;
-static volatile uint8_t act_i;
+volatile uint8_t act_i;
 // a Game Gear frame presented (video_present) and not shown yet: the line
 // interrupt at the end of the WS screen clears it
 static volatile uint8_t frame_waiting;
@@ -817,6 +818,10 @@ static uint8_t spr_back = 1;   // the table to build next: 1 sprite_table_b
 #ifdef GGSWAN_HOST
 uint32_t host_spr_builds, host_relayouts, host_backdrops;
 #endif
+#ifndef GGSWAN_HOST
+uint8_t spr_par[4], spr_cnt;   // (spr_build's)
+uint8_t *spr_build(const uint8_t *sat, uint8_t *table);
+#endif
 static void build_sprites(void) {
 #ifdef GGSWAN_HOST
     host_spr_builds++;
@@ -836,6 +841,14 @@ static void build_sprites(void) {
     // could be copied by the WS (line 144) half old, half new: Aladdin's
     // pieces of trousers away from his legs, for a frame now and then.
     uint8_t *table = spr_back ? sprite_table_b : sprite_table;
+#ifndef GGSWAN_HOST
+    // (the loop below in assembly: drc_asm.s)
+    spr_par[0] = tbase >> 8;
+    spr_par[1] = tall;
+    spr_par[2] = xoff + (GG_VIEW_X - 32);
+    spr_par[3] = hide_y;
+    uint8_t *s = spr_build(sat, table);
+#else
     uint8_t *s = table, *end = table + 127 * 4;
     for (uint8_t i = 0; i < 64 && s < end; i++) {
         uint8_t y = sat[i];
@@ -860,6 +873,7 @@ static void build_sprites(void) {
             s += 4;
         }
     }
+#endif
     uint16_t f = irq_save();
     outportb(0x04, (IRAM_OFF(table) >> 9) & 0x3F);
     outportb(0x05, 0);        // first sprite
@@ -1013,15 +1027,28 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
 /* === Sound: SN76489 to WS === */
 
 #include "psg_table.h"
-static const uint8_t __far psg_volume_table[16] = {
+static const uint8_t psg_volume_table[16] = {
     15, 12, 10, 8, 6, 4, 3, 2, 2, 2, 1, 1, 1, 1, 0, 0
 };
-static uint8_t psg_latch, psg_noise, psg_stereo = 0xFF;
-static uint8_t psg_vol[4];
-static uint16_t psg_tone[3];
+// the SN76489's state (psg_run in drc_asm.s writes it too: the layout is
+// fixed): the latched register, the noise control, the WS registers to
+// update (psg_dirty: bits 0-3 volume of channel, 4-6 tone, 7 noise), the
+// volumes (as written: 0 loudest, 15 off), the tones
+struct psg_state {
+    uint8_t latch, noise, dirty, pad;
+    uint8_t vol[4];
+    uint16_t tone[3];
+};
+GGSWAN_HOST_VISIBLE struct psg_state psg_st;
+#define psg_latch psg_st.latch
+#define psg_noise psg_st.noise
+#define psg_dirty psg_st.dirty
+#define psg_vol psg_st.vol
+#define psg_tone psg_st.tone
+static uint8_t psg_stereo = 0xFF;
 
 static void psg_volume(uint8_t ch) {
-    outportb(0x88 + ch, psg_vol[ch] * ((psg_stereo >> ch) & 0x11));
+    outportb(0x88 + ch, psg_volume_table[psg_vol[ch]] * ((psg_stereo >> ch) & 0x11));
 }
 
 static void psg_noise_freq(void) {
@@ -1038,9 +1065,7 @@ static void psg_noise_freq(void) {
     outportb(WS_SOUND_CH_CTRL_PORT, (psg_noise & 4) ? 0x8F : 0x0F);
 }
 
-// one write to the SN76489: its state only; psg_dirty says which WS
-// registers to update (bits 0-3 volume of channel, 4-6 tone, 7 noise)
-static uint8_t psg_dirty;
+// one write to the SN76489: its state only (psg_dirty: what to output)
 static void psg_apply(uint8_t data) {
     uint8_t target;
     if (data & 0x80) {
@@ -1052,7 +1077,7 @@ static void psg_apply(uint8_t data) {
     uint8_t ch = (target >> 5) & 3;
     switch ((target >> 4) & 7) {
     case 1: case 3: case 5: case 7:
-        psg_vol[ch] = psg_volume_table[data & 0x0F];
+        psg_vol[ch] = data & 0x0F;
         psg_dirty |= 1 << ch;
         break;
     case 6:
@@ -1090,13 +1115,20 @@ static void psg_output(void) {
 // the writes the recompiler queued (OUT (n),A to ports 40-7F), in order,
 // then the WS registers once: a sample played through the volume (Sailor
 // Moon S, hundreds of writes a frame) costs a C loop, not a helper each
+#ifndef GGSWAN_HOST
+void psg_run(const uint8_t *q, uint8_t n);   // (drc_asm.s)
+#endif
 void gg_platform_psg_flush(void) {
     uint8_t n = (uint8_t) drc_st.psg_n;
     if (!n)
         return;
     drc_st.psg_n = 0;
+#ifndef GGSWAN_HOST
+    psg_run(drc_st.psg_q, n);   // (the loop below in assembly)
+#else
     for (uint8_t i = 0; i < n; i++)
         psg_apply(drc_st.psg_q[i]);
+#endif
     psg_output();
 }
 
@@ -1120,8 +1152,10 @@ GGSWAN_HOST_VISIBLE void sound_init(void) {
             wave_table[ch * 16 + i] = (i & 4) ? 0xFF : 0x00;
     for (uint8_t i = 0; i < 16; i++)
         wave_table[48 + i] = (i & 7) ? 0x00 : 0x0F;
-    for (uint8_t ch = 0; ch < 4; ch++)
+    for (uint8_t ch = 0; ch < 4; ch++) {
+        psg_vol[ch] = 15;   // (off)
         outportb(0x88 + ch, 0);
+    }
     outportb(WS_SOUND_CH_CTRL_PORT, 0x0F);
     outportb(WS_SOUND_OUT_CTRL_PORT, WS_SOUND_OUT_CTRL_HEADPHONE_ENABLE
         | WS_SOUND_OUT_CTRL_SPEAKER_ENABLE | WS_SOUND_OUT_CTRL_SPEAKER_VOLUME_100);
