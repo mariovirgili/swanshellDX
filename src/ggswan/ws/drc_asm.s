@@ -110,72 +110,11 @@ drc_helper_tramp:
     iret
     .endm
 
-    IRQ_ENTRY line_irq_full, line_irq
-
-    // void line_irq_entry(void): the line interrupt.
-    //
-    // A split inside the picture (most of them: Super Monaco GP's road has
-    // one a line): its scroll value, then the next ones that are already
-    // due, then the interrupt line of the next, here with three registers
-    // saved; patch 64's entry saved them all and called C for each, too
-    // slow for a split a line (the status bar below the road drawn late).
-    // The end of the screen, or splits late into the bottom border: the C
-    // handler (line_irq, through line_irq_full). As line_irq: act_line,
-    // act_val, act_n, act_i (main.c); ports 02h line, 03h interrupt line,
-    // 10h screen 1 X scroll, B6h interrupt acknowledge (line match: 10h).
-    .global line_irq_entry
-line_irq_entry:
-    push ax
-    push si
-    push ds
-    push ss
-    pop ds
-    in al, 0x03
-    cmp al, 144
-    jae .Lirq_full              // the end of the screen
-    xor ah, ah
-    mov al, byte ptr [act_i]
-    test al, al
-    jz .Lirq_full               // (no split started yet)
-    mov si, ax
-.Lirq_split:
-    mov al, byte ptr [act_val + si]
-    out 0x10, al
-    inc si
-    mov ax, si
-    cmp al, byte ptr [act_n]
-    jae .Lirq_last
-    mov al, byte ptr [act_line + si]
-    dec al                      // the line before the split
-    cmp al, 144
-    jbe .Lirq_next
-.Lirq_last:
-    mov al, 144                 // no more: the end of the screen
-.Lirq_next:
-    mov ah, al
-    in al, 0x02                 // the line being drawn
-    cmp al, 144
-    jae .Lirq_late              // late into the border: C
-    cmp ah, al
-    jbe .Lirq_split             // already due: its value now
-    mov al, ah
-    out 0x03, al
-    mov ax, si
-    mov byte ptr [act_i], al
-    mov al, 0x10
-    out 0xB6, al
-    pop ds
-    pop si
-    pop ax
-    iret
-.Lirq_late:
-    mov ax, si
-    mov byte ptr [act_i], al
-.Lirq_full:
-    pop ds
-    pop si
-    pop ax
-    jmp line_irq_full
+    // (line_irq_entry: patch 71 served the splits inside the picture with
+    // a short path in assembly, without C; Super Monaco GP II got worse on
+    // the emulator, the whole picture flickering now and then: back to the
+    // full entry for every line interrupt)
+    IRQ_ENTRY line_irq_entry, line_irq
     IRQ_ENTRY vblank_irq_entry, vblank_irq
 
     // void log_copy(void);

@@ -479,12 +479,11 @@ uint8_t gg_platform_vram_defer(uint16_t a, uint8_t value) {
         gg_platform_vram_sync();   // full: written now, then again
     }
 }
-// (not static: the line interrupt's fast path in drc_asm.s reads them)
-volatile uint8_t act_line[MAX_SPLITS], act_val[MAX_SPLITS], act_n = 1;
+GGSWAN_HOST_VISIBLE volatile uint8_t act_line[MAX_SPLITS], act_val[MAX_SPLITS], act_n = 1;
 // screen 1 Y scroll for the next WS frame (set by the line interrupt at the
 // end of the screen, like act_val[0]: no tear while the WS draws)
 static volatile uint8_t act_vy;
-volatile uint8_t act_i;
+static volatile uint8_t act_i;
 // a Game Gear frame presented (video_present) and not shown yet: the line
 // interrupt at the end of the WS screen clears it
 static volatile uint8_t frame_waiting;
