@@ -56,7 +56,10 @@
 
 // PSRAM: Game Gear ROM in banks 0.. (64 KiB each); see wfconfig.toml
 #define GG_PSRAM_FIRST_BANK 0
-#define GG_ROM_MAX (512UL * 1024)
+// 1 MiB, the largest Game Gear ROMs: the loader writes them through the
+// RAM window, whose bank mask (set in main) covers 16 banks of 64 KiB;
+// the code cache must sit above the ROM's banks (checked in main)
+#define GG_ROM_MAX (1024UL * 1024)
 
 #define TILE_PTR(t) IRAM(TILE_ADDR(t))
 
@@ -1515,7 +1518,9 @@ int main(void) {
         uint16_t code_bank = (((uint16_t) inportb(0xC0 /* linear bank */) << 4)
             | (DRC_CODE_SEG >> 12)) & (old_mask & NILE_SEG_MASK_ROM_MASK);
         text_hex("CODE BANK", code_bank);
-        if (code_bank < GG_PSRAM_FIRST_BANK + 8)
+        // the ROM takes 64 KiB banks from GG_PSRAM_FIRST_BANK up: the code
+        // cache (segments 4000h-A000h) must start above them
+        if (code_bank < GG_PSRAM_FIRST_BANK + ((banks + 3) >> 2))
             fail("CODE BANK", code_bank);
         // X4 (X left) held: diagnostics, the recompiler without patches
         // 29-32 (see drc_rt.h)
