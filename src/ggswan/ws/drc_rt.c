@@ -41,14 +41,14 @@ uint16_t drc_entry[2];   // far pointer used by drc_enter: offset, segment
 #define STUB_HELPER 0x0020
 #define STUB_DYN    0x0040
 #define STUB_NT     0x0180
-#define STUB_CLS    0x0969   // a VRAM byte outside tile data (drc.c)
+#define STUB_CLS    0x0980   // a VRAM byte outside tile data (drc.c)
 #define STUB_CRAM   0x01E0   // a byte to CRAM
 #define STUB_OUTI   0x0240   // (OUTD: + DRC_OUTD_DELTA)
 #define STUB_LDI    0x04C0   // (LDD: + DRC_LDD_DELTA)
 #define STUB_HCALL  0x05F0   // helpers called without leaving the block
 #define STUB_LINE   0x0640   // the exits' common part, the line routine
 #define STUB_CTL    0x0800   // OUT (BFh),A
-#define CACHE_START 0x0A00
+#define CACHE_START 0x0A40
 // translation buffer in free IRAM (between the font tiles and the mask tile)
 #define BUF_ADDR    0xA600
 /// DYN L0 cache: 512 direct-mapped entries of 8 bytes in free IRAM (in the
@@ -707,6 +707,7 @@ static uint16_t translate(uint16_t pc, uint8_t bank, uint16_t h) {
     drc_stat_blocks++;
 #ifdef GGSWAN_HOST
     host_translated(pc, r.length, r.z80_instr);
+    if (getenv("GGSWAN_TRLOG")) printf("TRBLK %u %u %u %u\n", (unsigned) ((DRC_CODE_SEG + cache_bank * 0x1000u) * 16u + off), (unsigned) r.z80_instr, (unsigned) r.length, (unsigned) gg.frame);
 #endif
     return off;
 }

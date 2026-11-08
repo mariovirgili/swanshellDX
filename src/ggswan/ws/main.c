@@ -681,6 +681,18 @@ static uint16_t diag_irq_line, diag_vbl_pc, diag_fg;
 static int16_t diag_left;
 static uint8_t diag_vbl_st;
 static bool diag_mode;   // Y4 (Y left) held at the start: the right column
+// diagnostics: WS lines spent per second in parts of video_present (PSG
+// queue, map relayout, splits and tile log, backdrop guess, sprites, all)
+enum { VP_PSG, VP_MAP, VP_LOG, VP_BACK, VP_SPR, VP_ALL, VP_N };
+static uint16_t vp_lines[VP_N];
+static uint8_t vp_mark;
+static inline uint8_t vp_lap(uint8_t part) {
+    uint8_t l = inportb(WS_DISPLAY_LINE_PORT);
+    uint8_t d = l >= vp_mark ? l - vp_mark : l + WS_LINES - vp_mark;
+    vp_lines[part] += d;
+    vp_mark = l;
+    return d;
+}
 extern uint16_t drc_diag_irq_line, gg_diag_vbl_pc;
 extern uint8_t gg_diag_vbl_st;
 
@@ -931,7 +943,10 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
 #endif
     prof_phase = PROF_VIDEO;
     const uint8_t *reg = gg.vdp.reg;
+    uint8_t vp_start = inportb(WS_DISPLAY_LINE_PORT);
+    vp_mark = vp_start;
     gg_platform_psg_flush();   // (the frame's PSG writes, queued)
+    vp_lap(VP_PSG);
 
     // vertical: the Game Gear view starts at row (24 + vscroll) mod 224
     uint16_t s = (GG_VIEW_Y + gg.vdp.vscroll_frame) % 224;
@@ -961,6 +976,7 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
 #ifdef GGSWAN_HOST
     outportb(0x11, act_vy);   // (the PC tests have no WS raster)
 #endif
+    vp_lap(VP_MAP);
     // this frame's VRAM writes: at the end of the WS screen, with the
     // scroll (splits_commit) and the sprites (the WS copies them there)
     log_present();
@@ -969,11 +985,14 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
     rec_val[0] = 16 - gg.vdp.reg[8];
     rec_n = 1;
     drc_st.hs_last = gg.vdp.reg[8];
+    vp_lap(VP_LOG);
     if (!(gg.frame & 7))
         update_backdrop();
+    vp_lap(VP_BACK);
 
     if (drc_st.sprites_dirty)
         build_sprites();
+    vp_lap(VP_SPR);
 
     // display on: at the start of the frame or now (games such as Sonic
     // turn it off in the frame interrupt while they fill the VRAM, and on
@@ -986,6 +1005,8 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
         outportb(0x00, 0x02 | 0x10 | 0x20);
     }
     frame_waiting = 1;
+    vp_mark = vp_start;
+    vp_lap(VP_ALL);
     prof_phase = PROF_OTHER;
 }
 
@@ -1341,23 +1362,23 @@ static void show_fps(uint8_t fps) {
     } else {
         // the right column instead of the profile (Y4 held at the start),
         // one value a row: K lines the VRAM writes took at the end of the
-        // screen, M most scroll values in a frame (1: no splits), Y the
-        // first split's line, G Game Gear interrupts taken; from the last
-        // frame with a split: A the Game Gear line of the last interrupt
-        // taken in C, then (hex) frame_given (low word) and the cycles left
-        // when the split was recorded, the Z80 PC when the frame interrupt
-        // was requested, and its state (IFF1 1, halted 2, just after EI 4)
-        // with VDP register 0
+        // screen, M most scroll values in a frame (1: no splits), the
+        // parts of video_present (below), G Game Gear interrupts taken
         put_value(1, 24, 'K', diag_commit);
         put_value(3, 24, 'M', diag_splits);
-        put_value(5, 24, 'Y', diag_split_line);
-        put_value(7, 24, 'G', drc_stat_irq - l_irq);
-        put_value(9, 24, 'A', diag_irq_line);
-        put_hex(11, 24, diag_fg);
-        put_hex(13, 24, (uint16_t) diag_left);
-        put_hex(15, 24, diag_vbl_pc);
-        put_hex(17, 24, (diag_vbl_st << 8) | (diag_regs >> 8));
+        // WS lines a second (256 cycles each) in video_present: P PSG
+        // queue, R map relayout, L splits and tile log, B backdrop
+        // guess, S sprites, V all of it
+        put_value(5, 24, 'P', vp_lines[VP_PSG]);
+        put_value(7, 24, 'R', vp_lines[VP_MAP]);
+        put_value(9, 24, 'L', vp_lines[VP_LOG]);
+        put_value(11, 24, 'B', vp_lines[VP_BACK]);
+        put_value(13, 24, 'S', vp_lines[VP_SPR]);
+        put_value(15, 24, 'V', vp_lines[VP_ALL]);
+        put_value(17, 24, 'G', drc_stat_irq - l_irq);
     }
+    for (uint8_t i = 0; i < VP_N; i++)
+        vp_lines[i] = 0;
     diag_irq_line = 0;
     diag_fg = 0;
     diag_left = 0;

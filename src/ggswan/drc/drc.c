@@ -338,9 +338,29 @@ static void write_const(uint16_t addr, uint8_t src, uint8_t live) {
         return;
     }
     clobber(live);
+    uint8_t *same = 0;
+    if (addr >= 0xFFFD && env->psg_queue) {
+        // a bank register written with the bank it maps already (a
+        // quarter of the mapper writes in Super Monaco GP II, Aladdin,
+        // Shinobi): the RAM mirror only, no helper. drc_st.keys[1..3]: the
+        // banks of slots 0-2 (as mapped, % ROM banks: a value past the ROM
+        // takes the helper); slot 2 only while it is ROM (keys[0] == 0)
+        uint8_t k = addr - 0xFFFC;
+        uint8_t *other = 0;
+        if (k == 3) {
+            B(0x80); B(0x3E); W(SA(keys)); B(0);     // cmp byte [keys], 0
+            other = jcc8(0x75);                      // jne helper
+        }
+        B(0x3A); B(0x06 | (src << 3)); W(SA(keys) + k);   // cmp r8, [keys + k]
+        uint8_t *diff = jcc8(0x75);                  // jne helper
+        B(0x88); B(0x06 | (src << 3)); W((addr & 0x1FFF) + 0xC000 + env->ram_delta);   // mirror
+        same = jcc8(0xEB);                           // jmp done
+        land8(other); land8(diff);
+    }
     B(0x88); B(0x06 | (src << 3)); W(SA(val));
     B(0xC7); B(0x06); W(SA(arg)); W(addr);
     helper(addr >= 0xFFFC && map_write_safe(addr) ? DRC_H_WRITE_MAP : DRC_H_WRITE);
+    land8(same);
 }
 
 // Read a byte from a constant address into an 8-bit register
@@ -887,13 +907,32 @@ uint16_t drc_emit_ctl_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) {
     land8(regw);
     B(0x89); B(0xC6);                                // mov si, ax
     B(0x83); B(0xE6); B(0x0F);                       // and si, 0Fh
-    B(0x83); B(0xFE); B(0x08);                       // cmp si, 8
-    B(0x75); B((uint8_t) (slow - (o + 1)));          // jne slow
     B(0x50);                                         // push ax
     B(0x8A); B(0x26); W(VA(latch));                  // mov ah, [latch]
+    B(0x83); B(0xFE); B(0x08);                       // cmp si, 8
+    uint8_t *r8 = jcc8(0x74);                        // je reg8
+    // another register with the value it has: nothing to do but the latch
+    // (registers 0, 9, 10 are written again with the same value a few
+    // times a frame by Aladdin, the Monaco games: a helper each before)
+    B(0x83); B(0xFE); B(0x0B);                       // cmp si, 11
+    uint8_t *ns1 = jcc8(0x73);                       // jae notsame
+    B(0x3A); B(0xA4); W(VA(reg));                    // cmp ah, [si + reg]
+    uint8_t *ns2 = jcc8(0x75);                       // jne notsame
+    uint8_t *same_r = jcc8(0xEB);                    // jmp same
+    land8(ns1); land8(ns2);
+    B(0x58);                                         // pop ax
+    {
+        int16_t back = (int16_t) (slow - (o + 2));
+#ifdef GGSWAN_HOST
+        if (back < -128) { extern void abort(void); abort(); }
+#endif
+        B(0xEB); B((uint8_t) back);                  // jmp slow
+    }
+    land8(r8);
     B(0x3A); B(0x26); W(SA(hs_last));                // cmp ah, [hs_last]
     uint8_t *diff = jcc8(0x75);                      // jne differ
     B(0x88); B(0x26); W(VA(reg) + 8);                // mov [reg + 8], ah
+    land8(same_r);
     B(0x88); B(0x26); W(VA(addr));                   // mov [addr], ah
     B(0x88); B(0xC4);                                // mov ah, al
     B(0x80); B(0xE4); B(0x3F);                       // and ah, 3Fh
