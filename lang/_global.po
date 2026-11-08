@@ -1,5 +1,5 @@
 msgid "NAME"
-msgstr "SwanShell"
+msgstr "SwanShellDX"
 
 msgid "NAME_COPYRIGHT"
 msgstr "(c) 2026 Adrian \"asie\" Siekierka"
