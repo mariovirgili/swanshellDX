@@ -588,7 +588,11 @@ static uint16_t put_map(uint8_t *stub, uint16_t at, uint16_t *map2) {
         PB(0x58);                                            // pop ax
         PB(0x88); PB(0xE0);                                  // mov al, ah
         PB(0x30); PB(0xE4);                                  // xor ah, ah
-        PB(0xE7); PB(slot == 1 ? 0xC3 : 0xC1);               // out C3h / C1h, ax
+        // out ROM1 / RAM bank port, ax (16 bits: D4h / D0h on the WS;
+        // patch 74 wrote C3h / C1h, the PC tests' ports, which on the WS
+        // are the 8-bit ports and also wrote C4h / C2h: ROM0, slot 0's
+        // window, set to 0 at each slot 2 change)
+        PB(0xE7); PB(slot == 1 ? WS_CART_EXTBANK_ROM1_PORT : WS_CART_EXTBANK_RAM_PORT);
         PB(0x58);                                            // pop ax
         PB(0xF8); PB(0xC3);                                  // clc; ret
     }

@@ -1,0 +1,195 @@
+#!/usr/bin/env python3
+"""Runs the WS build of the plugin (build/ggswan.elf) in Unicorn, from main(),
+with a Game Gear ROM: the SD card calls (f_mount, f_open, f_read, f_close)
+answered here, the ports and the cartridge windows emulated simply (no
+interrupts: a HLT counts as a vertical blank). Prints, every N frames, the
+estimated V30MZ cycles by profiler phase (prof_phase: AL CD DI PO ST IN TR
+VI ID) and the Z80 addresses translated.
+usage: wsrun.py build/ggswan.elf rom.gg frames [every] [keys "frame:hex,..."]
+Cycles: a rough estimate, for comparing."""
+import sys, bisect, collections
+from elftools.elf.elffile import ELFFile
+from unicorn import *
+from unicorn.x86_const import *
+import capstone
+
+ELF, ROM, FRAMES = sys.argv[1], sys.argv[2], int(sys.argv[3])
+EVERY = int(sys.argv[4]) if len(sys.argv) > 4 else 60
+KEYS = dict((int(k.split(':')[0]), int(k.split(':')[1], 16)) for k in sys.argv[5].split(',')) if len(sys.argv) > 5 and sys.argv[5] else {}
+f = ELFFile(open(ELF, 'rb'))
+import ctypes
+uc = Uc(UC_ARCH_X86, UC_MODE_16)
+# memory: internal RAM, the three cartridge windows (RAM C1, ROM0 C2, ROM1
+# C3: PSRAM or SRAM banks) and the linear area 40000h-FFFFFh (PSRAM banks
+# (C0 << 4) | segment: C0 = 1 here, so the code cache banks are 20-25 and
+# the plugin itself 30-31), all sharing the same bank buffers
+psram = [ctypes.create_string_buffer(0x10000) for _ in range(32)]
+sram = [ctypes.create_string_buffer(0x10000) for _ in range(8)]
+iram = ctypes.create_string_buffer(0x10000)
+uc.mem_map_ptr(0, 0x10000, 7, ctypes.addressof(iram))
+uc.mem_map_ptr(0x100000, 0x10000, 7, ctypes.addressof(iram))   # (the 20-bit wrap: FC00:C000 is 0:8000)
+LIN = 1
+for seg in range(4, 16):
+    uc.mem_map_ptr(seg << 16, 0x10000, 7, ctypes.addressof(psram[(LIN << 4 | seg) & 31]))
+for s in f.iter_sections():
+    if s['sh_flags'] & 2 and s['sh_size'] and s['sh_type'] == 'SHT_PROGBITS':
+        uc.mem_write(s['sh_addr'] & 0xFFFFF, s.data())
+syms, funcs = {}, []
+for y in f.get_section_by_name('.symtab').iter_symbols():
+    a = y['st_value'] & 0xFFFFF
+    syms.setdefault(y.name, a)
+    if y['st_info']['type'] == 'STT_FUNC' and y['st_size']:
+        funcs.append((a, a + y['st_size'], y.name))
+funcs.sort(); starts = [x[0] for x in funcs]
+def fname(a):
+    i = bisect.bisect_right(starts, a) - 1
+    return funcs[i][2] if i >= 0 and funcs[i][0] <= a < funcs[i][1] else '?%05X' % a
+
+rom = open(ROM, 'rb').read()
+for i in range(0, len(rom), 0x10000):
+    d = rom[i:i + 0x10000]; ctypes.memmove(psram[i >> 16], d, len(d))
+path = b'GAME.GG\0'
+for b in sram: ctypes.memmove(ctypes.addressof(b) + 0xE0, path, len(path))
+ports = bytearray(256)
+ports[0xC0] = LIN
+win = {}
+def set_win(base, buf):
+    if win.get(base) is buf: return
+    if base in win: uc.mem_unmap(base, 0x10000)
+    uc.mem_map_ptr(base, 0x10000, 7, ctypes.addressof(buf)); win[base] = buf
+bank = {'ram': 0, 'rom0': 0, 'rom1': 0}
+def remap():
+    set_win(0x10000, psram[bank['ram'] & 31] if ports[0xCE] & 1 else sram[bank['ram'] & 7])
+    set_win(0x20000, psram[bank['rom0'] & 31])
+    set_win(0x30000, psram[bank['rom1'] & 31])
+    uc.ctl_flush_tb()   # (code written through the RAM window: the linear area sees it)
+remap()
+
+md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_16)
+cost_cache = {}
+def cost(code):
+    c = cost_cache.get(code)
+    if c is not None: return c
+    try: i = next(md.disasm(code, 0)); m, ops = i.mnemonic, i.op_str
+    except StopIteration: m, ops = '?', ''
+    c = 1 + ops.count('[')
+    if m == 'lcall' or (m == 'call' and ':' in ops): c = 10
+    elif m == 'call': c = 5
+    elif m in ('retf', 'lret', 'iret'): c = 8
+    elif m == 'ret': c = 5
+    elif m.startswith('j') or m.startswith('loop'): c = 3
+    elif m in ('push', 'pop'): c = 2 + ops.count('[')
+    elif m in ('div', 'idiv'): c = 16
+    elif m in ('mul', 'imul'): c = 3
+    elif m in ('in', 'out'): c = 6
+    cost_cache[code] = c
+    return c
+
+st = {'cyc': 0, 'frame': 0}
+PH = 'AL CD DI PO ST IN TR VI ID'.split()
+ph_c = collections.Counter(); fn_c = collections.Counter(); tr_pcs = collections.Counter()
+PROF = syms['prof_phase']
+def h_in(uc, port, size, ud):
+    if port == 0x02: return (st['cyc'] // 256) % 159
+    if port == 0xB5: return 0
+    if port == 0xE4: return 0xFFFF
+    if port == 0xA0: return 0x86   # (Color)   # (nileswan: segment mask)
+    return ports[port] if size == 1 else ports[port] | ports[port + 1] << 8
+BANKPORT = {0xC1: 'ram', 0xC2: 'rom0', 0xC3: 'rom1', 0xD0: 'ram', 0xD2: 'rom0', 0xD4: 'rom1'}
+def h_out(uc, port, size, value, ud):
+    for i in range(size):
+        p = (port + i) & 255; v = (value >> (8 * i)) & 255
+        ports[p] = v
+        if p in (0xC1, 0xC2, 0xC3, 0xD0, 0xD2, 0xD4):
+            bank[BANKPORT[p]] = (bank[BANKPORT[p]] & 0xFF00) | v
+        elif p in (0xD1, 0xD3, 0xD5):
+            k = BANKPORT[p - 1]; bank[k] = (bank[k] & 0xFF) | v << 8
+    if 0xC0 <= port <= 0xD5: remap()
+uc.hook_add(UC_HOOK_INSN, h_in, None, 1, 0, UC_X86_INS_IN)
+uc.hook_add(UC_HOOK_INSN, h_out, None, 1, 0, UC_X86_INS_OUT)
+
+def retf(pop=0):
+    sp = uc.reg_read(UC_X86_REG_SP)
+    ip, cs = int.from_bytes(uc.mem_read(sp, 2), 'little'), int.from_bytes(uc.mem_read(sp + 2, 2), 'little')
+    uc.reg_write(UC_X86_REG_SP, sp + 4 + pop)
+    uc.reg_write(UC_X86_REG_CS, cs); uc.reg_write(UC_X86_REG_IP, ip)
+rom_pos = [0]
+def sd(name):
+    ax = uc.reg_read(UC_X86_REG_AX)
+    if name == 'f_open':
+        uc.mem_write(ax + 0xA, len(rom).to_bytes(4, 'little')); rom_pos[0] = 0
+    elif name == 'f_read':
+        # (fp AX, buff DX, btr and br on the stack: the callee pops them)
+        buf = uc.reg_read(UC_X86_REG_DX)
+        sp = uc.reg_read(UC_X86_REG_SP)
+        n = int.from_bytes(uc.mem_read(sp + 4, 2), 'little')
+        brp = int.from_bytes(uc.mem_read(sp + 6, 2), 'little')
+        d = rom[rom_pos[0]:rom_pos[0] + n]; rom_pos[0] += len(d)
+        uc.mem_write(buf, d); uc.mem_write(brp, len(d).to_bytes(2, 'little'))
+        uc.reg_write(UC_X86_REG_AX, 0); retf(4); return
+    uc.reg_write(UC_X86_REG_AX, 0); retf()
+SD = {syms[n]: n for n in ('f_mount', 'f_open', 'f_read', 'f_close')}
+FAIL, FRAME, TRANS = syms['fail'], syms['gg_run_frame'], syms['drc_translate']
+KEYSYM = syms['gg'] + 0   # (gg.keys: found below)
+
+trail = collections.deque(maxlen=40)
+def h_code(uc, addr, size, ud):
+    n = fname(addr)
+    if n[0] == '?': n = '?%03X' % (addr >> 8)
+    if not trail or trail[-1][0] != n: trail.append([n, addr])
+    else: trail[-1][1] = addr
+    if addr in SD:
+        sd(SD[addr]); return
+    if addr == FAIL:
+        ax, dx, cx = (uc.reg_read(r) for r in (UC_X86_REG_AX, UC_X86_REG_DX, UC_X86_REG_CX))
+        txt = bytes(uc.mem_read((dx << 4) + ax, 16)).split(b'\0')[0]
+        raise SystemExit('fail(%r, %04X)' % (txt, cx))
+    if addr == TRANS:
+        tr_pcs[uc.reg_read(UC_X86_REG_DX)] += 1
+    if addr == FRAME:
+        st['frame'] += 1
+        fr = st['frame']
+        if fr in KEYS: pending_keys[0] = KEYS[fr]
+        if fr % EVERY == 0: report(fr)
+        if fr >= FRAMES: uc.emu_stop()
+    c = cost(bytes(uc.mem_read(addr, size)))
+    st['cyc'] += c
+    ph_c[uc.mem_read(PROF, 1)[0]] += c
+    fn_c[fname(addr)] += c
+uc.hook_add(UC_HOOK_CODE, h_code)
+pending_keys = [0]
+
+def report(fr):
+    tot = sum(v for k, v in ph_c.items() if k != 8) or 1
+    print('frames %d-%d: %s' % (fr - EVERY + 1, fr, ' '.join('%s%02d' % (PH[k], 100 * v // tot) for k, v in sorted(ph_c.items()) if k != 8)))
+    print('   translated %d: %s' % (sum(tr_pcs.values()), ' '.join('%04X%s' % (p, '' if n == 1 else 'x%d' % n) for p, n in tr_pcs.most_common(12))))
+    print('   ' + ', '.join('%s %d%%' % (n, 100 * c // tot) for n, c in fn_c.most_common(10)))
+    ph_c.clear(); fn_c.clear(); tr_pcs.clear()
+    sys.stdout.flush()
+
+# a HLT: an interrupt would come (vertical blank: frame credit; the end of
+# the WS screen: the frame shown)
+FC, FW, VB = syms['frame_credit'], syms['frame_waiting'], syms['vblanks']
+cs, ip = syms['_start'] >> 4, syms['_start'] & 15   # (crt0: stack 0000:4000, data)
+uc.mem_write(0x3EFC, b'\0\0\0\0')
+uc.reg_write(UC_X86_REG_SS, 0); uc.reg_write(UC_X86_REG_SP, 0x3EFC)
+uc.reg_write(UC_X86_REG_DS, 0); uc.reg_write(UC_X86_REG_ES, 0)
+uc.reg_write(UC_X86_REG_CS, cs)
+start = (cs << 4) + ip
+while st['frame'] < FRAMES:
+    try:
+        uc.emu_start(start, 0xFFFFFFFF)
+    except UcError as e:
+        cs = uc.reg_read(UC_X86_REG_CS); ip = uc.reg_read(UC_X86_REG_IP)
+        raise SystemExit('%s at %04X:%04X (%s) frame %d; trail %s' % (e, cs, ip, fname((cs << 4) + ip), st['frame'], ' '.join('%s@%05X' % (n, a) for n, a in trail)))
+    if st['frame'] >= FRAMES: break
+    cs = uc.reg_read(UC_X86_REG_CS); ip = uc.reg_read(UC_X86_REG_IP)
+    a = (cs << 4) + ip
+    if uc.mem_read(a - 1, 1)[0] == 0xF4:   # HLT
+        uc.mem_write(FC, (7547 * 2).to_bytes(2, 'little'))
+        uc.mem_write(FW, b'\0')
+        uc.mem_write(VB, bytes([(uc.mem_read(VB, 1)[0] + 1) & 255]))
+        st['cyc'] += 256 * 8
+        start = a
+        continue
+    raise SystemExit('stopped at %04X:%04X (%s)' % (cs, ip, fname(a)))
