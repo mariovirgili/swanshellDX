@@ -58,6 +58,23 @@ uint8_t z80_read(uint16_t a) {
     return gg_slot[a >> 14][a & 0x3FFF];
 }
 
+// for the translator (drc.c): the bytes z80_read gives from a on, up to
+// the end of what one pointer covers (*len bytes, at least 1)
+const uint8_t GGFAR *z80_read_span(uint16_t a, uint16_t *len) {
+    if (a >= 0xC000) {
+        *len = 0x2000 - (a & 0x1FFF);
+        return gg_ram + (a & 0x1FFF);
+    }
+    if (a < 0x0400) {
+        *len = 0x0400 - a;
+        return rom_first_kb + a;
+    }
+    *len = 0x4000 - (a & 0x3FFF);
+    if (a >= 0x8000 && cart_ram)
+        return cart_ram + (a & 0x3FFF);
+    return gg_slot[a >> 14] + (a & 0x3FFF);
+}
+
 void z80_write(uint16_t a, uint8_t v) {
     if (a >= 0xC000) {
         gg_ram[a & 0x1FFF] = v;

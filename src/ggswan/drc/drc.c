@@ -1098,7 +1098,21 @@ uint16_t drc_emit_ctl_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) {
 
 /* === Decoder === */
 
-static uint8_t rd(uint16_t a) { return z80_read(a); }
+// the Z80 bytes, as z80_read: through a pointer kept for the span it
+// covers (z80_read_span), not a far call each. On the WS z80_read was 13-17%
+// of the translation time (the device build run in Unicorn, Shinobi's
+// blocks), every byte read several times. Reset at each block.
+static const uint8_t GGFAR *rd_ptr;
+static uint16_t rd_base, rd_len;
+static uint8_t rd(uint16_t a) {
+    uint16_t k = a - rd_base;
+    if (k >= rd_len) {
+        rd_ptr = z80_read_span(a, &rd_len);
+        rd_base = a;
+        k = 0;
+    }
+    return rd_ptr[k];
+}
 
 static int is_cond_true_flag(uint8_t cc) {
     static const uint8_t m[4] = { FZ, FC, FP, FS };
@@ -2504,6 +2518,7 @@ static void ram_check(uint16_t pc, uint16_t end) {
 int drc_translate(const drc_env_t *e, uint16_t pc, uint8_t *out,
                   uint16_t out_off, uint16_t out_max, drc_result_t *res) {
     env = e;
+    rd_len = 0;   // (the mapping may have changed since the last block)
     // code in work RAM (C000-DFFF): short blocks that check their own bytes
     // when entered (see ram_check)
     uint8_t ram = pc >= 0xC000;

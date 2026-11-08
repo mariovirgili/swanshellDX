@@ -112,6 +112,8 @@ void host_translated(uint16_t pc, uint16_t len, uint16_t n) {
         gen[bk][pc] = cur;
     }
     tr_bytes += len; tr_instr += n; tr_count++;
+    // (the block list for wsprof.py, which profiles the WS build's translator)
+    if (getenv("GGSWAN_BLK")) printf("BLK %04X %u %u %u\n", pc, gg.mapper[1 + (pc >> 14)], len, n);
     static uint8_t seen[64][8192];
     uint8_t bk = gg.mapper[1 + (pc >> 14)] & 63;
     if (!(seen[bk][pc >> 3] & (1 << (pc & 7)))) { seen[bk][pc >> 3] |= 1 << (pc & 7); tr_unique++; tr_unique_bytes += len; }

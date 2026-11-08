@@ -77,6 +77,7 @@ extern uint8_t *gg_vram;
 #define gg_cram gg.vdp.cram
 // the three 16 KiB ROM slots ($0000, $4000, $8000)
 extern const uint8_t GGFAR *gg_slot[3];
+const uint8_t GGFAR *z80_read_span(uint16_t a, uint16_t *len);
 
 /* Provided by the platform */
 
