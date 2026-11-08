@@ -49,7 +49,8 @@ uint16_t drc_entry[2];   // far pointer used by drc_enter: offset, segment
 #define STUB_LINE   0x0640   // the exits' common part, the line routine
 #define STUB_CTL    0x0800   // OUT (BFh),A
 #define STUB_MAP    0x0A18   // a bank change of slot 1 or 2 (put_map)
-#define CACHE_START 0x0AA0
+#define STUB_VCNT   0x0A90   // IN A,(7Eh) (drc_emit_vcnt_stub)
+#define CACHE_START 0x0AE0
 // translation buffer in free IRAM (between the font tiles and the mask tile)
 #define BUF_ADDR    0xA600
 /// DYN L0 cache: 512 direct-mapped entries of 8 bytes in free IRAM (in the
@@ -736,11 +737,19 @@ void drc_rt_init(uint16_t bank) {
         {
             uint16_t map_end = put_map(stub, STUB_MAP, &map2_at);
 #ifdef GGSWAN_HOST
-            if (STUB_CLS + l6 > STUB_MAP || map_end > CACHE_START) { printf("MAP stub: no room (%X)\n", map_end); exit(1); }
+            if (STUB_CLS + l6 > STUB_MAP || map_end > STUB_VCNT) { printf("MAP stub: no room (%X)\n", map_end); exit(1); }
             if (getenv("GGSWAN_STUBS")) printf("MAP stubs end %X\n", map_end);
 #else
             (void) map_end;
 #endif
+            uint16_t l7 = drc_emit_vcnt_stub(&env, stub + STUB_VCNT, STUB_VCNT);
+#ifdef GGSWAN_HOST
+            if (STUB_VCNT + l7 > CACHE_START) { printf("VCNT stub: no room (%X)\n", l7); exit(1); }
+#else
+            (void) l7;
+#endif
+            if (!drc_no_fast)
+                env.vcnt_off = STUB_VCNT;
         }
         env.outi_off = STUB_OUTI;
         uint16_t l1 = drc_emit_run_stub(&env, stub + STUB_OUTI, STUB_OUTI, 0);

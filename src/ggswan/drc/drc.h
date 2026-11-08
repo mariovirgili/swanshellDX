@@ -140,6 +140,7 @@ typedef struct {
     uint16_t cram_off;     // routine for a byte to CRAM (val; 0: the helper)
     uint16_t cls_off;      // routine for a VRAM byte outside tile data (0: inline)
     uint8_t pad_in;        // IN from 00h and C0h-FFh: drc_state_t keys_in (0: helper)
+    uint16_t vcnt_off;     // routine for IN A,(7Eh) (drc_emit_vcnt_stub; 0: helper)
     uint16_t map1_off;     // routines for a bank change of slot 1 (FFFE) and
     uint16_t map2_off;     // slot 2 (FFFF), [val] the bank (0: the helper)
     uint8_t psg_queue;     // OUT (n),A to the PSG: queued in drc_state_t
@@ -172,6 +173,7 @@ uint16_t drc_emit_ldi_stub(const drc_env_t *env, uint8_t *out, uint16_t out_off,
 
 /// Write the routine for OUT (BFh),A; returns its length
 uint16_t drc_emit_ctl_stub(const drc_env_t *env, uint8_t *out, uint16_t out_off);
+uint16_t drc_emit_vcnt_stub(const drc_env_t *env, uint8_t *out, uint16_t out_off);
 
 int drc_translate(const drc_env_t *env, uint16_t pc, uint8_t *out,
                   uint16_t out_off, uint16_t out_max, drc_result_t *res);

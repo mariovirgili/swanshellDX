@@ -376,17 +376,22 @@ static void log_apply_at(uint16_t start, uint16_t end, uint16_t a) {
         p += 3 + n;
     }
 }
-// (VRAM reads in this Game Gear frame: past a few, all of the log at once)
-static uint8_t sync_reads;
+// (VRAM reads in this Game Gear frame: past a few, no more deferring in it)
+static uint8_t sync_reads, defer_paused;
 void gg_platform_vram_sync_at(uint16_t a) {
     if (!drc_st.defer)
         return;
     if (sync_reads >= 16) {
         // many reads (Sailor Moon S loads with ~250 a frame, Aladdin has
         // up to 6): scanning the whole log for each one took most of the
-        // time, the screens black for seconds; written now instead, the
-        // log then holds only the writes since
+        // time, the screens black for seconds. All of it written now, and
+        // the tile writes go straight to VRAM until the end of the frame
+        // (log_present), so the reads need no helper (patch 75 wrote the
+        // log each time: still ~1000 lines a second in the helper)
         gg_platform_vram_sync();
+        drc_st.defer = 0;
+        vram_class_update();
+        defer_paused = 1;
         return;
     }
     sync_reads++;
@@ -419,6 +424,11 @@ void gg_platform_vram_sync(void) {
 // frames end in one WS frame: written now)
 static void log_present(void) {
     sync_reads = 0;
+    if (defer_paused) {
+        defer_paused = 0;
+        drc_st.defer = 1;
+        vram_class_update();
+    }
     if (!drc_st.defer)
         return;
     uint16_t f = irq_save();

@@ -866,6 +866,52 @@ uint16_t drc_emit_ldi_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
  * prefetch). Register writes (code 2): CF = 1, the caller uses the helper.
  * Uses SI; AL, AH kept.
  */
+/*
+ * IN A,(7Eh) (the V counter; and its even mirrors 40h-7Eh): AL = the
+ * counter as z80_in (gg_current_line: frame position / 228, at most 261;
+ * past DAh, 6 less), the position as the CTL routine finds it (frame_given
+ * - left_base - [cycles]); AH and the others kept. CF = 1: not plain (as
+ * there: fl_off, frame_given past 16 bits), the caller uses the helper.
+ * Sailor Moon S's loading screens read it ~100 times a frame.
+ */
+uint16_t drc_emit_vcnt_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) {
+    env = e;
+    o = o_start = out; o_base = out_off;
+    B(0x80); B(0x3E); W(SA(fl_off)); B(0);           // cmp byte [fl_off], 0
+    uint8_t *c1 = jcc8(0x75);                        // jne C
+    B(0x83); B(0x3E); W(VA(frame_given) + 2); B(0);  // cmp word [frame_given + 2], 0
+    uint8_t *go = jcc8(0x74);                        // je go
+    land8(c1);
+    B(0xF9); B(0xC3);                                // stc; ret
+    land8(go);
+    B(0x52); B(0x57); B(0x50);                       // push dx, di, ax
+    B(0x8B); B(0x3E); W(SA(left_base));              // mov di, [left_base]
+    B(0x03); B(0x3E); W(SA(cycles));                 // add di, [cycles] (left)
+    B(0xA1); W(VA(frame_given));                     // mov ax, [frame_given]
+    B(0x85); B(0xFF);                                // test di, di
+    B(0x7E); B(0x08);                                // jle +8 (sub)
+    B(0x39); B(0xC7);                                // cmp di, ax
+    B(0x76); B(0x04);                                // jbe +4 (sub)
+    B(0x31); B(0xC0);                                // xor ax, ax
+    B(0xEB); B(0x02);                                // jmp +2
+    B(0x29); B(0xF8);                                // sub ax, di (pos)
+    B(0x31); B(0xD2);                                // xor dx, dx
+    B(0xBF); W(GG_CYCLES_PER_LINE);                  // mov di, 228
+    B(0xF7); B(0xF7);                                // div di (ax = line)
+    B(0x3D); W(GG_LINES - 1);                        // cmp ax, 261
+    B(0x76); B(0x03);                                // jbe +3
+    B(0xB8); W(GG_LINES - 1);                        // mov ax, 261
+    B(0x3D); W(0xDA);                                // cmp ax, DAh
+    B(0x76); B(0x03);                                // jbe +3
+    B(0x2D); W(6);                                   // sub ax, 6
+    B(0x88); B(0xC2);                                // mov dl, al
+    B(0x58);                                         // pop ax
+    B(0x88); B(0xD0);                                // mov al, dl
+    B(0x5F); B(0x5A);                                // pop di, dx
+    B(0xF8); B(0xC3);                                // clc; ret
+    return (uint16_t) (o - o_start);
+}
+
 uint16_t drc_emit_ctl_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) {
     env = e;
     o = o_start = out; o_base = out_off;
@@ -2259,6 +2305,22 @@ static int emit(int i) {
                     return 1;
                 }
                 clobber(live);
+                if (env->vcnt_off && (I->nn & 0xC0) == 0x40) {
+                    // (after clobber: the routine's DIV and compares)
+                    if (I->nn & 1) {
+                        B(0xB0); B(0x80);                    // H counter: mov al, 80h (z80_in)
+                    } else {
+                        // the V counter: the routine, or the helper
+                        call_near(env->vcnt_off);
+                        uint8_t *ok = jcc8(0x73);            // jnc done
+                        B(0xC7); B(0x06); W(SA(arg)); W(I->nn);
+                        helper(DRC_H_IN);
+                        B(0xA0); W(SA(val));                 // mov al, [val]
+                        land8(ok);
+                    }
+                    cyc += 11;
+                    return 1;
+                }
                 if (env->vdp_addr && env->ctl_off && (I->nn & 0xC1) == 0x80) {
                     // VDP data port: the prefetched byte, prefetch the next
                     if (env->cls_off) {
