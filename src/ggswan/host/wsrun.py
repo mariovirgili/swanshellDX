@@ -144,26 +144,44 @@ def h_code(uc, addr, size, ud):
         ax, dx, cx = (uc.reg_read(r) for r in (UC_X86_REG_AX, UC_X86_REG_DX, UC_X86_REG_CX))
         txt = bytes(uc.mem_read((dx << 4) + ax, 16)).split(b'\0')[0]
         raise SystemExit('fail(%r, %04X)' % (txt, cx))
+    if addr in COUNT_AT: counts[COUNT_AT[addr]] += 1
     if addr == TRANS:
         tr_pcs[uc.reg_read(UC_X86_REG_DX)] += 1
     if addr == FRAME:
         st['frame'] += 1
         fr = st['frame']
         if fr in KEYS: pending_keys[0] = KEYS[fr]
+        uc.mem_write(syms['gg'] + 0x6A, bytes([pending_keys[0]]))   # gg.keys (read_keys: none here)
         if fr % EVERY == 0: report(fr)
         if fr >= FRAMES: uc.emu_stop()
     c = cost(bytes(uc.mem_read(addr, size)))
     st['cyc'] += c
-    ph_c[uc.mem_read(PROF, 1)[0]] += c
+    ph = uc.mem_read(PROF, 1)[0]
+    ph_c[ph] += c
+    if ph == 2: di_c[fname(addr)] += c
     fn_c[fname(addr)] += c
+    if FOCUS and fname(addr) == FOCUS: focus_c[addr] += c
 uc.hook_add(UC_HOOK_CODE, h_code)
 pending_keys = [0]
+import os
+FOCUS = os.environ.get('WSRUN_FOCUS'); focus_c = collections.Counter()
+COUNT_AT = {syms[n]: n for n in ('drc_enter', 'event_step', 'drc_fast_reentry', 'drc_helper', 'gg_line_event', 'z80_step') if n in syms}
+counts = collections.Counter(); di_c = collections.Counter()
 
 def report(fr):
     tot = sum(v for k, v in ph_c.items() if k != 8) or 1
     print('frames %d-%d: %s' % (fr - EVERY + 1, fr, ' '.join('%s%02d' % (PH[k], 100 * v // tot) for k, v in sorted(ph_c.items()) if k != 8)))
     print('   translated %d: %s' % (sum(tr_pcs.values()), ' '.join('%04X%s' % (p, '' if n == 1 else 'x%d' % n) for p, n in tr_pcs.most_common(12))))
     print('   ' + ', '.join('%s %d%%' % (n, 100 * c // tot) for n, c in fn_c.most_common(10)))
+    if FOCUS:
+        g = collections.Counter()
+        for a, c in focus_c.items(): g[a & ~15] += c
+        print('   %s by 16 bytes (0.1%%): %s' % (FOCUS, ' '.join('%05X:%d' % (a, 1000 * c // tot) for a, c in g.most_common(20))))
+        focus_c.clear()
+    print('   calls a frame: ' + ', '.join('%s %.1f' % (n, c / EVERY) for n, c in counts.most_common()))
+    counts.clear()
+    print('   DI: ' + ', '.join('%s %.1f%%' % (n, 100 * c / tot) for n, c in di_c.most_common(10)))
+    di_c.clear()
     ph_c.clear(); fn_c.clear(); tr_pcs.clear()
     sys.stdout.flush()
 

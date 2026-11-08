@@ -23,6 +23,13 @@ uint8_t z80_read(uint16_t a) {
     uint32_t bank = mapper[1 + (a >> 14)];
     return rom[((bank << 14) | (a & 0x3FFF)) & rom_mask];
 }
+// (drc.c's rd: one byte at a time here, as z80_read)
+const uint8_t *z80_read_span(uint16_t a, uint16_t *len) {
+    static uint8_t b;
+    b = z80_read(a);
+    *len = 1;
+    return &b;
+}
 void z80_write(uint16_t a, uint8_t v) {
     if (a >= 0xC000) {
         ram[a & 0x1FFF] = v;

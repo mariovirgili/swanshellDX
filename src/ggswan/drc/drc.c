@@ -1240,8 +1240,31 @@ static void decode(uint16_t pc, ins_t *I) {
             if (op2 == 0x8E || op2 == 0x9E) I->fread = FC;
             return;
         }
-        // other DD/FD forms (IXH, IXL...) or a prefix on a plain opcode:
-        // leave it to the interpreter, between blocks
+        // the undocumented halves IXH/IXL (IYH/IYL): H and L of a plain
+        // opcode read as them. Aladdin's palette fades loop on LD IXL,A and
+        // OR IXL: each ended its block, then the interpreter between blocks
+        // (~20 dispatches a frame). LD r,IXh / LD IXh,r / ALU A,IXh native
+        // (drc_emit), INC/DEC/LD n and the rest stepped in the block.
+        {
+            uint8_t x2 = op2 >> 6, y2 = (op2 >> 3) & 7, z2 = op2 & 7;
+            uint8_t hy = y2 == 4 || y2 == 5, hz = z2 == 4 || z2 == 5;
+            if (x2 == 1 && op2 != 0x76 && (hy || hz) && y2 != 6 && z2 != 6) {
+                if (hy && hz) I->step = 1;                         // LD IXh,IXl
+                return;                                            // LD r,IXh / LD IXh,r
+            }
+            if (x2 == 2 && hz) {                                   // ALU A,IXh
+                I->fwrite = FALL;
+                if (y2 == 1 || y2 == 3) I->fread = FC;
+                return;
+            }
+            if (x2 == 0 && hy && (z2 == 4 || z2 == 5 || z2 == 6)) {   // INC/DEC/LD IXh(,n)
+                I->step = 1;
+                if (z2 == 6) I->len = 3;
+                return;
+            }
+        }
+        // other DD/FD forms, or a prefix on a plain opcode: left to the
+        // interpreter, between blocks
         I->term = T_STOP;
         return;
     }
@@ -1959,6 +1982,27 @@ static int emit(int i) {
             if (dst == X_BX || dst == 7) hl_es = 0;
             cyc += 19;
             return 1;
+        }
+        {
+            // IXH/IXL (decode): the byte in z80_t (ixh after ixl)
+            uint8_t x2 = op >> 6, y2 = (op >> 3) & 7, z2 = op & 7;
+            uint8_t hy = y2 == 4 || y2 == 5, hz = z2 == 4 || z2 == 5;
+            if (x2 == 1 && (hy || hz) && !(hy && hz) && y2 != 6 && z2 != 6) {
+                if (hz) {   // LD r,IXh
+                    B(0x8A); B(0x06 | (r8x[y2] << 3)); W(ixa + (z2 == 4));
+                } else {    // LD IXh,r
+                    B(0x88); B(0x06 | (r8x[z2] << 3)); W(ixa + (y2 == 4));
+                }
+                cyc += 8;
+                return 1;
+            }
+            if (x2 == 2 && hz) {   // ALU A,IXh
+                if (y2 == 1 || y2 == 3) need_cf();
+                B(alu_x86[y2] + 2); B(0x06); W(ixa + (z2 == 4));
+                alu_done(y2);
+                cyc += 8;
+                return 1;
+            }
         }
         if (op >= 0x86 && op <= 0xBE) {   // ALU A,(IX+d)
             uint8_t y = (op >> 3) & 7;

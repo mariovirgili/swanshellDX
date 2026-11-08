@@ -854,6 +854,7 @@ uint8_t drc_no_links;
 uint8_t drc_no_fast;
 
 uint32_t drc_stat_helper[5], drc_stat_dispatch, drc_stat_nolink;
+uint32_t drc_stat_quick;   // (dispatches by drc_fast_reentry from L0)
 uint16_t drc_stat_op[16];   // helper calls by DRC_H_* (diagnostics)
 uint16_t drc_stat_op_lines[16];   // ...and the WS lines they took
 static void drc_helper_body(void);
@@ -1077,6 +1078,42 @@ static void check_end(uint16_t pc, int16_t used) {
  */
 uint8_t drc_fast_reentry(void) {
     drc_map_sync();
+    // A block that ended at an exit that can not be linked (RET, JP (HL),
+    // another slot...) with cycles left and nothing waiting: the next
+    // block from the L0 cache, without going back to drc_z80_run. Each
+    // trip there cost a few hundred cycles (Aladdin ~20 a frame, DI 13-16%
+    // on the device build run in Unicorn, wsrun.py). The block goes on
+    // counting from the same start (drc_st.cycles, block_start, left_base
+    // as they are), as one long block would. Not taken: exits that can be
+    // linked (the dispatcher links them), RAM code, an L0 miss, and all
+    // that drc_z80_run handles (interrupts, events, breaks, flushes).
+    // (a guarded exit, linked already for another bank of its slot, that
+    // found the slot on a different one: counts as one that can not be
+    // linked. The dispatcher patched it to the current bank each time,
+    // Aladdin's ~9 a frame: two banks taking turns)
+    uint16_t link = drc_st.link;
+    if (link && !drc_no_links) {
+        const uint8_t __far *g = MK_FP(drc_st.cur_seg, link - 3);
+        if (g[1] == 0x75 && g[0] != 0xFF)
+            link = 0;
+    }
+    if (drc_st.cycles > 0 && !drc_st.reason && !link && !drc_no_fast && !drc_check
+        && !z80_break && !drc_flush_request && !drc_st.ram_fail && !remapped
+        && !z80.ei_pending && !z80.halted && !(z80.irq && z80.iff1)) {
+        uint16_t pc = z80.pc;
+        if (pc < 0x8000 || (pc < 0xC000 && !(drc_st.keys[0] & 0x08))) {
+            uint8_t bank = bank_key(pc);
+            const uint16_t *l0 = (const uint16_t*) IRAM(L0_ADDR + ((hash(pc, bank) & ~3) & 0x7FC) * 2);
+            if (l0[0] == pc && (uint8_t) l0[1] == bank) {
+                drc_entry[0] = l0[2];
+                drc_entry[1] = l0[3];
+                drc_stat_dispatch++;
+                drc_stat_nolink++;
+                drc_stat_quick++;
+                return 1;
+            }
+        }
+    }
     if (drc_no_fast || drc_st.reason || drc_st.cycles > 0 || drc_check || z80_break
         || drc_flush_request || drc_st.ram_fail || remapped
         || z80.ei_pending || z80.halted)

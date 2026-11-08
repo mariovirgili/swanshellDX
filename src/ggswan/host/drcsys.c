@@ -123,8 +123,9 @@ void host_translated(uint16_t pc, uint16_t len, uint16_t n) {
 }
 extern uint32_t drc_stat_helper[5], drc_stat_dispatch, drc_stat_nolink;
 extern uint32_t host_fast_reentries;
-extern uint32_t drc_stat_irq;
+extern uint32_t drc_stat_irq, drc_stat_quick;
 void sys_tr_report(void) {
+    printf("dispatches from L0 in drc_fast_reentry: %u\n", drc_stat_quick);
     printf("line events with their interrupt in drc_enter: %u (interrupts: %u)\n", host_fast_reentries, drc_stat_irq);
     printf("dispatches %u (exits that can not be linked: %u), helpers: write %u out %u in %u step %u\n",
            drc_stat_dispatch, drc_stat_nolink, drc_stat_helper[1], drc_stat_helper[2], drc_stat_helper[3], drc_stat_helper[4]);
