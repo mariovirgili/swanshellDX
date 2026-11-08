@@ -1152,6 +1152,9 @@ static void decode(uint16_t pc, ins_t *I) {
         case 0x44: I->fwrite = FALL; return;                        // NEG
         case 0x47: return;                                          // LD I,A
         case 0x57: I->fwrite = FALL & ~FC; I->fread = FC; return;   // LD A,I
+        case 0x5F:                                                  // LD A,R
+            if (env->no_fast) { I->step = 1; return; }
+            I->fwrite = FALL & ~FC; I->fread = FC; return;
         case 0x67: case 0x6F:                                       // RRD, RLD
             if (env->no_fast) { I->step = 1; return; }
             I->fwrite = FALL & ~FC; I->fread = FC; return;
@@ -1661,6 +1664,73 @@ static int emit(int i) {
         case 0x57:   // LD A,I: S Z (and bits 5, 3) from I, P/V = IFF2, C kept
             clobber(live);
             B(0xA0); W(ZA(i));                        // mov al, [i]
+            B(0x80); B(0xE4); B(0x01);                // and ah, 1 (C)
+            B(0x89); B(0xC6);                         // mov si, ax
+            B(0x81); B(0xE6); W(0x00A8);              // and si, 0A8h (S, 5, 3)
+            B(0xC1); B(0xE6); B(0x08);                // shl si, 8
+            B(0x09); B(0xF0);                         // or ax, si
+            B(0x84); B(0xC0);                         // test al, al
+            B(0x75); B(0x03);                         // jnz +3
+            B(0x80); B(0xCC); B(0x40);                // or ah, 40h (Z)
+            B(0x80); B(0x3E); W(ZA(iff2)); B(0);      // cmp byte [iff2], 0
+            B(0x74); B(0x03);                         // je +3
+            B(0x80); B(0xCC); B(0x04);                // or ah, 4 (P/V)
+            fkind = K_AH;
+            cyc += 9;
+            return 1;
+        case 0x40: case 0x48: case 0x50: case 0x58: case 0x60: case 0x68: case 0x78:
+            if (I->d == 1) {
+                // IN r,(C), C the VDP data port (known: see the decoder):
+                // the prefetched byte as IN A,(BEh), into r; S Z P from it,
+                // H N 0, C kept
+                uint8_t dst = r8x[(op >> 3) & 7];
+                clobber(live);
+                B(0x80); B(0xE4); B(0x01);                      // and ah, 1 (C)
+                B(0x50);                                        // push ax
+                if (env->cls_off) {
+                    B(0x80); B(0x3E); W(SA(defer)); B(0);       // cmp byte [defer], 0
+                    uint8_t *nd = jcc8(0x74);                   // je
+                    B(0xC6); B(0x06); W(SA(op)); B(DRC_H_SYNC); // mov byte [op], SYNC
+                    call_near(env->helper_off);
+                    land8(nd);
+                    hl_es = 0;
+                }
+                B(0x8B); B(0x36); W(VA(addr));                  // mov si, [addr]
+                B(0x8A); B(0x84); W(env->vram_addr);            // mov al, [si + vram]
+                B(0x86); B(0x06); W(VA(read_buffer));           // xchg al, [read_buffer]
+                B(0x46);                                        // inc si
+                B(0x81); B(0xE6); W(0x3FFF);                    // and si, 3FFFh
+                B(0x89); B(0x36); W(VA(addr));                  // mov [addr], si
+                B(0xC6); B(0x06); W(VA(latch_full)); B(0);      // latch_full = 0
+                if (dst) { B(0x88); B(0xC0 | dst); }            // mov r, al
+                B(0x84); B(0xC0);                               // test al, al
+                B(0x9F);                                        // lahf (S Z P: as the Z80's)
+                B(0x80); B(0xE4); B(0xC4);                      // and ah, C4h
+                B(0x89); B(0xE6);                               // mov si, sp
+                B(0x36); B(0x0A); B(0x64); B(0x01);             // or ah, ss:[si + 1] (C)
+                if (dst) { B(0x36); B(0x8A); B(0x04); }         // mov al, ss:[si] (A)
+                B(0x5E);                                        // pop si
+                if (dst == X_BX || dst == 7) hl_es = 0;
+                fkind = K_AH;
+                cyc += 12;
+                return 1;
+            }
+            return 0;
+        case 0x5F:   // LD A,R: as the interpreter (the step it was, ~1800
+                     // a minute in Aladdin): R + 2 (the two opcode
+                     // fetches, bit 7 kept), A = R, flags as LD A,I. (The
+                     // translated code does not count R otherwise.)
+            clobber(live);
+            B(0x50);                                  // push ax
+            B(0xA0); W(ZA(r));                        // mov al, [r]
+            B(0x88); B(0xC4);                         // mov ah, al
+            B(0x80); B(0xE4); B(0x80);                // and ah, 80h
+            B(0x04); B(0x02);                         // add al, 2
+            B(0x24); B(0x7F);                         // and al, 7Fh
+            B(0x08); B(0xE0);                         // or al, ah
+            B(0xA2); W(ZA(r));                        // mov [r], al
+            B(0x58);                                  // pop ax
+            B(0xA0); W(ZA(r));                        // mov al, [r]
             B(0x80); B(0xE4); B(0x01);                // and ah, 1 (C)
             B(0x89); B(0xC6);                         // mov si, ax
             B(0x81); B(0xE6); W(0x00A8);              // and si, 0A8h (S, 5, 3)
@@ -2579,6 +2649,7 @@ int drc_translate(const drc_env_t *e, uint16_t pc, uint8_t *out,
     int max_n = (out_max - 128) / 96;
     if (max_n > MAX_INSTR) max_n = MAX_INSTR;
     uint8_t inlined = 0;
+    int c_known = -1;   // C as set by LD C,n earlier in the block (-1: not known)
     while (n < max_n) {
         // stay inside the block's 16 KiB slot (or slot 0, through a jump)
         if (n && ((p ^ pc) & 0xC000) && !(p < 0x4000 && !ram)) break;
@@ -2597,6 +2668,24 @@ int drc_translate(const drc_env_t *e, uint16_t pc, uint8_t *out,
             } else {
                 break;
             }
+        }
+        {
+            // IN r,(C) with C known (LD C,n, then only instructions that
+            // leave C alone): the VDP data port natively, as IN A,(n)
+            // (Aladdin reads VRAM with LD C,BEh / IN C,(C): a step each,
+            // ~3 a frame). d = 1 marks it (emit).
+            ins_t *K = &ins[n];
+            if (K->pre == 0xED && (K->op & 0xC7) == 0x40 && K->op != 0x70 && c_known >= 0
+                && (c_known & 0xC1) == 0x80 && env->vdp_addr && env->ctl_off && !env->no_fast) {
+                K->step = 0; K->count = 0; K->nn = (uint16_t) c_known; K->d = 1;
+                K->fwrite = FALL & ~FC; K->fread = FC;
+            }
+            if (K->pre == 0 && K->op == 0x0E) c_known = K->nn;
+            else if (K->pre == 0 && K->op == 0x01) c_known = K->nn & 0xFF;
+            else if (!(K->pre == 0 && (K->op == 0x00 || K->op == 0xF3 || K->op == 0xD5 || K->op == 0xE5
+                                         || K->op == 0xF5 || K->op == 0xC5 || K->op == 0xD1 || K->op == 0xE1
+                                         || K->op == 0xF1)))
+                c_known = -1;
         }
         if (ins[n].term == T_STOP) break;
         p += ins[n].len;

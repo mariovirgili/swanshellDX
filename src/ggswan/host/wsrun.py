@@ -147,6 +147,16 @@ def h_code(uc, addr, size, ud):
     if addr in COUNT_AT: counts[COUNT_AT[addr]] += 1
     if addr == TRANS:
         tr_pcs[uc.reg_read(UC_X86_REG_DX)] += 1
+        last_tr[0] = uc.reg_read(UC_X86_REG_DX)
+    if addr == PSW and last_tr[0] is not None:
+        # psram_write(which, off, src, len): the block just translated
+        which = uc.reg_read(UC_X86_REG_AX) & 255; off = uc.reg_read(UC_X86_REG_DX)
+        ln = int.from_bytes(uc.mem_read((uc.reg_read(UC_X86_REG_SS) << 4) + uc.reg_read(UC_X86_REG_SP) + 4, 2), 'little')
+        if which < 6:
+            base = 0x40000 + which * 0x10000 + off
+            i = bisect.bisect_left(blk_starts, base)
+            blk_starts.insert(i, base); blk_info.insert(i, (base + ln, last_tr[0]))
+        last_tr[0] = None
     if addr == FRAME:
         st['frame'] += 1
         fr = st['frame']
@@ -159,6 +169,13 @@ def h_code(uc, addr, size, ud):
     ph = uc.mem_read(PROF, 1)[0]
     ph_c[ph] += c
     if ph == 2: di_c[fname(addr)] += c
+    if 0x40000 <= addr < 0xA0000:
+        i = bisect.bisect_right(blk_starts, addr) - 1
+        if i >= 0 and addr < blk_info[i][0]: blk_c[blk_info[i][1]] += c
+        else:
+            o = addr & 0xFFFF
+            if STUBX and 0x240 <= o < 0x4C0: stub_n[o] += 1
+            blk_c[next((n for lo, hi, n in STUBS if lo <= o < hi), 'unmapped')] += c
     fn_c[fname(addr)] += c
     if FOCUS and fname(addr) == FOCUS: focus_c[addr] += c
 uc.hook_add(UC_HOOK_CODE, h_code)
@@ -167,6 +184,14 @@ import os
 FOCUS = os.environ.get('WSRUN_FOCUS'); focus_c = collections.Counter()
 COUNT_AT = {syms[n]: n for n in ('drc_enter', 'event_step', 'drc_fast_reentry', 'drc_helper', 'gg_line_event', 'z80_step') if n in syms}
 counts = collections.Counter(); di_c = collections.Counter()
+blk_c = collections.Counter(); blk_starts = []; blk_info = []; last_tr = [None]
+PSW = syms['psram_write']
+STUBX = os.environ.get('WSRUN_STUBX'); stub_n = collections.Counter()
+# the routines at the start of each code bank (drc_rt.c STUB_*)
+STUBS = [(0x0000, 0x0020, 'EXIT'), (0x0020, 0x0040, 'HELPER'), (0x0040, 0x0180, 'DYN'), (0x0180, 0x01E0, 'NT'),
+         (0x01E0, 0x0240, 'CRAM'), (0x0240, 0x04C0, 'OUTI/OUTD'), (0x04C0, 0x05F0, 'LDI/LDD'), (0x05F0, 0x0640, 'HCALL'),
+         (0x0640, 0x0800, 'LINE'), (0x0800, 0x0980, 'CTL'), (0x0980, 0x0A18, 'CLS'), (0x0A18, 0x0A90, 'MAP'),
+         (0x0A90, 0x0AE0, 'VCNT')]
 
 def report(fr):
     tot = sum(v for k, v in ph_c.items() if k != 8) or 1
@@ -182,6 +207,13 @@ def report(fr):
     counts.clear()
     print('   DI: ' + ', '.join('%s %.1f%%' % (n, 100 * c / tot) for n, c in di_c.most_common(10)))
     di_c.clear()
+    print('   CD by block: ' + ', '.join('%s %.1f%%' % (k if isinstance(k, str) else '%04X' % k, 100 * c / tot) for k, c in blk_c.most_common(14)))
+    blk_c.clear()
+    if STUBX:
+        code = bytes(uc.mem_read(0x40240, 0x280))
+        for i in md.disasm(code, 0x240):
+            print('      %04X %7d  %s %s' % (i.address, stub_n[i.address], i.mnemonic, i.op_str))
+        stub_n.clear()
     ph_c.clear(); fn_c.clear(); tr_pcs.clear()
     sys.stdout.flush()
 
