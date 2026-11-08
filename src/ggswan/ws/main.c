@@ -1039,7 +1039,7 @@ struct psg_state {
     uint8_t vol[4];
     uint16_t tone[3];
 };
-GGSWAN_HOST_VISIBLE struct psg_state psg_st;
+struct psg_state psg_st;   // (not static: drc_asm.s)
 #define psg_latch psg_st.latch
 #define psg_noise psg_st.noise
 #define psg_dirty psg_st.dirty
