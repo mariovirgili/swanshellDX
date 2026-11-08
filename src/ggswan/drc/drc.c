@@ -604,13 +604,9 @@ uint16_t drc_emit_run_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
     B(0xE9); W((uint16_t) (loop - (o + 2)));         // jmp loop
     land8(end);
     uint8_t *flags = o;
-    // flags of the last OUTI: S, Z from B; N from bit 7 of the byte
-    B(0x88); B(0x26); W(SA(val));                    // mov [val], ah
-    B(0x84); B(0xED);                                // test ch, ch
-    B(0x9F);                                         // lahf
-    B(0x80); B(0xE4); B(0xC0);                       // and ah, C0h
-    B(0xF6); B(0x06); W(SA(val)); B(0x80);           // test byte [val], 80h
-    B(0x74); B(0x03); B(0x80); B(0xCC); B(0x02);     // jz +3; or ah, 2
+    // AH = the last byte: the caller makes the flags of the last OUTI from
+    // it when they are live (run_flags), ~a third of the runs' fixed cost
+    // in Aladdin's VRAM fill loop, whose flags are dead (OR A after)
     B(0x83); B(0xC4); B(0x04);                       // add sp, 4
     B(0xF8);                                         // clc
     B(0xC3);                                         // ret
@@ -649,7 +645,7 @@ uint16_t drc_emit_run_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
         B(0xC1); B(0xEF); B(0x08);                   // shr di, 8
         B(0x0A); B(0x95); W(SA(vram_class));         // or dl, [di + class]
         B(0x5F);                                     // pop di
-        uint8_t *n1, *n3 = 0, *n4 = 0, *logged = 0;
+        uint8_t *n1, *n3 = 0, *n4 = 0, *logged = 0, *plain = 0;
         if (e->cls_off) {
             /*
              * Deferred writes (class bit 3, main.c): the run goes to the
@@ -704,6 +700,8 @@ uint16_t drc_emit_run_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
             B(0x5A);                                 // pop dx
             B(0xE9); W((uint16_t) (flags - (o + 2)));    // jmp flags
             land8(live);
+            B(0xF6); B(0xC2); B(0x03);               // test dl, 3 (name or sprite table)
+            plain = jcc8(0x74);                      // jz plain (the usual case)
             B(0xF6); B(0xC2); B(0x01);               // test dl, 1 (name table without the log)
             B(0x75); B((uint8_t) (nofast - (o + 1)));    // jnz nofast (backwards)
             (void) n4; (void) logged;
@@ -722,6 +720,7 @@ uint16_t drc_emit_run_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
         uint8_t *clean = jcc8(0x74);                 // jz clean
         B(0xC6); B(0x06); W(SA(sprites_dirty)); B(1);   // sprites_dirty = 1
         land8(clean);
+        land8(plain);
         B(0x89); B(0xFA);                            // mov dx, di (k)
         B(0x28); B(0xD5);                            // sub ch, dl (B -= k)
         B(0x51);                                     // push cx
@@ -738,8 +737,8 @@ uint16_t drc_emit_run_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
         B(0x8A); B(0x65); B(0xFF);                   // mov ah, [di - 1] (last byte)
         B(0x88); B(0x26); W(VA(read_buffer));        // mov [read_buffer], ah
         B(0xC6); B(0x06); W(VA(latch_full)); B(0);   // mov byte [latch_full], 0
-        B(0x81); B(0xEF); W(env->vram_addr);         // sub di, vram
-        B(0x81); B(0xE7); W(0x3FFF);                 // and di, 3FFFh
+        if (env->vram_addr & 0x3FFF) { B(0x81); B(0xEF); W(env->vram_addr); }   // sub di, vram
+        B(0x81); B(0xE7); W(0x3FFF);                 // and di, 3FFFh (vram: a multiple of 4000h)
         B(0x89); B(0x3E); W(VA(addr));               // mov [addr], di
         B(0xE9); W((uint16_t) (flags - (o + 2)));    // jmp flags
     }
@@ -1462,6 +1461,29 @@ static void push_imm(uint16_t value) {
     B(0xC7); B(0x86); W(env->ram_delta); W(value);              // mov word [bp+d], imm
 }
 
+// After a call to the OUTI/OUTD run routine (CF = 1: the rest to the
+// helper, which makes the flags; CF = 0: AH = the last byte): the flags of
+// the last OUTI, S and Z from B, N from bit 7 of the byte, only when live
+static void run_flags(uint8_t h, int live) {
+    if (!live) {
+        uint8_t *done = jcc8(0x73);                      // jnc done
+        helper(h);                                       // the OUTIs left (CRAM, other ports)
+        land8(done);
+        return;
+    }
+    uint8_t *slow = jcc8(0x72);                          // jc slow
+    B(0x88); B(0x26); W(SA(val));                        // mov [val], ah
+    B(0x84); B(0xED);                                    // test ch, ch
+    B(0x9F);                                             // lahf
+    B(0x80); B(0xE4); B(0xC0);                           // and ah, C0h
+    B(0xF6); B(0x06); W(SA(val)); B(0x80);               // test byte [val], 80h
+    B(0x74); B(0x03); B(0x80); B(0xCC); B(0x02);         // jz +3; or ah, 2
+    uint8_t *done = jcc8(0xEB);                          // jmp done
+    land8(slow);
+    helper(h);                                           // the OUTIs left (CRAM, other ports)
+    land8(done);
+}
+
 // Returns 0 if the instruction could not be emitted (block ends before it)
 static int emit(int i) {
     ins_t *I = &ins[i];
@@ -1866,9 +1888,7 @@ static int emit(int i) {
             B(0x57);                                         // push di (k)
             B(0xBE); W(I->pc);                               // mov si, pc
             call_near(env->outi_off);
-            uint8_t *done = jcc8(0x73);                      // jnc done
-            helper(DRC_H_OUTI_RUN);                          // the ones left (CRAM, other ports)
-            land8(done);
+            run_flags(DRC_H_OUTI_RUN, 1);
             B(0x5E);                                         // pop si (k)
             B(0x6B); B(0xF6); B(21);                         // imul si, si, 21
             B(0x29); B(0x36); W(SA(cycles));                 // sub [cycles], si
@@ -1886,9 +1906,7 @@ static int emit(int i) {
             B(0xBF); W(I->count);                            // mov di, k
             B(0xBE); W(I->pc);                               // mov si, pc
             call_near(op == 0xA3 ? env->outi_off : env->outi_off + DRC_OUTD_DELTA);
-            uint8_t *done = jcc8(0x73);                      // jnc done
-            helper(op == 0xA3 ? DRC_H_OUTI_RUN : DRC_H_OUTD_RUN);   // the OUTIs left (CRAM, other ports)
-            land8(done);
+            run_flags(op == 0xA3 ? DRC_H_OUTI_RUN : DRC_H_OUTD_RUN, live_out[i] & FALL);
             fkind = K_AH; hl_es = 0;
             cyc += 16 * I->count;
             return 1;
