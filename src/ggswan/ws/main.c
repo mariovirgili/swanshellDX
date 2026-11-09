@@ -283,6 +283,10 @@ static void hscroll_write(uint8_t value);
 #define LOG_B 0xF200
 #define LOG_SIZE 0x0C00
 static uint8_t vram_class_norm[64];
+// the pages whose writes were ever deferred since the last full sync: a
+// VRAM read elsewhere (Aladdin's name table reads in its game screens) has
+// nothing in the logs to look for (gg_platform_vram_sync_at)
+static uint8_t defer_seen[64];
 static uint16_t log_start;                    // the log being filled
 static volatile uint16_t pend_start, pend_top; // the log waiting (0: none)
 
@@ -293,6 +297,7 @@ static void vram_class_update(void) {
                   | ((uint16_t) (a - sat_base) < 0x100 ? 2 : 0);
         vram_class_norm[i] = c;
         drc_st.vram_class[i] = (drc_st.defer && !c) ? c | 8 : c;
+        defer_seen[i] |= drc_st.vram_class[i] & 8;
     }
     drc_st.vram_class[64] = 0x11;
 }
@@ -398,6 +403,9 @@ void gg_platform_vram_sync_at(uint16_t a) {
         return;
     }
     sync_reads++;
+    // (an entry holding a starts at most 254 bytes before it)
+    if (!defer_seen[a >> 8] && !defer_seen[((a - 254) & 0x3FFF) >> 8])
+        return;
     uint16_t f = irq_save();
     if (pend_start)
         log_apply_at(pend_start, pend_top, a);
@@ -419,6 +427,9 @@ void gg_platform_vram_sync(void) {
     log_apply(log_start, drc_st.log_top);
     drc_st.log_top = log_start;
     drc_st.log_last = 0;
+    // (both logs empty: only the pages deferred from now on)
+    for (uint8_t i = 0; i < 64; i++)
+        defer_seen[i] = drc_st.vram_class[i] & 8;
     irq_restore(f);
 }
 
