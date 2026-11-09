@@ -1437,6 +1437,7 @@ static void show_profile(void) {
 static void show_fps(uint8_t fps) {
     put_text(1, 0, "FPS");
     put_value(2, 0, ' ', fps);
+    put_value(0, 24, 'P', GGSWAN_PATCH);   // the patch number, top right
     if (!show_stats)
         return;
     // per second: T translations; D returns to the dispatcher, helpers
