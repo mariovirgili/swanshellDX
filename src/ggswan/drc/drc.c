@@ -660,7 +660,73 @@ uint16_t drc_emit_run_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
         to_fast[0] = (uint8_t) rel;
         to_fast[1] = (uint8_t) (rel >> 8);
         B(0x80); B(0x3E); W(VA(code)); B(3);         // cmp byte [code], 3
-        uint8_t *cram = jcc8(0x74);                  // je to_loop (CRAM)
+        uint8_t *cram = 0;
+        uint8_t *not_cram = jcc8(0x75);              // jne (VRAM)
+        if (!dec) {
+            /*
+             * CRAM (palette uploads, ~60 bytes a frame in Super Monaco GP):
+             * the bytes here instead of one CRAM routine call each through
+             * the loop. As put_cram (drc_rt.c): the even byte latched, the
+             * odd one writes the color and its WS copies; read buffer,
+             * address, latch, HL, B; AH = the last byte. The source inside
+             * one 8 KiB page, else the loop.
+             */
+            B(0x52);                                 // push dx
+            B(0x89); B(0xDA);                        // mov dx, bx
+            B(0x81); B(0xE2); W(0x1FFF);             // and dx, 1FFFh
+            B(0x01); B(0xFA);                        // add dx, di
+            B(0x81); B(0xFA); W(0x2000);             // cmp dx, 2000h
+            uint8_t *cr_ok = jcc8(0x76);             // jbe ok
+            B(0x5A);                                 // pop dx
+            B(0xE9); W((uint16_t) (loop - (o + 2))); // jmp loop
+            land8(cr_ok);
+            B(0x89); B(0xFA);                        // mov dx, di (k)
+            B(0x28); B(0xD5);                        // sub ch, dl (B -= k)
+            B(0x50);                                 // push ax (A)
+            B(0x8B); B(0x16); W(VA(addr));           // mov dx, [addr]
+            uint8_t *cr_loop = o;
+            B(0x26); B(0x8A); B(0x07);               // mov al, es:[bx]
+            B(0x43);                                 // inc bx
+            B(0xA2); W(VA(read_buffer));             // mov [read_buffer], al
+            B(0xF6); B(0xC2); B(0x01);               // test dl, 1
+            uint8_t *cr_odd = jcc8(0x75);            // jnz odd
+            B(0xA2); W(VA(cram_latch));              // mov [cram_latch], al
+            uint8_t *cr_next = jcc8(0xEB);           // jmp next
+            land8(cr_odd);
+            B(0x24); B(0x0F);                        // and al, 0Fh
+            B(0x89); B(0xD6);                        // mov si, dx
+            B(0x83); B(0xE6); B(0x3F);               // and si, 3Fh
+            B(0x88); B(0x84); W(VA(cram));           // mov [si + cram], al
+            B(0x8A); B(0x26); W(VA(cram_latch));     // mov ah, [cram_latch]
+            B(0x88); B(0xA4); W(VA(cram) - 1);       // mov [si + cram - 1], ah
+            B(0x53);                                 // push bx
+            B(0x88); B(0xE3);                        // mov bl, ah
+            B(0x80); B(0xE3); B(0xF0);               // and bl, F0h (G)
+            B(0x08); B(0xD8);                        // or al, bl (G B)
+            B(0x80); B(0xE4); B(0x0F);               // and ah, 0Fh (R)
+            B(0x5B);                                 // pop bx
+            B(0x83); B(0xE6); B(0x3E);               // and si, 3Eh (color * 2)
+            B(0x89); B(0x84); W(0xFE00);             // mov [si + FE00h], ax
+            B(0x83); B(0xFE); B(0x20);               // cmp si, 20h
+            B(0x72); B(0x04);                        // jb +4
+            B(0x89); B(0x84); W(0xFEE0);             // mov [si + FEE0h], ax (FF00h + color * 2 - 20h)
+            land8(cr_next);
+            B(0x42);                                 // inc dx
+            B(0x81); B(0xE2); W(0x3FFF);             // and dx, 3FFFh
+            B(0x4F);                                 // dec di
+            B(0x75); B((uint8_t) (cr_loop - (o + 1)));   // jnz loop
+            B(0x89); B(0x16); W(VA(addr));           // mov [addr], dx
+            B(0xC6); B(0x06); W(VA(latch_full)); B(0);   // mov byte [latch_full], 0
+            B(0x58);                                 // pop ax (A)
+            B(0x8A); B(0x26); W(VA(read_buffer));    // mov ah, [read_buffer] (the last byte)
+            B(0x5A);                                 // pop dx
+            B(0x83); B(0xC4); B(0x04);               // add sp, 4
+            B(0xF8);                                 // clc
+            B(0xC3);                                 // ret
+        } else {
+            cram = jcc8(0xEB);                       // (OUTD: the loop)
+        }
+        land8(not_cram);
         B(0x52);                                     // push dx
         B(0x8B); B(0x36); W(VA(addr));               // mov si, [addr]
         B(0x81); B(0xE6); W(0x3FFF);                 // and si, 3FFFh (start)

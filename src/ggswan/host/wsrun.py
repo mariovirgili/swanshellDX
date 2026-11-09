@@ -174,7 +174,7 @@ def h_code(uc, addr, size, ud):
         if i >= 0 and addr < blk_info[i][0]: blk_c[blk_info[i][1]] += c
         else:
             o = addr & 0xFFFF
-            if STUBX and 0x240 <= o < 0x4C0: stub_n[o] += 1
+            if STUBX and 0x240 <= o < 0x4E0: stub_n[o] += 1
             blk_c[next((n for lo, hi, n in STUBS if lo <= o < hi), 'unmapped')] += c
     fn_c[fname(addr)] += c
     if FOCUS and fname(addr) == FOCUS: focus_c[addr] += c
@@ -189,8 +189,8 @@ PSW = syms['psram_write']
 STUBX = os.environ.get('WSRUN_STUBX'); stub_n = collections.Counter()
 # the routines at the start of each code bank (drc_rt.c STUB_*)
 STUBS = [(0x0000, 0x0020, 'EXIT'), (0x0020, 0x0040, 'HELPER'), (0x0040, 0x0180, 'DYN'), (0x0180, 0x01E0, 'NT'),
-         (0x01E0, 0x0240, 'CRAM'), (0x0240, 0x04C0, 'OUTI/OUTD'), (0x04C0, 0x05F0, 'LDI/LDD'), (0x05F0, 0x0640, 'HCALL'),
-         (0x0640, 0x0800, 'LINE'), (0x0800, 0x0980, 'CTL'), (0x0980, 0x0A60, 'CLS'), (0x0A60, 0x0AD8, 'MAP'),
+         (0x01E0, 0x0240, 'CRAM'), (0x0240, 0x04E0, 'OUTI/OUTD'), (0x04E0, 0x0610, 'LDI/LDD'), (0x0610, 0x0660, 'HCALL'),
+         (0x0660, 0x0800, 'LINE'), (0x0800, 0x0980, 'CTL'), (0x0980, 0x0A60, 'CLS'), (0x0A60, 0x0AD8, 'MAP'),
          (0x0AD8, 0x0B28, 'VCNT')]
 
 def report(fr):
@@ -210,7 +210,7 @@ def report(fr):
     print('   CD by block: ' + ', '.join('%s %.1f%%' % (k if isinstance(k, str) else '%04X' % k, 100 * c / tot) for k, c in blk_c.most_common(14)))
     blk_c.clear()
     if STUBX:
-        code = bytes(uc.mem_read(0x40240, 0x280))
+        code = bytes(uc.mem_read(0x40240, 0x2A0))
         for i in md.disasm(code, 0x240):
             print('      %04X %7d  %s %s' % (i.address, stub_n[i.address], i.mnemonic, i.op_str))
         stub_n.clear()
