@@ -7,7 +7,7 @@ estimated V30MZ cycles by profiler phase (prof_phase: AL CD DI PO ST IN TR
 VI ID) and the Z80 addresses translated.
 usage: wsrun.py build/ggswan.elf rom.gg frames [every] [keys "frame:hex,..."]
 Cycles: a rough estimate, for comparing."""
-import sys, bisect, collections
+import sys, os, bisect, collections
 from elftools.elf.elffile import ELFFile
 from unicorn import *
 from unicorn.x86_const import *
@@ -190,8 +190,8 @@ STUBX = os.environ.get('WSRUN_STUBX'); stub_n = collections.Counter()
 # the routines at the start of each code bank (drc_rt.c STUB_*)
 STUBS = [(0x0000, 0x0020, 'EXIT'), (0x0020, 0x0040, 'HELPER'), (0x0040, 0x0180, 'DYN'), (0x0180, 0x01E0, 'NT'),
          (0x01E0, 0x0240, 'CRAM'), (0x0240, 0x04C0, 'OUTI/OUTD'), (0x04C0, 0x05F0, 'LDI/LDD'), (0x05F0, 0x0640, 'HCALL'),
-         (0x0640, 0x0800, 'LINE'), (0x0800, 0x0980, 'CTL'), (0x0980, 0x0A18, 'CLS'), (0x0A18, 0x0A90, 'MAP'),
-         (0x0A90, 0x0AE0, 'VCNT')]
+         (0x0640, 0x0800, 'LINE'), (0x0800, 0x0980, 'CTL'), (0x0980, 0x0A60, 'CLS'), (0x0A60, 0x0AD8, 'MAP'),
+         (0x0AD8, 0x0B28, 'VCNT')]
 
 def report(fr):
     tot = sum(v for k, v in ph_c.items() if k != 8) or 1
@@ -220,6 +220,7 @@ def report(fr):
 # a HLT: an interrupt would come (vertical blank: frame credit; the end of
 # the WS screen: the frame shown)
 FC, FW, VB = syms['frame_credit'], syms['frame_waiting'], syms['vblanks']
+DUMP = os.environ.get('WSRUN_DUMP'); dumped = set()
 cs, ip = syms['_start'] >> 4, syms['_start'] & 15   # (crt0: stack 0000:4000, data)
 uc.mem_write(0x3EFC, b'\0\0\0\0')
 uc.reg_write(UC_X86_REG_SS, 0); uc.reg_write(UC_X86_REG_SP, 0x3EFC)
@@ -236,6 +237,13 @@ while st['frame'] < FRAMES:
     cs = uc.reg_read(UC_X86_REG_CS); ip = uc.reg_read(UC_X86_REG_IP)
     a = (cs << 4) + ip
     if uc.mem_read(a - 1, 1)[0] == 0xF4:   # HLT
+        if DUMP:
+            # WSRUN_DUMP=dir: the Game Gear RAM (8000h) at every 50th
+            # Game Gear frame (gg.frame), to compare two builds
+            gf = int.from_bytes(uc.mem_read(syms['gg'] + 0x6C, 4), 'little')
+            if gf % 50 == 0 and gf not in dumped:
+                dumped.add(gf)
+                open('%s/ram%05d.bin' % (DUMP, gf), 'wb').write(bytes(uc.mem_read(0x8000, 0x2000)))
         uc.mem_write(FC, (7547 * 2).to_bytes(2, 'little'))
         uc.mem_write(FW, b'\0')
         uc.mem_write(VB, bytes([(uc.mem_read(VB, 1)[0] + 1) & 255]))

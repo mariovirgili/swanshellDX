@@ -41,6 +41,8 @@ void drc_check_failed(uint16_t pc, const z80_t *before, const z80_t *drc,
 
 /// bank: PSRAM bank behind linear segment DRC_CODE_SEG
 void drc_rt_init(uint16_t bank);
+/// diagnostics: blocks always back to the runtime (the stubs made again)
+void drc_rt_set_no_links(uint8_t on);
 /// diagnostics: do not follow JP/JR in blocks, do not inline CALLs
 void drc_rt_options(uint8_t no_trace, uint8_t no_inline);
 /// set when slot 0 changes bank: links into it are no longer valid

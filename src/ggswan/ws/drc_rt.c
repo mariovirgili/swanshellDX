@@ -48,9 +48,9 @@ uint16_t drc_entry[2];   // far pointer used by drc_enter: offset, segment
 #define STUB_HCALL  0x05F0   // helpers called without leaving the block
 #define STUB_LINE   0x0640   // the exits' common part, the line routine
 #define STUB_CTL    0x0800   // OUT (BFh),A
-#define STUB_MAP    0x0A18   // a bank change of slot 1 or 2 (put_map)
-#define STUB_VCNT   0x0A90   // IN A,(7Eh) (drc_emit_vcnt_stub)
-#define CACHE_START 0x0AE0
+#define STUB_MAP    0x0A60   // a bank change of slot 1 or 2 (put_map)
+#define STUB_VCNT   0x0AD8   // IN A,(7Eh) (drc_emit_vcnt_stub)
+#define CACHE_START 0x0B28
 // translation buffer in free IRAM (between the font tiles and the mask tile)
 #define BUF_ADDR    0xA600
 /// DYN L0 cache: 512 direct-mapped entries of 8 bytes in free IRAM (in the
@@ -60,6 +60,9 @@ uint16_t drc_entry[2];   // far pointer used by drc_enter: offset, segment
 /// block table key of the code in work RAM (banks are below 64)
 #define RAM_KEY     0xFE
 #define L0_SIZE     0x1000
+/// the L0 entry of Z80 address pc (the bank is in the entry): DYN and the
+/// dispatcher index it the same way
+#define L0_ENTRY(pc) (L0_ADDR + (((pc) << 3) & 0x0FF8))
 #define BUF_SIZE    0x1900
 
 /*
@@ -366,8 +369,10 @@ static uint16_t put_dyn(uint8_t *stub, uint8_t bank_index) {
     uint16_t entry = (uint16_t) (p - stub);
     PB(0x83); PB(0x3E); PW(cyc); PB(0);              // cmp word [cycles], 0
     PB(0x7E); PREL(exit0);                       // jle EXIT0
-    PB(0x80); PB(0x3E); PW(nolink); PB(0);           // cmp byte [nolink], 0
-    PB(0x75); PREL(exit0);                       // jne EXIT0
+    // (no links, a diagnostics option: always back to the runtime; the
+    // stubs are made again when it is set, drc_rt_set_no_links)
+    if (drc_no_links) { PB(0xEB); PREL(exit0); }     // jmp EXIT0
+    (void) nolink;
     PB(0x50); PB(0x53);                              // push ax; push bx
     PB(0xA1); PW(pc);                                // mov ax, [pc]
     PB(0x3D); PW(0xC000);                            // cmp ax, C000h
@@ -387,18 +392,10 @@ static uint16_t put_dyn(uint8_t *stub, uint8_t bank_index) {
     PB(0x83); PB(0xE6); PB(0x03);                    // and si, 3
     PB(0x8A); PB(0x9C); PW(keys + 1);                // mov bl, [si + keys + 1]
     *have = (uint8_t) (p - have - 1);
-    PB(0x89); PB(0xDF);                              // mov di, bx
-    PB(0x81); PB(0xE7); PW(0x00FF);                  // and di, 00FFh
-    PB(0xC1); PB(0xE7); PB(0x05);                    // shl di, 5
-    PB(0x31); PB(0xC7);                              // xor di, ax
+    // L0 first: entry (pc << 3) & FF8h (L0_ENTRY)
     PB(0x89); PB(0xC6);                              // mov si, ax
-    PB(0xC1); PB(0xEE); PB(0x09);                    // shr si, 9
-    PB(0x31); PB(0xF7);                              // xor di, si
-    PB(0x81); PB(0xE7); PW((HASH_SIZE - 1) & ~3);    // and di, set mask
-    // L0 first: entry (di & 7FCh) * 2
-    PB(0x89); PB(0xFE);                              // mov si, di
-    PB(0x81); PB(0xE6); PW(0x07FC);                  // and si, 7FCh
-    PB(0xD1); PB(0xE6);                              // shl si, 1
+    PB(0xC1); PB(0xE6); PB(0x03);                    // shl si, 3
+    PB(0x81); PB(0xE6); PW(0x0FF8);                  // and si, FF8h
     PB(0x3B); PB(0x84); PW(L0_ADDR);                 // cmp ax, [si + L0]
     PB(0x75); uint8_t *l0miss1 = p++;                // jne
     PB(0x3A); PB(0x9C); PW(L0_ADDR + 2);             // cmp bl, [si + L0 + 2]
@@ -408,6 +405,15 @@ static uint16_t put_dyn(uint8_t *stub, uint8_t bank_index) {
     *l0miss1 = (uint8_t) (p - l0miss1 - 1);
     *l0miss2 = (uint8_t) (p - l0miss2 - 1);
     PB(0x89); PB(0x36); PW(l0_slot);                 // mov [l0_slot], si
+    // the block table: hash and 4-way set as drc_z80_run
+    PB(0x89); PB(0xDF);                              // mov di, bx
+    PB(0x81); PB(0xE7); PW(0x00FF);                  // and di, 00FFh
+    PB(0xC1); PB(0xE7); PB(0x05);                    // shl di, 5
+    PB(0x31); PB(0xC7);                              // xor di, ax
+    PB(0x89); PB(0xC6);                              // mov si, ax
+    PB(0xC1); PB(0xEE); PB(0x09);                    // shr si, 9
+    PB(0x31); PB(0xF7);                              // xor di, si
+    PB(0x81); PB(0xE7); PW((HASH_SIZE - 1) & ~3);    // and di, set mask
     PB(0x8E); PB(0x06); PW(tseg);                    // mov es, [table_seg]
     for (uint8_t way = 0; way < 4; way++) {
         uint8_t *next[2];
@@ -776,6 +782,11 @@ void drc_rt_init(uint16_t bank) {
     flush();
 }
 
+void drc_rt_set_no_links(uint8_t on) {
+    drc_no_links = on;
+    drc_rt_init(code_bank);   // (DYN without links)
+}
+
 static inline uint8_t bank_key(uint16_t pc) {
     return drc_st.keys[1 + (pc >> 14)];
 }
@@ -1103,7 +1114,7 @@ uint8_t drc_fast_reentry(void) {
         uint16_t pc = z80.pc;
         if (pc < 0x8000 || (pc < 0xC000 && !(drc_st.keys[0] & 0x08))) {
             uint8_t bank = bank_key(pc);
-            const uint16_t *l0 = (const uint16_t*) IRAM(L0_ADDR + ((hash(pc, bank) & ~3) & 0x7FC) * 2);
+            const uint16_t *l0 = (const uint16_t*) IRAM(L0_ENTRY(pc));
             if (l0[0] == pc && (uint8_t) l0[1] == bank) {
                 drc_entry[0] = l0[2];
                 drc_entry[1] = l0[3];
@@ -1234,7 +1245,7 @@ int32_t drc_z80_run(int32_t cycles) {
         uint16_t h0 = hash(pc, bank) & ~3;
         // L0 first (internal RAM, the same one DYN uses): pc, bank,
         // offset, code segment
-        uint16_t *l0 = (uint16_t*) IRAM(L0_ADDR + (h0 & 0x7FC) * 2);
+        uint16_t *l0 = (uint16_t*) IRAM(L0_ENTRY(pc));
         const uint16_t __far *tw = MK_FP(DRC_TABLE_SEG, 0);
         const uint8_t __far *tb = (const uint8_t __far*) tw;
         uint16_t h = h0, off = 0;

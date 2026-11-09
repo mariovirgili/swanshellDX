@@ -427,6 +427,7 @@ void gg_platform_vram_sync(void) {
     log_apply(log_start, drc_st.log_top);
     drc_st.log_top = log_start;
     drc_st.log_last = 0;
+    drc_st.log_next = 0xFFFF;
     // (both logs empty: only the pages deferred from now on)
     for (uint8_t i = 0; i < 64; i++)
         defer_seen[i] = drc_st.vram_class[i] & 8;
@@ -454,6 +455,7 @@ static void log_present(void) {
         drc_st.log_top = log_start;
         drc_st.log_end = log_start + LOG_SIZE;
         drc_st.log_last = 0;
+    drc_st.log_next = 0xFFFF;
 #ifdef GGSWAN_HOST
         if (getenv("GGSWAN_LOGSTAT"))
             fprintf(stderr, "LOGSZ %u\n", (unsigned) (pend_top - pend_start));
@@ -483,6 +485,7 @@ static void log_init(void) {
     drc_st.log_top = LOG_A;
     drc_st.log_end = LOG_A + LOG_SIZE;
     drc_st.log_last = 0;
+    drc_st.log_next = 0xFFFF;
     pend_start = 0;
 }
 
@@ -501,6 +504,7 @@ uint8_t gg_platform_vram_defer(uint16_t a, uint8_t value) {
                 *top = value;
                 last[2]++;
                 drc_st.log_top++;
+                drc_st.log_next = 0xFFFF;
                 return 1;
             }
         } else if (drc_st.log_top + 4 <= drc_st.log_end) {
@@ -509,6 +513,7 @@ uint8_t gg_platform_vram_defer(uint16_t a, uint8_t value) {
             top[2] = 1;
             top[3] = value;
             drc_st.log_last = drc_st.log_top;
+            drc_st.log_next = 0xFFFF;
             drc_st.log_top += 4;
             return 1;
         }
@@ -1552,11 +1557,11 @@ int main(void) {
         if (ws_keypad_scan() & WS_KEY_Y4)
             diag_mode = true;
         if (ws_keypad_scan() & WS_KEY_Y3) {
-            drc_no_links = 1;
+            drc_rt_set_no_links(1);
             drc_check = 1;
             text_print("CPU: RECOMPILER, SELF-CHECK");
         } else if (ws_keypad_scan() & WS_KEY_Y2) {
-            drc_no_links = 1;
+            drc_rt_set_no_links(1);
             text_print("CPU: RECOMPILER, NO LINKS");
         } else if (ws_keypad_scan() & WS_KEY_X1) {
             drc_rt_options(1, 1);

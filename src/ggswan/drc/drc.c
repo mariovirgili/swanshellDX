@@ -476,7 +476,42 @@ uint16_t drc_emit_cls_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) {
     env = e;
     o = o_start = out; o_base = out_off;
     B(0xF6); B(0x85); W(SA(vram_class)); B(8);       // test byte [di + class], 8
-    uint8_t *live = jcc8(0x74);                      // jz live
+    uint8_t *deferred = jcc8(0x75);                  // jnz deferred
+    // live: stored, then the name table routine or sprites_dirty
+    B(0x50);                                         // push ax
+    B(0xA0); W(VA(read_buffer));                     // mov al, [read_buffer]
+    B(0x88); B(0x84); W(e->vram_addr);               // mov [si + vram], al
+    B(0x58);                                         // pop ax
+    B(0xF6); B(0x85); W(SA(vram_class)); B(1);       // test byte [di + class], 1
+    uint8_t *sat = jcc8(0x74);                       // jz sat
+    B(0xE9); W((uint16_t) (e->nt_stub_off - (o_base + (uint16_t) (o - o_start) + 2)));   // jmp NT
+    land8(sat);
+    B(0xC6); B(0x06); W(SA(sprites_dirty)); B(1);    // sprites_dirty = 1
+    B(0xC3);                                         // ret
+    land8(deferred);
+    // the byte that follows the last entry this routine made (log_next):
+    // joined to it without saving registers
+    B(0x3B); B(0x36); W(SA(log_next));               // cmp si, [log_next]
+    uint8_t *s1 = jcc8(0x75);                        // jne slow
+    B(0x8B); B(0x3E); W(SA(log_top));                // mov di, [log_top]
+    B(0x3B); B(0x3E); W(SA(log_end));                // cmp di, [log_end]
+    uint8_t *s2 = jcc8(0x73);                        // jae slow
+    B(0x50);                                         // push ax
+    B(0xA0); W(VA(read_buffer));                     // mov al, [read_buffer]
+    B(0x88); B(0x05);                                // mov [di], al
+    B(0x58);                                         // pop ax
+    B(0x47);                                         // inc di
+    B(0x89); B(0x3E); W(SA(log_top));                // mov [log_top], di
+    B(0x8B); B(0x3E); W(SA(log_last));               // mov di, [log_last]
+    B(0xFE); B(0x45); B(0x02);                       // inc byte [di + 2]
+    B(0x80); B(0x7D); B(0x02); B(0xFF);              // cmp byte [di + 2], 255
+    uint8_t *f255 = jcc8(0x74);                      // je full entry
+    B(0xFF); B(0x06); W(SA(log_next));               // inc word [log_next]
+    B(0xC3);                                         // ret
+    land8(f255);
+    B(0xC7); B(0x06); W(SA(log_next)); W(0xFFFF);    // mov word [log_next], FFFFh
+    B(0xC3);                                         // ret
+    land8(s1); land8(s2);
     uint8_t *retry = o;
     B(0x50); B(0x53); B(0x51); B(0x57);              // push ax, bx, cx, di
     B(0xA0); W(VA(read_buffer));                     // mov al, [read_buffer] (the byte)
@@ -504,35 +539,34 @@ uint16_t drc_emit_cls_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) {
     B(0x89); B(0x3E); W(SA(log_top));                // mov [log_top], di
     B(0xFE); B(0x47); B(0x02);                       // inc byte [bx + 2]
     uint8_t *out1 = jcc8(0xEB);                      // jmp out
+    // (here, in reach of the short jumps)
+    land8(f1);
+    uint8_t *full = o;
+    B(0x5F); B(0x59); B(0x5B); B(0x58);              // full: pop di, cx, bx, ax
+    B(0xC6); B(0x06); W(SA(op)); B(DRC_H_SYNC);      // mov byte [op], SYNC (the log to VRAM)
+    call_near(e->helper_off);                        // (keeps SI, DI, ES, the registers)
+    B(0xEB); B((uint8_t) (retry - (o + 1)));         // jmp retry
     land8(n1); land8(n2); land8(n3); land8(n4);
     B(0x8B); B(0x3E); W(SA(log_top));                // new: mov di, [log_top]
     B(0x89); B(0xFB);                                // mov bx, di
     B(0x83); B(0xC3); B(0x04);                       // add bx, 4
     B(0x3B); B(0x1E); W(SA(log_end));                // cmp bx, [log_end]
-    uint8_t *f2 = jcc8(0x77);                        // ja full
+    B(0x77); B((uint8_t) (full - (o + 1)));          // ja full
     B(0x89); B(0x35);                                // mov [di], si (address)
     B(0xC6); B(0x45); B(0x02); B(0x01);              // mov byte [di + 2], 1
     B(0x88); B(0x45); B(0x03);                       // mov [di + 3], al
     B(0x89); B(0x3E); W(SA(log_last));               // mov [log_last], di
     B(0x89); B(0x1E); W(SA(log_top));                // mov [log_top], bx
     land8(out1);
-    B(0x5F); B(0x59); B(0x5B); B(0x58);              // out: pop di, cx, bx, ax
-    B(0xC3);                                         // ret
-    land8(f1); land8(f2);
-    B(0x5F); B(0x59); B(0x5B); B(0x58);              // full: pop di, cx, bx, ax
-    B(0xC6); B(0x06); W(SA(op)); B(DRC_H_SYNC);      // mov byte [op], SYNC (the log to VRAM)
-    call_near(e->helper_off);                        // (keeps SI, DI, ES, the registers)
-    B(0xEB); B((uint8_t) (retry - (o + 1)));         // jmp retry
-    land8(live);
-    B(0x50);                                         // push ax
-    B(0xA0); W(VA(read_buffer));                     // mov al, [read_buffer]
-    B(0x88); B(0x84); W(e->vram_addr);               // mov [si + vram], al
-    B(0x58);                                         // pop ax
-    B(0xF6); B(0x85); W(SA(vram_class)); B(1);       // test byte [di + class], 1
-    uint8_t *sat = jcc8(0x74);                       // jz sat
-    B(0xE9); W((uint16_t) (e->nt_stub_off - (o_base + (uint16_t) (o - o_start) + 2)));   // jmp NT
-    land8(sat);
-    B(0xC6); B(0x06); W(SA(sprites_dirty)); B(1);    // sprites_dirty = 1
+    // out: the next byte joins this entry (log_next), unless it is full
+    B(0x8B); B(0x1E); W(SA(log_last));               // mov bx, [log_last]
+    B(0x89); B(0xF7);                                // mov di, si
+    B(0x47);                                         // inc di
+    B(0x80); B(0x7F); B(0x02); B(0xFF);              // cmp byte [bx + 2], 255
+    B(0x75); B(0x03);                                // jne +3
+    B(0xBF); W(0xFFFF);                              // mov di, FFFFh
+    B(0x89); B(0x3E); W(SA(log_next));               // mov [log_next], di
+    B(0x5F); B(0x59); B(0x5B); B(0x58);              // pop di, cx, bx, ax
     B(0xC3);                                         // ret
     return (uint16_t) (o - o_start);
 }
@@ -674,6 +708,7 @@ uint16_t drc_emit_run_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
             B(0x8B); B(0x3E); W(SA(log_top));        // mov di, [log_top]
             B(0x89); B(0x16); W(SA(log_top));        // mov [log_top], dx
             B(0x89); B(0x3E); W(SA(log_last));       // mov [log_last], di (this entry)
+            B(0xC7); B(0x06); W(SA(log_next)); W(0xFFFF);   // mov word [log_next], FFFFh
             B(0x89); B(0x35);                        // mov [di], si (VRAM address)
             B(0x5A);                                 // pop dx (k)
             B(0x88); B(0x55); B(0x02);               // mov [di + 2], dl (length)

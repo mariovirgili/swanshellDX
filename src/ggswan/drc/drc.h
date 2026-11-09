@@ -101,6 +101,10 @@ typedef struct {
                           // them, the C side (gg.mapper, gg_slot) not yet
     uint16_t diag_fg;     // diagnostics: at the last scroll split recorded,
     int16_t diag_left;    // frame_given (low word) and the cycles left
+    uint16_t log_next;    // the class routine (drc.c): the VRAM address that
+                          // joins the last log entry, which it made and is
+                          // the top one (FFFFh: none; anything else that
+                          // changes the log sets it)
 } drc_state_t;
 
 /// Helper operations: generated code sets drc_state.op (and arg/val),

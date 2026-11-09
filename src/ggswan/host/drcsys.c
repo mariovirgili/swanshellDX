@@ -45,7 +45,7 @@ void drc_check_failed(uint16_t pc, const z80_t *before, const z80_t *drc,
            pc, drc->pc, ref->pc, used, used_ref, sum_drc, sum_ref);
     exit(1);
 }
-void sys_check(int on) { drc_check = on; drc_no_links = on; }
+void sys_check(int on) { drc_check = on; drc_rt_set_no_links(on); }
 int trace_on;
 static uint32_t step_op[256], step_ed[256];
 void host_step(uint16_t pc) {
@@ -300,5 +300,5 @@ uint32_t sys_code_version(void) { return code_version; }
 uint32_t sys_stat(int i) { return i == 0 ? drc_stat_blocks : i == 1 ? drc_stat_flushes : drc_stat_interp; }
 int sys_pc(void) { return z80.pc; }
 
-void sys_nolinks(int on) { drc_no_links = on; }
+void sys_nolinks(int on) { drc_rt_set_no_links(on); }
 void sys_options(int no_trace, int no_inline) { drc_rt_options(no_trace, no_inline); }
