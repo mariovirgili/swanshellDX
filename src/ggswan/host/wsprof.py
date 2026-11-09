@@ -7,7 +7,7 @@ blk.txt: the blocks to translate, "BLK pc bank len n" lines (as drcsys.c
 prints them with a GGSWAN_BLK hook; only pc and bank are used here).
 Buffer and cache offsets as drc_rt.c (BUF_ADDR A600h, CACHE_START 0AE0h).
 Cycles: a rough V30MZ estimate, for comparing, not exact."""
-import sys, bisect, collections
+import sys, os, bisect, collections
 from elftools.elf.elffile import ELFFile
 from unicorn import *
 from unicorn.x86_const import *
@@ -156,7 +156,7 @@ print('blocks %d, x86 instructions %d (%.0f a block), est. cycles %d (%.0f a blo
 for name, c in stats_c.most_common(30):
     print('%-28s %6.1f%%  instr %8d  cycles %9d' % (name, 100 * c / tc, stats_n[name], c))
 
-raise SystemExit
+if not os.environ.get("WSPROF_LINES"): raise SystemExit
 import subprocess
 full = {}
 for y in st.iter_symbols():

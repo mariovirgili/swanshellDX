@@ -26,6 +26,7 @@
 #endif
 #include "gg.h"
 #include "z80.h"
+#include "version.h"
 #include "drc_rt.h"
 
 /* === IRAM layout (color mode) ===
@@ -149,6 +150,22 @@ static void text_print(const char __far *s) {
     text_y += text_step;
     if (text_y > 17)
         text_y = 17;   // (the last row is overwritten)
+}
+
+// s at the bottom right of the text screen (the patch number at start)
+static void text_corner(const char __far *s) {
+    uint8_t n = 0;
+    while (s[n]) n++;
+    uint8_t y = text_y;
+    text_y = 17;
+    uint8_t x0 = (uint8_t) (27 - n), x = 1;
+    // (text_print starts at column 1: pad with spaces)
+    char buf[28];
+    for (; x < x0 && x < 27; x++) buf[x - 1] = ' ';
+    for (uint8_t k = 0; k < n && x < 27; k++, x++) buf[x - 1] = s[k];
+    buf[x - 1] = 0;
+    text_print(buf);
+    text_y = y;
 }
 
 static void text_hex(const char __far *label, uint32_t v) {
@@ -1499,6 +1516,16 @@ int main(void) {
     memset(gg_vram, 0, 0x4000);
     text_init();
     text_print("GGSWAN 0.1 - GAME GEAR");
+    {
+        // the patch number, bottom right
+        char pb[12] = "PATCH ";
+        uint8_t v = GGSWAN_PATCH, n = 6;
+        if (v >= 100) pb[n++] = '0' + v / 100;
+        if (v >= 10) pb[n++] = '0' + (v / 10) % 10;
+        pb[n++] = '0' + v % 10;
+        pb[n] = 0;
+        text_corner(pb);
+    }
     text_hex("MASK", inportw(IO_NILE_SEG_MASK));
 
     // path of the .gg file, left by the menu in the IPC area

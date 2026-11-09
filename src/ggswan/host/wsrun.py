@@ -171,7 +171,17 @@ def h_code(uc, addr, size, ud):
     if ph == 2: di_c[fname(addr)] += c
     if 0x40000 <= addr < 0xA0000:
         i = bisect.bisect_right(blk_starts, addr) - 1
-        if i >= 0 and addr < blk_info[i][0]: blk_c[blk_info[i][1]] += c
+        if i >= 0 and addr < blk_info[i][0]:
+            blk_c[blk_info[i][1]] += c
+            if MNEM:
+                # WSRUN_MNEM: the translated blocks' instructions by kind
+                code = bytes(uc.mem_read(addr, size))
+                k = mn_cache.get(code)
+                if k is None:
+                    ins = next(md.disasm(code, 0), None)
+                    k = mn_cache[code] = (ins.mnemonic + ' ' + ins.op_str) if ins else '?'
+                    k = mn_cache[code] = mn_class(k)
+                mn_c[k] += c
         else:
             o = addr & 0xFFFF
             if STUBX and 0x240 <= o < 0x4E0: stub_n[o] += 1
@@ -187,6 +197,11 @@ counts = collections.Counter(); di_c = collections.Counter()
 blk_c = collections.Counter(); blk_starts = []; blk_info = []; last_tr = [None]
 PSW = syms['psram_write']
 STUBX = os.environ.get('WSRUN_STUBX'); stub_n = collections.Counter()
+MNEM = os.environ.get('WSRUN_MNEM'); mn_c = collections.Counter(); mn_cache = {}
+import re as _re
+def mn_class(t):
+    # the instruction with its operands generalised (numbers -> N)
+    return _re.sub(r'0x[0-9a-f]+|\b\d+\b', 'N', t)
 # the routines at the start of each code bank (drc_rt.c STUB_*)
 STUBS = [(0x0000, 0x0020, 'EXIT'), (0x0020, 0x0040, 'HELPER'), (0x0040, 0x0180, 'DYN'), (0x0180, 0x01E0, 'NT'),
          (0x01E0, 0x0240, 'CRAM'), (0x0240, 0x04E0, 'OUTI/OUTD'), (0x04E0, 0x0610, 'LDI/LDD'), (0x0610, 0x0660, 'HCALL'),
@@ -209,6 +224,11 @@ def report(fr):
     di_c.clear()
     print('   CD by block: ' + ', '.join('%s %.1f%%' % (k if isinstance(k, str) else '%04X' % k, 100 * c / tot) for k, c in blk_c.most_common(14)))
     blk_c.clear()
+    if MNEM:
+        tm = sum(mn_c.values()) or 1
+        print('   block code by instruction (%% of block code):')
+        for k, v in mn_c.most_common(40): print('      %5.1f%%  %s' % (100 * v / tm, k))
+        mn_c.clear()
     if STUBX:
         code = bytes(uc.mem_read(0x40240, 0x2A0))
         for i in md.disasm(code, 0x240):
@@ -244,6 +264,19 @@ while st['frame'] < FRAMES:
             if gf % 50 == 0 and gf not in dumped:
                 dumped.add(gf)
                 open('%s/ram%05d.bin' % (DUMP, gf), 'wb').write(bytes(uc.mem_read(0x8000, 0x2000)))
+                # the Game Gear VRAM as the game sees it: the WS tiles with the
+                # deferred writes (pending log, then the one filling) applied
+                vr = bytearray(uc.mem_read(0x4000, 0x4000))
+                r16 = lambda a: int.from_bytes(uc.mem_read(a, 2), 'little')
+                def apply(a, e):
+                    while a < e:
+                        ea = r16(a); n = uc.mem_read(a + 2, 1)[0]
+                        for k in range(n): vr[(ea + k) & 0x3FFF] = uc.mem_read(a + 3 + k, 1)[0]
+                        a += 3 + n
+                ps = r16(syms['pend_start'])
+                if ps: apply(ps, r16(syms['pend_top']))
+                apply(r16(syms['log_start']), r16(syms['drc_st'] + 304))
+                open('%s/vram%05d.bin' % (DUMP, gf), 'wb').write(bytes(vr))
         uc.mem_write(FC, (7547 * 2).to_bytes(2, 'little'))
         uc.mem_write(FW, b'\0')
         uc.mem_write(VB, bytes([(uc.mem_read(VB, 1)[0] + 1) & 255]))
