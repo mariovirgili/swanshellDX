@@ -406,6 +406,13 @@ static uint8_t sync_reads, defer_paused;
 void gg_platform_vram_sync_at(uint16_t a) {
     if (!drc_st.defer)
         return;
+    // (an entry holding a starts at most 254 bytes before it) a page never
+    // deferred has nothing in the logs: no work, and it does not count
+    // (Aladdin reads its name table 16-34 times a frame in its levels:
+    // counted, they turned the deferring off for the rest of nearly every
+    // frame, its sprite tiles written in the middle of the WS screen)
+    if (!defer_seen[a >> 8] && !defer_seen[((a - 254) & 0x3FFF) >> 8])
+        return;
     if (sync_reads >= 16) {
         // many reads (Sailor Moon S loads with ~250 a frame, Aladdin has
         // up to 6): scanning the whole log for each one took most of the
@@ -420,9 +427,6 @@ void gg_platform_vram_sync_at(uint16_t a) {
         return;
     }
     sync_reads++;
-    // (an entry holding a starts at most 254 bytes before it)
-    if (!defer_seen[a >> 8] && !defer_seen[((a - 254) & 0x3FFF) >> 8])
-        return;
     uint16_t f = irq_save();
     if (pend_start)
         log_apply_at(pend_start, pend_top, a);
