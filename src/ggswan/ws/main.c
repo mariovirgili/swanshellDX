@@ -888,6 +888,7 @@ NILEDBG_API_TABLE;   // (filled in by niledebug's injector)
 uint8_t spr_par[4], spr_cnt;   // (spr_build's)
 uint8_t *spr_build(const uint8_t *sat, uint8_t *table);
 #endif
+static uint8_t spr_port04, spr_count, spr_ready;
 static void build_sprites(void) {
 #ifdef GGSWAN_HOST
     host_spr_builds++;
@@ -940,13 +941,24 @@ static void build_sprites(void) {
         }
     }
 #endif
-    uint16_t f = irq_save();
-    outportb(0x04, (IRAM_OFF(table) >> 9) & 0x3F);
-    outportb(0x05, 0);        // first sprite
-    outportb(0x06, (uint8_t) ((s - table) >> 2));   // sprite count
-    irq_restore(f);
+    // (given to the WS by sprites_publish, with the frame's tile log)
+    spr_port04 = (IRAM_OFF(table) >> 9) & 0x3F;
+    spr_count = (uint8_t) ((s - table) >> 2);
+    spr_ready = 1;
     spr_back ^= 1;
     drc_st.sprites_dirty = false;
+}
+
+// the sprite table built to the WS (it copies it at the end of the screen)
+static void sprites_publish(void) {
+    if (!spr_ready)
+        return;
+    spr_ready = 0;
+    uint16_t f = irq_save();
+    outportb(0x04, spr_port04);
+    outportb(0x05, 0);        // first sprite
+    outportb(0x06, spr_count);   // sprite count
+    irq_restore(f);
 }
 
 GGSWAN_HOST_VISIBLE void video_init(void) {
@@ -1023,17 +1035,6 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
             __asm__ volatile ("hlt");
         while (inportb(WS_DISPLAY_LINE_PORT) == GG_VIEW_H) {}
     }
-    // not on the last lines of the screen: the sprite table would miss the
-    // copy (line 144 on the WS, 142 in Mednafen) while the VRAM writes
-    // still made it to the end-of-screen interrupt, the new tiles with the
-    // old sprites for a WS frame (Aladdin now and then). After the end.
-    {
-        uint8_t l = inportb(WS_DISPLAY_LINE_PORT);
-        if (l >= GG_VIEW_H - 4 && l < GG_VIEW_H) {
-            prof_phase = PROF_IDLE;
-            while ((l = inportb(WS_DISPLAY_LINE_PORT)) >= GG_VIEW_H - 4 && l <= GG_VIEW_H) {}
-        }
-    }
 #endif
     prof_phase = PROF_VIDEO;
     const uint8_t *reg = gg.vdp.reg;
@@ -1071,9 +1072,34 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
     outportb(0x11, act_vy);   // (the PC tests have no WS raster)
 #endif
     vp_lap(VP_MAP);
-    // this frame's VRAM writes: at the end of the WS screen, with the
-    // scroll (splits_commit) and the sprites (the WS copies them there)
+    // the sprite table first (built, not given to the WS yet)
+    if (drc_st.sprites_dirty)
+        build_sprites();
+    vp_lap(VP_SPR);
+    // this frame's VRAM writes (at the end of the WS screen) and its
+    // sprite table (the WS copies it there) together, both for the same WS
+    // frame: never on the last lines of the screen, where the sprite table
+    // missed the copy (line 144 on the WS, 142 in Mednafen) while the
+    // VRAM writes still made the end-of-screen interrupt (patch 92: checked
+    // only at the start of video_present, a map relayout or the sprite
+    // table could still end there: Aladdin's new pose on the old sprites
+    // now and then). Then the scroll (splits_commit)
+#ifndef GGSWAN_HOST
+    for (;;) {
+        uint16_t f = irq_save();
+        uint8_t l = inportb(WS_DISPLAY_LINE_PORT);
+        if (l < GG_VIEW_H - 3 || l > GG_VIEW_H) {
+            log_present();
+            sprites_publish();
+            irq_restore(f);
+            break;
+        }
+        irq_restore(f);   // (the end-of-screen interrupt)
+    }
+#else
     log_present();
+    sprites_publish();
+#endif
     splits_commit();
     // record the next frame: it starts with the current value
     rec_val[0] = 16 - gg.vdp.reg[8];
@@ -1083,10 +1109,6 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
     if (!(gg.frame & 7))
         update_backdrop();
     vp_lap(VP_BACK);
-
-    if (drc_st.sprites_dirty)
-        build_sprites();
-    vp_lap(VP_SPR);
 
     // display on: at the start of the frame or now (games such as Sonic
     // turn it off in the frame interrupt while they fill the VRAM, and on
