@@ -2628,6 +2628,22 @@ static int ram_smc(int n, uint16_t pc, uint16_t end) {
 static void ram_check(uint16_t pc, uint16_t end) {
     uint8_t *fail[RAM_BLOCK_MAX];
     int nf = 0;
+    if (end - pc > RAM_BLOCK_MAX) {
+        // a block of OUTIs only (translate): all words ED A3
+        B(0x50);                                         // push ax
+        B(0x51);                                         // push cx
+        B(0x1E); B(0x07);                                // push ds; pop es
+        B(0xBF); W((uint16_t) (pc + env->ram_delta));    // mov di, start
+        B(0xB9); W((uint16_t) ((end - pc) / 2));         // mov cx, words
+        B(0xB8); W(0xA3ED);                              // mov ax, A3EDh (ED A3)
+        B(0xFC);                                         // cld
+        B(0xF3); B(0xAF);                                // repe scasw
+        B(0x59);                                         // pop cx
+        B(0x58);                                         // pop ax
+        fail[nf++] = jcc8(0x75);                         // jne fail
+        hl_es = 0;
+        goto checked;
+    }
     uint16_t a = pc;
     while (a < end) {
         uint8_t k = a - pc;
@@ -2642,6 +2658,7 @@ static void ram_check(uint16_t pc, uint16_t end) {
         }
         fail[nf++] = jcc8(0x75);                                 // jne fail
     }
+checked:;
     uint8_t *body = jcc8(0xEB);
     for (int i = 0; i < nf; i++) land8(fail[i]);
     // changed: back to the runtime, which leaves this address to the interpreter
@@ -2659,6 +2676,7 @@ int drc_translate(const drc_env_t *e, uint16_t pc, uint8_t *out,
     // code in work RAM (C000-DFFF): short blocks that check their own bytes
     // when entered (see ram_check)
     uint8_t ram = pc >= 0xC000;
+    uint8_t long_run = 0;   // a block in RAM of OUTIs only, longer than RAM_BLOCK_MAX
     if (ram && (!env->ram_blocks || pc >= 0xDFC0)) return 0;
     // decode
     int n = 0;
@@ -2675,6 +2693,26 @@ int drc_translate(const drc_env_t *e, uint16_t pc, uint8_t *out,
         decode(p, &ins[n]);
         ins[n].dyn = 0;
         ins[n].trace = 0;
+        if (ram && n == 0 && ins[0].pre == 0xED && ins[0].op == 0xA3 && ins[0].count > RAM_BLOCK_MAX / 2
+            && !env->no_fast) {
+            // a block in RAM made only of a run of OUTIs (Aladdin's
+            // unrolled VRAM upload at C6FF-C7F8, entered at any of them):
+            // the whole run, its bytes checked by one REPE SCASW
+            // (ram_check) instead of one compare per OUTI; the block ends
+            // after it. The same as the blocks of 12 OUTIs it replaces
+            // (translate): whole pieces of 12 unless the run ends here (64:
+            // more may follow), none starting from DFC0 (interpreted)
+            uint8_t k = ins[0].count;
+            if (k == 64) k = 60;
+            uint16_t pieces = (uint16_t) ((0xDFC0 - pc + 23) / 24);
+            if (pieces < 6 && k > 12 * pieces) k = (uint8_t) (12 * pieces);
+            ins[0].count = k;
+            ins[0].len = k * 2;
+            long_run = k > RAM_BLOCK_MAX / 2;
+            n = 1;
+            p += ins[0].len;
+            break;
+        }
         if (ram && p + ins[n].len - pc > RAM_BLOCK_MAX) {
             // a run of LDI/OUTI... (up to 128 bytes) longer than a block
             // in RAM may be (ram_check checks at most RAM_BLOCK_MAX
@@ -2774,6 +2812,22 @@ int drc_translate(const drc_env_t *e, uint16_t pc, uint8_t *out,
     force_nolink = 0;
     idle_block = is_idle(n, pc);
     if (ram) ram_check(pc, end);
+    if (long_run) {
+        // the blocks of 12 OUTIs this one replaces would each have ended the
+        // run when the cycles ran out: so only when the cycles of all the
+        // pieces but the last leave some; else the first 12, then the
+        // block after them (the same again)
+        uint8_t k = ins[0].count, r = (uint8_t) (k - 12 * ((k - 1) / 12));
+        B(0x81); B(0x3E); W(SA(cycles)); W(16 * (k - r));   // cmp word [cycles], cycles
+        uint8_t *whole = jcc8(0x7F);                         // jg whole
+        ins[0].count = 12; ins[0].len = 24;
+        if (!emit(0))
+            return 0;
+        exit_const(pc + 24, 0);
+        land8(whole);
+        fkind = K_AH; cf_valid = 0; hl_es = 0; cyc = 0;
+        ins[0].count = k; ins[0].len = k * 2;
+    }
     int i;
     for (i = 0; i < n; i++) {
         // emit() can only refuse an instruction that decode() accepted by
