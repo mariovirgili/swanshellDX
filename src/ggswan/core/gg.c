@@ -196,7 +196,8 @@ static void vdp_write_control(uint8_t v) {
  *
  * The CPU does not stop at every line: gg_run_frame() runs it up to the
  * next line where something must happen at an exact time (the frame
- * interrupt at line 193, a line interrupt, the end of the frame); the line
+ * presented at line 168, the frame interrupt at line 193, a line
+ * interrupt, the end of the frame); the line
  * being drawn is worked out from the cycles when the game asks for it.
  * Writes to VDP registers 0, 1 and 10 (interrupt settings) make the CPU
  * return early (z80_break) so that the next stop is computed again.
@@ -331,12 +332,11 @@ static void vdp_line(uint16_t line) {
     if (line == GG_ACTIVE_LINES + 1) {
         gg.vdp.status |= 0x80;
         gg_diag_vbl();
-        update_irq();
-        gg_platform_frame_end();
-        return;
     }
 
     update_irq();
+    if (line == GG_PRESENT_LINE)
+        gg_platform_frame_end();
 }
 
 // start lines from .. to - 1 at once (the same as vdp_line on each, in
@@ -373,7 +373,7 @@ static void vdp_lines(uint16_t from, uint16_t to) {
     }
     gg.vdp.vcounter = to - 1;
     update_irq();
-    if (end)
+    if (from <= GG_PRESENT_LINE && to > GG_PRESENT_LINE)
         gg_platform_frame_end();
 }
 
@@ -383,7 +383,9 @@ static uint16_t next_event(uint16_t l) {
     if (gg_every_line)
         return l;
     uint16_t e = GG_LINES;
-    if (l <= GG_ACTIVE_LINES + 1)
+    if (l <= GG_PRESENT_LINE)
+        e = GG_PRESENT_LINE;       // the frame presented
+    else if (l <= GG_ACTIVE_LINES + 1)
         e = GG_ACTIVE_LINES + 1;   // frame interrupt
     if ((gg.vdp.reg[0] & 0x10) && l <= GG_ACTIVE_LINES) {
         // the line counter reaches zero at the start of line l + counter
@@ -425,9 +427,9 @@ int32_t gg_line_event(int32_t left) {
     // (frame_pos with the cycles left given)
     int32_t p = frame_given - left;
     uint16_t pos = p < 0 ? 0 : p > 0xFFFF ? 0xFFFF : (uint16_t) p;
-    // only the lines of the picture (the frame interrupt, the lines after
-    // it and the end of the frame stay in gg_run_frame)
-    if (gg_every_line || pos >= (uint16_t) (GG_ACTIVE_LINES * (unsigned) GG_CYCLES_PER_LINE))
+    // only the lines of the view (the frame presented at line 168, the
+    // frame interrupt and the end of the frame stay in gg_run_frame)
+    if (gg_every_line || pos >= (uint16_t) (GG_PRESENT_LINE * (unsigned) GG_CYCLES_PER_LINE))
         return -1;
     return event_step(pos);
 }
@@ -441,7 +443,7 @@ int16_t gg_fast_line(int16_t left) {
     uint16_t e = started;
     uint8_t r = gg.vdp.reg[10];
     if (gg_every_line || left > 0 || left <= -GG_CYCLES_PER_LINE
-        || e == 0 || r >= 128 || e + r + 1 >= GG_ACTIVE_LINES - 1
+        || e == 0 || r >= 128 || e + r + 1 >= GG_PRESENT_LINE - 1
         || gg.vdp.line_counter || !(gg.vdp.reg[0] & 0x10)
         || frame_given != (int32_t) (uint16_t) (e * (unsigned) GG_CYCLES_PER_LINE))
         return 0;

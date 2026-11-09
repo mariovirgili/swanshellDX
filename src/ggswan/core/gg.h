@@ -27,6 +27,9 @@
 #define GG_VIEW_Y 24
 #define GG_VIEW_W 160
 #define GG_VIEW_H 144
+// the frame is presented at the start of this line, right after the last
+// line the Game Gear shows (gg_platform_frame_end)
+#define GG_PRESENT_LINE (GG_VIEW_Y + GG_VIEW_H)
 
 // Joypad bits (1 = pressed)
 #define GG_KEY_UP    0x01
@@ -90,8 +93,9 @@ uint8_t GGFAR *gg_platform_cart_ram(uint8_t page);
 void gg_platform_line(uint16_t line);
 /// A write to the PSG (port $7F) or the stereo register (port $06).
 void gg_platform_psg(uint8_t value);
-/// the end of the picture (line 193, the frame interrupt): the platform
-/// shows the frame as the Game Gear has drawn it
+/// the end of the view (the start of line 168, after the last line the
+/// Game Gear shows): the platform shows the frame as the Game Gear has
+/// drawn it
 void gg_platform_frame_end(void);
 /// the PSG writes the recompiler queued (drc_state_t), in order
 void gg_platform_psg_flush(void);

@@ -1174,11 +1174,11 @@ uint16_t drc_emit_ctl_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) {
         B(0x88); B(0x94); W(SA(rec_val));            // mov [si + rec_val], dl
         B(0xFE); B(0x06); W(SA(rec_n));              // inc byte [rec_n]
         uint8_t *out = jcc8(0xEB);                   // (appended: jmp set_last)
-        // below the view: after the picture (line 194 on, the frame was
-        // presented at 193, main.c) the value for the next frame's first
-        // line; before it, nothing
+        // below the view: after it (line 169 on, the frame was presented
+        // at the start of line 168, main.c) the value for the next frame's
+        // first line; before it, nothing
         land8(below);
-        B(0x3D); W(GG_ACTIVE_LINES + 2 - GG_VIEW_Y); // cmp ax, 194 - VIEW_Y
+        B(0x3D); W(GG_PRESENT_LINE + 1 - GG_VIEW_Y); // cmp ax, 169 - VIEW_Y
         uint8_t *mid = jcc8(0x72);                   // jb done
         B(0x88); B(0x16); W(SA(rec_val));            // mov [rec_val], dl
         B(0xC6); B(0x06); W(SA(rec_n)); B(1);        // rec_n = 1

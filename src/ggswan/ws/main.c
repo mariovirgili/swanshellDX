@@ -703,9 +703,9 @@ static void hscroll_write(uint8_t value) {
         drc_st.hs_last = value;
         return;
     }
-    if (line > GG_ACTIVE_LINES + 1) {
-        // after the picture (the frame interrupt, the frame was presented):
-        // the value for the next frame's first line
+    if (line > GG_PRESENT_LINE) {
+        // after the view (the frame was presented at line 168): the value
+        // for the next frame's first line
         rec_val[0] = v;
         rec_n = 1;
         drc_st.hs_last = value;
@@ -989,13 +989,16 @@ GGSWAN_HOST_VISIBLE void video_init(void) {
 #endif
 }
 
-// The frame is shown as the Game Gear drew it: at the end of its picture
-// (line 193, before the frame interrupt), not at the end of the frame
-// (262). What a game writes in the frame interrupt is for the next
-// frame; and some upload more after line 262: Sailor Moon S writes its
-// sprite table at lines 194-208 and the matching sprite tiles at lines
-// 241-261 and 0-84 of the next frame (above its sprites on a Game Gear):
-// shown at line 262 its sprites were half the old pose.
+// The frame is shown as the Game Gear drew it: right after the last line
+// it shows (the start of line 168), not at the end of the frame (262) nor
+// at the frame interrupt (193). What a game writes below the view is for
+// the next frame: Sailor Moon S writes its sprite table at lines 194-208
+// and the matching sprite tiles at lines 241-261 and 0-84 of the next
+// frame (above its sprites on a Game Gear): shown at line 262 its sprites
+// were half the old pose. The Addams Family writes its sprite table at
+// lines 180-193 and Gomez's tiles at 198-241: shown at 193 (since the
+// Sailor Moon S change), the last sprites still had the old table and
+// Gomez the old tiles, in pieces.
 GGSWAN_HOST_VISIBLE void video_present(void);
 void gg_platform_frame_end(void) {
     video_present();
@@ -1015,6 +1018,17 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
         while (frame_waiting)
             __asm__ volatile ("hlt");
         while (inportb(WS_DISPLAY_LINE_PORT) == GG_VIEW_H) {}
+    }
+    // not on the last lines of the screen: the sprite table would miss the
+    // copy (line 144 on the WS, 142 in Mednafen) while the VRAM writes
+    // still made it to the end-of-screen interrupt, the new tiles with the
+    // old sprites for a WS frame (Aladdin now and then). After the end.
+    {
+        uint8_t l = inportb(WS_DISPLAY_LINE_PORT);
+        if (l >= GG_VIEW_H - 4 && l < GG_VIEW_H) {
+            prof_phase = PROF_IDLE;
+            while ((l = inportb(WS_DISPLAY_LINE_PORT)) >= GG_VIEW_H - 4 && l <= GG_VIEW_H) {}
+        }
     }
 #endif
     prof_phase = PROF_VIDEO;
@@ -1635,7 +1649,7 @@ int main(void) {
         ia16_enable_irq();
         prof_phase = PROF_OTHER;
         read_keys();
-        gg_run_frame();   // (video_present at its line 193)
+        gg_run_frame();   // (video_present at its line 168)
 #ifdef GGSWAN_NILEDBG
         // niledebug (USB debugger, build with NILEDBG=1, inject with
         // --hook-offset none --pow read): the link served here, once a

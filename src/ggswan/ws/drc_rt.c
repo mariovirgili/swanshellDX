@@ -232,8 +232,8 @@ static uint16_t put_line(uint8_t *stub) {
     BAIL(0x73);                                      // jae common
     PB(0x01); PB(0xF7);                              // add di, si
     PB(0x47);                                        // inc di (e + r + 1)
-    PB(0x81); PB(0xFF); PW(GG_ACTIVE_LINES - 1);     // cmp di, 191
-    BAIL(0x73);                                      // jae common (next not in the picture)
+    PB(0x81); PB(0xFF); PW(GG_PRESENT_LINE - 1);     // cmp di, 167
+    BAIL(0x73);                                      // jae common (next not in the view)
     PB(0x83); PB(0x3E); PW(V_(frame_given) + 2); PB(0);   // cmp word [frame_given + 2], 0
     BAIL(0x75);                                      // jne common
     PB(0x8B); PB(0x3E); PW(V_(line_pos));            // mov di, [line_pos] (e * 228)

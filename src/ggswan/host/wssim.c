@@ -219,7 +219,7 @@ int main(int argc, char **argv) {
             if (!comma) break;
             k = comma + 1;
         }
-        gg_run_frame();   // (video_present at line 193)
+        gg_run_frame();   // (video_present at line 168)
         if (every && (fr + 1) % every == 0) {
             ws_render();
             long diff = 0;
