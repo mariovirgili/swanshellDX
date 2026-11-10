@@ -861,6 +861,12 @@ void line_irq(void) {
             if (end) {
                 act_i = i;
                 outportb(WS_DISPLAY_LINE_IRQ_PORT, next);
+                ws_int_ack(WS_INT_ACK_LINE_MATCH);
+                // (see below; here only after VRAM writes long enough to
+                // reach that line of the next screen)
+                uint8_t now = inportb(WS_DISPLAY_LINE_PORT);
+                if (now < GG_VIEW_H && now >= next)
+                    continue;
                 break;
             }
             i = 0;
@@ -869,6 +875,28 @@ void line_irq(void) {
         if (next > cur) {
             act_i = i;
             outportb(WS_DISPLAY_LINE_IRQ_PORT, next);
+            /*
+             * The line may have started between reading it and setting
+             * the match (this interrupt served late: interrupts off in
+             * the main code, a long REP there): no match on it then until
+             * the next WS screen, so no more splits and no end of the
+             * screen in this one, the rest of it and the top of the next
+             * with the last scroll value written: half a screen jerking
+             * sideways for an instant (Super Monaco GP and others). And
+             * a match that came before the acknowledge at the end of the
+             * handler was lost with it, the same way. So: acknowledge
+             * right after setting the match, then look at the line again;
+             * if it is there already, that split (or the end of the
+             * screen) now. A match still pending from a line handled this
+             * way is cleared by the acknowledge after the next one set.
+             */
+            ws_int_ack(WS_INT_ACK_LINE_MATCH);
+            uint8_t now = inportb(WS_DISPLAY_LINE_PORT);
+            if (now >= next) {
+                if (next >= GG_VIEW_H)
+                    i = 0;
+                continue;
+            }
             break;
         }
         // late (consecutive splits, Super Monaco GP's road: one a line, and
@@ -876,7 +904,6 @@ void line_irq(void) {
         // that line is already being drawn, a match on it would come only
         // in the next WS frame. Its value now.
     }
-    ws_int_ack(WS_INT_ACK_LINE_MATCH);
 }
 #endif
 
