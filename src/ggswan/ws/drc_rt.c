@@ -574,6 +574,23 @@ static uint16_t put_cram(uint8_t *stub, uint16_t at) {
     PB(0x8D); PB(0x77); PB(0x01);                        // lea si, [bx + 1]
     PB(0x81); PB(0xE6); PW(0x3FFF);                      // and si, 3FFFh
     PB(0x89); PB(0x36); PW(V_(addr));                    // mov [addr], si
+#ifdef GGSWAN_SMS
+    // smsswan: one byte a color (--BBGGRR), its WS color from the table
+    // of 64 at WS_CRAM_TABLE (main.c video_init)
+    PB(0x83); PB(0xE3); PB(0x1F);                        // and bx, 1Fh
+    PB(0x24); PB(0x3F);                                  // and al, 3Fh
+    PB(0x88); PB(0x87); PW(V_(cram));                    // mov [bx + cram], al
+    PB(0x30); PB(0xE4);                                  // xor ah, ah
+    PB(0x89); PB(0xC6);                                  // mov si, ax
+    PB(0x01); PB(0xF6);                                  // add si, si
+    PB(0x8B); PB(0x84); PW(WS_CRAM_TABLE);               // mov ax, [si + table]
+    PB(0x01); PB(0xDB);                                  // add bx, bx
+    PB(0x89); PB(0x87); PW(0xFE00);                      // mov [bx + FE00h], ax
+    PB(0x80); PB(0xFB); PB(0x20);                        // cmp bl, 20h
+    PB(0x72); PB(0x04);                                  // jb +4
+    PB(0x89); PB(0x87); PW(0xFEE0);                      // mov [bx + FEE0h], ax (FF00h + color * 2 - 20h)
+    PB(0x5B); PB(0x58); PB(0xC3);                        // pop bx; pop ax; ret
+#else
     PB(0x83); PB(0xE3); PB(0x3F);                        // and bx, 3Fh
     PB(0xF6); PB(0xC3); PB(0x01);                        // test bl, 1
     PB(0x75); PB(0x06);                                  // jnz odd
@@ -595,6 +612,7 @@ static uint16_t put_cram(uint8_t *stub, uint16_t at) {
     PB(0x72); PB(0x04);                                  // jb +4
     PB(0x89); PB(0x87); PW(0xFEE0);                      // mov [bx + FEE0h], ax (FF00h + color * 2 - 20h)
     PB(0x5B); PB(0x58); PB(0xC3);                        // pop bx; pop ax; ret
+#endif
 #undef PB
 #undef PW
 #undef V_
@@ -735,11 +753,7 @@ void drc_rt_init(uint16_t bank) {
     for (uint8_t i = 0; i < 8; i++)
         drc_st.nt_flags[i] = (i & 1 ? 0x4000 : 0) | (i & 2 ? 0x8000 : 0) | (i & 4 ? 0x0200 : 0);
     env.no_fast = drc_no_fast;
-#ifdef GGSWAN_SMS
-    env.cram_off = 0;   // (the Master System's CRAM: the helper, for now)
-#else
     env.cram_off = drc_no_fast ? 0 : STUB_CRAM;   // (X4: CRAM through the helper)
-#endif
     env.cls_off = drc_no_fast ? 0 : STUB_CLS;
     env.psg_queue = !drc_no_fast;
     env.pad_in = !drc_no_fast;     // (X4: inline, no deferred tile writes)

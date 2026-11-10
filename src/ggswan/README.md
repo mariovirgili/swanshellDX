@@ -6,7 +6,7 @@ emulated by a dynamic recompiler (Z80 to V30MZ code), with the original
 interpreter kept for the parts that need it. The Game Gear video memory is
 mapped onto the WonderSwan's own tile and screen hardware.
 
-Status: fairly stable (patch 127). It has been tested mostly in the
+Status: fairly stable (patch 128). It has been tested mostly in the
 nileswan-medem emulator and with the host test tools; tests on real
 hardware are still to come.
 
@@ -276,7 +276,7 @@ it are listed in order without one.
 - lighter DYN lookup and class routine for deferred tile bytes
 - OUTI runs to CRAM handled in the run routine
 
-### Patches 90-127
+### Patches 90-128
 
 | Patch | Change |
 |---|---|
@@ -318,3 +318,4 @@ it are listed in order without one.
 | 125 | smsswan, steps 5 and 6: the view moved with the Y buttons, diagnostics with Y1 at the start, the Codemasters mapper |
 | 126 | smsswan: the whole picture squeezed vertically (START + Y3), an experiment; the scroll list prepared with interrupts on |
 | 127 | smsswan: the first 16 lines not scrolled sideways (register 0 bit 6: Wonder Boy III's status bar) |
+| 128 | smsswan: palette writes in the recompiler without the C helper |

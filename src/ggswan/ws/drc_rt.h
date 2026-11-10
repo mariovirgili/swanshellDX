@@ -2,6 +2,9 @@
  * ggswan - recompiler runtime (see drc_rt.c)
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
+// smsswan: the WS colors of the Master System's 64 (IRAM, free: 128 bytes;
+// filled by main.c video_init, used by the recompiler's CRAM routine)
+#define WS_CRAM_TABLE 0xE600
 #ifndef GGSWAN_DRC_RT_H_
 #define GGSWAN_DRC_RT_H_
 

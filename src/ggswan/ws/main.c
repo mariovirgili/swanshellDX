@@ -1266,6 +1266,13 @@ GGSWAN_HOST_VISIBLE void video_init(void) {
         t[r * 4 + 1] = t[r * 4 + 2] = t[r * 4 + 3] = 0;
     }
     memset(TILE_PTR(1023), 0, 32);
+#ifdef GGSWAN_SMS
+    // the WS color of each of the Master System's 64 (--BBGGRR, each
+    // 2-bit value times 5), for the recompiler's CRAM routine
+    for (uint8_t v = 0; v < 64; v++)
+        ((uint16_t*) IRAM(WS_CRAM_TABLE))[v] = (uint16_t) ((v & 3) * 5) << 8
+            | (uint16_t) (((v >> 2) & 3) * 5) << 4 | (uint16_t) (((v >> 4) & 3) * 5);
+#endif
 #ifdef GGSWAN_HOST
 #ifdef GGSWAN_SMS
     // (the PC tests: GGSWAN_NOPRIO, and GGSWAN_PAN=x,y for the view)
