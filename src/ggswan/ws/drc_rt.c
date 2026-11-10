@@ -351,7 +351,15 @@ static uint16_t put_line(uint8_t *stub) {
     PB(0x29); PB(0xFE);                              // sub si, di
     PB(0x01); PB(0x36); PW(V_(frame_given));         // add [frame_given], si
     PB(0x83); PB(0x16); PW(V_(frame_given) + 2); PB(0);   // adc word [frame_given + 2], 0
-    PB(0x01); PB(0x36); PW(S_(cycles));              // add [cycles], si
+    // (the cycles run past the start of the line are not counted: left =
+    // want, as gg_fast_line; see event_step in gg.c)
+    PB(0x8B); PB(0x3E); PW(S_(left_base));           // mov di, [left_base]
+    PB(0x03); PB(0x3E); PW(S_(cycles));              // add di, [cycles] (left, 0 or less)
+    PB(0x29); PB(0x3E); PW(V_(irq_debt));            // sub [irq_debt], di
+    PB(0x8B); PB(0x3E); PW(S_(left_base));           // mov di, [left_base]
+    PB(0xF7); PB(0xDF);                              // neg di
+    PB(0x01); PB(0xF7);                              // add di, si
+    PB(0x89); PB(0x3E); PW(S_(cycles));              // mov [cycles], di (left = want)
     PB(0xC7); PB(0x06); PW(S_(link)); PW(0);         // link = 0
     PB(0xC3);                                        // ret
 #ifdef GGSWAN_HOST

@@ -400,6 +400,9 @@ static uint16_t next_event(uint16_t l) {
 }
 
 #define started gg.vdp.started   // lines of this frame started
+#ifndef GG_IRQ_LATE
+#define GG_IRQ_LATE 1
+#endif
 
 // (line_pos = started * 228 always: the recompiler's line routine)
 static inline void set_started(uint16_t s) {
@@ -413,8 +416,55 @@ static inline void set_started(uint16_t s) {
 static int32_t event_step(uint16_t pos) {
     uint16_t reached = pos / GG_CYCLES_PER_LINE + 1;
     if (reached > GG_LINES) reached = GG_LINES;
+    /*
+     * A line interrupt taken late (the recompiler stops only
+     * between blocks: a long one, an LDIR or OUTI run in one go, ends lines
+     * after the event it was given the cycles for). With an interrupt every
+     * line (Super Monaco GP II's road, one scroll value a line, register 10
+     * = 0 from line 120 to 160) the interrupts of the lines run over were
+     * lost (one request for all of them), so the game's handler counted
+     * fewer lines than the picture has and set the status bar's scroll up
+     * to 7 lines late, or not at all in that frame: the bar's digits torn.
+     * And an interrupt part of a line late put the handler's scroll write
+     * on the line after its own. The frame position goes back to the start
+     * of the interrupt's line instead (the cycles run over are not
+     * counted, here and in gg_fast_line and the recompiler's LINE routine):
+     * the handler runs at its line, and again for each of the next ones.
+     * Those cycles are taken back later in the frame (irq_debt, below):
+     * the CPU still gets a frame's worth. Only when the CPU would have taken
+     * it (interrupts on, none waiting: a game that keeps them off loses
+     * them on the Game Gear too).
+     */
+    if ((gg.vdp.reg[0] & 0x10) && z80.iff1 && !gg.vdp.line_pending
+            && started <= GG_ACTIVE_LINES) {
+        uint16_t l1 = started + gg.vdp.line_counter;   // the line that requests it
+        uint16_t at = l1 * (uint16_t) GG_CYCLES_PER_LINE;
+        if (l1 <= GG_ACTIVE_LINES && pos >= at && pos - at >= GG_IRQ_LATE) {
+            frame_given -= pos - at;
+            gg.vdp.irq_debt += pos - at;
+            pos = at;
+            reached = l1 + 1;
+        }
+    }
     vdp_lines(started, reached);
     if (reached > started) set_started(reached);
+    // the cycles not counted above are taken back below the view, where
+    // nothing is shown (after the frame was presented, up to line 192: the
+    // frame interrupt stays on time); what is left, at the end of the frame
+    if (gg.vdp.irq_debt && started > GG_PRESENT_LINE && started <= GG_ACTIVE_LINES) {
+        uint16_t lim = GG_ACTIVE_LINES * (uint16_t) GG_CYCLES_PER_LINE;
+        if (pos < lim) {
+            uint16_t t = lim - pos;
+            if (t > gg.vdp.irq_debt)
+                t = gg.vdp.irq_debt;
+            gg.vdp.irq_debt -= t;
+            frame_given += t;
+            pos += t;
+            reached = pos / GG_CYCLES_PER_LINE + 1;
+            vdp_lines(started, reached);
+            if (reached > started) set_started(reached);
+        }
+    }
     if (started >= GG_LINES && pos >= GG_FRAME_CYCLES)
         return -1;
     uint16_t e = next_event(started);
@@ -458,7 +508,10 @@ int16_t gg_fast_line(int16_t left) {
     set_started(e + 1);
     int16_t want = (int16_t) ((r + 1u) * GG_CYCLES_PER_LINE);   // (r < 128: fits)
     frame_given += want;
-    return want;
+    // (the cycles run past the start of the line, -left, are not counted:
+    // the interrupt is taken at the start of its line; see event_step)
+    gg.vdp.irq_debt -= left;
+    return want - left;
 }
 
 void gg_run_frame(void) {
@@ -492,5 +545,11 @@ void gg_run_frame(void) {
         }
     }
     frame_carry = frame_pos() - GG_FRAME_CYCLES;
+    {
+        // (at most 100 lines at once; the rest is forgiven)
+        uint16_t d = gg.vdp.irq_debt;
+        gg.vdp.irq_debt = 0;
+        frame_carry += d > 100 * GG_CYCLES_PER_LINE ? 100 * GG_CYCLES_PER_LINE : d;
+    }
     gg.frame++;
 }

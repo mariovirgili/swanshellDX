@@ -83,6 +83,9 @@ typedef struct {
     // 32 colors of 2 bytes, 12 bits (in gg.vdp: the recompiler's CRAM
     // routine reaches it at a known address)
     uint8_t cram[64];
+    // cycles not counted when a line interrupt was taken late (gg.c
+    // event_step): taken back below the view, in the same frame
+    uint16_t irq_debt;
 } gg_vdp_t;
 
 typedef struct {

@@ -6,7 +6,7 @@ emulated by a dynamic recompiler (Z80 to V30MZ code), with the original
 interpreter kept for the parts that need it. The Game Gear video memory is
 mapped onto the WonderSwan's own tile and screen hardware.
 
-Status: fairly stable (patch 118). It has been tested mostly in the
+Status: fairly stable (patch 119). It has been tested mostly in the
 nileswan-medem emulator and with the host test tools; tests on real
 hardware are still to come.
 
@@ -270,7 +270,7 @@ it are listed in order without one.
 - lighter DYN lookup and class routine for deferred tile bytes
 - OUTI runs to CRAM handled in the run routine
 
-### Patches 90-118
+### Patches 90-119
 
 | Patch | Change |
 |---|---|
@@ -303,3 +303,4 @@ it are listed in order without one.
 | 116 | START + Y1 held for a second goes back to the menu; cartridge RAM saved to .sav by the menu |
 | 117 | frame by frame fixed (the pause waited for a line it never saw), frame number F while paused; cartridge reset before the soft reset to the menu |
 | 118 | smsswan, step 1: PLUG_SMS.BIN from the same sources (-DGGSWAN_SMS), the 224x144 view over the whole WS screen, priority always on, .sms in the menu |
+| 119 | line interrupts taken at their line (Super Monaco GP II: the status bar's digits torn, its scroll set lines late) |
