@@ -1505,6 +1505,13 @@ static uint8_t idle_block;
 static int idle_body(const ins_t *I) {
     uint8_t op = I->op;
     if (I->pre == 0xCB) return op >= 0x40 && op < 0x80;          // BIT b,r / (HL)
+    if (I->pre == 0xDD || I->pre == 0xFD) {
+        // BIT b,(IX+d) (Sonic waits for its frame interrupt with
+        // BIT 0,(IY+0) / JR Z: a quarter of its time on the title screen,
+        // 7% in the game); LD r,(IX+d), r not H or L
+        if (I->cb) return (op & 0xC0) == 0x40;
+        return op == 0x7E || op == 0x46 || op == 0x4E || op == 0x56 || op == 0x5E;
+    }
     if (I->pre) return 0;
     return op == 0x00                                            // NOP
         || op == 0x3A || op == 0x7E || op == 0x0A || op == 0x1A  // LD A,(nn) (HL) (BC) (DE)
@@ -1629,7 +1636,7 @@ static int emit(int i) {
     if (I->pre == 0xCB) {
         uint8_t r = op & 7, b = (op >> 3) & 7;
         uint8_t xr = r8x[r];
-        if (r == 4 || r == 5) hl_es = 0;   // H or L changes (except BIT: harmless)
+        if (r == 4) hl_es = 0;   // H changes (except BIT: harmless; L: the same slot)
         if (op < 0x40) {
             uint8_t y = op >> 3;
             if (y <= 3) {
@@ -2212,14 +2219,14 @@ static int emit(int i) {
         if (z == 6) {
             seg_hl(live);
             B(0x26); B(0x8A); B(0x07 | (r8x[y] << 3));
-            if (y == 4 || y == 5) hl_es = 0;
+            if (y == 4) hl_es = 0;   // (L: the same slot)
             cyc += 7;
         } else if (y == 6) {
             write_byte(X_BX, r8x[z], 0, live);
             cyc += 7;
         } else {
             if (y != z) { B(0x8A); B(0xC0 | (r8x[y] << 3) | r8x[z]); }
-            if (y == 4 || y == 5) hl_es = 0;
+            if (y == 4) hl_es = 0;   // (L: the same slot)
             cyc += 4;
         }
         return 1;
@@ -2392,14 +2399,14 @@ static int emit(int i) {
             inc_dec_flags(dec, live_out[i] & FC);
             B(0xFE); B((dec ? 0xC8 : 0xC0) | r8x[y]);
             fkind = dec ? K_DEC : K_INC;
-            if (y == 4 || y == 5) hl_es = 0;
+            if (y == 4) hl_es = 0;   // (L: the same slot)
             cyc += 4;
             return 1;
         }
         case 6:   // LD r,n
             if (y == 6) { write_byte(X_BX, 0xFF, I->nn, live); cyc += 10; return 1; }
             B(0xB0 + r8x[y]); B(I->nn);
-            if (y == 4 || y == 5) hl_es = 0;
+            if (y == 4) hl_es = 0;   // (L: the same slot)
             cyc += 7;
             return 1;
         case 7:

@@ -173,6 +173,7 @@ def h_code(uc, addr, size, ud):
         i = bisect.bisect_right(blk_starts, addr) - 1
         if i >= 0 and addr < blk_info[i][0]:
             blk_c[blk_info[i][1]] += c
+            if DUMPB: dump_n[addr] += 1
             if MNEM:
                 # WSRUN_MNEM: the translated blocks' instructions by kind
                 code = bytes(uc.mem_read(addr, size))
@@ -197,6 +198,7 @@ counts = collections.Counter(); di_c = collections.Counter()
 blk_c = collections.Counter(); blk_starts = []; blk_info = []; last_tr = [None]
 PSW = syms['psram_write']
 STUBX = os.environ.get('WSRUN_STUBX'); stub_n = collections.Counter()
+DUMPB = os.environ.get('WSRUN_DUMPBLK'); dump_n = collections.Counter()
 MNEM = os.environ.get('WSRUN_MNEM'); mn_c = collections.Counter(); mn_cache = {}
 import re as _re
 def mn_class(t):
@@ -210,7 +212,7 @@ STUBS = [(0x0000, 0x0020, 'EXIT'), (0x0020, 0x0040, 'HELPER'), (0x0040, 0x0180, 
 
 def report(fr):
     tot = sum(v for k, v in ph_c.items() if k != 8) or 1
-    print('frames %d-%d: %s' % (fr - EVERY + 1, fr, ' '.join('%s%02d' % (PH[k], 100 * v // tot) for k, v in sorted(ph_c.items()) if k != 8)))
+    print('frames %d-%d: %s  (busy %.0f k cycles a frame)' % (fr - EVERY + 1, fr, ' '.join('%s%02d' % (PH[k], 100 * v // tot) for k, v in sorted(ph_c.items()) if k != 8), tot / EVERY / 1000))
     print('   translated %d: %s' % (sum(tr_pcs.values()), ' '.join('%04X%s' % (p, '' if n == 1 else 'x%d' % n) for p, n in tr_pcs.most_common(12))))
     print('   ' + ', '.join('%s %d%%' % (n, 100 * c // tot) for n, c in fn_c.most_common(10)))
     if FOCUS:
@@ -229,6 +231,17 @@ def report(fr):
         print('   block code by instruction (%% of block code):')
         for k, v in mn_c.most_common(40): print('      %5.1f%%  %s' % (100 * v / tm, k))
         mn_c.clear()
+    DB = os.environ.get('WSRUN_DUMPBLK')
+    if DB:
+        # WSRUN_DUMPBLK=pc,pc...: the x86 code of those blocks, with counts
+        for want in DB.split(','):
+            for j, st in enumerate(blk_starts):
+                if blk_info[j][1] == int(want, 16):
+                    code = bytes(uc.mem_read(st, blk_info[j][0] - st))
+                    print('   block %s at %05X, %d bytes' % (want, st, len(code)))
+                    for i in md.disasm(code, st):
+                        print('      %05X %7d  %s %s' % (i.address, dump_n[i.address], i.mnemonic, i.op_str))
+        dump_n.clear()
     if STUBX:
         code = bytes(uc.mem_read(0x40240, 0x2A0))
         for i in md.disasm(code, 0x240):
