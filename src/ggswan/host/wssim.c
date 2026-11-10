@@ -108,7 +108,7 @@ static void render_line(uint16_t line) {
     if (line >= GG_VIEW_Y && line < GG_VIEW_Y + GG_VIEW_H) {
         for (uint16_t x = 0; x < GG_VIEW_W; x++) {
             uint8_t ci = color[x + GG_VIEW_X];
-            uint16_t c = gg_cram[ci * 2] | (gg_cram[ci * 2 + 1] << 8);
+            uint16_t c = gg_color12(ci);
             fb[line - GG_VIEW_Y][x][0] = (c & 0xF) * 17;
             fb[line - GG_VIEW_Y][x][1] = ((c >> 4) & 0xF) * 17;
             fb[line - GG_VIEW_Y][x][2] = ((c >> 8) & 0xF) * 17;

@@ -641,7 +641,7 @@ void gg_platform_vram_write(uint16_t a, uint8_t value) {
 }
 
 void gg_platform_cram_write(uint8_t i) {
-    uint16_t c = gg_cram[i * 2] | (gg_cram[i * 2 + 1] << 8);
+    uint16_t c = gg_color12(i);
     // Game Gear: ----BBBBGGGGRRRR; WS: ----RRRRGGGGBBBB
     uint16_t ws = ((c & 0x00F) << 8) | (c & 0x0F0) | ((c >> 8) & 0x00F);
     if (i < 16) {

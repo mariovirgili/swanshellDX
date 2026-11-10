@@ -734,7 +734,11 @@ uint16_t drc_emit_run_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
         B(0x80); B(0x3E); W(VA(code)); B(3);         // cmp byte [code], 3
         uint8_t *cram = 0;
         uint8_t *not_cram = jcc8(0x75);              // jne (VRAM)
+#ifdef GGSWAN_SMS
+        if (0) {   // (the Master System's CRAM, one byte a color: the loop)
+#else
         if (!dec) {
+#endif
             /*
              * CRAM (palette uploads, ~60 bytes a frame in Super Monaco GP):
              * the bytes here instead of one CRAM routine call each through
@@ -2950,7 +2954,12 @@ static int emit(int i) {
             switch (y) {
             case 0: branch_to(I->nn, 10); return 1;   // JP nn
             case 2: {   // OUT (n),A
+#ifdef GGSWAN_SMS
+                // (smsswan: the even ports, 3E; the odd ones are 3F, kept)
+                if (env->ctl_off && I->nn < 0x40 && !(I->nn & 1)) {
+#else
                 if (env->ctl_off && I->nn < 0x40 && I->nn != 0x06) {
+#endif
                     cyc += 11;   // (ports 00-3F but 06: nothing to do, see z80_out)
                     return 1;
                 }
@@ -2987,7 +2996,22 @@ static int emit(int i) {
                 return 1;
             }
             case 3:   // IN A,(n)
+#ifdef GGSWAN_SMS
+                // smsswan: DC only (DD has the TH lines: z80_in); 00-3F FFh
+                if (env->pad_in && I->nn >= 0xC0 && !(I->nn & 1)) {
+                    B(0xA0); W(SA(keys_in) + 1);                           // mov al, [keys_in + 1]
+                    cyc += 11;
+                    return 1;
+                }
+                if (env->ctl_off && I->nn < 0x40) {
+                    B(0xB0); B(0xFF);                                      // mov al, FFh
+                    cyc += 11;
+                    return 1;
+                }
+                if (0) {
+#else
                 if (env->pad_in && (I->nn == 0x00 || I->nn >= 0xC0)) {
+#endif
                     // Start, the joypad (and its odd mirrors: FFh), as
                     // z80_in, from drc_state_t: no helper
                     if (I->nn & 1) { B(0xB0); B(0xFF); }                 // mov al, FFh

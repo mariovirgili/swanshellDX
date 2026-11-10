@@ -94,6 +94,7 @@ typedef struct {
     uint8_t keys;           // GG_KEY_* currently pressed
     uint16_t rom_banks;     // 16 KiB banks in the ROM
     uint32_t frame;
+    uint8_t io_ctrl;        // smsswan: port 3Fh (I/O control: TH/TR direction and level)
 } gg_t;
 
 extern gg_t gg;
@@ -101,6 +102,17 @@ extern gg_t gg;
 extern uint8_t *gg_ram;
 extern uint8_t *gg_vram;
 #define gg_cram gg.vdp.cram
+// color i (0-31) as ----BBBBGGGGRRRR: the Game Gear's two CRAM bytes;
+// smsswan: one byte --BBGGRR, each 2-bit value times 5 (0, 5, 10, 15)
+static inline uint16_t gg_color12(uint8_t i) {
+#ifdef GGSWAN_SMS
+    uint8_t v = gg_cram[i];
+    return (uint16_t) ((v & 3) * 5) | (uint16_t) (((v >> 2) & 3) * 5) << 4
+        | (uint16_t) (((v >> 4) & 3) * 5) << 8;
+#else
+    return gg_cram[i * 2] | (gg_cram[i * 2 + 1] << 8);
+#endif
+}
 // the three 16 KiB ROM slots ($0000, $4000, $8000)
 extern const uint8_t GGFAR *gg_slot[3];
 const uint8_t GGFAR *z80_read_span(uint16_t a, uint16_t *len);

@@ -120,6 +120,12 @@ static uint8_t vdp_read_data(void) {
 static void vdp_write_data(uint8_t v) {
     gg.vdp.latch_full = 0;
     if (gg.vdp.code == 3) {
+#ifdef GGSWAN_SMS
+        // CRAM: 32 colors of one byte (--BBGGRR), no latch
+        uint8_t ci = gg.vdp.addr & 0x1F;
+        gg_cram[ci] = v & 0x3F;
+        gg_platform_cram_write(ci);
+#else
         // CRAM: 32 colors of 2 bytes; the even byte is latched, the odd
         // byte writes both
         uint8_t ca = gg.vdp.addr & 0x3F;
@@ -130,6 +136,7 @@ static void vdp_write_data(uint8_t v) {
         } else {
             gg.vdp.cram_latch = v;
         }
+#endif
     } else {
         uint16_t va = gg.vdp.addr & 0x3FFF;
         // (the platform may keep the byte for later: deferred tile writes)
@@ -240,6 +247,23 @@ static uint8_t vdp_vcounter(void) {
 /* === I/O ports === */
 
 uint8_t z80_in(uint8_t port) {
+#ifdef GGSWAN_SMS
+    // Master System (export): nothing to read at 00-3F; DC (even, C0-FF):
+    // joypad 1 in bits 0-5, joypad 2's up and down in bits 6-7 (not
+    // pressed); DD (odd): the rest of joypad 2 (not pressed), Reset (bit
+    // 4, not pressed), bits 6-7 the TH lines: high as inputs, the level
+    // written to port 3F as outputs (how games tell an export console)
+    if (port < 0x40)
+        return 0xFF;
+    if (port >= 0xC0) {
+        if (!(port & 1))
+            return ~(gg.keys & 0x3F);
+        uint8_t v = 0xFF;
+        if (!(gg.io_ctrl & 0x02) && !(gg.io_ctrl & 0x20)) v &= ~0x40;
+        if (!(gg.io_ctrl & 0x08) && !(gg.io_ctrl & 0x80)) v &= ~0x80;
+        return v;
+    }
+#endif
     if (port < 0x40) {
         switch (port) {
         case 0x00:
@@ -266,8 +290,12 @@ uint8_t z80_in(uint8_t port) {
 
 void z80_out(uint8_t port, uint8_t v) {
     if (port < 0x40) {
-#ifndef GGSWAN_SMS
-        // (the Master System has no stereo: there port 06h is 3Eh)
+#ifdef GGSWAN_SMS
+        // Master System: even ports are 3E (memory control: the cartridge
+        // is always on here), odd ports 3F (I/O control)
+        if (port & 1)
+            gg.io_ctrl = v;
+#else
         if (port == 0x06)
             gg_platform_stereo(v);
 #endif
@@ -309,6 +337,7 @@ void gg_reset(void) {
         map_slot(s);
     map_cart_ram();
     gg.frame = 0;
+    gg.io_ctrl = 0xFF;   // (all inputs)
     z80_reset();
 }
 

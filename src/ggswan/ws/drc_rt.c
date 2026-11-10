@@ -734,7 +734,11 @@ void drc_rt_init(uint16_t bank) {
     for (uint8_t i = 0; i < 8; i++)
         drc_st.nt_flags[i] = (i & 1 ? 0x4000 : 0) | (i & 2 ? 0x8000 : 0) | (i & 4 ? 0x0200 : 0);
     env.no_fast = drc_no_fast;
+#ifdef GGSWAN_SMS
+    env.cram_off = 0;   // (the Master System's CRAM: the helper, for now)
+#else
     env.cram_off = drc_no_fast ? 0 : STUB_CRAM;   // (X4: CRAM through the helper)
+#endif
     env.cls_off = drc_no_fast ? 0 : STUB_CLS;
     env.psg_queue = !drc_no_fast;
     env.pad_in = !drc_no_fast;     // (X4: inline, no deferred tile writes)

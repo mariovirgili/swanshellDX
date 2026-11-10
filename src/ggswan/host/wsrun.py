@@ -182,7 +182,7 @@ def h_code(uc, addr, size, ud):
         st['frame'] += 1
         fr = st['frame']
         if fr in KEYS: pending_keys[0] = KEYS[fr]
-        uc.mem_write(syms['gg'] + 0x6A, bytes([pending_keys[0]]))   # gg.keys (read_keys: none here)
+        uc.mem_write(syms['gg'] + 0x6C, bytes([pending_keys[0]]))   # gg.keys (read_keys: none here)
         if fr % EVERY == 0: report(fr)
         if fr >= FRAMES: uc.emu_stop()
     if DYNX:
