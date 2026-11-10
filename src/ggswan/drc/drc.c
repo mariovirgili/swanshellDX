@@ -199,7 +199,14 @@ static void sub_cycles(uint16_t n) {
     else { B(0x81); B(0x2E); W(SA(cycles)); W(n); }
 }
 
+static uint8_t idle_block;
+static uint16_t idle_target;   // (is_idle 2: the EI the loop goes through; 3: the JR back)
+static void idle_exit(uint16_t target, uint16_t extra);
 static void exit_const(uint16_t target, uint16_t extra) {
+    if (idle_block == 3 && target == idle_target) {
+        idle_exit(target, extra);
+        return;
+    }
     materialize();
     sub_cycles(cyc + extra);
     // (z80.pc and the link are only needed by the runtime: a linked exit
@@ -1539,7 +1546,6 @@ static void inc_dec_flags(uint8_t dec, uint8_t live_c) {
  * an interrupt, and interrupts only arrive between runs: the loop can end
  * the run at once, as if it had spun until then.
  */
-static uint8_t idle_block;
 
 static int idle_body(const ins_t *I) {
     uint8_t op = I->op;
@@ -1560,11 +1566,24 @@ static int idle_body(const ins_t *I) {
         || (op >= 0xB0 && op <= 0xBF) || op == 0xF6 || op == 0xFE;   // OR, CP
 }
 
-static uint16_t idle_target;   // (is_idle 2: the EI the loop goes through)
+static int idle_rest(int n);
 static int is_idle(int n, uint16_t pc, uint8_t ram) {
     const ins_t *L = &ins[n - 1];
     uint16_t target;
     if (L->pre) return 0;
+    if (L->op == 0x20 || L->op == 0x28 || L->op == 0x30 || L->op == 0x38 || (L->op & 0xC7) == 0xC2) {
+        // the loop's way out, the way back after it: LD A,(nn) / OR A /
+        // JR Z,out / JR back (Batman Returns, a quarter of its time): the
+        // block ends at the JR Z, its "not taken" exit is the wait
+        uint16_t next = L->pc + ((L->op & 0xC7) == 0xC2 ? 3 : 2);
+        if (!ram && (next >> 14) == (pc >> 14) && next < 0xC000
+                && ((rd(next) == 0x18 && (uint16_t) (next + 2 + (int8_t) rd(next + 1)) == pc)
+                    || (rd(next) == 0xC3 && (rd(next + 1) | (rd(next + 2) << 8)) == pc))
+                && idle_rest(n - 1)) {
+            idle_target = next;
+            return 3;
+        }
+    }
     if (L->op == 0x18 || (L->op >= 0x20 && L->op <= 0x38 && !(L->op & 7)))
         target = (uint16_t) (L->pc + 2 + (int8_t) L->nn);       // JR, JR cc
     else if (L->op == 0xC3 || (L->op & 0xC7) == 0xC2)
@@ -1588,22 +1607,54 @@ static int is_idle(int n, uint16_t pc, uint8_t ram) {
         idle_target = target;
         return 2;
     }
-    for (int i = 0; i < n - 1; i++)
-        if (!idle_body(&ins[i])) return 0;
+    return idle_rest(n - 1);
+}
+
+// the first n instructions only read and test
+static int idle_rest(int n) {
+    uint16_t pc = ins[0].pc;
+    (void) pc;
+    for (int i = 0; i < n; i++) {
+        const ins_t *I = &ins[i];
+        // a conditional branch out of the loop (its end): Batman Returns'
+        // LD A,(nn) / OR A / JR Z,out / JR back (a third of its time)
+        if (!I->pre && (I->op == 0x20 || I->op == 0x28 || I->op == 0x30 || I->op == 0x38
+                        || (I->op & 0xC7) == 0xC2))
+            continue;
+        if (!idle_body(I)) {
+#ifdef GGSWAN_HOST
+            extern char *getenv(const char *);
+            extern int printf(const char *, ...);
+            if (getenv("GGSWAN_IDLELOG")) printf("NOIDLE %04X n %d at %d: %02X %02X\n", pc, n, i, I->pre, I->op);
+#endif
+            return 0;
+        }
+    }
+#ifdef GGSWAN_HOST
+    {
+        extern char *getenv(const char *);
+        extern int printf(const char *, ...);
+        if (getenv("GGSWAN_IDLELOG")) printf("IDLE %04X n %d\n", pc, n + 1);
+    }
+#endif
     return 1;
+}
+
+// wait loop: end the run (cycles left: none)
+static void idle_exit(uint16_t target, uint16_t extra) {
+    materialize();
+    sub_cycles(cyc + extra);
+    B(0x7E); B(0x06);                         // jle +6
+    B(0xC7); B(0x06); W(SA(cycles)); W(0);    // mov word [cycles], 0
+    B(0xC7); B(0x06); W(ZA(pc)); W(target);
+    set_link(0);
+    jmp_near(env->exit_off);
 }
 
 // Taken branch to target: loop back inside the block when possible
 static void branch_to(uint16_t target, uint16_t extra) {
-    if (idle_block && target == (idle_block == 2 ? idle_target : block_pc)) {
-        // wait loop: end the run (cycles left: none)
-        materialize();
-        sub_cycles(cyc + extra);
-        B(0x7E); B(0x06);                         // jle +6
-        B(0xC7); B(0x06); W(SA(cycles)); W(0);    // mov word [cycles], 0
-        B(0xC7); B(0x06); W(ZA(pc)); W(target);
-        set_link(0);
-        jmp_near(env->exit_off);
+    if ((idle_block == 1 && target == block_pc) || (idle_block == 2 && target == idle_target)) {
+        idle_exit(target, extra);
         return;
     }
     if (target == block_pc) {
