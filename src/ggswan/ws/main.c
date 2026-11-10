@@ -995,10 +995,13 @@ static void sprites_publish(void) {
  * Screen 2: either the Game Gear background tiles with priority (bit 12 of
  * the name table entry: in front of the sprites; Sonic Spinball's tubes
  * hide Sonic), inside the 160x144 view, scrolling with screen 1; or the
- * borders' black mask and the diagnostics, outside the view. Y1 (Y up)
- * switches (priority first). The WS has no priority per tile: screen 2,
+ * borders' black mask and the diagnostics, outside the view (the default;
+ * Y1 (Y up) pressed in the game switches, and back: with the priority the
+ * borders show the map around the view). The WS has no priority per
+ * tile: screen 2,
  * whose sprites are all behind it, is the only layer in front of them.
  */
+static uint8_t prio_wanted;   // (the PC tests: GGSWAN_PRIO)
 static void screen2_mode(uint8_t prio) {
     drc_st.prio_on = prio;
     if (prio) {
@@ -1029,7 +1032,10 @@ GGSWAN_HOST_VISIBLE void video_init(void) {
         t[r * 4 + 1] = t[r * 4 + 2] = t[r * 4 + 3] = 0;
     }
     memset(TILE_PTR(1023), 0, 32);
-    screen2_mode(1);
+#ifdef GGSWAN_HOST
+    prio_wanted = getenv("GGSWAN_PRIO") != NULL;
+#endif
+    screen2_mode(prio_wanted);
     WS_DISPLAY_COLOR_MEM(MASK_PALETTE)[1] = 0x000;
     memset(sprite_table, 0, 512);
     memset(sprite_table_b, 0, 512);
@@ -1423,15 +1429,15 @@ GGSWAN_HOST_VISIBLE void sound_init(void) {
 
 /* === Input === */
 
-static void screen2_mode(uint8_t prio);
-static uint16_t keys_before;
+static uint16_t keys_before = 0xFFFF;   // (a key held from the start: not a press)
 
 GGSWAN_HOST_VISIBLE void read_keys(void) {
     uint16_t k = ws_keypad_scan();
-    // Y1 (Y up) pressed: background priority <-> diagnostics in the borders
+    // Y1 (Y up) pressed: background priority on screen 2, and off again
     if ((k & ~keys_before) & WS_KEY_Y1)
         screen2_mode(!drc_st.prio_on);
     keys_before = k;
+
     uint8_t g = 0;
     if (k & WS_KEY_X1) g |= GG_KEY_UP;
     if (k & WS_KEY_X3) g |= GG_KEY_DOWN;
@@ -1801,6 +1807,7 @@ int main(void) {
         // Y4 (Y left) held: the diagnostics column instead of the profile
         if (ws_keypad_scan() & WS_KEY_Y4)
             diag_mode = true;
+
         if (ws_keypad_scan() & WS_KEY_Y3) {
             drc_rt_set_no_links(1);
             drc_check = 1;
