@@ -595,7 +595,8 @@ static inline uint16_t gg_entry(uint8_t row, uint8_t col) {
  * row (v & 31) shows Game Gear row (v % 28) for v in that range. When the
  * view leaves it, the map is laid out again.
  */
-static void map_relayout(uint8_t top) {
+// (first: the WS row written first, then the ones after it: video_present)
+static void map_relayout(uint8_t top, uint8_t first) {
     map_top = top;
     drc_st.map_top = top;
     // where each row goes (as map_put), for the name table routine
@@ -606,14 +607,23 @@ static void map_relayout(uint8_t top) {
             if (v >= top)
                 drc_st.nt_rows[k++ * 28 + r] = (v & 31) * 64;
     }
-    for (uint8_t w = 0; w < 32; w++) {
+    for (uint8_t k = 0; k < 32; k++) {
+        uint8_t w = (first + k) & 31;
         uint8_t v = top + ((w - top) & 31);
         uint8_t r = v % 28;
-        for (uint8_t c = 0; c < 32; c++) {
-            uint16_t e = gg_entry(r, c), x = conv_entry(e);
-            map1[w * 32 + c] = x;
-            if (drc_st.prio_on)
-                map2[w * 32 + c] = prio_entry(e, x);
+        // (a name table row does not wrap in VRAM: 3800h + 27 * 64 at most)
+        const uint8_t *p = gg_vram + nt_base + r * 64;
+        uint16_t *m = map1 + w * 32;
+        if (drc_st.prio_on) {
+            uint16_t *m2 = map2 + w * 32;
+            for (uint8_t c = 0; c < 32; c++, p += 2) {
+                uint16_t e = p[0] | (p[1] << 8), x = conv_entry(e);
+                *m++ = x;
+                *m2++ = prio_entry(e, x);
+            }
+        } else {
+            for (uint8_t c = 0; c < 32; c++, p += 2)
+                *m++ = conv_entry(p[0] | (p[1] << 8));
         }
     }
 }
@@ -675,7 +685,7 @@ void gg_platform_vdp_reg(uint8_t r, uint8_t v) {
         nt_base = (v & 0x0E) << 10;
         drc_st.nt_base = nt_base;
         vram_class_update();
-        map_relayout(map_top);
+        map_relayout(map_top, 0);
         break;
     case 5:
         if ((uint16_t) ((v & 0x7E) << 7) != sat_base)
@@ -1070,7 +1080,7 @@ static uint8_t prio_wanted;   // (main: Y1 held; the PC tests: GGSWAN_PRIO)
 static void screen2_mode(uint8_t prio) {
     drc_st.prio_on = prio;
     if (prio) {
-        map_relayout(map_top);   // (map1 and map2)
+        map_relayout(map_top, 0);   // (map1 and map2)
         outportb(0x12, inportb(0x10));
         outportb(0x13, inportb(0x11));
     } else {
@@ -1118,7 +1128,7 @@ GGSWAN_HOST_VISIBLE void video_init(void) {
     outportb(0x12, 0);
     outportb(0x13, 0);
     outportb(0x06, 0);
-    map_relayout(0);
+    map_relayout(0, 0);
 #ifndef GGSWAN_HOST
     ia16_disable_irq();
     ws_int_set_handler(WS_INT_LINE_MATCH, (ia16_int_handler_t) line_irq_entry);
@@ -1175,6 +1185,9 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
     while (vy < map_top * 8u)
         vy += 224;   // (virtual rows: the same Game Gear row 28 later)
     next_vy = vy & 0xFF;
+#ifndef GGSWAN_HOST
+    uint8_t relay = 0, relay_top = 0;
+#endif
     if (vy > map_top * 8u + (256 - GG_VIEW_H - 8)) {
 #ifdef GGSWAN_HOST
         if (getenv("GGSWAN_RELAYSTAT"))
@@ -1188,14 +1201,25 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
 #ifdef GGSWAN_HOST
         host_relayouts++;
 #endif
-        map_relayout((s >> 3) + 28 - 6);
         vy = s + 224;
-        // (the map changed now: its scroll too)
         next_vy = vy & 0xFF;
+#ifdef GGSWAN_HOST
+        // (the PC tests have no WS raster: the map and its scroll now)
+        map_relayout((s >> 3) + 28 - 6, 0);
         act_vy = next_vy;
-        outportb(0x11, act_vy);
-        if (drc_st.prio_on)
-            outportb(0x13, act_vy);
+#else
+        /*
+         * The map is laid out again below, after the end of the WS screen
+         * that shows this frame's scroll, tiles and sprites for the first
+         * time. It was done here, at once, with its scroll: the rows the
+         * WS was drawing changed under it, some of them with the old
+         * contents at the new place or the other way around for one WS
+         * screen (Sonic: a few rows of the picture jumping now and then,
+         * whenever the camera had moved some 50 pixels up or down).
+         */
+        relay = 1;
+        relay_top = (s >> 3) + 28 - 6;
+#endif
     }
 #ifdef GGSWAN_HOST
     outportb(0x11, next_vy);   // (the PC tests have no WS raster)
@@ -1230,6 +1254,17 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
             break;
         }
         irq_restore(f);   // (the end-of-screen interrupt)
+    }
+    if (relay) {
+        // the end of the WS screen (its interrupt sets the new scroll for
+        // the next one), then the rows in the order the WS draws them,
+        // ahead of it: 15 lines of vertical blank to start with, a row of
+        // 32 entries written in less time than the 8 lines it is shown for
+        prof_phase = PROF_IDLE;
+        while (frame_waiting)
+            __asm__ volatile ("hlt");
+        prof_phase = PROF_VIDEO;
+        map_relayout(relay_top, (next_vy >> 3) & 31);
     }
 #else
     log_present();

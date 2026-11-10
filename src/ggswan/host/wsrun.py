@@ -86,6 +86,8 @@ def cost(code):
     return c
 
 st = {'cyc': 0, 'frame': 0}
+CLIX = os.environ.get('WSRUN_CLI')
+cli_st = [0, '']; cli_n = collections.Counter(); cli_sum = collections.Counter(); cli_max = collections.Counter()
 OPSPREV = {}
 PH = 'AL CD DI PO ST IN TR VI ID'.split()
 ph_c = collections.Counter(); fn_c = collections.Counter(); tr_pcs = collections.Counter()
@@ -194,6 +196,18 @@ def h_code(uc, addr, size, ud):
         prev_addr[0] = addr
     c = cost(bytes(uc.mem_read(addr, size)))
     st['cyc'] += c
+    if CLIX:
+        # WSRUN_CLI=1: stretches with interrupts off (cycles), by the
+        # function they start in: how late a line interrupt can be served
+        if uc.reg_read(UC_X86_REG_EFLAGS) & 0x200:
+            if cli_st[0]:
+                f0 = cli_st[1]
+                cli_n[f0] += 1; cli_sum[f0] += cli_st[0]
+                if cli_st[0] > cli_max[f0]: cli_max[f0] = cli_st[0]
+                cli_st[0] = 0
+        else:
+            if not cli_st[0]: cli_st[1] = fname(addr)
+            cli_st[0] += c
     ph = uc.mem_read(PROF, 1)[0]
     ph_c[ph] += c
     if ph == 2: di_c[fname(addr)] += c
@@ -252,6 +266,9 @@ STUBS = [(0x0000, 0x0020, 'EXIT'), (0x0020, 0x0040, 'HELPER'), (0x0040, 0x0180, 
          (0x0BF8, 0x0C48, 'VCNT'), (0x0C48, 0x0D20, 'PAIRS')]
 
 def report(fr):
+    if CLIX:
+        print('   interrupts off (cycles: longest, mean, times): ' + ', '.join('%s %d/%d/%d' % (n, cli_max[n], cli_sum[n] // cli_n[n], cli_n[n]) for n, _ in cli_max.most_common(8)))
+        cli_n.clear(); cli_sum.clear(); cli_max.clear()
     tot = sum(v for k, v in ph_c.items() if k != 8) or 1
     print('frames %d-%d: %s  (busy %.0f k cycles a frame)' % (fr - EVERY + 1, fr, ' '.join('%s%02d' % (PH[k], 100 * v // tot) for k, v in sorted(ph_c.items()) if k != 8), tot / EVERY / 1000))
     print('   translated %d: %s' % (sum(tr_pcs.values()), ' '.join('%04X%s' % (p, '' if n == 1 else 'x%d' % n) for p, n in tr_pcs.most_common(12))))
@@ -360,6 +377,7 @@ while st['frame'] < FRAMES:
                 open('%s/vram%05d.bin' % (DUMP, gf), 'wb').write(bytes(vr))
         uc.mem_write(FC, (7547 * 2).to_bytes(2, 'little'))
         uc.mem_write(FW, b'\0')
+        if CLIX: uc.mem_write(syms['pend_start'], b'\0\0')   # (as if the line interrupt had written the log: not in VRAM here)
         uc.mem_write(VB, bytes([(uc.mem_read(VB, 1)[0] + 1) & 255]))
         st['cyc'] += 256 * 8
         start = a
