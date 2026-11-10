@@ -254,6 +254,33 @@ int main(int argc, char **argv) {
         }
         if (getenv("GGSWAN_R0")) gg.vdp.reg[0] |= strtol(getenv("GGSWAN_R0"), NULL, 16);   // (tests: register 0 bits forced)
         gg_run_frame();   // (video_present at line 168)
+#ifdef GGSWAN_SMS
+        if (getenv("GGSWAN_COLL")) {
+            gg.coll_used = 1;   // (forced for the test)
+            // the collision flag against a count of the sprites on each pixel
+            static uint8_t cov[240][256];
+            static unsigned n_set, n_bad;
+            memset(cov, 0, sizeof(cov));
+            uint8_t *reg = gg.vdp.reg; uint16_t sat = gg_sat_base(); int h = (reg[1] & 2) ? 16 : 8, hit = 0;
+            for (int i = 0; i < 64 && (reg[1] & 0x40); i++) {
+                uint8_t sy = gg_vram[sat + i];
+                if (GG_SPR_END(sy)) break;
+                int top = (uint8_t) (sy + 1);
+                if (top >= GG_ACTIVE) continue;
+                uint8_t sx = gg_vram[sat + 0x80 + i * 2];
+                uint16_t n = gg_vram[sat + 0x81 + i * 2] | ((reg[6] & 4) ? 0x100 : 0);
+                if (h == 16) n &= ~1;
+                for (int r = 0; r < h; r++) for (int c = 0; c < 8; c++) {
+                    if (!tile_pixel((n + (r >> 3)) & 0x1FF, r & 7, c)) continue;
+                    if (top + r >= 240) continue;
+                    if (++cov[top + r][(uint8_t) (sx + c)] > 1) hit = 1;
+                }
+            }
+            int got = gg_platform_sprite_status() != 0;
+            n_set += hit; if (got != hit) n_bad++;
+            if (fr == frames - 1) printf("collision flag: set in %u frames, %u frames differ from the pixel count\n", n_set, n_bad);
+        }
+#endif
         if (every && (fr + 1) % every == 0) {
             ws_render();
             long diff = 0;

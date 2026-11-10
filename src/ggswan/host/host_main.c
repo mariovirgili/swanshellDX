@@ -31,6 +31,7 @@ const uint8_t *gg_platform_bank(uint8_t slot, uint16_t bank) {
 uint8_t *gg_platform_cart_ram(uint8_t page) { return cart_ram_buf + page * 0x4000; }
 void gg_platform_psg(uint8_t v) { (void) v; psg_writes++; }
 void gg_platform_stereo(uint8_t v) { (void) v; }
+uint8_t gg_platform_sprite_status(void) { return 0; }
 void gg_platform_vram_write(uint16_t a, uint8_t v) { (void) a; (void) v; }
 void gg_platform_cram_write(uint8_t i) { (void) i; }
 void gg_platform_vdp_reg(uint8_t r, uint8_t v) { (void) r; (void) v; }

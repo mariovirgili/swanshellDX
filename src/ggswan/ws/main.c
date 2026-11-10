@@ -1228,6 +1228,75 @@ static void build_sprites(void) {
     drc_st.sprites_dirty = false;
 }
 
+#ifdef GGSWAN_SMS
+/*
+ * The sprite collision flag (VDP status bit 5: two sprites with a pixel
+ * of each on the same spot; Fantastic Dizzy, Taz-Mania, Ecco, Impossible
+ * Mission, Master of Darkness, Cheese Cat-Astrophe use it for their own
+ * collisions). Once a frame, from the sprite table as it is then: the
+ * sprites on the picture go into lists by band of 16 lines, each one is
+ * compared with those of its band and the two next to it (rectangles
+ * first), and the pairs that overlap by the rows of their tiles: a row's
+ * 8 pixels are the OR of its 4 bitplane bytes. Not the limit of 8
+ * sprites a line (more are compared than the Master System shows), nor
+ * sprites partly above the first line.
+ */
+static inline uint8_t spr_row_mask(uint16_t tile, uint8_t row) {
+    const uint8_t *p = gg_vram + tile * 32u + row * 4u;
+    return p[0] | p[1] | p[2] | p[3];
+}
+uint8_t gg_platform_sprite_status(void) {
+    const uint8_t *reg = gg.vdp.reg;
+    if (!(reg[1] & 0x40))
+        return 0;
+    static uint8_t head[16], nxt[64], sy[64];
+    const uint8_t *sat = gg_vram + sat_base;
+    uint8_t h = (reg[1] & 0x02) ? 16 : 8;
+    uint16_t tb = (reg[6] & 0x04) ? 0x100 : 0;
+    uint8_t lines = (uint8_t) GG_ACTIVE;
+    memset(head, 0xFF, sizeof(head));
+    for (uint8_t i = 0; i < 64; i++) {
+        uint8_t y = sat[i];
+        if (GG_SPR_END(y))
+            break;
+        y++;
+        if (y >= lines)
+            continue;
+        uint8_t x = sat[0x80 + i * 2];
+        uint8_t b = y >> 4;
+        for (uint8_t bb = b ? b - 1 : 0; bb <= b + 1; bb++) {
+            for (uint8_t j = head[bb]; j != 0xFF; j = nxt[j]) {
+                uint8_t dy = y - sy[j] + (h - 1);
+                if (dy > 2 * h - 2)
+                    continue;
+                uint8_t dx = x - sat[0x80 + j * 2] + 7;
+                if (dx > 14)
+                    continue;
+                int8_t oy = (int8_t) (dy - (h - 1)), ox = (int8_t) (dx - 7);
+                uint16_t ti = sat[0x81 + i * 2] | tb, tj = sat[0x81 + j * 2] | tb;
+                if (h == 16) {
+                    ti &= ~1;
+                    tj &= ~1;
+                }
+                // (rows: i's from ri, j's from rj, n of them)
+                uint8_t ri = oy < 0 ? -oy : 0, rj = oy > 0 ? oy : 0;
+                uint8_t n = h - (oy < 0 ? -oy : oy);
+                for (; n; n--, ri++, rj++) {
+                    uint8_t mi = spr_row_mask((ti + (ri >> 3)) & 0x1FF, ri & 7);
+                    uint8_t mj = spr_row_mask((tj + (rj >> 3)) & 0x1FF, rj & 7);
+                    if (ox >= 0 ? (mi & (uint8_t) (mj << ox)) : (mj & (uint8_t) (mi << -ox)))
+                        return 0x20;
+                }
+            }
+        }
+        sy[i] = y;
+        nxt[i] = head[b];
+        head[b] = i;
+    }
+    return 0;
+}
+#endif
+
 // the sprite table built to the WS (it copies it at the end of the screen)
 static void sprites_publish(void) {
     if (!spr_ready)

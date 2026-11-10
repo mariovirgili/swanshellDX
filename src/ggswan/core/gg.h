@@ -118,6 +118,7 @@ typedef struct {
     uint32_t frame;
     uint8_t io_ctrl;        // smsswan: port 3Fh (I/O control: TH/TR direction and level)
     uint8_t codemasters;    // smsswan: the Codemasters mapper (banks written at 0000h, 4000h, 8000h)
+    uint8_t coll_used;      // smsswan: the game looks at the sprite collision flag (gg_status_read_at)
 } gg_t;
 
 extern gg_t gg;
@@ -167,6 +168,13 @@ void gg_platform_frame_end(void);
 /// the PSG writes the recompiler queued (drc_state_t), in order
 void gg_platform_psg_flush(void);
 void gg_platform_stereo(uint8_t value);
+/// smsswan: VDP status bits for the sprites as they are now (20h: two of
+/// them overlap on the picture).
+uint8_t gg_platform_sprite_status(void);
+/// smsswan: the code at pc follows a read of the VDP status (the
+/// interpreter's, or an IN the recompiler translates): if it tests bit 5,
+/// the collision flag is worked out from now on (it costs time).
+void gg_status_read_at(uint16_t pc);
 /// VDP writes the platform may need to mirror (VRAM, CRAM, registers).
 void gg_platform_vram_write(uint16_t addr, uint8_t value);
 void gg_platform_cram_write(uint8_t index);

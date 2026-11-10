@@ -1789,7 +1789,14 @@ static void decode(uint16_t pc, ins_t *I) {
         case 3:
             switch (y) {
             case 0: I->nn = rd(pc + 1) | (rd(pc + 2) << 8); I->len = 3; I->term = T_END; return;
-            case 2: case 3: I->nn = rd(pc + 1); I->len = 2; return;   // OUT (n),A / IN A,(n)
+            case 2: case 3: I->nn = rd(pc + 1); I->len = 2;           // OUT (n),A / IN A,(n)
+#ifdef GGSWAN_SMS
+                // (a read of the VDP status: does the game test the
+                // sprite collision flag after it? gg.c)
+                if (y == 3 && (I->nn & 0xC1) == 0x81)
+                    gg_status_read_at(pc + 2);
+#endif
+                return;
             case 4: case 5: return;                                   // EX (SP),HL / EX DE,HL
             case 6: return;                                           // DI
             case 7: I->fread = FALL; return;   // EI (flags all live: the block may exit there)

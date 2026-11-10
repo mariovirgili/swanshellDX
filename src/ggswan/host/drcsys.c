@@ -299,7 +299,7 @@ uint8_t *sys_psram(void) { return psram; }
 uint8_t *sys_sram(void) { return sram; }
 uint8_t *sys_ports(void) { return ports; }
 uint32_t sys_code_version(void) { return code_version; }
-uint32_t sys_stat(int i) { return i == 0 ? drc_stat_blocks : i == 1 ? drc_stat_flushes : drc_stat_interp; }
+uint32_t sys_stat(int i) { return i == 0 ? drc_stat_blocks : i == 1 ? drc_stat_flushes : i == 3 ? gg.coll_used : drc_stat_interp; }
 int sys_pc(void) { return z80.pc; }
 
 void sys_nolinks(int on) { drc_rt_set_no_links(on); }

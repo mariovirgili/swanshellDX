@@ -114,6 +114,29 @@ void gg_remap(void) {
 
 /* === VDP === */
 
+// smsswan: the sprite collision flag (status bit 5), worked out by the
+// platform once a frame, when the frame interrupt is requested (the
+// recompiler reads the status without coming to C)
+#ifdef GGSWAN_SMS
+// (only for the games that look at it: the check takes some 3500 cycles a
+// frame in Sonic, 8% of it. Looked for in the 8 bytes after a status
+// read: AND n with bit 5, or BIT 5,A)
+#define SPRITE_STATUS() (gg.coll_used ? gg_platform_sprite_status() : 0)
+void gg_status_read_at(uint16_t pc) {
+    if (gg.coll_used)
+        return;
+    for (uint8_t k = 0; k < 8; k++) {
+        uint8_t b = z80_read(pc + k), n = z80_read(pc + k + 1);
+        if ((b == 0xE6 && (n & 0x20) && n != 0xFF) || (b == 0xCB && n == 0x6F)) {
+            gg.coll_used = 1;
+            return;
+        }
+    }
+}
+#else
+#define SPRITE_STATUS() 0
+#endif
+
 #ifdef GGSWAN_SMS
 static void vdp_mode_update(void);
 #endif
@@ -321,6 +344,12 @@ uint8_t z80_in(uint8_t port) {
     if (port < 0x80)
         return (port & 1) ? 0x80 /* H counter: approximation */ : vdp_vcounter();
     if (port < 0xC0)
+#ifdef GGSWAN_SMS
+    {
+        if (port & 1)
+            gg_status_read_at(z80.pc);
+    }
+#endif
         return (port & 1) ? vdp_read_status() : vdp_read_data();
     // $DC (and mirrors): joypad 1, active low
     if (!(port & 1))
@@ -369,6 +398,7 @@ void gg_reset(void) {
     gg.mapper[2] = 1;
     gg.mapper[3] = 2;
     gg.codemasters = 0;
+    gg.coll_used = 0;
 #ifdef GGSWAN_SMS
     if (gg.rom_banks >= 2) {
         // a Codemasters cartridge: its header at 7FE0h has a checksum
@@ -418,7 +448,7 @@ static void vdp_line(uint16_t line) {
 
     // frame interrupt
     if (line == GG_ACTIVE + 1) {
-        gg.vdp.status |= 0x80;
+        gg.vdp.status |= 0x80 | SPRITE_STATUS();
         gg_diag_vbl();
     }
 
@@ -456,7 +486,7 @@ static void vdp_lines(uint16_t from, uint16_t to) {
     // frame interrupt
     uint8_t end = from <= GG_ACTIVE + 1 && to > GG_ACTIVE + 1;
     if (end) {
-        gg.vdp.status |= 0x80;
+        gg.vdp.status |= 0x80 | SPRITE_STATUS();
         gg_diag_vbl();
     }
     gg.vdp.vcounter = to - 1;

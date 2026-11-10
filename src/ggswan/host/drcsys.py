@@ -212,6 +212,7 @@ def main():
                   % (fr + 1, diff * 100 / (VIEW_W * 144), drc.sys_stat(0), drc.sys_stat(1), drc.sys_stat(2),
                      x86.calls, time.time() - t0))
             write_ppm("%s_%05d.ppm" % (PREFIX, fr + 1), a, b)
+    print("sprite collision check used: interpreter %d, recompiler %d" % (ref.sys_stat(3), drc.sys_stat(3)))
     print("identical screens: %d of %d; identical screen and RAM/VRAM/CRAM: %d (first different: %s)"
           % (same_screen, FRAMES, same, first_diff[0]))
     sys.stdout.flush()

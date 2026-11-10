@@ -6,7 +6,7 @@ emulated by a dynamic recompiler (Z80 to V30MZ code), with the original
 interpreter kept for the parts that need it. The Game Gear video memory is
 mapped onto the WonderSwan's own tile and screen hardware.
 
-Status: fairly stable (patch 129). It has been tested mostly in the
+Status: fairly stable (patch 130). It has been tested mostly in the
 nileswan-medem emulator and with the host test tools; tests on real
 hardware are still to come.
 
@@ -177,8 +177,12 @@ The 224-line mode (Codemasters' games) is there: the picture is then
 Not done: PAL timing (313 lines, 50 Hz: Codemasters' games were made
 for it; Micro Machines reaches its menus with the 262 lines here),
 register 0 bit 7 (the right columns not scrolled up and down), the
-sprite overflow and collision flags, the limit of 8 sprites a line, FM
-sound, a second joypad.
+sprite overflow flag, the limit of 8 sprites a line, FM sound, a second
+joypad.
+
+The sprite collision flag is worked out only for games seen to test
+it right after reading the VDP status (it takes time: about 8% of a
+frame in Sonic, which does not use it).
 
 ## Changelog
 
@@ -280,7 +284,7 @@ it are listed in order without one.
 - lighter DYN lookup and class routine for deferred tile bytes
 - OUTI runs to CRAM handled in the run routine
 
-### Patches 90-129
+### Patches 90-130
 
 | Patch | Change |
 |---|---|
@@ -324,3 +328,4 @@ it are listed in order without one.
 | 127 | smsswan: the first 16 lines not scrolled sideways (register 0 bit 6: Wonder Boy III's status bar) |
 | 128 | smsswan: palette writes in the recompiler without the C helper |
 | 129 | smsswan: the 224-line mode (Micro Machines and the other Codemasters games) |
+| 130 | smsswan: the sprite collision flag, for the games that test it |
