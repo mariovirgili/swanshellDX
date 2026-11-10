@@ -84,13 +84,15 @@ exit_no_launch:
             return launch_com(path);
         } else if (!strcasecmp(ext, s_file_ext_rom)) {
             return launch_plugin_via_ipc(s_path_plugin_uxn, path);
-        } else if (!strcasecmp(ext, s_file_ext_gg)) {
-            // Game Gear ROM: ggswan emulator plugin
+        } else if (!strcasecmp(ext, s_file_ext_gg) || !strcasecmp(ext, s_file_ext_sms)) {
+            // Game Gear ROM: ggswan emulator plugin; Master System ROM:
+            // smsswan, built from the same sources
             if (flags & LAUNCH_ROUTER_USE_SERIAL_OUT) return ERR_FILE_NOT_EXECUTABLE;
             // its cartridge RAM (up to 32 KiB) is the first 32 KiB of the
-            // SRAM: saved as for a WS game, game.sav next to the .gg,
-            // loaded now and written back by the menu when it starts again
-            // (SAVE.INI; the plugin's START + Y1 goes back to the menu)
+            // SRAM: saved as for a WS game, game.sav next to the .gg (or
+            // .sms), loaded now and written back by the menu when it
+            // starts again (SAVE.INI; the plugin's START + Y1 goes back to
+            // the menu)
             {
                 launch_rom_metadata_t gg_meta;
                 memset(&gg_meta, 0, sizeof(gg_meta));
@@ -109,7 +111,7 @@ exit_no_launch:
                     return result;
                 }
             }
-            return launch_plugin_via_ipc(s_path_plugin_gg, path);
+            return launch_plugin_via_ipc(strcasecmp(ext, s_file_ext_sms) ? s_path_plugin_gg : s_path_plugin_sms, path);
         } else {
             goto txtview;
         }

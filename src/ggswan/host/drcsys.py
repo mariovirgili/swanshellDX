@@ -119,11 +119,14 @@ class X86:
             import os
             os._exit(1)   # (an exception would be lost inside the ctypes callback)
 
+VIEW_W = 160   # (the view's width: 224 for smsswan, from the library)
+
 def write_ppm(path, a, b):
     with open(path, 'wb') as f:
-        f.write(b"P6\n%d %d\n255\n" % (160 * 2 + 8, 144))
+        f.write(b"P6\n%d %d\n255\n" % (VIEW_W * 2 + 8, 144))
+        n = VIEW_W * 3
         for y in range(144):
-            f.write(a[y * 480:(y + 1) * 480] + bytes(24) + b[y * 480:(y + 1) * 480])
+            f.write(a[y * n:(y + 1) * n] + bytes(24) + b[y * n:(y + 1) * n])
 
 def main():
     import shutil, os, tempfile
@@ -135,6 +138,9 @@ def main():
     shutil.copy(REF_LIB or LIB, tmp + "/a.so"); shutil.copy(LIB, tmp + "/b.so")
     ref = load(tmp + "/a.so")
     drc = load(tmp + "/b.so")
+    global VIEW_W
+    if hasattr(drc, "sys_view_w"):
+        VIEW_W = drc.sys_view_w()
     # reference: interpreter stopping at every line; tested: the recompiler
     # (or with --interp the interpreter) stopping only where timing matters
     every = 1 if "--every-line" in sys.argv else 0
@@ -190,8 +196,8 @@ def main():
                 nspl = globals().setdefault('nspl', [0]); nspl[0] += 1
                 if nspl[0] <= 12:
                     print("frame %d splits: ref %s drc %s" % (fr + 1, la, lb))
-        a = ctypes.string_at(ref.sys_fb_end(), 160 * 144 * 3)
-        b = ctypes.string_at(drc.sys_fb_end(), 160 * 144 * 3)
+        a = ctypes.string_at(ref.sys_fb_end(), VIEW_W * 144 * 3)
+        b = ctypes.string_at(drc.sys_fb_end(), VIEW_W * 144 * 3)
         if a == b:
             same_screen += 1
         elif "--show-diff" in sys.argv:
@@ -203,7 +209,7 @@ def main():
         if EVERY and (fr + 1) % EVERY == 0:
             diff = sum(1 for i in range(0, len(a), 3) if a[i:i + 3] != b[i:i + 3])
             print("frame %5d: %5.1f%% pixels differ  (blocks %d, flushes %d, interpreted %d, block calls %d, %.1fs)"
-                  % (fr + 1, diff * 100 / (160 * 144), drc.sys_stat(0), drc.sys_stat(1), drc.sys_stat(2),
+                  % (fr + 1, diff * 100 / (VIEW_W * 144), drc.sys_stat(0), drc.sys_stat(1), drc.sys_stat(2),
                      x86.calls, time.time() - t0))
             write_ppm("%s_%05d.ppm" % (PREFIX, fr + 1), a, b)
     print("identical screens: %d of %d; identical screen and RAM/VRAM/CRAM: %d (first different: %s)"

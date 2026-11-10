@@ -6,7 +6,7 @@ emulated by a dynamic recompiler (Z80 to V30MZ code), with the original
 interpreter kept for the parts that need it. The Game Gear video memory is
 mapped onto the WonderSwan's own tile and screen hardware.
 
-Status: fairly stable (patch 117). It has been tested mostly in the
+Status: fairly stable (patch 118). It has been tested mostly in the
 nileswan-medem emulator and with the host test tools; tests on real
 hardware are still to come.
 
@@ -147,6 +147,29 @@ interrupts a second).
 - `host/`: PC test tools (comparison against the interpreter and a
   reference renderer, cycle profiling in an x86 emulator).
 
+## smsswan: the Master System plugin (in progress)
+
+`PLUG_SMS.BIN` is built from the same sources with `-DGGSWAN_SMS`
+(`make -f Makefile.ggswan SMS=1`; the main build makes both plugins).
+Copy it to `/NILESWAN/PLUG_SMS.BIN`: the menu starts it for `.sms`
+files, with the same `.sav` saves and the same START + Y1 (Y up) exit.
+
+The Master System shows the whole 256x192 picture; the WonderSwan shows
+224x144 of it (columns 16-239, lines 24-167) on its whole screen, with
+the background priority always on (screen 2 holds the priority tiles,
+so there are no borders and no diagnostics on screen).
+
+Done (patch 118): two plugins from one source tree (the Game Gear one
+unchanged: built with the patch number 117 it is identical, byte for
+byte, to patch 117's), the Master System view, sprites and screen 2
+over the whole WonderSwan screen, `.sms` in the menu, the host tools
+(`make sms` in `host/`). Still to do, in this order: the Master System
+palette (32 colors of 6 bits) and ports (3E, 3F, DC, DD), the Pause
+button (an NMI, from START), register 0's fixed scroll areas and the
+sprite status flags, moving the view over the picture and diagnostics
+on sprites, the Codemasters mapper. Until the palette is done the
+colors are wrong.
+
 ## Changelog
 
 One line per commit, oldest first. The patch number (shown as `P` at
@@ -247,7 +270,7 @@ it are listed in order without one.
 - lighter DYN lookup and class routine for deferred tile bytes
 - OUTI runs to CRAM handled in the run routine
 
-### Patches 90-117
+### Patches 90-118
 
 | Patch | Change |
 |---|---|
@@ -279,3 +302,4 @@ it are listed in order without one.
 | 115 | tile bytes appended to the log inside the block |
 | 116 | START + Y1 held for a second goes back to the menu; cartridge RAM saved to .sav by the menu |
 | 117 | frame by frame fixed (the pause waited for a line it never saw), frame number F while paused; cartridge reset before the soft reset to the menu |
+| 118 | smsswan, step 1: PLUG_SMS.BIN from the same sources (-DGGSWAN_SMS), the 224x144 view over the whole WS screen, priority always on, .sms in the menu |

@@ -266,8 +266,11 @@ uint8_t z80_in(uint8_t port) {
 
 void z80_out(uint8_t port, uint8_t v) {
     if (port < 0x40) {
+#ifndef GGSWAN_SMS
+        // (the Master System has no stereo: there port 06h is 3Eh)
         if (port == 0x06)
             gg_platform_stereo(v);
+#endif
         return;
     }
     if (port < 0x80) {

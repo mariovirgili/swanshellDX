@@ -164,9 +164,10 @@ log_copy:
     // computes spr_par: the tile bank byte, 8x16 or not, the X offset, the
     // hidden rows). The same as the C loop it replaces, there ~35 cycles a
     // sprite (Sailor Moon S: 9 lines a frame). Returns the end of the
-    // table. GG_VIEW_X/Y/W/H: 48, 24, 160, 144.
-    //   spr_par: +0 tile bank byte, +1 8x16, +2 X offset + 48 - 32,
-    //            +3 hidden rows (113 - sprite height)
+    // table. GG_VIEW_X/Y/W/H: 48, 24, 160, 144, at WS column 32 (smsswan:
+    // 16, 24, 224, 144 at column 0).
+    //   spr_par: +0 tile bank byte, +1 8x16, +2 X offset + 16 (GG_VIEW_X -
+    //            the WS column), +3 hidden rows (113 - sprite height)
     .global spr_build
 spr_build:
     push bx
@@ -195,10 +196,17 @@ spr_build:
     mov ah, byte ptr [bp]
     sub ah, dl                  // the WS column
     push ax
+#ifdef GGSWAN_SMS
+    sub ah, 0 + 224             // (main.c: WS_VIEW_ORIGIN_X + GG_VIEW_W,
+    cmp ah, 256 - 224 - 7       // 256 - GG_VIEW_W - 7)
+    pop ax
+    jb .Lspr_skip               // outside the 224 columns
+#else
     sub ah, 32 + 160
     cmp ah, 89
     pop ax
     jb .Lspr_skip               // outside the 160 columns
+#endif
     test ch, ch
     jnz .Lspr_tall
     mov ch, byte ptr [bp + 1]   // tile

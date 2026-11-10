@@ -896,13 +896,14 @@ static void update_backdrop(void) {
     uint8_t top = (GG_VIEW_Y + gg.vdp.vscroll_frame) % 224 >> 3;
     uint8_t left = (GG_VIEW_X - gg.vdp.reg[8]) >> 3;
     uint16_t sprite_pal = 0;
-    for (uint8_t r = 0; r < 18; r += 2) {
+    // (every other tile of the view: 18 rows, 20 columns; smsswan 28)
+    for (uint8_t r = 0; r < GG_VIEW_H / 8; r += 2) {
         uint8_t row = (top + r) % 28;
-        for (uint8_t c = 0; c < 20; c += 2)
+        for (uint8_t c = 0; c < GG_VIEW_W / 8; c += 2)
             if (gg_entry(row, (left + c) & 31) & 0x800)
                 sprite_pal++;
     }
-    backdrop_palette = sprite_pal > 45 ? 1 : 0;
+    backdrop_palette = sprite_pal > (GG_VIEW_H / 16) * (GG_VIEW_W / 16) / 2 ? 1 : 0;
 }
 
 static uint8_t spr_back = 1;   // the table to build next: 1 sprite_table_b
@@ -928,9 +929,9 @@ static void build_sprites(void) {
     bool tall = reg[1] & 0x02;
     uint8_t xoff = (reg[0] & 0x08) ? 8 : 0;
     // hidden: a sprite outside the 160x144 window (WS 32-191 x 0-143, the
-    // borders are screen 2, in front of the sprites) is not given to the
-    // WS; games park the unused ones out of the picture (Shinobi: most of
-    // its 64)
+    // borders are screen 2, in front of the sprites; smsswan: 224x144, the
+    // whole WS screen) is not given to the WS; games park the unused ones
+    // out of the picture (Shinobi: most of its 64)
     uint8_t hide_y = 113 - (tall ? 16 : 8);
     const uint8_t *sat = gg_vram + sat_base;
     // two tables: this frame's sprites go to the one the WS is not using,
@@ -942,7 +943,7 @@ static void build_sprites(void) {
     // (the loop below in assembly: drc_asm.s)
     spr_par[0] = tbase >> 8;
     spr_par[1] = tall;
-    spr_par[2] = xoff + (GG_VIEW_X - 32);
+    spr_par[2] = xoff + (GG_VIEW_X - WS_VIEW_ORIGIN_X);
     spr_par[3] = hide_y;
     uint8_t *s = spr_build(sat, table);
 #else
@@ -952,12 +953,13 @@ static void build_sprites(void) {
         if (y == 0xD0)
             break;
         // Game Gear (x, y + 1) in the 256x192 picture; the view starts at
-        // (48, 24) and is shown at WS (32, 0)
+        // (48, 24) and is shown at WS (32, 0) (smsswan: (16, 24) at (0, 0))
         uint8_t wy = y + 1 - GG_VIEW_Y;
         if ((uint8_t) (wy - GG_VIEW_H) < hide_y)
             continue;
-        uint8_t wx = sat[0x80 + i * 2] - xoff - (GG_VIEW_X - 32);
-        if ((uint8_t) (wx - (32 + GG_VIEW_W)) < 89)
+        uint8_t wx = sat[0x80 + i * 2] - xoff - (GG_VIEW_X - WS_VIEW_ORIGIN_X);
+        // (hidden: from the column after the view to 8 before its start)
+        if ((uint8_t) (wx - (WS_VIEW_ORIGIN_X + GG_VIEW_W)) < 256 - GG_VIEW_W - 7)
             continue;
         uint8_t t = sat[0x81 + i * 2];
         // tile (bit 8: s[1] bit 0); palette 0 (= WS palette 8); behind screen 2
@@ -1000,8 +1002,14 @@ static void sprites_publish(void) {
  * map around the view, no diagnostics). The WS has no priority per tile:
  * screen 2,
  * whose sprites are all behind it, is the only layer in front of them.
+ * smsswan: always the priority (the view is the whole WS screen: no
+ * borders), so no diagnostics there either.
  */
+#ifdef GGSWAN_SMS
+#define prio_wanted 1
+#else
 static uint8_t prio_wanted;   // (main: Y1 held; the PC tests: GGSWAN_PRIO)
+#endif
 static void screen2_mode(uint8_t prio) {
     drc_st.prio_on = prio;
     if (prio) {
@@ -1032,7 +1040,7 @@ GGSWAN_HOST_VISIBLE void video_init(void) {
         t[r * 4 + 1] = t[r * 4 + 2] = t[r * 4 + 3] = 0;
     }
     memset(TILE_PTR(1023), 0, 32);
-#ifdef GGSWAN_HOST
+#if defined(GGSWAN_HOST) && !defined(GGSWAN_SMS)
     prio_wanted = getenv("GGSWAN_PRIO") != NULL;
 #endif
     screen2_mode(prio_wanted);
@@ -1044,10 +1052,11 @@ GGSWAN_HOST_VISIBLE void video_init(void) {
     uint16_t m1 = IRAM_OFF(map1), m2 = IRAM_OFF(map2);
     outportb(WS_SCR_BASE_PORT, ((m1 >> 11) & 0x0F) | (((m2 >> 11) & 0x0F) << 4));
     outportb(0x04, (IRAM_OFF(sprite_table) >> 9) & 0x3F);
-    // screen 2 (the mask) only outside the 160x144 window
-    outportb(0x08, 32);
+    // the screen 2 window: the 160x144 view (the mask outside it; the
+    // priority tiles inside); smsswan: the whole WS screen, 224x144
+    outportb(0x08, WS_VIEW_ORIGIN_X);
     outportb(0x09, 0);
-    outportb(0x0A, 32 + GG_VIEW_W - 1);
+    outportb(0x0A, WS_VIEW_ORIGIN_X + GG_VIEW_W - 1);
     outportb(0x0B, GG_VIEW_H - 1);
     outportb(0x12, 0);
     outportb(0x13, 0);
@@ -1790,7 +1799,11 @@ int main(void) {
     outportb(WS_DISPLAY_CTRL_PORT, 0);
     memset(gg_vram, 0, 0x4000);
     text_init();
+#ifdef GGSWAN_SMS
+    text_print("SMSSWAN 0.1 - MASTER SYSTEM");
+#else
     text_print("GGSWAN 0.1 - GAME GEAR");
+#endif
     {
         // the patch number, bottom right
         char pb[12] = "PATCH ";
@@ -1827,12 +1840,14 @@ int main(void) {
     uint16_t banks = load_rom();
     text_hex("BANKS", banks);
 
+#ifndef GGSWAN_SMS
     // Y1 (Y up) held: background priority on screen 2 (see screen2_mode;
-    // it used to select the interpreter, no longer needed)
+    // it used to select the interpreter, no longer needed; smsswan: always)
     if (ws_keypad_scan() & WS_KEY_Y1) {
         prio_wanted = 1;
         text_print("BACKGROUND PRIORITY");
     }
+#endif
     // CPU: the recompiler
     {
         // the code cache: the PSRAM bank behind linear segment DRC_CODE_SEG

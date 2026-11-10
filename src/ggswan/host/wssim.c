@@ -226,15 +226,15 @@ int main(int argc, char **argv) {
         if (every && (fr + 1) % every == 0) {
             ws_render();
             long diff = 0;
-            for (int y = 0; y < 144; y++) for (int x = 0; x < 160; x++)
-                if (memcmp(fb[y][x], wsfb[y][x + 32], 3)) diff++;
-            printf("frame %5d: %5.1f%% pixels differ, splits %d:", fr + 1, diff * 100.0 / (160 * 144), act_n); for (int i = 0; i < act_n; i++) printf(" %d=%d", act_line[i], act_val[i]); printf("\n");
+            for (int y = 0; y < 144; y++) for (int x = 0; x < GG_VIEW_W; x++)
+                if (memcmp(fb[y][x], wsfb[y][x + WS_VIEW_ORIGIN_X], 3)) diff++;
+            printf("frame %5d: %5.1f%% pixels differ, splits %d:", fr + 1, diff * 100.0 / (GG_VIEW_W * 144), act_n); for (int i = 0; i < act_n; i++) printf(" %d=%d", act_line[i], act_val[i]); printf("\n");
             char path[512];
             snprintf(path, sizeof(path), "%s_%05d.ppm", argv[3], fr + 1);
             FILE *o = fopen(path, "wb");
-            fprintf(o, "P6\n%d %d\n255\n", 160 + 8 + 224, 144);
+            fprintf(o, "P6\n%d %d\n255\n", GG_VIEW_W + 8 + 224, 144);
             for (int y = 0; y < 144; y++) {
-                fwrite(fb[y], 1, 160 * 3, o);
+                fwrite(fb[y], 1, GG_VIEW_W * 3, o);
                 static const uint8_t gap[8 * 3] = {0};
                 fwrite(gap, 1, sizeof(gap), o);
                 fwrite(wsfb[y], 1, 224 * 3, o);

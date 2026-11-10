@@ -292,6 +292,8 @@ uint32_t sys_digest(void) {
     return h;
 }
 uint8_t *sys_fb(void) { return &fb[0][0][0]; }
+// the view's width (160; smsswan 224)
+int sys_view_w(void) { return GG_VIEW_W; }
 uint8_t *sys_iram(void) { return iram; }
 uint8_t *sys_psram(void) { return psram; }
 uint8_t *sys_sram(void) { return sram; }

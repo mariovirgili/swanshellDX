@@ -22,13 +22,33 @@
 /// cycles of a frame (unsigned: past the 16-bit int range)
 #define GG_FRAME_CYCLES ((uint16_t) (GG_LINES * 228u))
 #define GG_ACTIVE_LINES 192
+#ifdef GGSWAN_SMS
+// smsswan (PLUG_SMS.BIN: these sources built with -DGGSWAN_SMS): the
+// Master System shows all of the 256x192 picture, the WS 224x144 of it,
+// on its whole screen
+#define GG_VIEW_X 16
+#define GG_VIEW_Y 24
+#define GG_VIEW_W 224
+#define GG_VIEW_H 144
+#define WS_VIEW_ORIGIN_X 0      // the WS column where the view starts
+#else
 // the Game Gear shows a 160x144 window of the 256x192 picture
 #define GG_VIEW_X 48
 #define GG_VIEW_Y 24
 #define GG_VIEW_W 160
 #define GG_VIEW_H 144
+#define WS_VIEW_ORIGIN_X 32     // the WS column where the view starts
+#endif
+// WS column x shows picture column x + 16 in both (the horizontal scroll
+// is 16 - register 8: main.c hscroll_write, the CTL routine in drc.c; the
+// sprites' X offset)
+#if GG_VIEW_X - WS_VIEW_ORIGIN_X != 16
+#error "the view must start 16 columns to the right of its WS column"
+#endif
 // the frame is presented at the start of this line, right after the last
-// line the Game Gear shows (gg_platform_frame_end)
+// line the Game Gear shows (gg_platform_frame_end); smsswan: the same 168
+// while its view does not move (moving it is for later: then 192, the
+// end of the picture, as ChatGPT's review of the plan suggests)
 #define GG_PRESENT_LINE (GG_VIEW_Y + GG_VIEW_H)
 
 // Joypad bits (1 = pressed)

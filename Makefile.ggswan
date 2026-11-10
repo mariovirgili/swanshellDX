@@ -2,15 +2,24 @@
 #
 # ggswan: Game Gear emulator plugin for swanshell (nileswan).
 # Built from the main Makefile; output: dist/NILESWAN/PLUG_GG.BIN
+# SMS=1: smsswan, the Master System plugin from the same sources built
+# with -DGGSWAN_SMS; output: dist/NILESWAN/PLUG_SMS.BIN
 
 WONDERFUL_TOOLCHAIN ?= /opt/wonderful
 TARGET = wswan/medium
 include $(WONDERFUL_TOOLCHAIN)/target/$(TARGET)/makedefs.mk
 
-NAME		:= ggswan
 INCLUDEDIRS	:= src/ggswan/core src/ggswan/ws
 SOURCEDIRS	:= src/ggswan/core src/ggswan/drc src/ggswan/ws
 DEFINES		:= -DLIBWS_USE_EXTBANK
+ifeq ($(SMS),1)
+NAME		:= smsswan
+DEFINES		+= -DGGSWAN_SMS
+ROM		:= dist/NILESWAN/PLUG_SMS.BIN
+else
+NAME		:= ggswan
+ROM		:= dist/NILESWAN/PLUG_GG.BIN
+endif
 # make ... NILEDBG=1: the niledebug USB debugger's poll in the frame loop
 ifeq ($(NILEDBG),1)
 DEFINES		+= -DGGSWAN_NILEDBG
@@ -21,10 +30,9 @@ LIBS		:= -lnilefs -lnile -lwsx -lws
 LIBDIRS		:= $(WF_ARCH_LIBDIRS) \
 		   $(LIBNILE_PATH)/dist/$(TARGET)
 
-BUILDDIR	:= build/ggswan
+BUILDDIR	:= build/$(NAME)
 ELF		:= build/$(NAME).elf
 ELF_STAGE1	:= build/$(NAME)_stage1.elf
-ROM		:= dist/NILESWAN/PLUG_GG.BIN
 
 ifeq ($(V),1)
 _V		:=

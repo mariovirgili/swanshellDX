@@ -50,6 +50,7 @@ DEFINE_STRING(s_file_ext_il, ".il");
 DEFINE_STRING(s_file_ext_pc2, ".pc2");
 DEFINE_STRING(s_file_ext_raw, ".raw");
 DEFINE_STRING(s_file_ext_rom, ".rom");
+DEFINE_STRING(s_file_ext_sms, ".sms");
 DEFINE_STRING(s_file_ext_txt, ".txt");
 DEFINE_STRING(s_file_ext_vgm, ".vgm");
 DEFINE_STRING(s_file_ext_vgz, ".vgz");
@@ -93,6 +94,7 @@ DEFINE_STRING(s_rom_info_eeprom_b_tpl, "EEPROM %u B");
 
 DEFINE_STRING(s_path_plugin_uxn, "/NILESWAN/PLUG_UXN.BIN");
 DEFINE_STRING(s_path_plugin_gg, "/NILESWAN/PLUG_GG.BIN");
+DEFINE_STRING(s_path_plugin_sms, "/NILESWAN/PLUG_SMS.BIN");
 
 DEFINE_STRING(s_error_unknown, "Error %d");
 
