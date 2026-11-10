@@ -159,7 +159,7 @@ typedef struct {
     uint8_t (*known_start)(uint16_t pc);
 } drc_env_t;
 
-#define DRC_OUTD_DELTA 0x250
+#define DRC_OUTD_DELTA 0x2C0
 #define DRC_LDD_DELTA 0xC0
 
 typedef struct {
