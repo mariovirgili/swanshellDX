@@ -3387,6 +3387,16 @@ int drc_translate(const drc_env_t *e, uint16_t pc, uint8_t *out,
         ins[0].count = k; ins[0].len = k * 2;
     }
     int i;
+    // IN A,(7Eh) / CP n / JR cc back here: waiting for a line (Sonic
+    // Spinball, ~66 polls a frame): the runtime skips the polls whose
+    // result changes nothing, then this one runs as usual
+    if (n == 3 && env->vcnt_off && !env->no_fast && ins[0].pre == 0 && ins[0].op == 0xDB
+        && (ins[0].nn & 0xC1) == 0x40 && ins[1].pre == 0 && ins[1].op == 0xFE
+        && ins[2].pre == 0 && (ins[2].op & 0xE7) == 0x20
+        && (uint16_t) (ins[2].pc + 2 + (int8_t) ins[2].nn) == ins[0].pc) {
+        B(0xC7); B(0x06); W(SA(arg)); W((uint16_t) (ins[1].nn & 0xFF) | (((ins[2].op >> 3) & 3) << 8));
+        helper(DRC_H_VWAIT);
+    }
     for (i = 0; i < n; i++) {
         int g = pairs_at(i, n);
         if (g) {

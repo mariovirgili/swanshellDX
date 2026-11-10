@@ -127,6 +127,9 @@ enum {
                        // slot 0 nor the slot of the block: it may go on
     DRC_H_SYNC,        // write the deferred tile writes now, stop deferring
     DRC_H_PSG,         // the queue of PSG writes is full: write them
+    DRC_H_VWAIT,       // a loop polling the V counter (IN A,(7Eh) / CP n /
+                       // JR cc back; arg: n, cc << 8): the iterations that
+                       // change nothing, at once (drc_rt.c, vwait)
 };
 
 typedef struct {

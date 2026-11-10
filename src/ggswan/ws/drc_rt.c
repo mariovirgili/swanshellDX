@@ -948,6 +948,49 @@ uint32_t drc_stat_quick;   // (dispatches by drc_fast_reentry from L0)
 uint16_t drc_stat_op[16];   // helper calls by DRC_H_* (diagnostics)
 uint16_t drc_stat_op_lines[16];   // ...and the WS lines they took
 static void drc_helper_body(void);
+
+/*
+ * A block IN A,(7Eh) / CP n / JR cc back to it (drc.c): a wait for a line.
+ * Each turn takes 30 cycles (11 + 7 + 12) and ends the block's run when
+ * the cycles left reach 0. The turns whose V counter would keep it going
+ * are taken off here at once (as many as the cycles allow, as the block
+ * would have run them): then the block reads the counter as usual. The V
+ * counter as the routine computes it (drc_emit_vcnt_stub). arg: n, the
+ * JR's condition (0 NZ, 1 Z, 2 NC, 3 C) << 8.
+ */
+static void vwait(uint16_t arg) {
+    int16_t cyc = drc_st.cycles;
+    if (remapped || drc_st.fl_off || cyc <= 0 || (gg.vdp.frame_given >> 16))
+        return;   // (as the routine: the helper's way)
+    uint8_t n = arg, cc = arg >> 8;
+    uint16_t kmax = (uint16_t) (cyc - 1) / 30;   // turns that leave cycles > 0
+    uint16_t fg = (uint16_t) gg.vdp.frame_given;
+    uint16_t k = 0;
+    for (;;) {
+        int16_t di = drc_st.left_base + (int16_t) (cyc - 30 * k);
+        uint16_t pos = di <= 0 ? fg - di : ((uint16_t) di > fg ? 0 : fg - di);
+        uint16_t line = pos / GG_CYCLES_PER_LINE;
+        if (line > GG_LINES - 1)
+            line = GG_LINES - 1;
+        uint8_t vc = line > 0xDA ? line - 6 : line;
+        uint8_t again = cc == 0 ? vc != n : cc == 1 ? vc == n : cc == 2 ? vc >= n : vc < n;
+        if (!again || (di > 0 && (uint16_t) di > fg))
+            break;
+        if (line >= GG_LINES - 1) {
+            k = kmax;
+            break;
+        }
+        // the first turn on the next line
+        uint16_t kk = k + ((line + 1) * GG_CYCLES_PER_LINE - pos + 29) / 30;
+        if (kk > kmax) {
+            k = kmax;
+            break;
+        }
+        k = kk;
+    }
+    drc_st.cycles = cyc - 30 * k;
+}
+
 static void drc_helper(void) {
     uint8_t op = drc_st.op & 15;
     uint8_t l0 = inportb(WS_DISPLAY_LINE_PORT);
@@ -968,6 +1011,11 @@ static void drc_helper_body(void) {
             gg_platform_vram_sync();
         else
             gg_platform_vram_sync_at(gg.vdp.addr & 0x3FFF);
+        return;
+    }
+    if (drc_st.op == DRC_H_VWAIT) {
+        prof_phase = PROF_HELPER;
+        vwait(drc_st.arg);
         return;
     }
     if (drc_st.op == DRC_H_PSG) {
