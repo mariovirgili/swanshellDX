@@ -156,7 +156,7 @@ typedef struct {
                            // LDD's at ldi_off + DRC_LDD_DELTA (0: interpreted)
 } drc_env_t;
 
-#define DRC_OUTD_DELTA 0x200
+#define DRC_OUTD_DELTA 0x250
 #define DRC_LDD_DELTA 0xC0
 
 typedef struct {

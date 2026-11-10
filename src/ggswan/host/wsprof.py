@@ -5,7 +5,7 @@ instructions and estimated V30MZ cycles per function.
 usage: wsprof.py build/ggswan.elf rom.gg blk.txt [n]
 blk.txt: the blocks to translate, "BLK pc bank len n" lines (as drcsys.c
 prints them with a GGSWAN_BLK hook; only pc and bank are used here).
-Buffer and cache offsets as drc_rt.c (BUF_ADDR A600h, CACHE_START 0AE0h).
+Buffer and cache offsets as drc_rt.c (BUF_ADDR A600h, CACHE_START 0B88h).
 Cycles: a rough V30MZ estimate, for comparing, not exact."""
 import sys, os, bisect, collections
 from elftools.elf.elffile import ELFFile
@@ -143,10 +143,10 @@ for k, b in enumerate(blocks):
     if slot:
         call('z80_write', ax=0xFFFD + slot, dx=bank)
     cur.update(n=0, c=0, prof=True)
-    ok = call('drc_translate', ax=syms['env_rt'], dx=pc, cx=0xA600, stack=(0x0B28, 0x1900, 0x3E00))
+    ok = call('drc_translate', ax=syms['env_rt'], dx=pc, cx=0xA600, stack=(0x0B88, 0x1900, 0x3E00))
     ln = int.from_bytes(uc.mem_read(0x3E00, 2), 'little')
     if ok & 0xFF:
-        call('psram_write', ax=0, dx=0x0B28, cx=0xA600, stack=(ln,))
+        call('psram_write', ax=0, dx=0x0B88, cx=0xA600, stack=(ln,))
     if k < 5: print('pc %04X ok %d len %d (host %s)' % (pc, ok & 0xFF, ln, b[3]))
     cur['prof'] = False
     per.append((cur['n'], cur['c'], int(b[4]), int(b[3])))

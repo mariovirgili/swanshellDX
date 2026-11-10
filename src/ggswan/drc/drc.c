@@ -803,8 +803,47 @@ uint16_t drc_emit_run_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
             land8(live);
             B(0xF6); B(0xC2); B(0x03);               // test dl, 3 (name or sprite table)
             plain = jcc8(0x74);                      // jz plain (the usual case)
-            B(0xF6); B(0xC2); B(0x01);               // test dl, 1 (name table without the log)
+            B(0xF6); B(0xC2); B(0x01);               // test dl, 1 (name table)
+            uint8_t *not_nt = jcc8(0x74);            // jz (sprite table only)
+            B(0xF6); B(0xC2); B(0x02);               // test dl, 2 (both)
             B(0x75); B((uint8_t) (nofast - (o + 1)));    // jnz nofast (backwards)
+            /*
+             * Name table (live): the run to VRAM at once, then the name
+             * table routine once for each word it touched (it converts the
+             * whole word), instead of the loop's class and name table
+             * routines for every byte. Sonic writes its map entries as
+             * runs of 2 OUTIs, ~50 a frame.
+             */
+            B(0x89); B(0xFA);                        // mov dx, di (k)
+            B(0x28); B(0xD5);                        // sub ch, dl (B -= k)
+            B(0x51);                                 // push cx
+            B(0x56);                                 // push si (VRAM start)
+            B(0x89); B(0xF9);                        // mov cx, di (k)
+            B(0x8D); B(0xBC); W(env->vram_addr);     // lea di, [si + vram]
+            B(0x89); B(0xDE);                        // mov si, bx
+            B(0x1E); B(0x06); B(0x1F); B(0x07);      // push ds; push es; pop ds; pop es
+            B(0xFC);                                 // cld
+            B(0xF3); B(0xA4);                        // rep movsb
+            B(0x06); B(0x1F);                        // push es; pop ds (DS, ES: data)
+            B(0x89); B(0xF3);                        // mov bx, si (HL + k)
+            B(0x8A); B(0x65); B(0xFF);               // mov ah, [di - 1] (last byte)
+            B(0x88); B(0x26); W(VA(read_buffer));    // mov [read_buffer], ah
+            B(0xC6); B(0x06); W(VA(latch_full)); B(0);   // mov byte [latch_full], 0
+            if (env->vram_addr & 0x3FFF) { B(0x81); B(0xEF); W(env->vram_addr); }   // sub di, vram
+            B(0x81); B(0xE7); W(0x3FFF);             // and di, 3FFFh
+            B(0x89); B(0x3E); W(VA(addr));           // mov [addr], di
+            B(0x5E);                                 // pop si (VRAM start)
+            B(0x01); B(0xF2);                        // add dx, si (end)
+            B(0x83); B(0xE6); B(0xFE);               // and si, FFFEh (its word)
+            uint8_t *ntl = o;
+            call_near(e->nt_stub_off);               // the word at SI to the map
+            B(0x83); B(0xC6); B(0x02);               // add si, 2
+            B(0x39); B(0xD6);                        // cmp si, dx
+            B(0x72); B((uint8_t) (ntl - (o + 1)));   // jb ntl
+            B(0x59);                                 // pop cx
+            B(0x5A);                                 // pop dx
+            B(0xE9); W((uint16_t) (flags - (o + 2)));    // jmp flags
+            land8(not_nt);
             (void) n4; (void) logged;
         } else {
             B(0xF6); B(0xC2); B(0x01);               // test dl, 1

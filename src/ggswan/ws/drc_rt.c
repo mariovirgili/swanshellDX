@@ -41,16 +41,16 @@ uint16_t drc_entry[2];   // far pointer used by drc_enter: offset, segment
 #define STUB_HELPER 0x0020
 #define STUB_DYN    0x0040
 #define STUB_NT     0x0180
-#define STUB_CLS    0x0980   // a VRAM byte outside tile data (drc.c)
+#define STUB_CLS    0x09E0   // a VRAM byte outside tile data (drc.c)
 #define STUB_CRAM   0x01E0   // a byte to CRAM
 #define STUB_OUTI   0x0240   // (OUTD: + DRC_OUTD_DELTA)
-#define STUB_LDI    0x04E0   // (LDD: + DRC_LDD_DELTA)
-#define STUB_HCALL  0x0610   // helpers called without leaving the block
-#define STUB_LINE   0x0660   // the exits' common part, the line routine
-#define STUB_CTL    0x0800   // OUT (BFh),A
-#define STUB_MAP    0x0A60   // a bank change of slot 1 or 2 (put_map)
-#define STUB_VCNT   0x0AD8   // IN A,(7Eh) (drc_emit_vcnt_stub)
-#define CACHE_START 0x0B28
+#define STUB_LDI    0x0540   // (LDD: + DRC_LDD_DELTA)
+#define STUB_HCALL  0x0670   // helpers called without leaving the block
+#define STUB_LINE   0x06C0   // the exits' common part, the line routine
+#define STUB_CTL    0x0860   // OUT (BFh),A
+#define STUB_MAP    0x0AC0   // a bank change of slot 1 or 2 (put_map)
+#define STUB_VCNT   0x0B38   // IN A,(7Eh) (drc_emit_vcnt_stub)
+#define CACHE_START 0x0B88
 // translation buffer in free IRAM (between the font tiles and the mask tile)
 #define BUF_ADDR    0xA600
 /// DYN L0 cache: 512 direct-mapped entries of 8 bytes in free IRAM (in the
