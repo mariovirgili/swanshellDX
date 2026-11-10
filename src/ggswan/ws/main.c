@@ -351,7 +351,7 @@ static void log_apply(uint16_t start, uint16_t end) {
             for (uint16_t k = 0; k < n; k++) {
                 uint16_t o = (uint16_t) (a + k - nt_base);
                 if (o < 0x700 && (!(o & 1) || k == 0))
-                    map_put(o >> 6, (o >> 1) & 31, conv_entry(gg_entry(o >> 6, (o >> 1) & 31)));
+                    map_put(o >> 6, (o >> 1) & 31, gg_entry(o >> 6, (o >> 1) & 31));
             }
         }
         p += 3 + n;
@@ -553,6 +553,15 @@ static volatile uint8_t frame_waiting;
 uint16_t ws_map1_iram(void) {
     return IRAM_OFF(map1);
 }
+uint16_t ws_map2_iram(void) {
+    return IRAM_OFF(map2);
+}
+
+// screen 2 entry (drc_st.prio_on): a background tile with priority (bit
+// 12) in front of the sprites, the others empty
+static inline uint16_t prio_entry(uint16_t e, uint16_t w) {
+    return (e & 0x1000) ? w : WS_PRIO_BLANK;
+}
 
 // Game Gear name table entry -> WS screen entry
 static inline uint16_t conv_entry(uint16_t e) {
@@ -588,8 +597,12 @@ static void map_relayout(uint8_t top) {
     for (uint8_t w = 0; w < 32; w++) {
         uint8_t v = top + ((w - top) & 31);
         uint8_t r = v % 28;
-        for (uint8_t c = 0; c < 32; c++)
-            map1[w * 32 + c] = conv_entry(gg_entry(r, c));
+        for (uint8_t c = 0; c < 32; c++) {
+            uint16_t e = gg_entry(r, c), x = conv_entry(e);
+            map1[w * 32 + c] = x;
+            if (drc_st.prio_on)
+                map2[w * 32 + c] = prio_entry(e, x);
+        }
     }
 }
 
@@ -607,17 +620,21 @@ uint16_t host_map_check(void) {
 }
 #endif
 
-static void map_put(uint8_t row, uint8_t col, uint16_t w) {
+static void map_put(uint8_t row, uint8_t col, uint16_t e) {
+    uint16_t w = conv_entry(e), w2 = prio_entry(e, w);
     for (uint8_t v = row; v < map_top + 32; v += 28)
-        if (v >= map_top)
+        if (v >= map_top) {
             map1[(v & 31) * 32 + col] = w;
+            if (drc_st.prio_on)
+                map2[(v & 31) * 32 + col] = w2;
+        }
 }
 
 void gg_platform_vram_write(uint16_t a, uint8_t value) {
     (void) value;
     uint16_t off = a - nt_base;
     if (off < 0x700) {
-        map_put(off >> 6, (off >> 1) & 31, conv_entry(gg_entry(off >> 6, (off >> 1) & 31)));
+        map_put(off >> 6, (off >> 1) & 31, gg_entry(off >> 6, (off >> 1) & 31));
     } else if ((uint16_t) (a - sat_base) < 0x100) {
         drc_st.sprites_dirty = true;
     }
@@ -788,6 +805,10 @@ void line_irq(void) {
             // writes of the frame presented
             outportb(WS_SCR1_SCRL_X_PORT, act_val[0]);
             outportb(0x11, act_vy);                   // screen 1 Y scroll
+            if (drc_st.prio_on) {                     // screen 2 with it
+                outportb(0x12, act_val[0]);
+                outportb(0x13, act_vy);
+            }
             if (pend_start) {
                 uint8_t c0 = inportb(WS_DISPLAY_LINE_PORT);
                 log_commit_pending();
@@ -802,6 +823,8 @@ void line_irq(void) {
             i = 1;
         } else {
             outportb(WS_SCR1_SCRL_X_PORT, act_val[i]);
+            if (drc_st.prio_on)
+                outportb(0x12, act_val[i]);
             i++;
         }
         // interrupt on the line before the next split (or the end)
@@ -968,6 +991,28 @@ static void sprites_publish(void) {
     irq_restore(f);
 }
 
+/*
+ * Screen 2: either the Game Gear background tiles with priority (bit 12 of
+ * the name table entry: in front of the sprites; Sonic Spinball's tubes
+ * hide Sonic), inside the 160x144 view, scrolling with screen 1; or the
+ * borders' black mask and the diagnostics, outside the view. Y1 (Y up)
+ * switches (priority first). The WS has no priority per tile: screen 2,
+ * whose sprites are all behind it, is the only layer in front of them.
+ */
+static void screen2_mode(uint8_t prio) {
+    drc_st.prio_on = prio;
+    if (prio) {
+        map_relayout(map_top);   // (map1 and map2)
+        outportb(0x12, inportb(0x10));
+        outportb(0x13, inportb(0x11));
+    } else {
+        for (uint16_t i = 0; i < 32 * 32; i++)
+            map2[i] = TILE_ENTRY(MASK_TILE) | PAL_ENTRY(MASK_PALETTE);
+        outportb(0x12, 0);
+        outportb(0x13, 0);
+    }
+}
+
 GGSWAN_HOST_VISIBLE void video_init(void) {
     rec_n = 1;   // (no split yet: rec_val[0] only)
     drc_st.sprites_dirty = 1;
@@ -984,8 +1029,7 @@ GGSWAN_HOST_VISIBLE void video_init(void) {
         t[r * 4 + 1] = t[r * 4 + 2] = t[r * 4 + 3] = 0;
     }
     memset(TILE_PTR(1023), 0, 32);
-    for (uint16_t i = 0; i < 32 * 32; i++)
-        map2[i] = TILE_ENTRY(MASK_TILE) | PAL_ENTRY(MASK_PALETTE);
+    screen2_mode(1);
     WS_DISPLAY_COLOR_MEM(MASK_PALETTE)[1] = 0x000;
     memset(sprite_table, 0, 512);
     memset(sprite_table_b, 0, 512);
@@ -1077,6 +1121,8 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
         // (the map changed now: its scroll too)
         act_vy = vy & 0xFF;
         outportb(0x11, act_vy);
+        if (drc_st.prio_on)
+            outportb(0x13, act_vy);
     }
 #ifdef GGSWAN_HOST
     outportb(0x11, act_vy);   // (the PC tests have no WS raster)
@@ -1131,10 +1177,12 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
     // again before the next frame: at this point it can still be off)
     if ((reg[1] | gg.vdp.reg1_frame) & 0x40) {
         outportb(0x01, backdrop_palette << 4);        // backdrop: color 0
-        outportb(0x00, 0x01 | 0x02 | 0x04 | 0x10 | 0x20);
+        // (screen 2: the tiles with priority inside the view, or the
+        // borders' mask and diagnostics outside it)
+        outportb(0x00, 0x01 | 0x02 | 0x04 | 0x20 | (drc_st.prio_on ? 0 : 0x10));
     } else {
         outportb(0x01, 0x10 | (reg[7] & 0x0F));       // backdrop color
-        outportb(0x00, 0x02 | 0x10 | 0x20);
+        outportb(0x00, drc_st.prio_on ? 0 : 0x02 | 0x10 | 0x20);
     }
 #ifdef GGSWAN_HOST
     frame_waiting = 1;
@@ -1375,8 +1423,15 @@ GGSWAN_HOST_VISIBLE void sound_init(void) {
 
 /* === Input === */
 
+static void screen2_mode(uint8_t prio);
+static uint16_t keys_before;
+
 GGSWAN_HOST_VISIBLE void read_keys(void) {
     uint16_t k = ws_keypad_scan();
+    // Y1 (Y up) pressed: background priority <-> diagnostics in the borders
+    if ((k & ~keys_before) & WS_KEY_Y1)
+        screen2_mode(!drc_st.prio_on);
+    keys_before = k;
     uint8_t g = 0;
     if (k & WS_KEY_X1) g |= GG_KEY_UP;
     if (k & WS_KEY_X3) g |= GG_KEY_DOWN;
@@ -1526,6 +1581,8 @@ static uint16_t font_entry(char c) {
 // Diagnostics in the borders (screen 2, outside the Game Gear view):
 // left columns 0-3, right columns 24-27, one empty row between lines.
 static void put_text(uint8_t row, uint8_t col, const char __far *t) {
+    if (drc_st.prio_on)
+        return;   // (screen 2 holds the background's priority tiles)
     while (*t)
         map2[row * 32 + col++] = font_entry(*(t++));
 }

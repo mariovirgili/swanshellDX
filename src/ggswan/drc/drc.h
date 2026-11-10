@@ -34,7 +34,7 @@
 #ifndef GGSWAN_DRC_H_
 #define GGSWAN_DRC_H_
 
-#define DRC_PSG_Q 64   // PSG writes queued by the recompiled code
+#define DRC_PSG_Q 184  // PSG writes queued by the recompiled code (<= 255)
 
 #include <stdint.h>
 
@@ -106,6 +106,10 @@ typedef struct {
                           // joins the last log entry, which it made and is
                           // the top one (FFFFh: none; anything else that
                           // changes the log sets it)
+    uint8_t prio_on;      // main.c: screen 2 holds the background tiles with
+                          // priority (in front of the sprites): the NT
+                          // routine writes them there too (0: the borders'
+                          // mask and diagnostics)
 } drc_state_t;
 
 /// Helper operations: generated code sets drc_state.op (and arg/val),

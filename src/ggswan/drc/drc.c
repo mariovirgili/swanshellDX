@@ -2634,6 +2634,25 @@ static int emit(int i) {
             }
             {
                 uint16_t target = next + (int8_t) I->nn;
+                if (y == 2 && I->nn == 0xFE && !env->no_fast) {
+                    /*
+                     * DJNZ $: a delay of B steps (Sailor Moon S times its
+                     * voice samples with it, ~570 a frame): in one go,
+                     * 13 (B - 1) + 8 cycles, B = 0 (B = 0 at the start:
+                     * 256 steps), the flags as they were
+                     */
+                    clobber(live);
+                    B(0x89); B(0xCE);                    // mov si, cx
+                    B(0xC1); B(0xEE); B(0x08);           // shr si, 8 (B)
+                    B(0x4E);                             // dec si
+                    B(0x81); B(0xE6); W(0x00FF);         // and si, FFh (B - 1, 0: 255)
+                    B(0x6B); B(0xF6); B(13);             // imul si, si, 13
+                    B(0x29); B(0x36); W(SA(cycles));     // sub [cycles], si
+                    B(0xB5); B(0x00);                    // mov ch, 0
+                    cf_valid = 0;
+                    exit_const(next, 8);
+                    return 1;
+                }
                 if (y == 2) {   // DJNZ
                     clobber(live);
                     B(0xFE); B(0xCD);            // dec ch
@@ -2902,7 +2921,7 @@ static int emit(int i) {
                     B(0x88); B(0x84); W(SA(psg_q));      // mov [si + psg_q], al
                     B(0x46);                             // inc si
                     B(0x89); B(0x36); W(SA(psg_n));      // mov [psg_n], si
-                    B(0x83); B(0xFE); B(DRC_PSG_Q);      // cmp si, DRC_PSG_Q
+                    B(0x81); B(0xFE); W(DRC_PSG_Q);      // cmp si, DRC_PSG_Q
                     uint8_t *room = jcc8(0x72);          // jb room
                     helper(DRC_H_PSG);
                     land8(room);

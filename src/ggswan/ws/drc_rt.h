@@ -64,6 +64,10 @@ extern volatile uint8_t prof_phase;
 
 /// main.c: IRAM address of the WS screen map of the Game Gear background
 uint16_t ws_map1_iram(void);
+uint16_t ws_map2_iram(void);
+/// screen 2 entry of a background tile without priority: tile 1023, empty
+/// (main.c clears it): the sprites show through
+#define WS_PRIO_BLANK 0x21FF
 /// main.c: put the RAM window back as Game Gear slot 2 needs it
 void ws_ram_window_restore(void);
 /// check the PSRAM banks of the recompiler (0: all right)

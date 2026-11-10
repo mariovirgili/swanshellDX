@@ -40,7 +40,6 @@ uint16_t drc_entry[2];   // far pointer used by drc_enter: offset, segment
 #define STUB_EXIT   0x0000
 #define STUB_HELPER 0x0020
 #define STUB_DYN    0x0040
-#define STUB_NT     0x0180
 #define STUB_CLS    0x0AA0   // a VRAM byte outside tile data (drc.c)
 #define STUB_CRAM   0x01E0   // a byte to CRAM
 #define STUB_OUTI   0x0240   // (OUTD: + DRC_OUTD_DELTA)
@@ -51,7 +50,8 @@ uint16_t drc_entry[2];   // far pointer used by drc_enter: offset, segment
 #define STUB_MAP    0x0B80   // a bank change of slot 1 or 2 (put_map)
 #define STUB_VCNT   0x0BF8   // IN A,(7Eh) (drc_emit_vcnt_stub)
 #define STUB_PAIRS  0x0C48   // OUTI / OUTI / DEC L x 4 repeated (drc.c)
-#define CACHE_START 0x0D20
+#define STUB_NT     0x0D20   // a name table byte (put_nt)
+#define CACHE_START 0x0DA0
 // translation buffer in free IRAM (between the font tiles and the mask tile)
 #define BUF_ADDR    0xA600
 /// DYN L0 cache: 512 direct-mapped entries of 8 bytes in free IRAM (in the
@@ -482,7 +482,7 @@ static uint16_t put_dyn(uint8_t *stub, uint8_t bank_index) {
 #undef REL8
 #undef PREL
 #ifdef GGSWAN_HOST
-    if (p > stub + STUB_NT) { printf("DYN stub too long\n"); exit(1); }
+    if (p > stub + STUB_CRAM) { printf("DYN stub too long\n"); exit(1); }
 #endif
     return entry;
 }
@@ -501,7 +501,9 @@ static uint16_t put_nt(uint8_t *stub, uint16_t at) {
     uint16_t map1 = ws_map1_iram();
     uint16_t nt = env.state_addr + offsetof(drc_state_t, nt_base);
     uint16_t rows = env.state_addr + offsetof(drc_state_t, nt_rows);
-    PB(0x50); PB(0x53); PB(0x52); PB(0x57);             // push ax bx dx di
+    uint16_t map2 = ws_map2_iram();
+    uint16_t prio = env.state_addr + offsetof(drc_state_t, prio_on);
+    PB(0x50); PB(0x53); PB(0x51); PB(0x52); PB(0x57);   // push ax bx cx dx di
     PB(0x89); PB(0xF3);                                  // mov bx, si
     PB(0x81); PB(0xE3); PW(0x3FFE);                      // and bx, 3FFEh
     PB(0x8B); PB(0x87); PW(env.vram_addr);               // mov ax, [bx + vram]
@@ -510,8 +512,14 @@ static uint16_t put_nt(uint8_t *stub, uint16_t at) {
     // palette, h flip, v flip: bits 11, 9, 10 -> a table of 8
     PB(0x89); PB(0xC3);                                  // mov bx, ax
     PB(0xC1); PB(0xEB); PB(0x08);                        // shr bx, 8
+    PB(0x88); PB(0xD9);                                  // mov cl, bl (bit 4: priority)
     PB(0x83); PB(0xE3); PB(0x0E);                        // and bx, 0Eh
     PB(0x0B); PB(0x97); PW(env.state_addr + offsetof(drc_state_t, nt_flags));   // or dx, [bx + nt_flags]
+    // screen 2: the entry if it has priority, else the empty tile
+    PB(0xF6); PB(0xC1); PB(0x10);                        // test cl, 10h
+    PB(0xB9); PW(WS_PRIO_BLANK);                         // mov cx, blank
+    PB(0x74); PB(0x02);                                  // jz +2
+    PB(0x89); PB(0xD1);                                  // mov cx, dx
     PB(0x89); PB(0xF0);                                  // mov ax, si
     PB(0x2B); PB(0x06); PW(nt);                          // sub ax, [nt_base]
     PB(0x89); PB(0xC3);                                  // mov bx, ax
@@ -522,10 +530,13 @@ static uint16_t put_nt(uint8_t *stub, uint16_t at) {
         PB(0x89); PB(0xC7);                              // mov di, ax
         PB(0x8B); PB(0xBD); PW(rows + i * 56);           // mov di, [di + rows]
         PB(0x83); PB(0xFF); PB(0xFF);                    // cmp di, -1
-        PB(0x74); PB(0x04);                              // je +4 (none)
+        PB(0x74); PB(0x0F);                              // je +15 (none)
         PB(0x89); PB(0x91); PW(map1);                    // mov [bx + di + map1], dx
+        PB(0x80); PB(0x3E); PW(prio); PB(0);             // cmp byte [prio_on], 0
+        PB(0x74); PB(0x04);                              // je +4
+        PB(0x89); PB(0x89); PW(map2);                    // mov [bx + di + map2], cx
     }
-    PB(0x5F); PB(0x5A); PB(0x5B); PB(0x58);             // pop di dx bx ax
+    PB(0x5F); PB(0x5A); PB(0x59); PB(0x5B); PB(0x58);   // pop di dx cx bx ax
     PB(0xC3);                                            // ret
 #undef PB
 #undef PW
@@ -776,6 +787,9 @@ void drc_rt_init(uint16_t bank) {
 #endif
         env.nt_stub_off = STUB_NT;
         uint16_t end = put_nt(stub, STUB_NT);
+#ifdef GGSWAN_HOST
+        if (end > CACHE_START) { printf("NT stub: no room (%X)\n", end); exit(1); }
+#endif
         uint16_t l6 = drc_emit_cls_stub(&env, stub + STUB_CLS, STUB_CLS);
 #ifdef GGSWAN_HOST
         if (STUB_CTL + l5 > STUB_CLS || STUB_CLS + l6 > CACHE_START) { printf("CLS stub: no room\n"); exit(1); }
@@ -820,7 +834,7 @@ void drc_rt_init(uint16_t bank) {
         uint16_t l4 = drc_emit_ldi_stub(&env, stub + STUB_LDI + DRC_LDD_DELTA, STUB_LDI + DRC_LDD_DELTA, 1);
 #ifdef GGSWAN_HOST
         if (getenv("GGSWAN_STUBS")) printf("stubs: NT end %X, CRAM end %X, OUTI %X, OUTD %X, LDI %X, LDD %X\n", end, cram_end, l1, l2, l3, l4);
-        if (end > STUB_CRAM || cram_end > STUB_OUTI || l1 > DRC_OUTD_DELTA || STUB_OUTI + DRC_OUTD_DELTA + l2 > STUB_LDI
+        if (cram_end > STUB_OUTI || l1 > DRC_OUTD_DELTA || STUB_OUTI + DRC_OUTD_DELTA + l2 > STUB_LDI
             || l3 > DRC_LDD_DELTA || STUB_LDI + DRC_LDD_DELTA + l4 > STUB_HCALL) { printf("stubs too long\n"); exit(1); }
 #else
         (void) end; (void) cram_end; (void) l1; (void) l2; (void) l3; (void) l4;

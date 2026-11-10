@@ -141,7 +141,10 @@ static uint8_t scr1_x(int y) {
 
 static int screen_px(int scr, int x, int y, uint16_t *col) {
     uint16_t base = scr ? (ports[7] >> 4) << 11 : (ports[7] & 15) << 11;
-    uint8_t sx = x + (scr ? ports[0x12] : scr1_x(y)), sy = y + ports[scr ? 0x13 : 0x11];
+    // (screen 2 inside the window: the background's priority tiles, its
+    // scroll that of screen 1, set by line_irq on the WS: none here)
+    int with1 = scr && !(ports[0] & 0x10);
+    uint8_t sx = x + (scr && !with1 ? ports[0x12] : scr1_x(y)), sy = y + ports[scr && !with1 ? 0x13 : 0x11];
     uint16_t e = iram[base + ((sy >> 3) * 32 + (sx >> 3)) * 2] | (iram[base + ((sy >> 3) * 32 + (sx >> 3)) * 2 + 1] << 8);
     uint16_t t = (e & 0x1FF) | (((e >> 13) & 1) << 9);
     uint8_t r = sy & 7, c = sx & 7;
