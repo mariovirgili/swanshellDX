@@ -1027,6 +1027,8 @@ void gg_platform_frame_end(void) {
     video_present();
 }
 
+static void pcm_frame(void);   // (the frame's samples: below)
+
 GGSWAN_HOST_VISIBLE void video_present(void) {
 #ifndef GGSWAN_HOST
     // the last frame not shown yet (two Game Gear frames ended in one WS
@@ -1048,6 +1050,7 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
     uint8_t vp_start = inportb(WS_DISPLAY_LINE_PORT);
     vp_mark = vp_start;
     gg_platform_psg_flush();   // (the frame's PSG writes, queued)
+    pcm_frame();
     vp_lap(VP_PSG);
 
     // vertical: the Game Gear view starts at row (24 + vscroll) mod 224
@@ -1157,6 +1160,47 @@ struct psg_state {
     uint16_t tone[3];
 };
 struct psg_state psg_st;   // (not static: drc_asm.s)
+
+/*
+ * Samples. A game that plays them (Sailor Moon S's voices) sets the three
+ * tone channels to 0-1 (no tone: a constant level) and writes their
+ * volumes thousands of times a second (~11.4 kHz there, three writes a
+ * sample). Those levels can not wait for the end of the frame like the
+ * rest: each write to channel 2's volume while the three are without
+ * tone queues the sum of the three levels in pcm_buf (psg_apply, psg_run
+ * in drc_asm.s), and at the end of the frame (pcm_frame) the sound DMA
+ * plays them on WS channel 2 as a voice, 200 samples at 12 kHz a frame.
+ */
+#define PCM_MAX 640
+uint8_t pcm_on;               // (drc_asm.s too) the three tones are 0-1
+uint16_t pcm_n;               // (drc_asm.s too) levels in pcm_buf
+uint8_t pcm_buf[PCM_MAX];     // (drc_asm.s too)
+// 2 dB a step, 0-15 (off): three of them add up to 0-255
+const uint8_t pcm_level[16] = {   // (drc_asm.s too)
+    85, 67, 54, 43, 34, 27, 21, 17, 13, 11, 8, 7, 5, 4, 3, 0
+};
+static uint8_t voice_on;      // WS channel 2 plays the samples
+#ifndef WS_SDMA_CTRL_PORT   // (the host's older headers)
+#define WS_SDMA_SOURCE_L_PORT 0x4A
+#define WS_SDMA_SOURCE_H_PORT 0x4C
+#define WS_SDMA_LENGTH_L_PORT 0x4E
+#define WS_SDMA_LENGTH_H_PORT 0x50
+#define WS_SDMA_CTRL_PORT 0x52
+#define WS_SDMA_CTRL_ENABLE 0x80
+#define WS_SDMA_CTRL_TARGET_CH2 0x00
+#define WS_SDMA_CTRL_ONESHOT 0x00
+#define WS_SDMA_CTRL_RATE_12000 0x02
+#define WS_SOUND_VOICE_VOL_PORT 0x94
+#define WS_SOUND_VOICE_VOL_LEFT_FULL 0x0C
+#define WS_SOUND_VOICE_VOL_RIGHT_FULL 0x03
+#endif
+#define PCM_OUT_MAX 200
+#ifndef GGSWAN_HOST
+#define PCM_OUT ((uint8_t*) 0xE400)   // 2 x 200 (free IRAM E400h-E58Fh)
+#else
+static uint8_t pcm_out_host[2 * PCM_OUT_MAX];
+#define PCM_OUT pcm_out_host
+#endif
 #define psg_latch psg_st.latch
 #define psg_noise psg_st.noise
 #define psg_dirty psg_st.dirty
@@ -1165,6 +1209,12 @@ struct psg_state psg_st;   // (not static: drc_asm.s)
 static uint8_t psg_stereo = 0xFF;
 
 static void psg_volume(uint8_t ch) {
+    if (voice_on && ch < 3) {
+        // (channel 2's volume port is the voice's sample now)
+        if (ch != 1)
+            outportb(0x88 + ch, 0);
+        return;
+    }
     outportb(0x88 + ch, psg_volume_table[psg_vol[ch]] * ((psg_stereo >> ch) & 0x11));
 }
 
@@ -1179,7 +1229,7 @@ static void psg_noise_freq(void) {
     // 3072000 * tone / (3579545 >> 5)
     uint16_t divider = ((uint32_t) tone * 28118) >> 10;
     outportw(0x80 + 3 * 2, -divider);
-    outportb(WS_SOUND_CH_CTRL_PORT, (psg_noise & 4) ? 0x8F : 0x0F);
+    outportb(WS_SOUND_CH_CTRL_PORT, ((psg_noise & 4) ? 0x8F : 0x0F) | (voice_on ? 0x20 : 0));
 }
 
 // one write to the SN76489: its state only (psg_dirty: what to output)
@@ -1196,6 +1246,8 @@ static void psg_apply(uint8_t data) {
     case 1: case 3: case 5: case 7:
         psg_vol[ch] = data & 0x0F;
         psg_dirty |= 1 << ch;
+        if (ch == 2 && pcm_on && pcm_n < PCM_MAX)
+            pcm_buf[pcm_n++] = pcm_level[psg_vol[0]] + pcm_level[psg_vol[1]] + pcm_level[psg_vol[2]];
         break;
     case 6:
         psg_noise = data & 7;
@@ -1225,6 +1277,8 @@ static void psg_output(void) {
             // 3072000 * tone / (3579545 >> 1): the wave holds two periods
             // (a table: no 32-bit multiplication)
             outportw(0x80 + ch * 2, -psg_divider[psg_tone[ch]]);
+    if (d & 0x70)
+        pcm_on = psg_tone[0] <= 1 && psg_tone[1] <= 1 && psg_tone[2] <= 1;
     if (d & 0x80)
         psg_noise_freq();
 }
@@ -1247,6 +1301,45 @@ void gg_platform_psg_flush(void) {
         psg_apply(drc_st.psg_q[i]);
 #endif
     psg_output();
+}
+
+// the frame's samples to the sound DMA (see pcm_buf): a Game Gear frame
+// lasts 200 samples at 12 kHz, whatever the frame rate (slower than 60
+// frames a second: gaps between the frames' samples, but the voice at
+// its speed and pitch)
+#define PCM_FRAME 200
+static uint8_t pcm_half;
+static void pcm_frame(void) {
+    uint16_t n = PCM_FRAME;
+    if (!pcm_n) {
+        if (voice_on) {
+            outportb(WS_SDMA_CTRL_PORT, 0);
+            voice_on = 0;
+            psg_dirty |= 0xFF;   // the channels as they are
+            psg_output();
+        }
+        return;
+    }
+    if (!voice_on) {
+        voice_on = 1;
+        outportb(WS_SOUND_VOICE_VOL_PORT, WS_SOUND_VOICE_VOL_LEFT_FULL | WS_SOUND_VOICE_VOL_RIGHT_FULL);
+        psg_dirty |= 0x87;   // tone channels quiet, the voice on
+        psg_output();
+    }
+    uint8_t *out = PCM_OUT + (pcm_half ? PCM_OUT_MAX : 0);
+    pcm_half ^= 1;
+    // pcm_n levels over n samples (10.6 fixed point: pcm_n <= 640)
+    uint16_t step = (pcm_n << 6) / n, pos = 0;
+    for (uint16_t i = 0; i < n; i++, pos += step)
+        out[i] = pcm_buf[pos >> 6];
+    pcm_n = 0;
+    outportb(WS_SDMA_CTRL_PORT, 0);
+    outportw(WS_SDMA_SOURCE_L_PORT, (uint16_t) (uintptr_t) out);
+    outportb(WS_SDMA_SOURCE_H_PORT, 0);
+    outportw(WS_SDMA_LENGTH_L_PORT, n);
+    outportb(WS_SDMA_LENGTH_H_PORT, 0);
+    outportb(WS_SDMA_CTRL_PORT, WS_SDMA_CTRL_ENABLE | WS_SDMA_CTRL_RATE_12000
+        | WS_SDMA_CTRL_TARGET_CH2 | WS_SDMA_CTRL_ONESHOT);
 }
 
 void gg_platform_psg(uint8_t data) {

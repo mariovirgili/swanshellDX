@@ -106,7 +106,26 @@ def h_out(uc, port, size, value, ud):
             bank[BANKPORT[p]] = (bank[BANKPORT[p]] & 0xFF00) | v
         elif p in (0xD1, 0xD3, 0xD5):
             k = BANKPORT[p - 1]; bank[k] = (bank[k] & 0xFF) | v << 8
+        if p == 0x52 and v & 0x80 and SDMA:
+            src = ports[0x4A] | ports[0x4B] << 8 | (ports[0x4C] & 15) << 16
+            n = ports[0x4E] | ports[0x4F] << 8
+            sdma_chunks.append((st['cyc'] // 256, bytes(uc.mem_read(src, n))))
+            sdma_n[0] += 1
     if 0xC0 <= port <= 0xD5: remap()
+SDMA = os.environ.get('WSRUN_SDMA')
+sdma_n = [0]; sdma_chunks = []
+def sdma_save():
+    # what the WS plays: each chunk from the line its DMA started (12 kHz:
+    # a sample a line), cut by the next one; the last level held in the gaps
+    if not SDMA or not sdma_chunks: return
+    t0 = sdma_chunks[0][0]; out = bytearray([0x80]) * (sdma_chunks[-1][0] - t0 + len(sdma_chunks[-1][1]))
+    for i, (t, d) in enumerate(sdma_chunks):
+        end = sdma_chunks[i + 1][0] - t0 if i + 1 < len(sdma_chunks) else len(out)
+        seg = (d + bytes([d[-1]]) * max(0, end - (t - t0) - len(d)))[:end - (t - t0)]   # (the last level held)
+        out[t - t0:t - t0 + len(seg)] = seg
+    import wave
+    w = wave.open(SDMA, 'wb'); w.setnchannels(1); w.setsampwidth(1); w.setframerate(12000); w.writeframes(bytes(out)); w.close()
+import atexit; atexit.register(sdma_save)
 uc.hook_add(UC_HOOK_INSN, h_in, None, 1, 0, UC_X86_INS_IN)
 uc.hook_add(UC_HOOK_INSN, h_out, None, 1, 0, UC_X86_INS_OUT)
 

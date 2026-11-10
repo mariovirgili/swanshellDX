@@ -249,8 +249,11 @@ psg_run:
     and di, 0xFF
     mov ah, byte ptr [psg_st]       // the latched register
     mov ch, byte ptr [psg_st + 2]   // dirty
+    cmp byte ptr [pcm_on], 0
+    jne .Lpcm_loop
 .Lpsg_loop:
     lodsb
+.Lpsg_byte:
     test al, al
     jns .Lpsg_data
     mov ah, al                  // a latch byte
@@ -266,7 +269,64 @@ psg_run:
     mov al, 1
     shl al, cl
     or ch, al
+    // a sample (main.c, pcm_buf): channel 2's volume, the three without tone
+    cmp bl, 2
+    jne .Lpsg_next
+    cmp byte ptr [pcm_on], 0
+    je .Lpsg_next
+    mov bx, word ptr [pcm_n]
+    cmp bx, 640                 // (PCM_MAX)
+    jae .Lpsg_next
+    push bx
+    xor bx, bx
+    mov bl, byte ptr [psg_st + 4]
+    mov dl, byte ptr [pcm_level + bx]
+    mov bl, byte ptr [psg_st + 5]
+    add dl, byte ptr [pcm_level + bx]
+    mov bl, byte ptr [psg_st + 6]
+    add dl, byte ptr [pcm_level + bx]
+    pop bx
+    mov byte ptr [pcm_buf + bx], dl
+    inc bx
+    mov word ptr [pcm_n], bx
     jmp .Lpsg_next
+    // samples (pcm_on: the three tones 0-1): nearly all the bytes are
+    // volume latches, taken here in fewer steps; anything else goes to
+    // the loop above (for the rest of the queue)
+.Lpcm_loop:
+    lodsb
+    mov bl, al
+    and bl, 0x90
+    cmp bl, 0x90
+    jne .Lpsg_byte
+    mov ah, al                  // (the latch)
+    mov bl, al
+    shr bl, 5
+    and bx, 3
+    and al, 0x0F
+    mov byte ptr [psg_st + 4 + bx], al
+    cmp bl, 2
+    jne .Lpcm_next
+    mov bx, word ptr [pcm_n]
+    cmp bx, 640                 // (PCM_MAX)
+    jae .Lpcm_next
+    push bx
+    xor bx, bx
+    mov bl, byte ptr [psg_st + 4]
+    mov dl, byte ptr [pcm_level + bx]
+    mov bl, byte ptr [psg_st + 5]
+    add dl, byte ptr [pcm_level + bx]
+    mov bl, al
+    add dl, byte ptr [pcm_level + bx]
+    pop bx
+    mov byte ptr [pcm_buf + bx], dl
+    inc bx
+    mov word ptr [pcm_n], bx
+.Lpcm_next:
+    or ch, 0x07                 // (volumes to write when the samples end)
+    dec di
+    jnz .Lpcm_loop
+    jmp .Lpsg_end
 .Lpsg_tone:
     cmp bl, 3
     je .Lpsg_noise
@@ -306,6 +366,7 @@ psg_run:
 .Lpsg_next:
     dec di
     jnz .Lpsg_loop
+.Lpsg_end:
     mov byte ptr [psg_st], ah
     mov byte ptr [psg_st + 2], ch
     pop di
