@@ -6,7 +6,7 @@ emulated by a dynamic recompiler (Z80 to V30MZ code), with the original
 interpreter kept for the parts that need it. The Game Gear video memory is
 mapped onto the WonderSwan's own tile and screen hardware.
 
-Status: fairly stable (patch 115). It has been tested mostly in the
+Status: fairly stable (patch 116). It has been tested mostly in the
 nileswan-medem emulator and with the host test tools; tests on real
 hardware are still to come.
 
@@ -64,6 +64,18 @@ of the recompiler is behind a problem.
 |---|---|
 | Y2 (Y right) + Y4 (Y left) together | **Pause** (sound off) and resume: frame by frame, like Mednafen's Alt+A. |
 | Y3 (Y down), while paused | Runs **one frame**, then pauses again. |
+| START + Y1 (Y up), held for a second | **Back to the menu** (the cartridge RAM is then saved: see below). |
+
+## Saves
+
+Games that save to their cartridge RAM (battery saves) are saved as
+`.sav` files next to the `.gg` file, as SwanShellDX does for WonderSwan
+games. When a `.gg` file is launched, the menu loads its `.sav` (32 KiB,
+created empty the first time) into the cartridge's SRAM, where the
+plugin keeps the Game Gear cartridge RAM. When the menu starts again
+(START + Y1 (Y up) held for a second in the game, or the console turned
+off and on), it writes the SRAM back to the `.sav` file, with the
+backups set in the menu's settings.
 
 ## The numbers in the borders
 
@@ -123,7 +135,6 @@ interrupts a second).
 - The Game Gear view is 160x144; the WonderSwan screen is 224x144, so the
   game is centered with borders on both sides.
 - Background priority only with Y1 (Y up) at the start (see above).
-- No saving of the cartridge RAM (battery saves) to the SD card yet.
 - Some games run below full speed in their heaviest parts.
 - Requires a WonderSwan Color (or SwanCrystal) for the color modes and
   the sound DMA.
@@ -236,7 +247,7 @@ it are listed in order without one.
 - lighter DYN lookup and class routine for deferred tile bytes
 - OUTI runs to CRAM handled in the run routine
 
-### Patches 90-115
+### Patches 90-116
 
 | Patch | Change |
 |---|---|
@@ -266,3 +277,4 @@ it are listed in order without one.
 | 113 | V counter wait loops skipped at once (Sonic Spinball) |
 | 114 | RRD / RLD without flags when nothing reads them |
 | 115 | tile bytes appended to the log inside the block |
+| 116 | START + Y1 held for a second goes back to the menu; cartridge RAM saved to .sav by the menu |

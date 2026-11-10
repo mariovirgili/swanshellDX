@@ -87,6 +87,28 @@ exit_no_launch:
         } else if (!strcasecmp(ext, s_file_ext_gg)) {
             // Game Gear ROM: ggswan emulator plugin
             if (flags & LAUNCH_ROUTER_USE_SERIAL_OUT) return ERR_FILE_NOT_EXECUTABLE;
+            // its cartridge RAM (up to 32 KiB) is the first 32 KiB of the
+            // SRAM: saved as for a WS game, game.sav next to the .gg,
+            // loaded now and written back by the menu when it starts again
+            // (SAVE.INI; the plugin's START + Y1 goes back to the menu)
+            {
+                launch_rom_metadata_t gg_meta;
+                memset(&gg_meta, 0, sizeof(gg_meta));
+                FIL f;
+                int16_t result = f_open(&f, path, FA_OPEN_EXISTING | FA_READ);
+                if (result != FR_OK)
+                    return result;
+                gg_meta.id = f.obj.sclust;
+                f_close(&f);
+                gg_meta.sram_size = 32 * 1024L;
+                result = launch_restore_save_data(path, &gg_meta);
+                if (result == ERR_MCU_COMM_FAILED) {
+                    if (!launch_ui_handle_mcu_comm_error(&gg_meta))
+                        return result;
+                } else if (result != FR_OK) {
+                    return result;
+                }
+            }
             return launch_plugin_via_ipc(s_path_plugin_gg, path);
         } else {
             goto txtview;

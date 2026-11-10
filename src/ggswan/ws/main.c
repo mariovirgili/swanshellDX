@@ -1567,7 +1567,26 @@ static uint16_t step_pressed(void) {
     return p;
 }
 #define STEP_PAUSE (WS_KEY_Y2 | WS_KEY_Y4)
+// START + Y1 (Y up) held for a second: back to the menu (nileswan soft
+// reset: the menu starts again and writes the cartridge RAM, in SRAM, to
+// the game's .sav; the Game Gear has no Y buttons)
+static uint8_t exit_held;
+static void exit_check(void) {
+    if ((ws_keypad_scan() & (WS_KEY_START | WS_KEY_Y1)) != (WS_KEY_START | WS_KEY_Y1)) {
+        exit_held = 0;
+        return;
+    }
+    if (++exit_held < 60)
+        return;
+    ia16_disable_irq();
+    outportb(WS_SDMA_CTRL_PORT, 0);
+    outportb(WS_SOUND_CH_CTRL_PORT, 0);
+    outportb(WS_DISPLAY_CTRL_PORT, 0);
+    nile_soft_reset();
+}
+
 static void frame_step(void) {
+    exit_check();
     uint16_t p = step_pressed();
     if ((p & STEP_PAUSE) && (step_keys & STEP_PAUSE) == STEP_PAUSE)
         step_paused = 1;
