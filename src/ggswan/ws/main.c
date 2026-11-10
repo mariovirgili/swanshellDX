@@ -1458,14 +1458,15 @@ static void put_hex(uint8_t row, uint8_t col, uint16_t v) {
 
 static bool show_stats;
 
-// Profile: share of the samples (percent) in the right border, every 8
-// seconds: CD translated code, DI dispatcher, PO helpers (ports, memory),
+// Profile: share of the samples (percent) in the right border, every
+// second (75 samples, ~1.3% each; it was every 8 seconds, and showed the
+// translation of a scene start long after it, patch 102): CD translated code, DI dispatcher, PO helpers (ports, memory),
 // ST interpreted inside blocks, IN interpreter, TR translating,
 // VI end of frame video, AL the rest
 static void show_profile(void) {
     static const char __far labels[] = "ALCDDIPOSTINTRVI";   // (enum order)
     uint16_t total = prof_total - prof_count[PROF_IDLE];   // (time spent busy)
-    if (prof_total < 600)
+    if (prof_total < 75)
         return;
     if (total == 0)
         total = 1;
