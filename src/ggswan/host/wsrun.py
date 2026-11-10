@@ -86,6 +86,7 @@ def cost(code):
     return c
 
 st = {'cyc': 0, 'frame': 0}
+OPSPREV = {}
 PH = 'AL CD DI PO ST IN TR VI ID'.split()
 ph_c = collections.Counter(); fn_c = collections.Counter(); tr_pcs = collections.Counter()
 PROF = syms['prof_phase']
@@ -204,7 +205,7 @@ def h_code(uc, addr, size, ud):
                 mn_c[k] += c
         else:
             o = addr & 0xFFFF
-            if STUBX and 0x40 <= o < 0xCE0: stub_n[o] += 1
+            if STUBX and 0x40 <= o < 0xD20: stub_n[o] += 1
             blk_c[next((n for lo, hi, n in STUBS if lo <= o < hi), 'unmapped')] += c
     fn_c[fname(addr)] += c
     if FOCUS and fname(addr) == FOCUS: focus_c[addr] += c
@@ -227,9 +228,9 @@ def mn_class(t):
     return _re.sub(r'0x[0-9a-f]+|\b\d+\b', 'N', t)
 # the routines at the start of each code bank (drc_rt.c STUB_*)
 STUBS = [(0x0000, 0x0020, 'EXIT'), (0x0020, 0x0040, 'HELPER'), (0x0040, 0x0180, 'DYN'), (0x0180, 0x01E0, 'NT'),
-         (0x01E0, 0x0240, 'CRAM'), (0x0240, 0x05C0, 'OUTI/OUTD'), (0x05C0, 0x06F0, 'LDI/LDD'), (0x06F0, 0x0740, 'HCALL'),
-         (0x0740, 0x08E0, 'LINE'), (0x08E0, 0x0A60, 'CTL'), (0x0A60, 0x0B40, 'CLS'), (0x0B40, 0x0BB8, 'MAP'),
-         (0x0BB8, 0x0C08, 'VCNT'), (0x0C08, 0x0CE0, 'PAIRS')]
+         (0x01E0, 0x0240, 'CRAM'), (0x0240, 0x0600, 'OUTI/OUTD'), (0x0600, 0x0730, 'LDI/LDD'), (0x0730, 0x0780, 'HCALL'),
+         (0x0780, 0x0920, 'LINE'), (0x0920, 0x0AA0, 'CTL'), (0x0AA0, 0x0B80, 'CLS'), (0x0B80, 0x0BF8, 'MAP'),
+         (0x0BF8, 0x0C48, 'VCNT'), (0x0C48, 0x0D20, 'PAIRS')]
 
 def report(fr):
     tot = sum(v for k, v in ph_c.items() if k != 8) or 1
@@ -263,6 +264,16 @@ def report(fr):
                     for i in md.disasm(code, st):
                         print('      %05X %7d  %s %s' % (i.address, dump_n[i.address], i.mnemonic, i.op_str))
         dump_n.clear()
+    if 'drc_stat_op' in syms:
+        import struct
+        ops = struct.unpack('<16H', bytes(uc.mem_read(syms['drc_stat_op'], 32)))
+        lns = struct.unpack('<16H', bytes(uc.mem_read(syms['drc_stat_op_lines'], 32)))
+        prev = OPSPREV.get('ops', (0,) * 16), OPSPREV.get('lns', (0,) * 16)
+        names = ['?', 'WRITE', 'OUT', 'IN', 'STEP', 'OUTI', 'OUTD', 'MAP', 'SYNC', 'PSG']
+        print('   helpers a frame: ' + ', '.join('%s %.1f (%.1f lines)' % (names[k] if k < len(names) else k,
+              ((ops[k] - prev[0][k]) & 0xFFFF) / EVERY, ((lns[k] - prev[1][k]) & 0xFFFF) / EVERY)
+              for k in range(16) if (ops[k] - prev[0][k]) & 0xFFFF))
+        OPSPREV['ops'], OPSPREV['lns'] = ops, lns
     if DYNX:
         tot = sum(dyn_c.values()) or 1
         print('   DYN a frame: %.0f; same target as last time at that exit %d%%, other %d%%, first %d%%; exits %d, top 10 take %d%%' % (tot / EVERY,

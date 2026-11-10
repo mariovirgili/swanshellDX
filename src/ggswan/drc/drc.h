@@ -163,7 +163,7 @@ typedef struct {
     uint16_t pairs_off;
 } drc_env_t;
 
-#define DRC_OUTD_DELTA 0x2C0
+#define DRC_OUTD_DELTA 0x300
 #define DRC_LDD_DELTA 0xC0
 
 typedef struct {

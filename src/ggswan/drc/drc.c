@@ -631,7 +631,12 @@ uint16_t drc_emit_run_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
     B(0x89); B(0xCE);                                // mov si, cx
     B(0x81); B(0xE6); W(0x00C1);                     // and si, C1h
     B(0x81); B(0xFE); W(0x0080);                     // cmp si, 80h (port BEh)
-    uint8_t *s0 = jcc8(0x75);                        // jne slow
+    uint8_t *s0 = 0, *to_ctl = 0;
+    if (!dec && !env->no_fast && env->ctl_off) {
+        B(0x74); B(3);                               // je +3
+        B(0xE9); W(0); to_ctl = o - 2;               // jmp CTL (at the end)
+    } else
+        s0 = jcc8(0x75);                             // jne slow
     uint8_t *to_fast = 0, *to_loop = 0;
     if (!dec && !env->no_fast) {
         B(0xE9); W(0); to_fast = o - 2;              // jmp FAST (at the end)
@@ -642,7 +647,8 @@ uint16_t drc_emit_run_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
     // left (DI of them) for the interpreter
     uint8_t *slow1 = o;
     B(0x5F);                                         // pop di
-    land8(s0);
+    if (s0) land8(s0);
+    uint8_t *slow0 = o;
     B(0x89); B(0x3E); W(SA(val));                    // mov [val], di (count)
     B(0x5E);                                         // pop si (k)
     B(0x29); B(0xFE);                                // sub si, di
@@ -988,6 +994,43 @@ uint16_t drc_emit_run_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
             B(0x89); B(0x3E); W(VA(addr));                   // mov [addr], di
             B(0xE9); W((uint16_t) (ntail - (o + 2)));        // jmp tail
         }
+    }
+    if (to_ctl) {
+        /*
+         * CTL: to the VDP control port (Sailor Moon sends VRAM addresses
+         * with OUTI / OUTI to BDh between its data pairs, ~7 rows a frame,
+         * each a helper of ~2 WS lines): byte after byte through the OUT
+         * (BFh),A routine; a byte it does not take (a register write C
+         * must do) leaves the rest to the interpreter as the loop does.
+         */
+        uint16_t r_ = (uint16_t) (o - (to_ctl + 2));
+        to_ctl[0] = (uint8_t) r_; to_ctl[1] = (uint8_t) (r_ >> 8);
+        B(0x81); B(0xFE); W(0x0081);                 // cmp si, 81h (port BDh, BFh)
+        B(0x74); B(3);                               // je +3
+        B(0xE9); W((uint16_t) (slow0 - (o + 2)));    // jmp slow
+        uint8_t *cl = o;
+        B(0x57);                                     // L: push di
+        B(0x50);                                     // push ax
+        B(0x26); B(0x8A); B(0x07);                   // mov al, es:[bx]
+        call_near(env->ctl_off);
+        B(0xA2); W(SA(val));                         // mov [val], al (the last byte)
+        B(0x58);                                     // pop ax
+        B(0x73); B(3);                               // jnc +3
+        B(0xE9); W((uint16_t) (slow1 - (o + 2)));    // jmp slow1 (this one and the rest)
+        B(0x5F);                                     // pop di
+        B(0xFE); B(0xCD);                            // dec ch
+        B(0x43);                                     // inc bx
+        B(0xF7); B(0xC3); W(0x1FFF);                 // test bx, 1FFFh
+        uint8_t *nseg = jcc8(0x75);                  // jnz: same ES
+        B(0x89); B(0xDE);                            // mov si, bx
+        B(0xC1); B(0xC6); B(0x04);                   // rol si, 4
+        B(0x83); B(0xE6); B(0x0E);                   // and si, 14
+        B(0x8E); B(0x84); W(SA(segtab));             // mov es, [si + segtab]
+        land8(nseg);
+        B(0x4F);                                     // dec di
+        B(0x75); B((uint8_t) (cl - (o + 1)));        // jnz L
+        B(0x8A); B(0x26); W(SA(val));                // mov ah, [val]
+        B(0xE9); W((uint16_t) (flags - (o + 2)));    // jmp flags
     }
     return (uint16_t) (o - o_start);
 }
