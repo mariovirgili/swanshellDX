@@ -89,6 +89,7 @@ st = {'cyc': 0, 'frame': 0}
 PH = 'AL CD DI PO ST IN TR VI ID'.split()
 ph_c = collections.Counter(); fn_c = collections.Counter(); tr_pcs = collections.Counter()
 PROF = syms['prof_phase']
+PCSYM = syms['z80'] + 22   # z80.pc
 def h_in(uc, port, size, ud):
     if port == 0x02: return (st['cyc'] // 256) % 159
     if port == 0xB5: return 0
@@ -164,6 +165,13 @@ def h_code(uc, addr, size, ud):
         uc.mem_write(syms['gg'] + 0x6A, bytes([pending_keys[0]]))   # gg.keys (read_keys: none here)
         if fr % EVERY == 0: report(fr)
         if fr >= FRAMES: uc.emu_stop()
+    if DYNX:
+        if 0x40000 <= addr < 0xA0000 and (addr & 0xFFFF) == 0x4B:
+            site = prev_addr[0]; tgt = int.from_bytes(uc.mem_read(PCSYM, 2), 'little')
+            last = dyn_last.get(site)
+            dyn_c['same' if last == tgt else ('first' if last is None else 'other')] += 1
+            dyn_last[site] = tgt; dyn_sites[site] += 1
+        prev_addr[0] = addr
     c = cost(bytes(uc.mem_read(addr, size)))
     st['cyc'] += c
     ph = uc.mem_read(PROF, 1)[0]
@@ -209,6 +217,7 @@ counts = collections.Counter(); di_c = collections.Counter()
 blk_c = collections.Counter(); blk_starts = []; blk_info = []; last_tr = [None]
 PSW = syms['psram_write']
 STUBX = os.environ.get('WSRUN_STUBX'); stub_n = collections.Counter()
+DYNX = os.environ.get('WSRUN_DYNX'); dyn_c = collections.Counter(); dyn_last = {}; dyn_sites = collections.Counter(); prev_addr = [0]
 LINKX = os.environ.get('WSRUN_LINKX'); link_c = collections.Counter(); link_sites = collections.Counter()
 DUMPB = os.environ.get('WSRUN_DUMPBLK'); dump_n = collections.Counter()
 MNEM = os.environ.get('WSRUN_MNEM'); mn_c = collections.Counter(); mn_cache = {}
@@ -254,6 +263,12 @@ def report(fr):
                     for i in md.disasm(code, st):
                         print('      %05X %7d  %s %s' % (i.address, dump_n[i.address], i.mnemonic, i.op_str))
         dump_n.clear()
+    if DYNX:
+        tot = sum(dyn_c.values()) or 1
+        print('   DYN a frame: %.0f; same target as last time at that exit %d%%, other %d%%, first %d%%; exits %d, top 10 take %d%%' % (tot / EVERY,
+            100 * dyn_c['same'] // tot, 100 * dyn_c['other'] // tot, 100 * dyn_c['first'] // tot, len(dyn_sites),
+            100 * sum(v for _, v in dyn_sites.most_common(10)) // max(1, sum(dyn_sites.values()))))
+        dyn_c.clear(); dyn_sites.clear()
     if LINKX:
         tot = sum(link_c.values()) or 1
         print('   link jumps a frame: ' + ', '.join('%s/%s %.0f (%d%%)' % (k[0], k[1], v / EVERY, 100 * v // tot) for k, v in link_c.most_common()))

@@ -49,7 +49,8 @@ typedef struct {
     uint16_t arg;         // helper argument (address or port)
     uint16_t resume;      // where to continue the block after a helper
     uint8_t reason;       // 0: the block exited, 1: it wants a helper
-    uint8_t pad;
+    uint8_t ic;           // written (never read) by the unlinked exit of a
+                          // DYN exit with an inline cache: marks it (drc.c)
     uint16_t link;        // set by every exit: offset of a JMP the runtime
                           // may point at the next block (0: none)
     uint8_t keys[4];      // [0]: 8 if cartridge RAM is at 8000h; [1..3]: the
