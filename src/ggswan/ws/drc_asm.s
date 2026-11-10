@@ -190,7 +190,17 @@ spr_build:
     je .Lspr_done
 #ifdef GGSWAN_SMS
     inc al
+    cmp byte ptr [spr_sq], 0
+    je .Lspr_view
+    cmp al, 192                 // the whole picture squeezed: the row
+    jae .Lspr_skip              // scaled by 3/4 (none above line 0)
+    mov ah, al
+    shr ah, 2
+    sub al, ah
+    jmp .Lspr_row
+.Lspr_view:
     sub al, byte ptr [gg_view_y]   // the WS row (the view moves)
+.Lspr_row:
 #else
     add al, 1 - 24              // the WS row
 #endif
@@ -231,7 +241,11 @@ spr_build:
     mov byte ptr [di + 1], cl
     mov byte ptr [di + 5], cl
     mov word ptr [di + 2], ax
+#ifdef GGSWAN_SMS
+    add al, byte ptr [spr_dy]   // (6 when squeezed)
+#else
     add al, 8
+#endif
     mov word ptr [di + 6], ax
     add di, 8
 .Lspr_skip:

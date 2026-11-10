@@ -43,3 +43,6 @@ void host_line_hook(uint16_t line);
 #define WS_KEY_B 0x0008
 #define WS_KEY_START 0x0002
 #define WS_KEY_Y1 0x0100
+#define WS_KEY_Y2 0x0200
+#define WS_KEY_Y3 0x0400
+#define WS_KEY_Y4 0x0800

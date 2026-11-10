@@ -105,6 +105,22 @@ static void render_line(uint16_t line) {
             memset(color, backdrop, 8);
     }
 
+#ifdef GGSWAN_SMS
+    // the whole picture squeezed (GGSWAN_SQUEEZE): WS line y shows picture
+    // line y + y / 3 (the reference: that line, not scaled sprites)
+    extern uint8_t gg_squeeze;
+    if (gg_squeeze) {
+        if (line % 4 != 3) {
+            uint16_t wy = line - line / 4;
+            for (uint16_t x = 0; x < GG_VIEW_W; x++) {
+                uint16_t c = gg_color12(color[x + GG_VIEW_X]);
+                fb[wy][x][0] = (c & 0xF) * 17;
+                fb[wy][x][1] = ((c >> 4) & 0xF) * 17;
+                fb[wy][x][2] = ((c >> 8) & 0xF) * 17;
+            }
+        }
+    } else
+#endif
     if (line >= GG_VIEW_Y && line < GG_VIEW_Y + GG_VIEW_H) {
         for (uint16_t x = 0; x < GG_VIEW_W; x++) {
             uint8_t ci = color[x + GG_VIEW_X];
@@ -139,12 +155,26 @@ static uint8_t scr1_x(int y) {
     return v;
 }
 
+#ifdef GGSWAN_SMS
+extern volatile uint8_t act_y[], act_sq;
+#endif
+// (the Y scroll of WS line y: the line interrupt's, with the squeezed picture)
+static uint8_t scr1_y(int y) {
+    uint8_t v = ports[0x11];
+#ifdef GGSWAN_SMS
+    if (act_sq)
+        for (int i = 1; i < act_n; i++)
+            if (y >= act_line[i]) v = act_y[i];
+#endif
+    return v;
+}
+
 static int screen_px(int scr, int x, int y, uint16_t *col) {
     uint16_t base = scr ? (ports[7] >> 4) << 11 : (ports[7] & 15) << 11;
     // (screen 2 inside the window: the background's priority tiles, its
     // scroll that of screen 1, set by line_irq on the WS: none here)
     int with1 = scr && !(ports[0] & 0x10);
-    uint8_t sx = x + (scr && !with1 ? ports[0x12] : scr1_x(y)), sy = y + ports[scr && !with1 ? 0x13 : 0x11];
+    uint8_t sx = x + (scr && !with1 ? ports[0x12] : scr1_x(y)), sy = y + (scr && !with1 ? ports[0x13] : scr1_y(y));
     uint16_t e = iram[base + ((sy >> 3) * 32 + (sx >> 3)) * 2] | (iram[base + ((sy >> 3) * 32 + (sx >> 3)) * 2 + 1] << 8);
     uint16_t t = (e & 0x1FF) | (((e >> 13) & 1) << 9);
     uint8_t r = sy & 7, c = sx & 7;

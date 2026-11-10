@@ -6,7 +6,7 @@ emulated by a dynamic recompiler (Z80 to V30MZ code), with the original
 interpreter kept for the parts that need it. The Game Gear video memory is
 mapped onto the WonderSwan's own tile and screen hardware.
 
-Status: fairly stable (patch 125). It has been tested mostly in the
+Status: fairly stable (patch 126). It has been tested mostly in the
 nileswan-medem emulator and with the host test tools; tests on real
 hardware are still to come.
 
@@ -166,6 +166,7 @@ the picture while playing. The background priority is always on.
 | Y1 (Y up), Y3 (Y down), Y4 (Y left), Y2 (Y right) | **Move the view** over the picture, 2 pixels a frame (X 0-32, Y 0-48; it starts in the middle). Not into the first 8 columns while the game blanks them. |
 | Y2 (Y right) + Y4 (Y left) together | Pause and resume, frame by frame with Y3 (Y down), as on the Game Gear |
 | START + Y1 (Y up), held for a second | Back to the menu |
+| START + Y3 (Y down) | **Whole picture**, on and off (an experiment): the 192 lines squeezed into the 144 of the screen, one line in four left out. It takes about a quarter of the CPU, small text loses lines, and sprites keep their height (the pieces of a tall figure overlap). Sideways the view is still 224 columns. |
 | Y1 (Y up) held at the start | **Diagnostics** over the sides of the picture (the same numbers as in the Game Gear's borders) instead of the background priority |
 
 Mappers: Sega's, and Codemasters' (found from the cartridge header).
@@ -275,7 +276,7 @@ it are listed in order without one.
 - lighter DYN lookup and class routine for deferred tile bytes
 - OUTI runs to CRAM handled in the run routine
 
-### Patches 90-125
+### Patches 90-126
 
 | Patch | Change |
 |---|---|
@@ -315,3 +316,4 @@ it are listed in order without one.
 | 123 | the map laid out again after the end of the WS screen, ahead of the raster (Sonic: a few rows jumping when the camera moves up or down) |
 | 124 | smsswan, step 3: the Pause button (START, a non-maskable interrupt) |
 | 125 | smsswan, steps 5 and 6: the view moved with the Y buttons, diagnostics with Y1 at the start, the Codemasters mapper |
+| 126 | smsswan: the whole picture squeezed vertically (START + Y3), an experiment; the scroll list prepared with interrupts on |

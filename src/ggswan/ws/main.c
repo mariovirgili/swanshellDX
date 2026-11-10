@@ -541,7 +541,25 @@ uint8_t gg_platform_vram_defer(uint16_t a, uint8_t value) {
         gg_platform_vram_sync();   // full: written now, then again
     }
 }
-GGSWAN_HOST_VISIBLE volatile uint8_t act_line[MAX_SPLITS], act_val[MAX_SPLITS], act_n = 1;
+#ifdef GGSWAN_SMS
+/*
+ * smsswan, the whole picture on the screen (START + Y3 (Y down) switches
+ * it): the 192 lines squeezed into the 144 of the WS, one line in four
+ * left out. The WS has nothing to scale with: the line interrupt adds 1
+ * to the Y scroll every 3 WS lines (48 more interrupts a WS screen: about
+ * a quarter of the CPU), in the same list as the scroll splits, whose
+ * entries then carry a Y scroll too (act_y). Sprites keep their height:
+ * only their rows are scaled, so the pieces of a tall figure overlap by a
+ * quarter. Sideways the view is still 224 of the 256 columns.
+ */
+#define MAX_EVENTS 72   // (47 Y steps, the splits)
+uint8_t gg_squeeze;                                 // wanted (read_keys)
+GGSWAN_HOST_VISIBLE volatile uint8_t act_y[MAX_EVENTS], act_sq;
+uint8_t spr_sq, spr_dy = 8;                         // (spr_build's, drc_asm.s)
+#else
+#define MAX_EVENTS MAX_SPLITS
+#endif
+GGSWAN_HOST_VISIBLE volatile uint8_t act_line[MAX_EVENTS], act_val[MAX_EVENTS], act_n = 1;
 // screen 1 Y scroll for the next WS frame (set by the line interrupt at the
 // end of the screen, like act_val[0]: no tear while the WS draws)
 static volatile uint8_t act_vy;
@@ -554,7 +572,10 @@ static volatile uint8_t act_i;
 // for one WS screen: the road and the status bar of Super Monaco GP
 // jerking sideways now and then, half a screen of it.
 #ifndef GGSWAN_HOST
-static uint8_t pend_line[MAX_SPLITS], pend_val[MAX_SPLITS];
+static uint8_t pend_line[MAX_EVENTS], pend_val[MAX_EVENTS];
+#ifdef GGSWAN_SMS
+static uint8_t pend_y[MAX_EVENTS], pend_sq;
+#endif
 static volatile uint8_t pend_n;
 #endif
 static uint8_t next_vy;
@@ -827,7 +848,13 @@ void line_irq(void) {
                 for (uint8_t k = 0; k < pend_n; k++) {
                     act_line[k] = pend_line[k];
                     act_val[k] = pend_val[k];
+#ifdef GGSWAN_SMS
+                    act_y[k] = pend_y[k];
+#endif
                 }
+#ifdef GGSWAN_SMS
+                act_sq = pend_sq;
+#endif
                 act_n = pend_n;
                 act_vy = next_vy;
                 pend_n = 0;
@@ -857,6 +884,13 @@ void line_irq(void) {
             outportb(WS_SCR1_SCRL_X_PORT, act_val[i]);
             if (drc_st.prio_on)
                 outportb(0x12, act_val[i]);
+#ifdef GGSWAN_SMS
+            if (act_sq) {
+                outportb(0x11, act_y[i]);
+                if (drc_st.prio_on)
+                    outportb(0x13, act_y[i]);
+            }
+#endif
             i++;
         }
         // interrupt on the line before the next split (or the end)
@@ -921,11 +955,33 @@ void line_irq(void) {
 // smsswan: the splits were recorded over the whole picture (lines 0-191,
 // with the view in the middle, X 16); here for the view where it is now:
 // those above it give its first line's value, those below it are dropped
-static uint8_t cv_line[MAX_SPLITS], cv_val[MAX_SPLITS], cv_n;
+static uint8_t cv_line[MAX_EVENTS], cv_val[MAX_EVENTS], cv_y[MAX_EVENTS], cv_n, cv_sq;
+static uint8_t view_sq;   // (the frame being presented: video_present)
 static void splits_convert(void) {
     uint8_t dx = gg_view_x - 16, vy = gg_view_y, n = 1;
     cv_line[0] = 0;
     cv_val[0] = rec_val[0] + dx;
+    cv_sq = view_sq;
+    if (view_sq) {
+        // WS line L shows picture line L + L / 3: a split at picture line
+        // p is at WS line ceil(3p / 4); the Y scroll one more every 3 lines
+        uint8_t x = cv_val[0], j = 1;
+        for (uint8_t l = 1; l < GG_VIEW_H; l++) {
+            uint8_t ev = (l % 3) == 0;
+            while (j < rec_n && (uint8_t) ((rec_line[j] * 3u + 3) >> 2) <= l) {
+                x = rec_val[j++] + dx;
+                ev = 1;
+            }
+            if (ev && n < MAX_EVENTS) {
+                cv_line[n] = l;
+                cv_val[n] = x;
+                cv_y[n] = next_vy + l / 3;
+                n++;
+            }
+        }
+        cv_n = n;
+        return;
+    }
     for (uint8_t i = 1; i < rec_n; i++) {
         uint8_t y = rec_line[i];
         if (y <= vy) {
@@ -947,28 +1003,26 @@ static void splits_convert(void) {
 #define SPL_N rec_n
 #endif
 
-static void splits_commit(void) {
+// the frame's list written where the line interrupt will take it (the
+// waiting list: the interrupt does not look at it while pend_n is 0, and
+// video_present has waited for the last one to be taken), outside the
+// stretch with interrupts off: with smsswan's squeezed picture it has up
+// to 72 entries
+static uint8_t prep_n;
+static void splits_prepare(void) {
 #ifdef GGSWAN_SMS
     splits_convert();
 #endif
 #ifndef GGSWAN_HOST
-    uint16_t f = irq_save();   // (video_present calls it with interrupts off)
-#endif
-#ifndef GGSWAN_HOST
-    // (to the line interrupt at the end of the WS screen)
     for (uint8_t i = 0; i < SPL_N; i++) {
         pend_line[i] = SPL_LINE[i];
         pend_val[i] = SPL_VAL[i];
-    }
-    pend_n = SPL_N;
-#else
-    for (uint8_t i = 0; i < SPL_N; i++) {
-        act_line[i] = SPL_LINE[i];
-        act_val[i] = SPL_VAL[i];
-    }
-    act_n = SPL_N;
-    act_vy = next_vy;
+#ifdef GGSWAN_SMS
+        pend_y[i] = cv_y[i];
 #endif
+    }
+#endif
+    prep_n = SPL_N;
     if (rec_n > diag_splits)
         diag_splits = rec_n;
     if (rec_n > 1) {
@@ -982,8 +1036,29 @@ static void splits_commit(void) {
         diag_fg = drc_st.diag_fg;
         diag_left = drc_st.diag_left;
     }
+}
+
+// (video_present calls it with interrupts off)
+static void splits_commit(void) {
 #ifndef GGSWAN_HOST
-    irq_restore(f);
+    // (to the line interrupt at the end of the WS screen)
+#ifdef GGSWAN_SMS
+    pend_sq = cv_sq;
+#endif
+    pend_n = prep_n;
+#else
+    for (uint8_t i = 0; i < prep_n; i++) {
+        act_line[i] = SPL_LINE[i];
+        act_val[i] = SPL_VAL[i];
+#ifdef GGSWAN_SMS
+        act_y[i] = cv_y[i];
+#endif
+    }
+#ifdef GGSWAN_SMS
+    act_sq = cv_sq;
+#endif
+    act_n = prep_n;
+    act_vy = next_vy;
 #endif
 }
 
@@ -1020,6 +1095,11 @@ uint8_t spr_par[4], spr_cnt;   // (spr_build's; smsswan: gg_view_y too)
 uint8_t *spr_build(const uint8_t *sat, uint8_t *table);
 #endif
 static uint8_t spr_port04, spr_count, spr_ready;
+#ifdef GGSWAN_SMS
+#define TALL_DY spr_dy
+#else
+#define TALL_DY 8
+#endif
 static void build_sprites(void) {
 #ifdef GGSWAN_HOST
     host_spr_builds++;
@@ -1045,6 +1125,10 @@ static void build_sprites(void) {
     spr_par[1] = tall;
     spr_par[2] = xoff + (GG_VIEW_X - WS_VIEW_ORIGIN_X);
     spr_par[3] = hide_y;
+#ifdef GGSWAN_SMS
+    spr_sq = view_sq;
+    spr_dy = view_sq ? 6 : 8;
+#endif
     uint8_t *s = spr_build(sat, table);
 #else
     uint8_t *s = table, *end = table + 127 * 4;
@@ -1055,6 +1139,15 @@ static void build_sprites(void) {
         // Game Gear (x, y + 1) in the 256x192 picture; the view starts at
         // (48, 24) and is shown at WS (32, 0) (smsswan: (16, 24) at (0, 0))
         uint8_t wy = y + 1 - GG_VIEW_Y;
+#ifdef GGSWAN_SMS
+        if (view_sq) {
+            // (the row scaled as the picture; none above its first line)
+            wy = y + 1;
+            if (wy >= GG_ACTIVE_LINES)
+                continue;
+            wy -= wy >> 2;
+        }
+#endif
         if ((uint8_t) (wy - GG_VIEW_H) < hide_y)
             continue;
         uint8_t wx = sat[0x80 + i * 2] - xoff - (GG_VIEW_X - WS_VIEW_ORIGIN_X);
@@ -1065,7 +1158,7 @@ static void build_sprites(void) {
         // tile (bit 8: s[1] bit 0); palette 0 (= WS palette 8); behind screen 2
         if (tall) {
             s[0] = t & ~1; s[1] = tbase >> 8; s[2] = wy; s[3] = wx;
-            s[4] = t | 1; s[5] = tbase >> 8; s[6] = wy + 8; s[7] = wx;
+            s[4] = t | 1; s[5] = tbase >> 8; s[6] = wy + TALL_DY; s[7] = wx;
             s += 8;
         } else {
             s[0] = t; s[1] = tbase >> 8; s[2] = wy; s[3] = wx;
@@ -1152,6 +1245,7 @@ GGSWAN_HOST_VISIBLE void video_init(void) {
 #ifdef GGSWAN_SMS
     // (the PC tests: GGSWAN_NOPRIO, and GGSWAN_PAN=x,y for the view)
     prio_wanted = getenv("GGSWAN_NOPRIO") == NULL;
+    gg_squeeze = getenv("GGSWAN_SQUEEZE") != NULL;
     if (getenv("GGSWAN_PAN")) {
         int px = 16, py = 24;
         sscanf(getenv("GGSWAN_PAN"), "%d,%d", &px, &py);
@@ -1239,8 +1333,22 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
         drc_st.sprites_dirty = 1;
     }
 #endif
+#ifdef GGSWAN_SMS
+    // (the whole picture squeezed: from its first line, 192 lines of map)
+    if (view_sq != gg_squeeze) {
+        view_sq = gg_squeeze;
+        drc_st.sprites_dirty = 1;
+    }
+    #define VP_VIEW_Y (view_sq ? 0 : GG_VIEW_Y)
+    #define VP_SLACK (view_sq ? 256 - GG_ACTIVE_LINES - 8 : 256 - GG_VIEW_H - 8)
+    #define VP_ABOVE (view_sq ? 4 : 6)
+#else
+    #define VP_VIEW_Y GG_VIEW_Y
+    #define VP_SLACK (256 - GG_VIEW_H - 8)
+    #define VP_ABOVE 6
+#endif
     // vertical: the Game Gear view starts at row (24 + vscroll) mod 224
-    uint16_t s = (GG_VIEW_Y + gg.vdp.vscroll_frame) % 224;
+    uint16_t s = (VP_VIEW_Y + gg.vdp.vscroll_frame) % 224;
     uint16_t vy = s;
     while (vy < map_top * 8u)
         vy += 224;   // (virtual rows: the same Game Gear row 28 later)
@@ -1248,7 +1356,7 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
 #ifndef GGSWAN_HOST
     uint8_t relay = 0, relay_top = 0;
 #endif
-    if (vy > map_top * 8u + (256 - GG_VIEW_H - 8)) {
+    if (vy > map_top * 8u + VP_SLACK) {
 #ifdef GGSWAN_HOST
         if (getenv("GGSWAN_RELAYSTAT"))
             fprintf(stderr, "RELAYOUT %u s=%u top=%u\n", (unsigned) gg.frame, (unsigned) s, (unsigned) map_top);
@@ -1265,7 +1373,7 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
         next_vy = vy & 0xFF;
 #ifdef GGSWAN_HOST
         // (the PC tests have no WS raster: the map and its scroll now)
-        map_relayout((s >> 3) + 28 - 6, 0);
+        map_relayout((s >> 3) + 28 - VP_ABOVE, 0);
         act_vy = next_vy;
 #else
         /*
@@ -1278,7 +1386,7 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
          * whenever the camera had moved some 50 pixels up or down).
          */
         relay = 1;
-        relay_top = (s >> 3) + 28 - 6;
+        relay_top = (s >> 3) + 28 - VP_ABOVE;
 #endif
     }
 #ifdef GGSWAN_HOST
@@ -1297,6 +1405,7 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
     // only at the start of video_present, a map relayout or the sprite
     // table could still end there: Aladdin's new pose on the old sprites
     // now and then). Then the scroll (splits_commit)
+    splits_prepare();
 #ifndef GGSWAN_HOST
     for (;;) {
         uint16_t f = irq_save();
@@ -1628,10 +1737,18 @@ GGSWAN_HOST_VISIBLE void read_keys(void) {
     // (one frame: gg_run_frame takes the edge) unless Y1 (Y up) was held
     // with it: START + Y1 goes back to the menu
     {
-        static uint8_t start_held, start_y1;
+        static uint8_t start_held, start_y1, start_y3;
         if (k & WS_KEY_START) {
-            if (!start_held) { start_held = 1; start_y1 = 0; }
+            if (!start_held) { start_held = 1; start_y1 = 0; start_y3 = 0; }
             if (k & WS_KEY_Y1) start_y1 = 1;
+            // START + Y3 (Y down): the whole picture squeezed, or the view
+            if (k & WS_KEY_Y3) {
+                if (!start_y3) gg_squeeze ^= 1;
+                start_y3 = 1;
+                start_y1 = 1;   // (no Pause for the game)
+            } else {
+                start_y3 = 0;
+            }
         } else {
             if (start_held && !start_y1) g |= GG_KEY_START;
             start_held = 0;
