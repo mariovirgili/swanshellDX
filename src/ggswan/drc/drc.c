@@ -993,6 +993,123 @@ uint16_t drc_emit_run_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
 }
 
 /*
+ * Routine for g groups of OUTI / OUTI / DEC L x 4 (Shinobi uploads its
+ * tiles with that, unrolled: each pair of bytes from 2 below the one
+ * before, to the next 2 VRAM bytes). In: DI = g, BX = HL, CX = BC. When
+ * it is a plain VRAM upload (port BEh, not CRAM, L from 2 (g - 1) to FDh
+ * so that no step crosses into H, a VRAM run of 2 g bytes in tile data,
+ * the sprite table or the log, no wrap, room in the log): the bytes go
+ * there in one go, as the OUTI routine would put them, with VRAM
+ * address, read buffer, latch, B -= 2 g, L -= 2 g (H as it was), AH =
+ * the last byte; returns CF = 0. Anything else: nothing changed, CF = 1
+ * (the block runs the instructions one by one). The flags are left
+ * undefined: the block calls it only where the next OUTI sets them all.
+ */
+uint16_t drc_emit_pairs_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) {
+    env = e;
+    o = o_start = out; o_base = out_off;
+    // (fail first, so that the jumps to it go backwards; the entry is at
+    // + DRC_PAIRS_ENTRY)
+    uint8_t *fail = o;
+    B(0x5A);                                         // fail: pop dx
+    B(0xF9);                                         // stc
+    B(0xC3);                                         // ret
+#ifdef GGSWAN_HOST
+#define FAIL(op) do { if (o + 2 - fail > 128) { extern void abort(void); abort(); } \
+        B(op); B((uint8_t) (fail - (o + 1))); } while (0)
+#else
+#define FAIL(op) do { B(op); B((uint8_t) (fail - (o + 1))); } while (0)
+#endif
+    B(0x52);                                         // push dx
+    B(0x89); B(0xCE);                                // mov si, cx
+    B(0x81); B(0xE6); W(0x00C1);                     // and si, C1h
+    B(0x81); B(0xFE); W(0x0080);                     // cmp si, 80h (port BEh)
+    FAIL(0x75);                                      // jne fail
+    B(0x80); B(0x3E); W(VA(code)); B(3);             // cmp byte [code], 3
+    FAIL(0x74);                                      // je fail (CRAM)
+    B(0x80); B(0xFB); B(0xFD);                       // cmp bl, FDh
+    FAIL(0x77);                                      // ja fail
+    B(0x89); B(0xFA);                                // mov dx, di
+    B(0x4A);                                         // dec dx
+    B(0xD1); B(0xE2);                                // shl dx, 1 (2 (g - 1))
+    B(0x38); B(0xD3);                                // cmp bl, dl
+    FAIL(0x72);                                      // jb fail
+    B(0x89); B(0xDE);                                // mov si, bx
+    B(0xC1); B(0xC6); B(0x04);                       // rol si, 4
+    B(0x83); B(0xE6); B(0x0E);                       // and si, 14
+    B(0x8E); B(0x84); W(SA(segtab));                 // mov es, [si + segtab]
+    B(0x8B); B(0x36); W(VA(addr));                   // mov si, [addr]
+    B(0x81); B(0xE6); W(0x3FFF);                     // and si, 3FFFh (start)
+    // the classes of the first and last VRAM page (64: it wraps)
+    B(0x57);                                         // push di (g)
+    B(0xD1); B(0xE7);                                // shl di, 1 (2 g)
+    B(0x01); B(0xF7);                                // add di, si
+    B(0x4F);                                         // dec di (last byte)
+    B(0xC1); B(0xEF); B(0x08);                       // shr di, 8
+    B(0x8A); B(0x95); W(SA(vram_class));             // mov dl, [di + class]
+    B(0x89); B(0xF7);                                // mov di, si
+    B(0xC1); B(0xEF); B(0x08);                       // shr di, 8
+    B(0x0A); B(0x95); W(SA(vram_class));             // or dl, [di + class]
+    B(0x5F);                                         // pop di
+    B(0xF6); B(0xC2); B(0x11);                       // test dl, 11h (wrap, name table)
+    FAIL(0x75);                                      // jnz fail
+    B(0xF6); B(0xC2); B(0x08);                       // test dl, 8
+    uint8_t *plain = jcc8(0x74);                     // jz plain
+    B(0xF6); B(0xC2); B(0x02);                       // test dl, 2
+    FAIL(0x75);                                      // jnz fail (sprite table and log)
+    // to the log: an entry of VRAM address, length, the bytes
+    B(0x89); B(0xFA);                                // mov dx, di
+    B(0xD1); B(0xE2);                                // shl dx, 1 (2 g)
+    B(0x03); B(0x16); W(SA(log_top));                // add dx, [log_top]
+    B(0x83); B(0xC2); B(0x03);                       // add dx, 3
+    B(0x3B); B(0x16); W(SA(log_end));                // cmp dx, [log_end]
+    FAIL(0x77);                                      // ja fail (no room)
+    B(0x57);                                         // push di (g)
+    B(0x8B); B(0x3E); W(SA(log_top));                // mov di, [log_top]
+    B(0x89); B(0x16); W(SA(log_top));                // mov [log_top], dx
+    B(0x89); B(0x3E); W(SA(log_last));               // mov [log_last], di (this entry)
+    B(0xC7); B(0x06); W(SA(log_next)); W(0xFFFF);    // mov word [log_next], FFFFh
+    B(0x89); B(0x35);                                // mov [di], si (VRAM address)
+    B(0x5A);                                         // pop dx (g)
+    B(0x88); B(0xD4);                                // mov ah, dl
+    B(0xD0); B(0xE4);                                // shl ah, 1
+    B(0x88); B(0x65); B(0x02);                       // mov [di + 2], ah (length)
+    B(0x83); B(0xC7); B(0x03);                       // add di, 3
+    uint8_t *copy = jcc8(0xEB);                      // jmp copy
+    land8(plain);
+    B(0xF6); B(0xC2); B(0x02);                       // test dl, 2
+    uint8_t *clean = jcc8(0x74);                     // jz clean
+    B(0xC6); B(0x06); W(SA(sprites_dirty)); B(1);    // sprites_dirty = 1
+    land8(clean);
+    B(0x89); B(0xFA);                                // mov dx, di (g)
+    B(0x8D); B(0xBC); W(env->vram_addr);             // lea di, [si + vram]
+    land8(copy);
+    // DI: where the bytes go, DX = g, SI = VRAM address
+    B(0x01); B(0xD6);                                // add si, dx
+    B(0x01); B(0xD6);                                // add si, dx
+    B(0x81); B(0xE6); W(0x3FFF);                     // and si, 3FFFh
+    B(0x89); B(0x36); W(VA(addr));                   // mov [addr], si
+    B(0x28); B(0xD5);                                // sub ch, dl
+    B(0x28); B(0xD5);                                // sub ch, dl (B -= 2 g)
+    uint8_t *loop = o;
+    B(0x26); B(0x8A); B(0x27);                       // L: mov ah, es:[bx]
+    B(0x88); B(0x25);                                // mov [di], ah
+    B(0x26); B(0x8A); B(0x67); B(0x01);              // mov ah, es:[bx + 1]
+    B(0x88); B(0x65); B(0x01);                       // mov [di + 1], ah
+    B(0x83); B(0xC7); B(0x02);                       // add di, 2
+    B(0x80); B(0xEB); B(0x02);                       // sub bl, 2 (+ 2 - 4: L only)
+    B(0x4A);                                         // dec dx
+    B(0x75); B((uint8_t) (loop - (o + 1)));          // jnz L
+    B(0x88); B(0x26); W(VA(read_buffer));            // mov [read_buffer], ah
+    B(0xC6); B(0x06); W(VA(latch_full)); B(0);       // mov byte [latch_full], 0
+    B(0x5A);                                         // pop dx
+    B(0xF8);                                         // clc
+    B(0xC3);                                         // ret
+#undef FAIL
+    return (uint16_t) (o - o_start);
+}
+
+/*
  * Routine for a run of LDI (dec: LDD) copying to work RAM. In: DI = k,
  * SI = Z80 address of the run, AH = F. Returns CF = 0 with the flags of
  * the last LDI in AH; a destination outside work RAM: CF = 1 as for
@@ -2995,6 +3112,54 @@ checked:;
     land8(body);
 }
 
+/*
+ * OUTI / OUTI / DEC L x 4, again and again (Shinobi's tile uploads,
+ * 0720-0950h): returns how many of these groups starting at ins[i] go to
+ * the pairs routine (0: none). The last group of the row is left to the
+ * usual code: the flags it leaves are the ones that count, and those of
+ * the groups before are overwritten by its OUTIs.
+ */
+static int is_group(int j) {
+    if (ins[j].pre != 0xED || ins[j].op != 0xA3 || ins[j].count != 2 || ins[j].dyn || ins[j].trace)
+        return 0;
+    for (int k = 1; k <= 4; k++)
+        if (ins[j + k].pre || ins[j + k].op != 0x2D || ins[j + k].term || ins[j + k].trace)
+            return 0;
+    return 1;
+}
+
+static int pairs_at(int i, int n) {
+    if (!env->pairs_off || env->no_fast)
+        return 0;
+    int g = 0;
+    while (i + 5 * g + 5 <= n && g < 60 && is_group(i + 5 * g))
+        g++;
+    return g >= 3 ? g - 1 : 0;
+}
+
+static int emit(int i);
+
+// the g groups at ins[i]: the pairs routine, or (CF = 1) the instructions
+// one by one; both leave the same state (flags dead: the next OUTI)
+static int emit_pairs(int i, int g) {
+    clobber(0);
+    B(0xBF); W(g);                                   // mov di, g
+    call_near(env->pairs_off);
+    B(0x72); B(3);                                   // jc +3
+    B(0xE9); W(0);                                   // jmp done
+    uint8_t *done = o - 2;
+    uint16_t cyc0 = cyc;
+    for (int j = i; j < i + 5 * g; j++)
+        if (!emit(j))
+            return 0;
+    clobber(0);
+    uint16_t r = (uint16_t) (o - (done + 2));
+    done[0] = (uint8_t) r; done[1] = (uint8_t) (r >> 8);
+    fkind = K_AH; cf_valid = 0; hl_es = 0;
+    cyc = cyc0 + 48 * g;
+    return 1;
+}
+
 int drc_translate(const drc_env_t *e, uint16_t pc, uint8_t *out,
                   uint16_t out_off, uint16_t out_max, drc_result_t *res) {
     env = e;
@@ -3161,6 +3326,13 @@ int drc_translate(const drc_env_t *e, uint16_t pc, uint8_t *out,
     }
     int i;
     for (i = 0; i < n; i++) {
+        int g = pairs_at(i, n);
+        if (g) {
+            if (!emit_pairs(i, g))
+                return 0;
+            i += 5 * g - 1;
+            continue;
+        }
         // emit() can only refuse an instruction that decode() accepted by
         // mistake: the liveness analysis assumed it, so give up entirely
         if (!emit(i))

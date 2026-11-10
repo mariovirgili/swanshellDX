@@ -158,6 +158,9 @@ typedef struct {
     // a block already translated starts at pc (in pc's slot, its current
     // bank): a long block stops there and links to it (NULL: never)
     uint8_t (*known_start)(uint16_t pc);
+    // routine for OUTI / OUTI / DEC L x 4 repeated (drc_emit_pairs_stub;
+    // 0: each instruction as usual)
+    uint16_t pairs_off;
 } drc_env_t;
 
 #define DRC_OUTD_DELTA 0x2C0
@@ -182,6 +185,11 @@ uint16_t drc_emit_ldi_stub(const drc_env_t *env, uint8_t *out, uint16_t out_off,
 /// Write the routine for OUT (BFh),A; returns its length
 uint16_t drc_emit_ctl_stub(const drc_env_t *env, uint8_t *out, uint16_t out_off);
 uint16_t drc_emit_vcnt_stub(const drc_env_t *env, uint8_t *out, uint16_t out_off);
+
+/// Write the routine for OUTI / OUTI / DEC L x 4 repeated (entry at +
+/// DRC_PAIRS_ENTRY); returns its length
+#define DRC_PAIRS_ENTRY 3
+uint16_t drc_emit_pairs_stub(const drc_env_t *env, uint8_t *out, uint16_t out_off);
 
 int drc_translate(const drc_env_t *env, uint16_t pc, uint8_t *out,
                   uint16_t out_off, uint16_t out_max, drc_result_t *res);

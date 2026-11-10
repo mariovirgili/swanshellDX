@@ -204,7 +204,7 @@ def h_code(uc, addr, size, ud):
                 mn_c[k] += c
         else:
             o = addr & 0xFFFF
-            if STUBX and 0x40 <= o < 0xC08: stub_n[o] += 1
+            if STUBX and 0x40 <= o < 0xCE0: stub_n[o] += 1
             blk_c[next((n for lo, hi, n in STUBS if lo <= o < hi), 'unmapped')] += c
     fn_c[fname(addr)] += c
     if FOCUS and fname(addr) == FOCUS: focus_c[addr] += c
@@ -229,7 +229,7 @@ def mn_class(t):
 STUBS = [(0x0000, 0x0020, 'EXIT'), (0x0020, 0x0040, 'HELPER'), (0x0040, 0x0180, 'DYN'), (0x0180, 0x01E0, 'NT'),
          (0x01E0, 0x0240, 'CRAM'), (0x0240, 0x05C0, 'OUTI/OUTD'), (0x05C0, 0x06F0, 'LDI/LDD'), (0x06F0, 0x0740, 'HCALL'),
          (0x0740, 0x08E0, 'LINE'), (0x08E0, 0x0A60, 'CTL'), (0x0A60, 0x0B40, 'CLS'), (0x0B40, 0x0BB8, 'MAP'),
-         (0x0BB8, 0x0C08, 'VCNT')]
+         (0x0BB8, 0x0C08, 'VCNT'), (0x0C08, 0x0CE0, 'PAIRS')]
 
 def report(fr):
     tot = sum(v for k, v in ph_c.items() if k != 8) or 1
