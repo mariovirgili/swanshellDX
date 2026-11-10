@@ -148,6 +148,9 @@ for k, b in enumerate(blocks):
     if ok & 0xFF:
         call('psram_write', ax=0, dx=0x0B88, cx=0xA600, stack=(ln,))
     if k < 5: print('pc %04X ok %d len %d (host %s)' % (pc, ok & 0xFF, ln, b[3]))
+    if os.environ.get('WSPROF_CODE'):
+        import hashlib
+        print('CODE %04X %d %s' % (pc, ok & 0xFF, hashlib.md5(bytes(uc.mem_read(0xA600, ln)) if ok & 0xFF else b'').hexdigest()))
     cur['prof'] = False
     per.append((cur['n'], cur['c'], int(b[4]), int(b[3])))
 tn = sum(p[0] for p in per); tc = sum(p[1] for p in per); ti = sum(p[2] for p in per)

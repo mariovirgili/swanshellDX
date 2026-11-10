@@ -42,6 +42,10 @@ LIBDIRSFLAGS	:= $(foreach path,$(LIBDIRS),-L$(path)/lib)
 
 ASFLAGS		:= -x assembler-with-cpp $(DEFINES) $(WF_ARCH_CFLAGS) \
 		   $(INCLUDEFLAGS) -ffunction-sections -fdata-sections -fno-common
+# the translator (drc.c): -O3 without value-range propagation and PRE,
+# measured on the WS build in Unicorn (wsprof.py, Shinobi's 1457 blocks):
+# 7812 -> 7304 cycles a block, the same code generated
+DRC_OPT		?= -O3 -fno-tree-vrp -fno-tree-pre
 CFLAGS		:= -std=gnu11 $(WARNFLAGS) $(DEFINES) $(WF_ARCH_CFLAGS) \
 		   $(INCLUDEFLAGS) -ffunction-sections -fdata-sections -fno-common -O2
 LDFLAGS		:= -T$(WF_LDSCRIPT) $(LIBDIRSFLAGS) \
@@ -78,6 +82,6 @@ $(BUILDDIR)/%.s.o : %.s
 $(BUILDDIR)/%.c.o : %.c
 	@echo "  CC      $<"
 	@$(MKDIR) -p $(@D)
-	$(_V)$(CC) $(CFLAGS) -MMD -MP -c -o $@ $<
+	$(_V)$(CC) $(CFLAGS) $(if $(findstring drc/drc.c,$<),$(DRC_OPT)) -MMD -MP -c -o $@ $<
 
 -include $(DEPS)
