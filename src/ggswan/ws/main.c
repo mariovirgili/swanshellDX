@@ -1550,6 +1550,47 @@ static volatile uint8_t vblanks;
 #define FRAME_COST 7547
 static volatile uint16_t frame_credit;
 static volatile uint16_t prof_count[PROF_COUNT];
+
+#ifndef GGSWAN_HOST
+/*
+ * Frame by frame (for testing, as Mednafen's Alt+A): Y2 (Y right) and Y4
+ * (Y left) pressed together stop the game (the sound off) and start it
+ * again; while it is stopped, Y3 (Y down) runs one frame. The Game Gear
+ * has no Y buttons: the game sees none of this.
+ */
+static uint16_t step_keys = 0xFFFF;   // (keys held from the start: not presses)
+static uint8_t step_paused;
+static uint16_t step_pressed(void) {
+    uint16_t k = ws_keypad_scan();
+    uint16_t p = k & ~step_keys;
+    step_keys = k;
+    return p;
+}
+#define STEP_PAUSE (WS_KEY_Y2 | WS_KEY_Y4)
+static void frame_step(void) {
+    uint16_t p = step_pressed();
+    if ((p & STEP_PAUSE) && (step_keys & STEP_PAUSE) == STEP_PAUSE)
+        step_paused = 1;
+    else if (!step_paused)
+        return;
+    outportb(WS_SOUND_CH_CTRL_PORT, 0);   // (sound off while stopped)
+    for (;;) {
+        while (inportb(WS_DISPLAY_LINE_PORT) != 144) {}
+        while (inportb(WS_DISPLAY_LINE_PORT) == 144) {}
+        p = step_pressed();
+        if ((p & STEP_PAUSE) && (step_keys & STEP_PAUSE) == STEP_PAUSE) {
+            step_paused = 0;   // go on
+            break;
+        }
+        if (p & WS_KEY_Y3)
+            break;             // one frame, then stopped again
+    }
+    psg_noise_freq();   // (the channels on again)
+    ia16_disable_irq();
+    frame_credit = FRAME_COST;   // (no catching up)
+    ia16_enable_irq();
+}
+#endif
 static volatile uint16_t prof_total;
 
 // (the interrupt itself: vblank_irq_entry, drc_asm.s)
@@ -1848,6 +1889,7 @@ int main(void) {
         frame_credit -= FRAME_COST;
         ia16_enable_irq();
         prof_phase = PROF_OTHER;
+        frame_step();
         read_keys();
         gg_run_frame();   // (video_present at its line 168)
 #ifdef GGSWAN_NILEDBG
