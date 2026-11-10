@@ -1553,13 +1553,15 @@ static int idle_body(const ins_t *I) {
     }
     if (I->pre) return 0;
     return op == 0x00                                            // NOP
+        || op == 0xFB                                            // EI (Spinball: EI / LD A,(nn) / CP B / JR NZ)
         || op == 0x3A || op == 0x7E || op == 0x0A || op == 0x1A  // LD A,(nn) (HL) (BC) (DE)
         || op == 0x46 || op == 0x4E || op == 0x56 || op == 0x5E  // LD B/C/D/E,(HL)
         || (op >= 0xA0 && op <= 0xA7) || op == 0xE6              // AND (x & m twice = once)
         || (op >= 0xB0 && op <= 0xBF) || op == 0xF6 || op == 0xFE;   // OR, CP
 }
 
-static int is_idle(int n, uint16_t pc) {
+static uint16_t idle_target;   // (is_idle 2: the EI the loop goes through)
+static int is_idle(int n, uint16_t pc, uint8_t ram) {
     const ins_t *L = &ins[n - 1];
     uint16_t target;
     if (L->pre) return 0;
@@ -1569,7 +1571,23 @@ static int is_idle(int n, uint16_t pc) {
         target = L->nn;                                          // JP, JP cc
     else
         return 0;
-    if (target != pc) return 0;
+    if (target != pc) {
+        // a loop through EI / JP pc (or JR back) in the same ROM slot, the
+        // body here starting with DI, Super Tennis' (Agassi) wait for its
+        // frame interrupt: DI / LD A,(nn) / CP n / JR NZ,x ... x: EI / JP
+        // (three quarters of its time)
+        if (ram || (target >> 14) != (pc >> 14) || target >= 0xC000
+                || ins[0].pre || ins[0].op != 0xF3 || rd(target) != 0xFB)
+            return 0;
+        uint8_t j = rd(target + 1);
+        if (!((j == 0xC3 && (rd(target + 2) | (rd(target + 3) << 8)) == pc)
+              || (j == 0x18 && (uint16_t) (target + 3 + (int8_t) rd(target + 2)) == pc)))
+            return 0;
+        for (int i = 1; i < n - 1; i++)
+            if (!idle_body(&ins[i])) return 0;
+        idle_target = target;
+        return 2;
+    }
     for (int i = 0; i < n - 1; i++)
         if (!idle_body(&ins[i])) return 0;
     return 1;
@@ -1577,7 +1595,7 @@ static int is_idle(int n, uint16_t pc) {
 
 // Taken branch to target: loop back inside the block when possible
 static void branch_to(uint16_t target, uint16_t extra) {
-    if (target == block_pc && idle_block) {
+    if (idle_block && target == (idle_block == 2 ? idle_target : block_pc)) {
         // wait loop: end the run (cycles left: none)
         materialize();
         sub_cycles(cyc + extra);
@@ -2957,7 +2975,7 @@ int drc_translate(const drc_env_t *e, uint16_t pc, uint8_t *out,
     block_start_off = out_off; block_pc = pc;
     fkind = K_AH; cf_valid = 0; hl_es = 0; cyc = 0;
     force_nolink = 0;
-    idle_block = is_idle(n, pc);
+    idle_block = is_idle(n, pc, ram);
     if (ram) ram_check(pc, end);
     if (long_run) {
         // the blocks of 12 OUTIs this one replaces would each have ended the
