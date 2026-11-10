@@ -441,7 +441,7 @@ static void read_const16(uint16_t addr, uint8_t dst) {
  * nt_stub_off), sprite table writes mark the sprites to be rebuilt.
  * src: x86 8-bit register. x86 flags destroyed; uses SI and DI.
  */
-static void vram_fast(uint8_t src, uint8_t **slow1) {
+static void vram_fast(uint8_t src, uint8_t **slow1, uint8_t inl) {
     B(0x80); B(0x3E); W(VA(code)); B(3);                 // cmp byte [code], 3
     uint8_t *cram_end = 0;
     if (env->cram_off) {
@@ -466,11 +466,38 @@ static void vram_fast(uint8_t src, uint8_t **slow1) {
         B(0xC1); B(0xEF); B(0x08);                       // shr di, 8
         B(0xF6); B(0x85); W(SA(vram_class)); B(0x0B);    // test byte [di + class], 0Bh
         uint8_t *plain = jcc8(0x74);                     // jz (tile data)
+        // deferred, the byte after the last one logged (Sailor Moon S's
+        // tiles, a byte an OUT, ~190 a frame): appended here, as the
+        // routine's first case, without the call (in blocks: inl)
+        uint8_t *r1 = 0, *r2 = 0, *r3 = 0, *done1 = 0, *done2 = 0;
+        if (inl) {
+            B(0xF6); B(0x85); W(SA(vram_class)); B(0x08); // test byte [di + class], 8
+            r1 = jcc8(0x74);                             // jz routine
+            B(0x3B); B(0x36); W(SA(log_next));           // cmp si, [log_next]
+            r2 = jcc8(0x75);                             // jne routine
+            B(0x8B); B(0x3E); W(SA(log_top));            // mov di, [log_top]
+            B(0x3B); B(0x3E); W(SA(log_end));            // cmp di, [log_end]
+            r3 = jcc8(0x73);                             // jae routine
+            B(0x88); B(0x05 | (src << 3));               // mov [di], src
+            B(0x47);                                     // inc di
+            B(0x89); B(0x3E); W(SA(log_top));            // mov [log_top], di
+            B(0x8B); B(0x3E); W(SA(log_last));           // mov di, [log_last]
+            B(0xFE); B(0x45); B(0x02);                   // inc byte [di + 2]
+            B(0x80); B(0x7D); B(0x02); B(0xFF);          // cmp byte [di + 2], FFh
+            uint8_t *full = jcc8(0x74);                  // je full
+            B(0xFF); B(0x06); W(SA(log_next));           // inc word [log_next]
+            done1 = jcc8(0xEB);
+            land8(full);
+            B(0xC7); B(0x06); W(SA(log_next)); W(0xFFFF); // mov word [log_next], FFFFh
+            done2 = jcc8(0xEB);
+            land8(r1); land8(r2); land8(r3);
+        }
         call_near(env->cls_off);
         uint8_t *done = jcc8(0xEB);
         land8(plain);
         B(0x88); B(0x84 | (src << 3)); W(env->vram_addr);    // mov [si + vram], src
         land8(done);
+        if (done1) { land8(done1); land8(done2); }
         B(0x46);                                         // inc si
         B(0x81); B(0xE6); W(0x3FFF);                     // and si, 3FFFh
         B(0x89); B(0x36); W(VA(addr));                   // mov [addr], si
@@ -666,7 +693,7 @@ uint16_t drc_emit_run_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
     B(0x57);                                         // push di
     uint8_t *s1;
     B(0x26); B(0x8A); B(0x27);                       // mov ah, es:[bx]
-    vram_fast(4 /* AH */, &s1);
+    vram_fast(4 /* AH */, &s1, 0);   // (the routines: short)
     if (s1) *s1 = (uint8_t) (int8_t) (slow1 - (s1 + 1));   // (backwards)
     B(0x5F);                                         // pop di
     B(0xFE); B(0xCD);                                // dec ch
@@ -2281,7 +2308,7 @@ static int emit(int i) {
                 B(0x81); B(0xE6); W(0x00C1);             // and si, C1h
                 B(0x81); B(0xFE); W(0x0080);             // cmp si, 80h (VDP data)
                 s0 = jcc8(0x75);
-                vram_fast(src, &s1);
+                vram_fast(src, &s1, 1);
                 done = jcc8(0xEB);
                 land8(s0);
                 if (env->ctl_off) {
@@ -2945,7 +2972,7 @@ static int emit(int i) {
                 }
                 uint8_t *s1 = 0, *done = 0;
                 if (env->vdp_addr && (I->nn & 0xC1) == 0x80) {
-                    vram_fast(X_AX, &s1);
+                    vram_fast(X_AX, &s1, 1);
                     done = jcc8(0xEB);
                     land8(s1);
                 } else if (env->ctl_off && (I->nn & 0xC1) == 0x81) {
