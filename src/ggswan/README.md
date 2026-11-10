@@ -135,3 +135,134 @@ interrupts a second).
 - `ws/`: the WonderSwan side: runtime, video, sound, main loop.
 - `host/`: PC test tools (comparison against the interpreter and a
   reference renderer, cycle profiling in an x86 emulator).
+
+## Changelog
+
+One line per commit, oldest first. The patch number (shown as `P` at
+the top right while playing) exists from patch 90; the commits before
+it are listed in order without one.
+
+### Before patch 90
+
+- Game Gear emulator plugin (experimental)
+- Z80 -> V30MZ recompiler, first part (PC only, not built yet)
+- fix the build (MAP_SIZE), no far memcmp
+- recompiler runtime, the recompiler is now the default CPU
+- recompiler: do not read the bank ports back; diagnostics
+- recompiler diagnostics: self-check mode, PSRAM bank test
+- recompiler: fix the work RAM segments with 16-bit ints
+- faster timing, VRAM fast path, dynamic block lookup; clearer diagnostics
+- sampling profiler in the right border
+- 6 code cache banks, RETI/RETN translated, flush counter shown
+- shared OUTI routine, wait loops end the run, EI without the interpreter
+- native LDI runs, SBC/ADC HL, INC/DEC (IX+d); repeated instructions without the dispatcher
+- far links between code banks, guarded links between slots, helpers without leaving the block, VDP ports, native LDIR
+- shorter linked exits and RAM writes through (HL)
+- L0 cache in IRAM for RET / JP (HL) lookups; fix the start-up checks
+- fix the WS build of the recompiler (drc_tramp declared after use)
+- translate code in work RAM, with self-modifying LD A,(nn)
+- start-up text on every other row
+- start the lines reached by the CPU in one pass (AL time)
+- OUTI runs that leave the VRAM path finish in C, not instruction by instruction
+- link into blocks in work RAM, and find them through DYN
+- longer blocks through JP/JR and short CALLed routines
+- fix the 16-bit overflow warnings in gg_run_frame
+- VDP status reads and the fixed ports without the C helper
+- frame limiter at 59.92 FPS; scroll register writes that change nothing stay in the code
+- move big buffers out of the internal RAM below 4000h (stack room)
+- diagnostics, switch off JP/JR following or CALL inlining at start
+- turn off following JP/JR inside blocks by default
+- lighter dispatcher (L0 lookup in C, self-check sums only when on)
+- take IM 1 interrupts in the dispatcher
+- start the next line from the dispatcher, not the frame loop
+- line interrupts handled without leaving drc_enter
+- OUTI and LDI runs copied with rep movsb
+- rotates and shifts keep their flags in x86 flags when they can
+- name table routine with a row table
+- cld before the rep movsb of the OUTI and LDI routines
+- diagnostics, X4 at start turns off patches 29-32
+- LDI rep movsb path, refuse destinations in the RAM mirror
+- OTIR translated (the OUTI routine, 64 bytes per turn)
+- line events at the block exits, in the generated code
+- horizontal scroll splits recorded by the VDP control routine
+- name table routine, palette and flip bits from a table
+- OUTI routine, one page-class lookup instead of three range checks
+- keep the WS screens on when the display was on at the frame start
+- single VRAM writes find the name and sprite tables from the page class
+- LD A,I and LD I,A translated
+- block copies to PSRAM with _fmemcpy, table entries in one window switch
+- VDP data writes to CRAM through a generated routine, not the helper
+- port helpers without the mapper snapshot, PSG tone divider from a table
+- flags in AH only as far as they are read later
+- runs of LDI/OUTI in RAM code cut to the RAM block size
+- sprite tile writes in the frame interrupt deferred to the end of the frame
+- Sonic, screen shown when the display goes on during the frame
+- vertical scroll set at the end of the WS screen, like the horizontal one
+- sprites outside the view not given to the WS
+- scroll splits the WS line interrupt reaches late are applied at once
+- defer all VRAM tile/name-table writes to the end of the WS screen
+- defer only tile data; scroll before the VRAM commit; no vblank spin
+- diagnostics for the end-of-screen interrupt (L, K, E)
+- tile log copied with REP MOVSW; diagnostics M, Y, J
+- diagnostics for Sonic's device-only scroll split (G, registers, RAM)
+- diagnostics column (Y4 at the start): where Sonic's frame interrupt is taken
+- diagnostics: the frame position when a scroll split is recorded
+- cycles left after a mapping change: 32-bit and the real count
+- map relaid with room around the view; two sprite tables
+- interrupt entries in assembler that load DS and ES
+- present a Game Gear frame only after the last one was shown
+- a VRAM read applies only the byte it reads, not the whole log
+- Sailor Moon S: RRD/RLD translated, PSG writes queued, frame shown at line 193
+- declare video_present before gg_platform_frame_end
+- no split dropped at the bottom when the list is full; SYNC profiled as PO
+- same-value bank and VDP register writes without a helper; video_present timing
+- line interrupt, sprite table and PSG queue in assembly
+- psg_st not static on the WS
+- line interrupt back to the full entry
+- slot 1/2 bank changes and joypad reads without helpers
+- VRAM reads with a long tile log, helper time in the Y4 column
+- V counter without the helper, no deferring after many VRAM reads
+- translator reads Z80 bytes through a kept pointer; wsprof.py
+- translator byte reads inline
+- diagnostics show the last block translated
+- mapper routines write the WS bank ports; wsrun.py
+- IXH/IXL translated; quick redispatch from L0 in drc_fast_reentry
+- LD A,R and IN r,(C) on the VDP data port translated
+- optional niledebug poll in the frame loop (NILEDBG=1); ggsyms.py
+- cheaper OUTI/OUTD runs (flags in the caller, only when live)
+- Game Gear ROMs up to 1 MiB
+- long OUTI-only blocks in RAM, checked with one REPE SCASW
+- VRAM reads outside the deferred pages skip the log scan
+- lighter DYN lookup and class routine for deferred tile bytes
+- OUTI runs to CRAM handled in the run routine
+
+### Patches 90-115
+
+| Patch | Change |
+|---|---|
+| 90 | patch number on the start screen; profiling options |
+| 91 | patch number also in the top right corner while playing |
+| 92 | present the frame at line 168, after the last line shown |
+| 93 | VRAM reads outside the tile log do not turn deferring off |
+| 94 | tile log and sprite table handed to the WS together, off the last lines |
+| 95 | wait loops on (IX+d)/(IY+d) skipped; HL's segment kept when only L changes |
+| 96 | OUTI runs into the name table at once, one map conversion a word |
+| 97 | wait loops with EI, and DI loops that go through EI / JP back |
+| 98 | wait loops that leave with a conditional branch and come back with JR |
+| 99 | fixes from ChatGPT's review of patches 89-98 |
+| 100 | translator compiled with -O3 -fno-tree-vrp -fno-tree-pre |
+| 101 | long blocks stop where a translated block starts |
+| 102 | the profile column every second |
+| 103 | IRAM/PSRAM benchmark (X3 at start), stub and link profiling |
+| 104 | OUTI runs up to 4 bytes copied with a byte loop |
+| 105 | inline cache at the DYN exits (RET, JP (HL)) |
+| 106 | one routine for Shinobi's OUTI / OUTI / DEC L x 4 rows |
+| 107 | OUTI runs to the VDP control port without the helper |
+| 108 | samples played through the PSG volumes (Sailor Moon S voices) |
+| 109 | background tile priority, faster DJNZ $ delays, longer PSG queue |
+| 110 | background priority off by default, Y1 switches it |
+| 111 | Y1 at the start selects the background priority |
+| 112 | frame by frame (Y2 + Y4 stop, Y3 one frame) |
+| 113 | V counter wait loops skipped at once (Sonic Spinball) |
+| 114 | RRD / RLD without flags when nothing reads them |
+| 115 | tile bytes appended to the log inside the block |
