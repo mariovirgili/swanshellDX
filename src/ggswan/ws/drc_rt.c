@@ -655,9 +655,17 @@ static void flush(void) {
 
 // diagnostics: switch off parts of the block building (before the first
 // translation)
+static uint8_t known_start(uint16_t pc);
+
 void drc_rt_options(uint8_t no_trace, uint8_t no_inline) {
     env.no_trace = no_trace;
     env.no_inline = no_inline;
+}
+
+// diagnostics/measurement: long blocks do not stop at blocks already
+// translated (patch 101 off)
+void drc_rt_known_starts(uint8_t on) {
+    env.known_start = on ? known_start : 0;
 }
 
 void drc_rt_init(uint16_t bank) {
@@ -685,6 +693,7 @@ void drc_rt_init(uint16_t bank) {
     // scroll and the status bar of Wonder Boy III on the WonderSwan (not
     // on the PC tests, cause not found) and gained under 1%
     env.no_trace = 1;
+    env.known_start = known_start;
     drc_st.table_seg = DRC_TABLE_SEG;
     env.ram_delta = 0x8000 - 0xC000;   // Game Gear RAM at IRAM 8000h
 
@@ -793,6 +802,21 @@ static inline uint8_t bank_key(uint16_t pc) {
 
 static inline uint16_t hash(uint16_t pc, uint8_t bank) {
     return (pc ^ (pc >> 9) ^ ((uint16_t) bank << 5)) & (HASH_SIZE - 1);
+}
+
+// (drc_env_t known_start: the translator asks while it decodes a long
+// block, the same table lookup as drc_z80_run)
+static uint8_t known_start(uint16_t pc) {
+    uint8_t bank = bank_key(pc);
+    uint16_t h = hash(pc, bank) & ~3;
+    const uint16_t __far *tw = MK_FP(DRC_TABLE_SEG, 0);
+    const uint8_t __far *tb = (const uint8_t __far*) tw;
+    for (uint8_t i = 0; i < 4; i++, h++) {
+        uint16_t off = tw[(T_OFF / 2) + h];
+        if (off && off != DRC_NOT_TRANSLATED && tw[(T_PC / 2) + h] == pc && tb[T_BANK + h] == bank)
+            return 1;
+    }
+    return 0;
 }
 
 static uint16_t translate(uint16_t pc, uint8_t bank, uint16_t h) {

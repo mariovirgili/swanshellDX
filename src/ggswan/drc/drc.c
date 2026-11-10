@@ -2919,6 +2919,11 @@ int drc_translate(const drc_env_t *e, uint16_t pc, uint8_t *out,
         // stay inside the block's 16 KiB slot (or slot 0, through a jump)
         if (n && ((p ^ pc) & 0xC000) && !(p < 0x4000 && !ram)) break;
         if (ram && p - pc > RAM_BLOCK_MAX - 4) break;
+        // a long block stops where one already translated starts, and links
+        // to it: Shinobi uploads tiles with an unrolled OUTI / OUTI / DEC L
+        // x4 routine (0720-0950h) entered at 221 different points, each a
+        // new block of 48 instructions: 60% of all it translated
+        if (n >= 8 && !ram && env->known_start && env->known_start(p)) break;
         decode(p, &ins[n]);
         ins[n].dyn = 0;
         ins[n].trace = 0;

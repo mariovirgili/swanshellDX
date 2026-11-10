@@ -154,6 +154,9 @@ typedef struct {
                            // by rotates and shifts (patches 31-32 off)
     uint16_t ldi_off;      // routine for runs of LDI (drc_emit_ldi_stub),
                            // LDD's at ldi_off + DRC_LDD_DELTA (0: interpreted)
+    // a block already translated starts at pc (in pc's slot, its current
+    // bank): a long block stops there and links to it (NULL: never)
+    uint8_t (*known_start)(uint16_t pc);
 } drc_env_t;
 
 #define DRC_OUTD_DELTA 0x250
