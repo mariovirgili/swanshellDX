@@ -32,14 +32,19 @@ extern uint8_t gg_view_x, gg_view_y;
 #define GG_VIEW_X gg_view_x
 #define GG_VIEW_Y gg_view_y
 #define GG_VIEW_X_MAX 32
-#define GG_VIEW_Y_MAX 48
+#define GG_VIEW_Y_MAX (GG_ACTIVE - GG_VIEW_H)   // (48; 80 with 224 lines)
 #define GG_VIEW_W 224
 #define GG_VIEW_H 144
 #define WS_VIEW_ORIGIN_X 0      // the WS column where the view starts
 // scroll splits are recorded over the whole picture (the view moves)
 #define GG_REC_Y 0
-#define GG_REC_H GG_ACTIVE_LINES
+#define GG_REC_H GG_ACTIVE
+// the lines of the picture: 192, or 224 (mode 4 with M1 and M2 set,
+// registers 1 and 0: Codemasters' games), kept in gg.vdp (gg.c
+// vdp_mode_update) with the values the generated routines compare with
+#define GG_ACTIVE gg.vdp.active
 #else
+#define GG_ACTIVE GG_ACTIVE_LINES
 // the Game Gear shows a 160x144 window of the 256x192 picture
 #define GG_VIEW_X 48
 #define GG_VIEW_Y 24
@@ -97,6 +102,12 @@ typedef struct {
     // cycles not counted when a line interrupt was taken late (gg.c
     // event_step): taken back below the view, in the same frame
     uint16_t irq_debt;
+#ifdef GGSWAN_SMS
+    uint16_t active;        // lines of the picture: 192 or 224
+    uint16_t vcnt_max;      // the V counter jumps back by 6 after this line
+    uint16_t present_m1;    // GG_PRESENT_LINE - 1 and + 1 (the recompiler's
+    uint16_t present_p1;    // LINE and CTL routines)
+#endif
 } gg_vdp_t;
 
 typedef struct {
@@ -116,6 +127,15 @@ extern uint8_t *gg_vram;
 #define gg_cram gg.vdp.cram
 // color i (0-31) as ----BBBBGGGGRRRR: the Game Gear's two CRAM bytes;
 // smsswan: one byte --BBGGRR, each 2-bit value times 5 (0, 5, 10, 15)
+// the name table's height in lines and the end of the sprite list (a Y of
+// D0h), both only with 192 lines
+#ifdef GGSWAN_SMS
+#define GG_NT_WRAP (gg.vdp.active == 224 ? 256 : 224)
+#define GG_SPR_END(y) ((y) == 0xD0 && gg.vdp.active != 224)
+#else
+#define GG_NT_WRAP 224
+#define GG_SPR_END(y) ((y) == 0xD0)
+#endif
 static inline uint16_t gg_color12(uint8_t i) {
 #ifdef GGSWAN_SMS
     uint8_t v = gg_cram[i];
@@ -188,6 +208,10 @@ int16_t gg_fast_line(int16_t left);
 /* VDP helpers */
 
 static inline uint16_t gg_name_table_base(void) {
+#ifdef GGSWAN_SMS
+    if (gg.vdp.active == 224)
+        return ((gg.vdp.reg[2] & 0x0C) << 10) | 0x700;
+#endif
     return (gg.vdp.reg[2] & 0x0E) << 10;
 }
 static inline uint16_t gg_sat_base(void) {

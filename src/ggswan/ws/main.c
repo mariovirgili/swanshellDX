@@ -253,6 +253,20 @@ uint8_t __far *gg_platform_cart_ram(uint8_t page) {
 static uint16_t nt_base = 0x3800;
 static uint16_t sat_base = 0x3F00;
 static uint8_t map_top;        // first "virtual" Game Gear row in map1
+// the name table: 28 rows of 32 entries at (register 2 & 0Eh) << 10;
+// smsswan with 224 lines: 32 rows at ((register 2 & 0Ch) << 10) + 700h
+#ifdef GGSWAN_SMS
+static uint8_t nt_h = 28;
+#define NT_H nt_h
+#define NT_P (nt_h * 8u)
+#define NT_SIZE (nt_h * 64u)
+#define NT_BASE_OF(v) ((uint16_t) (nt_h == 32 ? (((v) & 0x0C) << 10) | 0x700 : ((v) & 0x0E) << 10))
+#else
+#define NT_H 28
+#define NT_P 224u
+#define NT_SIZE 0x700
+#define NT_BASE_OF(v) ((uint16_t) (((v) & 0x0E) << 10))
+#endif
 static uint8_t backdrop_palette;
 
 /*
@@ -310,7 +324,7 @@ static volatile uint16_t pend_start, pend_top; // the log waiting (0: none)
 static void vram_class_update(void) {
     for (uint8_t i = 0; i < 64; i++) {
         uint16_t a = (uint16_t) i << 8;
-        uint8_t c = ((uint16_t) (a - nt_base) < 0x700 ? 1 : 0)
+        uint8_t c = ((uint16_t) (a - nt_base) < NT_SIZE ? 1 : 0)
                   | ((uint16_t) (a - sat_base) < 0x100 ? 2 : 0);
         vram_class_norm[i] = c;
         drc_st.vram_class[i] = (drc_st.defer && !c) ? c | 8 : c;
@@ -346,11 +360,11 @@ static void log_apply(uint16_t start, uint16_t end) {
         uint8_t n = p[2];
         memcpy(gg_vram + a, p + 3, n);
         uint16_t off = a - nt_base;
-        if (off < 0x700 || (uint16_t) (a + n - 1 - nt_base) < 0x700) {
+        if (off < NT_SIZE || (uint16_t) (a + n - 1 - nt_base) < NT_SIZE) {
             // name table: the words touched
             for (uint16_t k = 0; k < n; k++) {
                 uint16_t o = (uint16_t) (a + k - nt_base);
-                if (o < 0x700 && (!(o & 1) || k == 0))
+                if (o < NT_SIZE && (!(o & 1) || k == 0))
                     map_put(o >> 6, (o >> 1) & 31, gg_entry(o >> 6, (o >> 1) & 31));
             }
         }
@@ -554,8 +568,13 @@ uint8_t gg_platform_vram_defer(uint16_t a, uint8_t value) {
  */
 #define MAX_EVENTS 72   // (47 Y steps, the splits)
 uint8_t gg_squeeze;                                 // wanted (read_keys)
+// the view's Y as set with the Y buttons (gg_view_y is this, kept inside
+// the picture: 192 or 224 lines, see video_present), and whether they
+// were used (if not, a picture of 224 lines starts with the view in its
+// middle too)
+static uint8_t view_y_want = 24, view_moved;
 GGSWAN_HOST_VISIBLE volatile uint8_t act_y[MAX_EVENTS], act_sq;
-uint8_t spr_sq, spr_dy = 8;                         // (spr_build's, drc_asm.s)
+uint8_t spr_sq, spr_dy = 8, spr_224;                // (spr_build's, drc_asm.s)
 #else
 #define MAX_EVENTS MAX_SPLITS
 #endif
@@ -621,17 +640,18 @@ static void map_relayout(uint8_t top, uint8_t first) {
     map_top = top;
     drc_st.map_top = top;
     // where each row goes (as map_put), for the name table routine
-    for (uint8_t r = 0; r < 28; r++) {
+    for (uint8_t r = 0; r < DRC_NT_ROWS; r++)
+        drc_st.nt_rows[r] = drc_st.nt_rows[DRC_NT_ROWS + r] = 0xFFFF;
+    for (uint8_t r = 0; r < NT_H; r++) {
         uint8_t k = 0;
-        drc_st.nt_rows[r] = drc_st.nt_rows[28 + r] = 0xFFFF;
-        for (uint8_t v = r; v < top + 32; v += 28)
+        for (uint8_t v = r; v < top + 32; v += NT_H)
             if (v >= top)
-                drc_st.nt_rows[k++ * 28 + r] = (v & 31) * 64;
+                drc_st.nt_rows[k++ * DRC_NT_ROWS + r] = (v & 31) * 64;
     }
     for (uint8_t k = 0; k < 32; k++) {
         uint8_t w = (first + k) & 31;
         uint8_t v = top + ((w - top) & 31);
-        uint8_t r = v % 28;
+        uint8_t r = v % NT_H;
         // (a name table row does not wrap in VRAM: 3800h + 27 * 64 at most)
         const uint8_t *p = gg_vram + nt_base + r * 64;
         uint16_t *m = map1 + w * 32;
@@ -655,7 +675,7 @@ uint16_t host_map_check(void) {
     uint16_t bad = 0;
     for (uint8_t w = 0; w < 32; w++) {
         uint8_t v = map_top + ((w - map_top) & 31);
-        uint8_t r = v % 28;
+        uint8_t r = v % NT_H;
         for (uint8_t c = 0; c < 32; c++)
             if (map1[w * 32 + c] != conv_entry(gg_entry(r, c))) bad++;
     }
@@ -665,7 +685,7 @@ uint16_t host_map_check(void) {
 
 static void map_put(uint8_t row, uint8_t col, uint16_t e) {
     uint16_t w = conv_entry(e), w2 = prio_entry(e, w);
-    for (uint8_t v = row; v < map_top + 32; v += 28)
+    for (uint8_t v = row; v < map_top + 32; v += NT_H)
         if (v >= map_top) {
             map1[(v & 31) * 32 + col] = w;
             if (drc_st.prio_on)
@@ -676,7 +696,7 @@ static void map_put(uint8_t row, uint8_t col, uint16_t e) {
 void gg_platform_vram_write(uint16_t a, uint8_t value) {
     (void) value;
     uint16_t off = a - nt_base;
-    if (off < 0x700) {
+    if (off < NT_SIZE) {
         map_put(off >> 6, (off >> 1) & 31, gg_entry(off >> 6, (off >> 1) & 31));
     } else if ((uint16_t) (a - sat_base) < 0x100) {
         drc_st.sprites_dirty = true;
@@ -701,9 +721,17 @@ void gg_platform_vdp_reg(uint8_t r, uint8_t v) {
         // (tile bytes still in the logs may be in the new name table: to
         // VRAM first, so that map_relayout reads them; the log copy does
         // not update the map)
-        if ((uint16_t) ((v & 0x0E) << 10) != nt_base)
+#ifdef GGSWAN_SMS
+        // (224 lines: 32 rows at x700h; a change of mode comes here too)
+        if (nt_h != (gg.vdp.active == 224 ? 32 : 28)) {
             gg_platform_vram_sync();
-        nt_base = (v & 0x0E) << 10;
+            nt_h = gg.vdp.active == 224 ? 32 : 28;
+            map_top = 0;
+        }
+#endif
+        if (NT_BASE_OF(v) != nt_base)
+            gg_platform_vram_sync();
+        nt_base = NT_BASE_OF(v);
         drc_st.nt_base = nt_base;
         vram_class_update();
         map_relayout(map_top, 0);
@@ -1093,12 +1121,12 @@ static void splits_commit(void) {
  * most of the visible tiles use.
  */
 static void update_backdrop(void) {
-    uint8_t top = (GG_VIEW_Y + gg.vdp.vscroll_frame) % 224 >> 3;
+    uint8_t top = (GG_VIEW_Y + gg.vdp.vscroll_frame) % NT_P >> 3;
     uint8_t left = (GG_VIEW_X - gg.vdp.reg[8]) >> 3;
     uint16_t sprite_pal = 0;
     // (every other tile of the view: 18 rows, 20 columns; smsswan 28)
     for (uint8_t r = 0; r < GG_VIEW_H / 8; r += 2) {
-        uint8_t row = (top + r) % 28;
+        uint8_t row = (top + r) % NT_H;
         for (uint8_t c = 0; c < GG_VIEW_W / 8; c += 2)
             if (gg_entry(row, (left + c) & 31) & 0x800)
                 sprite_pal++;
@@ -1153,13 +1181,14 @@ static void build_sprites(void) {
 #ifdef GGSWAN_SMS
     spr_sq = view_sq;
     spr_dy = view_sq ? 6 : 8;
+    spr_224 = gg.vdp.active == 224;
 #endif
     uint8_t *s = spr_build(sat, table);
 #else
     uint8_t *s = table, *end = table + 127 * 4;
     for (uint8_t i = 0; i < 64 && s < end; i++) {
         uint8_t y = sat[i];
-        if (y == 0xD0)
+        if (GG_SPR_END(y))
             break;
         // Game Gear (x, y + 1) in the 256x192 picture; the view starts at
         // (48, 24) and is shown at WS (32, 0) (smsswan: (16, 24) at (0, 0))
@@ -1282,6 +1311,7 @@ GGSWAN_HOST_VISIBLE void video_init(void) {
         int px = 16, py = 24;
         sscanf(getenv("GGSWAN_PAN"), "%d,%d", &px, &py);
         gg_view_x = px; gg_view_y = py;
+        view_y_want = py; view_moved = 1;
     }
 #else
     prio_wanted = getenv("GGSWAN_PRIO") != NULL;
@@ -1357,6 +1387,17 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
     vp_lap(VP_PSG);
 
 #ifdef GGSWAN_SMS
+    {
+        uint8_t y = view_y_want, max = GG_VIEW_Y_MAX;
+        if (!view_moved)
+            y = max / 2;        // (24, or 40 with 224 lines)
+        if (y > max)
+            y = max;
+        if (y != gg_view_y) {
+            gg_view_y = y;
+            drc_st.sprites_dirty = 1;
+        }
+    }
     // register 0 bit 5: the picture's first 8 columns are blanked (games
     // that scroll sideways hide the column being redrawn): the view does
     // not go there
@@ -1380,10 +1421,10 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
     #define VP_ABOVE 6
 #endif
     // vertical: the Game Gear view starts at row (24 + vscroll) mod 224
-    uint16_t s = (VP_VIEW_Y + gg.vdp.vscroll_frame) % 224;
+    uint16_t s = (VP_VIEW_Y + gg.vdp.vscroll_frame) % NT_P;
     uint16_t vy = s;
     while (vy < map_top * 8u)
-        vy += 224;   // (virtual rows: the same Game Gear row 28 later)
+        vy += NT_P;   // (virtual rows: the same Game Gear row 28 later)
     next_vy = vy & 0xFF;
 #ifndef GGSWAN_HOST
     uint8_t relay = 0, relay_top = 0;
@@ -1401,11 +1442,11 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
 #ifdef GGSWAN_HOST
         host_relayouts++;
 #endif
-        vy = s + 224;
+        vy = s + NT_P;
         next_vy = vy & 0xFF;
 #ifdef GGSWAN_HOST
         // (the PC tests have no WS raster: the map and its scroll now)
-        map_relayout((s >> 3) + 28 - VP_ABOVE, 0);
+        map_relayout((s >> 3) + NT_H - VP_ABOVE, 0);
         act_vy = next_vy;
 #else
         /*
@@ -1418,7 +1459,7 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
          * whenever the camera had moved some 50 pixels up or down).
          */
         relay = 1;
-        relay_top = (s >> 3) + 28 - VP_ABOVE;
+        relay_top = (s >> 3) + NT_H - VP_ABOVE;
 #endif
     }
 #ifdef GGSWAN_HOST
@@ -1751,6 +1792,8 @@ GGSWAN_HOST_VISIBLE void read_keys(void) {
         if (x != gg_view_x || y != gg_view_y) {
             gg_view_x = x;
             gg_view_y = y;
+            view_y_want = y;
+            view_moved = 1;
             drc_st.sprites_dirty = 1;
         }
     }

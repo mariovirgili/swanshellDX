@@ -1338,7 +1338,11 @@ uint16_t drc_emit_vcnt_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) 
     B(0x3D); W(GG_LINES - 1);                        // cmp ax, 261
     B(0x76); B(0x03);                                // jbe +3
     B(0xB8); W(GG_LINES - 1);                        // mov ax, 261
+#ifdef GGSWAN_SMS
+    B(0x3B); B(0x06); W(VA(vcnt_max));               // cmp ax, [vcnt_max] (DAh or EAh)
+#else
     B(0x3D); W(0xDA);                                // cmp ax, DAh
+#endif
     B(0x76); B(0x03);                                // jbe +3
     B(0x2D); W(6);                                   // sub ax, 6
     B(0x88); B(0xC2);                                // mov dl, al
@@ -1498,7 +1502,11 @@ uint16_t drc_emit_ctl_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) {
         uint8_t *last1 = jcc8(0xEB);                 // jmp set_last
         land8(inview);
         B(0x2D); W(GG_REC_Y);                        // sub ax, VIEW_Y (y)
+#ifdef GGSWAN_SMS
+        B(0x3B); B(0x06); W(VA(active));             // cmp ax, [active] (192 or 224)
+#else
         B(0x3D); W(GG_REC_H);                        // cmp ax, VIEW_H
+#endif
         uint8_t *below = jcc8(0x73);                 // jae below
         B(0x83); B(0xFE); B(1);                      // cmp si, 1
         uint8_t *app1 = jcc8(0x76);                  // jbe append
@@ -1515,7 +1523,11 @@ uint16_t drc_emit_ctl_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) {
         // at the start of line 168, main.c) the value for the next frame's
         // first line; before it, nothing
         land8(below);
+#ifdef GGSWAN_SMS
+        B(0x3B); B(0x06); W(VA(present_p1));         // cmp ax, [present + 1]
+#else
         B(0x3D); W(GG_PRESENT_LINE + 1 - GG_REC_Y);  // cmp ax, 169 - VIEW_Y
+#endif
         uint8_t *mid = jcc8(0x72);                   // jb done
         B(0x88); B(0x16); W(SA(rec_val));            // mov [rec_val], dl
         B(0xC6); B(0x06); W(SA(rec_n)); B(1);        // rec_n = 1

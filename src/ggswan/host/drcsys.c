@@ -160,7 +160,7 @@ static void render_line(uint16_t line) {
         uint8_t hscroll = (line < 16 && (reg[0] & 0x40)) ? 0 : reg[8];
         for (uint16_t x = 0; x < 256; x++) {
             uint16_t vs = ((x >> 3) >= 24 && (reg[0] & 0x80)) ? 0 : gg.vdp.vscroll_frame;
-            uint16_t y = (line + vs) % 224;
+            uint16_t y = (line + vs) % GG_NT_WRAP;
             uint8_t sx = (uint8_t) (x - hscroll);
             uint16_t ea = nt + ((y >> 3) * 32 + (sx >> 3)) * 2;
             uint16_t e = gg_vram[ea & 0x3FFF] | (gg_vram[(ea + 1) & 0x3FFF] << 8);
@@ -175,7 +175,7 @@ static void render_line(uint16_t line) {
         uint8_t height = (reg[1] & 0x02) ? 16 : 8, drawn = 0;
         for (uint8_t i = 0; i < 64 && drawn < 8; i++) {
             uint8_t sy = gg_vram[sat + i];
-            if (sy == 0xD0) break;
+            if (GG_SPR_END(sy)) break;
             int16_t top = sy + 1;
             if (top > 0xF0) top -= 256;
             if (line < top || line >= top + height) continue;
@@ -206,7 +206,7 @@ static void render_line(uint16_t line) {
             fb[line - GG_VIEW_Y][x][2] = ((c >> 8) & 0xF) * 17;
         }
 }
-void host_line_hook(uint16_t line) { if (line < GG_ACTIVE_LINES) render_line(line); }
+void host_line_hook(uint16_t line) { if (line < GG_ACTIVE) render_line(line); }
 
 /* drc_enter: Python runs the code (z80 and drc_st are mirrored in IRAM) */
 typedef void (*run_cb_t)(uint16_t offset);
@@ -273,7 +273,7 @@ void sys_frame(int keys) {
     // runs that stop at every line and runs that do not)
     uint8_t save[GG_VIEW_H][GG_VIEW_W][3];
     memcpy(save, fb, sizeof(fb));
-    for (uint16_t l = 0; l < GG_ACTIVE_LINES; l++) render_line(l);
+    for (uint16_t l = 0; l < GG_ACTIVE; l++) render_line(l);
     memcpy(fb_end, fb, sizeof(fb));
     memcpy(fb, save, sizeof(fb));
 }

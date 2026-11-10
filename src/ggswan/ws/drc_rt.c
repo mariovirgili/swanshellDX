@@ -263,7 +263,11 @@ static uint16_t put_line(uint8_t *stub) {
     BAIL(0x73);                                      // jae common
     PB(0x01); PB(0xF7);                              // add di, si
     PB(0x47);                                        // inc di (e + r + 1)
+#ifdef GGSWAN_SMS
+    PB(0x3B); PB(0x3E); PW(V_(present_m1));          // cmp di, [present - 1] (191 or 223)
+#else
     PB(0x81); PB(0xFF); PW(GG_PRESENT_LINE - 1);     // cmp di, 167
+#endif
     BAIL(0x73);                                      // jae common (next not in the view)
     PB(0x83); PB(0x3E); PW(V_(frame_given) + 2); PB(0);   // cmp word [frame_given + 2], 0
     BAIL(0x75);                                      // jne common
@@ -537,7 +541,7 @@ static uint16_t put_nt(uint8_t *stub, uint16_t at) {
     PB(0x24); PB(0xFE);                                  // and al, FEh (row * 2)
     for (uint8_t i = 0; i < 2; i++) {
         PB(0x89); PB(0xC7);                              // mov di, ax
-        PB(0x8B); PB(0xBD); PW(rows + i * 56);           // mov di, [di + rows]
+        PB(0x8B); PB(0xBD); PW(rows + i * 2 * DRC_NT_ROWS);   // mov di, [di + rows]
         PB(0x83); PB(0xFF); PB(0xFF);                    // cmp di, -1
         PB(0x74); PB(0x0F);                              // je +15 (none)
         PB(0x89); PB(0x91); PW(map1);                    // mov [bx + di + map1], dx
@@ -999,7 +1003,11 @@ static void vwait(uint16_t arg) {
         uint16_t line = pos / GG_CYCLES_PER_LINE;
         if (line > GG_LINES - 1)
             line = GG_LINES - 1;
+#ifdef GGSWAN_SMS
+        uint8_t vc = line > gg.vdp.vcnt_max ? line - 6 : line;
+#else
         uint8_t vc = line > 0xDA ? line - 6 : line;
+#endif
         uint8_t again = cc == 0 ? vc != n : cc == 1 ? vc == n : cc == 2 ? vc >= n : vc < n;
         if (!again || (di > 0 && (uint16_t) di > fg))
             break;

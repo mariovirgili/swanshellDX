@@ -34,7 +34,15 @@
 #ifndef GGSWAN_DRC_H_
 #define GGSWAN_DRC_H_
 
+#ifdef GGSWAN_SMS
+// (smsswan: 32 name table rows with 224 lines; the queue shorter, so that
+// drc_state_t still fits its 512 bytes)
+#define DRC_PSG_Q 168
+#define DRC_NT_ROWS 32
+#else
 #define DRC_PSG_Q 184  // PSG writes queued by the recompiled code (<= 255)
+#define DRC_NT_ROWS 28
+#endif
 
 #include <stdint.h>
 
@@ -69,7 +77,7 @@ typedef struct {
     uint8_t ram_fail;     // a block in RAM found its code changed
     uint8_t hs_last;      // main.c: VDP register 8 value of the last scroll
                           // split recorded (an equal write changes nothing)
-    uint16_t nt_rows[56]; // main.c: for each Game Gear name table row, the
+    uint16_t nt_rows[2 * DRC_NT_ROWS]; // main.c: for each Game Gear name table row, the
                           // byte offset of its first and (at 28 +) second
                           // row in the WS screen map, FFFFh: none
     // the line routine at the block exits (drc_rt.c, LINE stub):

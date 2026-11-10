@@ -114,6 +114,10 @@ void gg_remap(void) {
 
 /* === VDP === */
 
+#ifdef GGSWAN_SMS
+static void vdp_mode_update(void);
+#endif
+
 static inline void update_irq(void) {
     z80.irq = ((gg.vdp.status & 0x80) && (gg.vdp.reg[1] & 0x20))
         || (gg.vdp.line_pending && (gg.vdp.reg[0] & 0x10));
@@ -192,6 +196,10 @@ static void vdp_write_control(uint8_t v) {
             uint8_t old = gg.vdp.reg[r];
             gg.vdp.reg[r] = gg.vdp.latch;
             gg_platform_vdp_reg(r, gg.vdp.latch);
+#ifdef GGSWAN_SMS
+            if (r < 2)
+                vdp_mode_update();
+#endif
             // display turned on before the end of the view: shown this
             // frame even if off again at the end (Sonic, slow frames: off
             // at line 0 and at the end, on in between; see video_present)
@@ -249,10 +257,31 @@ uint16_t gg_current_line(void) {
     return l < GG_LINES ? l : GG_LINES - 1;
 }
 
+#ifdef GGSWAN_SMS
+// the 192 or 224 lines of the picture (mode 4; with M1 and M2, register 1
+// bit 4 and register 0 bit 1: 224 lines, the name table at x700h with 32
+// rows, frame interrupt at line 225, V counter 00-EA then E5-FF)
+static void vdp_mode_update(void) {
+    uint16_t a = ((gg.vdp.reg[0] & 0x02) && (gg.vdp.reg[1] & 0x10)) ? 224 : 192;
+    if (a == gg.vdp.active)
+        return;
+    gg.vdp.active = a;
+    gg.vdp.vcnt_max = a == 224 ? 0xEA : 0xDA;
+    gg.vdp.present_m1 = a - 1;
+    gg.vdp.present_p1 = a + 1;
+    z80_break = 1;                              // (the timing planned again)
+    gg_platform_vdp_reg(2, gg.vdp.reg[2]);      // (the name table moved)
+    gg_platform_vdp_reg(1, gg.vdp.reg[1]);      // (the sprites)
+}
+#define VCNT_MAX gg.vdp.vcnt_max
+#else
+#define VCNT_MAX 0xDA
+#endif
+
 static uint8_t vdp_vcounter(void) {
     // NTSC 192-line mode: 0x00-0xDA, then 0xD5-0xFF
     uint16_t l = gg_current_line();
-    return l <= 0xDA ? l : l - 6;
+    return l <= VCNT_MAX ? l : l - 6;
 }
 
 /* === I/O ports === */
@@ -361,6 +390,9 @@ void gg_reset(void) {
         map_slot(s);
     map_cart_ram();
     gg.frame = 0;
+#ifdef GGSWAN_SMS
+    vdp_mode_update();   // (192 lines)
+#endif
     gg.io_ctrl = 0xFF;   // (all inputs)
     z80_reset();
 }
@@ -373,7 +405,7 @@ static void vdp_line(uint16_t line) {
     }
 
     // line counter: counts down on lines 0-192, reloaded on the others
-    if (line <= GG_ACTIVE_LINES) {
+    if (line <= GG_ACTIVE) {
         if (gg.vdp.line_counter == 0) {
             gg.vdp.line_counter = gg.vdp.reg[10];
             gg.vdp.line_pending = 1;
@@ -385,7 +417,7 @@ static void vdp_line(uint16_t line) {
     }
 
     // frame interrupt
-    if (line == GG_ACTIVE_LINES + 1) {
+    if (line == GG_ACTIVE + 1) {
         gg.vdp.status |= 0x80;
         gg_diag_vbl();
     }
@@ -406,7 +438,7 @@ static void vdp_lines(uint16_t from, uint16_t to) {
     uint8_t c = gg.vdp.line_counter, r = gg.vdp.reg[10];
     // lines 0-192: the counter counts down, reloading (and requesting an
     // interrupt) on the line after it reached 0
-    uint16_t a_end = to < GG_ACTIVE_LINES + 1 ? to : GG_ACTIVE_LINES + 1;
+    uint16_t a_end = to < GG_ACTIVE + 1 ? to : GG_ACTIVE + 1;
     if (from < a_end) {
         uint16_t k = a_end - from;
         if (k > c) {
@@ -418,11 +450,11 @@ static void vdp_lines(uint16_t from, uint16_t to) {
         }
     }
     // the other lines reload it
-    if (to > GG_ACTIVE_LINES + 1)
+    if (to > GG_ACTIVE + 1)
         c = r;
     gg.vdp.line_counter = c;
     // frame interrupt
-    uint8_t end = from <= GG_ACTIVE_LINES + 1 && to > GG_ACTIVE_LINES + 1;
+    uint8_t end = from <= GG_ACTIVE + 1 && to > GG_ACTIVE + 1;
     if (end) {
         gg.vdp.status |= 0x80;
         gg_diag_vbl();
@@ -441,9 +473,9 @@ static uint16_t next_event(uint16_t l) {
     uint16_t e = GG_LINES;
     if (l <= GG_PRESENT_LINE)
         e = GG_PRESENT_LINE;       // the frame presented
-    else if (l <= GG_ACTIVE_LINES + 1)
-        e = GG_ACTIVE_LINES + 1;   // frame interrupt
-    if ((gg.vdp.reg[0] & 0x10) && l <= GG_ACTIVE_LINES) {
+    else if (l <= GG_ACTIVE + 1)
+        e = GG_ACTIVE + 1;   // frame interrupt
+    if ((gg.vdp.reg[0] & 0x10) && l <= GG_ACTIVE) {
         // the line counter reaches zero at the start of line l + counter
         uint16_t u = l + gg.vdp.line_counter;
         if (u < e)
@@ -489,10 +521,10 @@ static int32_t event_step(uint16_t pos) {
      * them on the Game Gear too).
      */
     if ((gg.vdp.reg[0] & 0x10) && z80.iff1 && !gg.vdp.line_pending
-            && started <= GG_ACTIVE_LINES) {
+            && started <= GG_ACTIVE) {
         uint16_t l1 = started + gg.vdp.line_counter;   // the line that requests it
         uint16_t at = l1 * (uint16_t) GG_CYCLES_PER_LINE;
-        if (l1 <= GG_ACTIVE_LINES && pos >= at && pos - at >= GG_IRQ_LATE) {
+        if (l1 <= GG_ACTIVE && pos >= at && pos - at >= GG_IRQ_LATE) {
             frame_given -= pos - at;
             gg.vdp.irq_debt += pos - at;
             pos = at;
@@ -504,8 +536,8 @@ static int32_t event_step(uint16_t pos) {
     // the cycles not counted above are taken back below the view, where
     // nothing is shown (after the frame was presented, up to line 192: the
     // frame interrupt stays on time); what is left, at the end of the frame
-    if (gg.vdp.irq_debt && started > GG_PRESENT_LINE && started <= GG_ACTIVE_LINES) {
-        uint16_t lim = GG_ACTIVE_LINES * (uint16_t) GG_CYCLES_PER_LINE;
+    if (gg.vdp.irq_debt && started > GG_PRESENT_LINE && started <= GG_ACTIVE) {
+        uint16_t lim = GG_ACTIVE * (uint16_t) GG_CYCLES_PER_LINE;
         if (pos < lim) {
             uint16_t t = lim - pos;
             if (t > gg.vdp.irq_debt)

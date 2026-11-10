@@ -55,7 +55,7 @@ static void render_line(uint16_t line) {
         for (uint16_t x = 0; x < 256; x++) {
             uint8_t col = x >> 3;
             uint16_t vs = (col >= 24 && (reg[0] & 0x80)) ? 0 : gg.vdp.vscroll_frame;
-            uint16_t y = (line + vs) % 224;
+            uint16_t y = (line + vs) % GG_NT_WRAP;
             uint8_t sx = (uint8_t) (x - hscroll);
             uint16_t e_addr = nt + ((y >> 3) * 32 + (sx >> 3)) * 2;
             uint16_t e = gg_vram[e_addr & 0x3FFF] | (gg_vram[(e_addr + 1) & 0x3FFF] << 8);
@@ -75,7 +75,7 @@ static void render_line(uint16_t line) {
         uint8_t used[256] = {0};
         for (uint8_t i = 0; i < 64 && drawn < 8; i++) {
             uint8_t sy = gg_vram[sat + i];
-            if (sy == 0xD0)
+            if (GG_SPR_END(sy))
                 break;
             int16_t top = sy + 1;
             if (top > 0xF0) top -= 256;
@@ -134,7 +134,7 @@ static void render_line(uint16_t line) {
 
 
 void host_line_hook(uint16_t line) {
-    if (line < GG_ACTIVE_LINES)
+    if (line < GG_ACTIVE)
         render_line(line);
 }
 

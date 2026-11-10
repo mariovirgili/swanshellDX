@@ -187,7 +187,14 @@ spr_build:
     jae .Lspr_done
     lodsb                       // y
     cmp al, 0xD0
+#ifdef GGSWAN_SMS
+    jne .Lspr_go
+    cmp byte ptr [spr_224], 0   // (224 lines: D0h does not end the list)
     je .Lspr_done
+.Lspr_go:
+#else
+    je .Lspr_done
+#endif
 #ifdef GGSWAN_SMS
     inc al
     cmp byte ptr [spr_sq], 0
