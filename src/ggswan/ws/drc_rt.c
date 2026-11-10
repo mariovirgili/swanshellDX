@@ -1036,6 +1036,77 @@ uint8_t drc_rt_test_banks(void) {
     return 0;
 }
 
+/* === Benchmark (diagnostics): IRAM against the PSRAM code cache === */
+
+#ifndef GGSWAN_HOST
+
+// the bodies: a mix like translated code (add bx,dx; mov al,[bx];
+// mov [E7F0h],al; sub word [E7F2h],5; jle $+2; mov ah,al), a chain of
+// short jumps, a chain of near jumps
+static const uint8_t bench_mix[] = { 0x01, 0xD3, 0x8A, 0x07, 0xA2, 0xF0, 0xE7,
+    0x83, 0x2E, 0xF2, 0xE7, 0x05, 0x7E, 0x00, 0x88, 0xC4 };
+static const uint8_t bench_jmp8[] = { 0xEB, 0x00 };
+static const uint8_t bench_jmp16[] = { 0xE9, 0x00, 0x00 };
+
+#define BENCH_IRAM 0xE400u    // (free IRAM: E400h-E7FFh)
+#define BENCH_OFF 0xF000u     // in code bank 0
+
+static uint16_t bench_build(uint8_t *b, const uint8_t *body, uint8_t len, uint8_t copies, uint16_t n) {
+    uint8_t *p = b;
+    *p++ = 0x50; *p++ = 0x53; *p++ = 0x51; *p++ = 0x52;   // push ax, bx, cx, dx
+    *p++ = 0xB9; *p++ = n; *p++ = n >> 8;                 // mov cx, n
+    uint8_t *loop = p;
+    for (uint8_t i = 0; i < copies; i++)
+        for (uint8_t j = 0; j < len; j++)
+            *p++ = body[j];
+    *p++ = 0x49;                                          // dec cx
+    *p++ = 0x74; *p++ = 3;                                // jz done
+    uint16_t rel = (uint16_t) (loop - (p + 3));
+    *p++ = 0xE9; *p++ = rel; *p++ = rel >> 8;             // jmp loop
+    *p++ = 0x5A; *p++ = 0x59; *p++ = 0x5B; *p++ = 0x58;   // done: pop...
+    *p++ = 0xCB;                                          // retf
+    return (uint16_t) (p - b);
+}
+
+static uint16_t bench_time(uint16_t seg, uint16_t off) {
+    uint16_t fp[2] = { off, seg };
+    ia16_disable_irq();
+    outportb(WS_TIMER_CTRL_PORT, WS_TIMER_CTRL_HBL_DISABLE);
+    outportw(WS_TIMER_HBL_RELOAD_PORT, 0xFFFF);   // (also sets the counter)
+    outportb(WS_TIMER_CTRL_PORT, WS_TIMER_CTRL_HBL_ONESHOT);
+    __asm__ volatile ("lcall *%0" : : "m" (fp) : "ax", "bx", "cx", "dx", "memory");
+    uint16_t left = inportw(WS_TIMER_HBL_COUNTER_PORT);
+    outportb(WS_TIMER_CTRL_PORT, WS_TIMER_CTRL_HBL_DISABLE);
+    ia16_enable_irq();
+    return 0xFFFF - left;
+}
+
+/// Run the same code from IRAM and from the PSRAM code cache: out[2 * i]
+/// and out[2 * i + 1] are the lines (256 cycles each) for test i (0: mix
+/// like translated code, 1: short jumps, 2: near jumps). Call before
+/// translating anything (it uses code bank 0 at F000h).
+void drc_rt_bench(uint16_t *out) {
+    static uint8_t b[300];
+    static const struct { const uint8_t *body; uint8_t len, copies; uint16_t n; } t[3] = {
+        { bench_mix, sizeof(bench_mix), 16, 8000 },
+        { bench_jmp8, sizeof(bench_jmp8), 64, 8000 },
+        { bench_jmp16, sizeof(bench_jmp16), 64, 8000 },
+    };
+    for (uint8_t i = 0; i < 3; i++) {
+        uint16_t len = bench_build(b, t[i].body, t[i].len, t[i].copies, t[i].n);
+        memcpy((uint8_t*) BENCH_IRAM, b, len);
+        psram_write(0, BENCH_OFF, b, len);
+        out[2 * i] = bench_time(0x0000, BENCH_IRAM);
+        out[2 * i + 1] = bench_time(DRC_CODE_SEG, BENCH_OFF);
+    }
+    // (also at IRAM E7E0h, after the marker 'BENC', for a debugger)
+    uint16_t *r = (uint16_t*) 0xE7E0;
+    r[0] = 0x4542; r[1] = 0x434E;
+    for (uint8_t i = 0; i < 6; i++)
+        r[2 + i] = out[i];
+}
+#endif
+
 /* === Self-check (diagnostics): every block is also run by the interpreter === */
 
 uint8_t drc_check;

@@ -68,6 +68,8 @@ uint16_t ws_map1_iram(void);
 void ws_ram_window_restore(void);
 /// check the PSRAM banks of the recompiler (0: all right)
 uint8_t drc_rt_test_banks(void);
+/// Diagnostics: the same code timed in IRAM and in PSRAM (see drc_rt.c)
+void drc_rt_bench(uint16_t *out);
 /// cycles left in the current run (for gg_cpu_left)
 int32_t drc_cycles_left(void);
 /// drc_enter: after the code returns, a line event handled at once (see

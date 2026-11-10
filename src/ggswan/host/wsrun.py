@@ -174,6 +174,17 @@ def h_code(uc, addr, size, ud):
         if i >= 0 and addr < blk_info[i][0]:
             blk_c[blk_info[i][1]] += c
             if DUMPB: dump_n[addr] += 1
+            if LINKX:
+                b = bytes(uc.mem_read(addr - 2, 7))
+                if b[2] == 0xE9 and b[5:7] == b'\x90\x90':
+                    d = ((addr + 3 + (b[3] | b[4] << 8)) & 0xFFFF) - (addr & 0xFFFF)
+                    if d > 0x7FFF: d -= 0x10000
+                    if d < -0x8000: d += 0x10000
+                    kind = 'plain' if b[0:2] == b'\x7E\x05' else 'guarded'
+                    link_c[kind, 'rel8' if -128 <= d <= 127 else 'near'] += 1
+                    link_sites[addr] += 1
+                elif b[2] == 0xEA: link_c['plain' if b[0:2] == b'\x7E\x05' else 'guarded', 'far'] += 1
+                elif b[2:4] == b'\xEB\x03' and b[4:7] == b'\x90\x90\x90': link_c['unlinked', '-'] += 1
             if MNEM:
                 # WSRUN_MNEM: the translated blocks' instructions by kind
                 code = bytes(uc.mem_read(addr, size))
@@ -185,7 +196,7 @@ def h_code(uc, addr, size, ud):
                 mn_c[k] += c
         else:
             o = addr & 0xFFFF
-            if STUBX and 0x240 <= o < 0x540: stub_n[o] += 1
+            if STUBX and 0x40 <= o < 0xB88: stub_n[o] += 1
             blk_c[next((n for lo, hi, n in STUBS if lo <= o < hi), 'unmapped')] += c
     fn_c[fname(addr)] += c
     if FOCUS and fname(addr) == FOCUS: focus_c[addr] += c
@@ -198,6 +209,7 @@ counts = collections.Counter(); di_c = collections.Counter()
 blk_c = collections.Counter(); blk_starts = []; blk_info = []; last_tr = [None]
 PSW = syms['psram_write']
 STUBX = os.environ.get('WSRUN_STUBX'); stub_n = collections.Counter()
+LINKX = os.environ.get('WSRUN_LINKX'); link_c = collections.Counter(); link_sites = collections.Counter()
 DUMPB = os.environ.get('WSRUN_DUMPBLK'); dump_n = collections.Counter()
 MNEM = os.environ.get('WSRUN_MNEM'); mn_c = collections.Counter(); mn_cache = {}
 import re as _re
@@ -242,10 +254,21 @@ def report(fr):
                     for i in md.disasm(code, st):
                         print('      %05X %7d  %s %s' % (i.address, dump_n[i.address], i.mnemonic, i.op_str))
         dump_n.clear()
+    if LINKX:
+        tot = sum(link_c.values()) or 1
+        print('   link jumps a frame: ' + ', '.join('%s/%s %.0f (%d%%)' % (k[0], k[1], v / EVERY, 100 * v // tot) for k, v in link_c.most_common()))
+        print('   link sites run: %d, top 20 take %d%%' % (len(link_sites), 100 * sum(v for _, v in link_sites.most_common(20)) // max(1, sum(link_sites.values()))))
+        link_c.clear(); link_sites.clear()
     if STUBX:
-        code = bytes(uc.mem_read(0x40240, 0x300))
-        for i in md.disasm(code, 0x240):
-            print('      %04X %7d  %s %s' % (i.address, stub_n[i.address], i.mnemonic, i.op_str))
+        nfr = max(1, EVERY)
+        for lo, hi, nm in STUBS:
+            if lo < 0x40 or not any(stub_n[a] for a in range(lo, hi)): continue
+            tot = sum(stub_n[a] for a in range(lo, hi))
+            print('   stub %s: %.0f instr a frame' % (nm, tot / nfr))
+            if STUBX == 'all' or STUBX == nm:
+                code = bytes(uc.mem_read(0x40000 + lo, hi - lo))
+                for i in md.disasm(code, lo):
+                    if stub_n[i.address]: print('      %04X %9.1f  %s %s' % (i.address, stub_n[i.address] / nfr, i.mnemonic, i.op_str))
         stub_n.clear()
     ph_c.clear(); fn_c.clear(); tr_pcs.clear()
     sys.stdout.flush()

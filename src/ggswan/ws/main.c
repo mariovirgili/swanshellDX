@@ -1634,6 +1634,17 @@ int main(void) {
         uint8_t bad = drc_rt_test_banks();
         if (bad)
             fail("BANK TEST", bad);
+        // X3 (X down) held: time the same code in IRAM and in PSRAM
+        if (ws_keypad_scan() & WS_KEY_X3) {
+            uint16_t r[6];
+            drc_rt_bench(r);
+            text_print("BENCH IRAM/PSRAM LINES");
+            text_hex("MIX IRAM", r[0]); text_hex("MIX PSRAM", r[1]);
+            text_hex("JMP8 IRAM", r[2]); text_hex("JMP8 PSRAM", r[3]);
+            text_hex("JMP16 IRAM", r[4]); text_hex("JMP16 PSRAM", r[5]);
+            text_print("PRESS A");
+            while (!(ws_keypad_scan() & WS_KEY_A)) {}
+        }
         gg_cpu_run = drc_z80_run;
         gg_cpu_left = drc_cycles_left;
         show_stats = true;
