@@ -2145,6 +2145,21 @@ static int emit(int i) {
                 B(0x88); B(0xA7); W(env->ram_delta);  // mov [bx + ram], ah
                 B(0x24); B(0x0F);                     // and al, 0Fh
             }
+            if (!(live_out[i] & FALL)) {
+                // flags dead after it (Sailor Moon S: RRD / OR C): A only
+                B(0x81); B(0xE7); W(0x00F0);          // and di, 00F0h (A high)
+                B(0x09); B(0xF8);                     // or ax, di (AH: stale flags)
+                B(0x83); B(0x2E); W(SA(cycles)); B(18);   // sub word [cycles], 18
+                uint8_t *j4 = jcc8(0xEB);
+                land8(j1); land8(j2);
+                B(0xC7); B(0x06); W(SA(arg)); W(I->pc);
+                B(0xC6); B(0x06); W(SA(val)); B(1);
+                helper(DRC_H_STEP);
+                land8(j4);
+                hl_es = 0;
+                fkind = K_AH;
+                return 1;
+            }
             B(0x89); B(0xFE);                         // mov si, di
             B(0x81); B(0xE6); W(0x00F0);              // and si, 00F0h (A high)
             B(0x09); B(0xF0);                         // or ax, si
