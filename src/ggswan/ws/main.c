@@ -546,6 +546,18 @@ GGSWAN_HOST_VISIBLE volatile uint8_t act_line[MAX_SPLITS], act_val[MAX_SPLITS], 
 // end of the screen, like act_val[0]: no tear while the WS draws)
 static volatile uint8_t act_vy;
 static volatile uint8_t act_i;
+// the splits and the Y scroll of the frame just presented, waiting for the
+// end of the WS screen (pend_n: 0 none). They replaced the active list at
+// once, in the middle of the WS screen being drawn, whose line interrupts
+// went on with the new list from where they were in the old one: the new
+// values on the old list's lines (or the rest skipped, a shorter list),
+// for one WS screen: the road and the status bar of Super Monaco GP
+// jerking sideways now and then, half a screen of it.
+#ifndef GGSWAN_HOST
+static uint8_t pend_line[MAX_SPLITS], pend_val[MAX_SPLITS];
+static volatile uint8_t pend_n;
+#endif
+static uint8_t next_vy;
 // a Game Gear frame presented (video_present) and not shown yet: the line
 // interrupt at the end of the WS screen clears it
 static volatile uint8_t frame_waiting;
@@ -800,6 +812,16 @@ void line_irq(void) {
     }
     for (;;) {
         if (i == 0) {
+            // the list of the frame presented, if one waits
+            if (pend_n) {
+                for (uint8_t k = 0; k < pend_n; k++) {
+                    act_line[k] = pend_line[k];
+                    act_val[k] = pend_val[k];
+                }
+                act_n = pend_n;
+                act_vy = next_vy;
+                pend_n = 0;
+            }
             // values for the first line of the next screen, first (the
             // scroll must not wait for the VRAM writes); then the VRAM
             // writes of the frame presented
@@ -862,15 +884,25 @@ static void splits_commit(void) {
 #ifndef GGSWAN_HOST
     uint16_t f = irq_save();   // (video_present calls it with interrupts off)
 #endif
+#ifndef GGSWAN_HOST
+    // (to the line interrupt at the end of the WS screen)
+    for (uint8_t i = 0; i < rec_n; i++) {
+        pend_line[i] = rec_line[i];
+        pend_val[i] = rec_val[i];
+    }
+    pend_n = rec_n;
+#else
     for (uint8_t i = 0; i < rec_n; i++) {
         act_line[i] = rec_line[i];
         act_val[i] = rec_val[i];
     }
     act_n = rec_n;
-    if (act_n > diag_splits)
-        diag_splits = act_n;
-    if (act_n > 1) {
-        diag_split_line = act_line[1];
+    act_vy = next_vy;
+#endif
+    if (rec_n > diag_splits)
+        diag_splits = rec_n;
+    if (rec_n > 1) {
+        diag_split_line = rec_line[1];
         diag_regs = (gg.vdp.reg[0] << 8) | gg.vdp.reg[10];
         // (Sonic: D2DC the line-interrupt line, D241 its state)
         diag_ram = (gg_ram[0x12DC] << 8) | gg_ram[0x1241];
@@ -880,8 +912,6 @@ static void splits_commit(void) {
         diag_fg = drc_st.diag_fg;
         diag_left = drc_st.diag_left;
     }
-    if (act_i > act_n)
-        act_i = act_n;
 #ifndef GGSWAN_HOST
     irq_restore(f);
 #endif
@@ -1117,7 +1147,7 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
     uint16_t vy = s;
     while (vy < map_top * 8u)
         vy += 224;   // (virtual rows: the same Game Gear row 28 later)
-    act_vy = vy & 0xFF;
+    next_vy = vy & 0xFF;
     if (vy > map_top * 8u + (256 - GG_VIEW_H - 8)) {
 #ifdef GGSWAN_HOST
         if (getenv("GGSWAN_RELAYSTAT"))
@@ -1134,13 +1164,14 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
         map_relayout((s >> 3) + 28 - 6);
         vy = s + 224;
         // (the map changed now: its scroll too)
-        act_vy = vy & 0xFF;
+        next_vy = vy & 0xFF;
+        act_vy = next_vy;
         outportb(0x11, act_vy);
         if (drc_st.prio_on)
             outportb(0x13, act_vy);
     }
 #ifdef GGSWAN_HOST
-    outportb(0x11, act_vy);   // (the PC tests have no WS raster)
+    outportb(0x11, next_vy);   // (the PC tests have no WS raster)
 #endif
     vp_lap(VP_MAP);
     // the sprite table first (built, not given to the WS yet)
