@@ -638,12 +638,19 @@ void gg_platform_cram_write(uint8_t i) {
 void gg_platform_vdp_reg(uint8_t r, uint8_t v) {
     switch (r) {
     case 2:
+        // (tile bytes still in the logs may be in the new name table: to
+        // VRAM first, so that map_relayout reads them; the log copy does
+        // not update the map)
+        if ((uint16_t) ((v & 0x0E) << 10) != nt_base)
+            gg_platform_vram_sync();
         nt_base = (v & 0x0E) << 10;
         drc_st.nt_base = nt_base;
         vram_class_update();
         map_relayout(map_top);
         break;
     case 5:
+        if ((uint16_t) ((v & 0x7E) << 7) != sat_base)
+            gg_platform_vram_sync();
         sat_base = (v & 0x7E) << 7;
         drc_st.sat_base = sat_base;
         vram_class_update();
@@ -830,7 +837,7 @@ void line_irq(void) {
 
 static void splits_commit(void) {
 #ifndef GGSWAN_HOST
-    ia16_disable_irq();
+    uint16_t f = irq_save();   // (video_present calls it with interrupts off)
 #endif
     for (uint8_t i = 0; i < rec_n; i++) {
         act_line[i] = rec_line[i];
@@ -853,7 +860,7 @@ static void splits_commit(void) {
     if (act_i > act_n)
         act_i = act_n;
 #ifndef GGSWAN_HOST
-    ia16_enable_irq();
+    irq_restore(f);
 #endif
 }
 
@@ -1089,8 +1096,14 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
         uint16_t f = irq_save();
         uint8_t l = inportb(WS_DISPLAY_LINE_PORT);
         if (l < GG_VIEW_H - 3 || l > GG_VIEW_H) {
+            // the scroll (splits) and frame_waiting in the same step: the
+            // end-of-screen interrupt could otherwise come in between and
+            // show the new tiles and sprites with the old scroll, and clear
+            // frame_waiting before it was set (ChatGPT's review of 89-98)
             log_present();
             sprites_publish();
+            splits_commit();
+            frame_waiting = 1;
             irq_restore(f);
             break;
         }
@@ -1099,8 +1112,8 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
 #else
     log_present();
     sprites_publish();
-#endif
     splits_commit();
+#endif
     // record the next frame: it starts with the current value
     rec_val[0] = 16 - gg.vdp.reg[8];
     rec_n = 1;
@@ -1120,7 +1133,9 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
         outportb(0x01, 0x10 | (reg[7] & 0x0F));       // backdrop color
         outportb(0x00, 0x02 | 0x10 | 0x20);
     }
+#ifdef GGSWAN_HOST
     frame_waiting = 1;
+#endif
     vp_mark = vp_start;
     vp_lap(VP_ALL);
     prof_phase = PROF_OTHER;

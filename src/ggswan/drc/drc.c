@@ -764,8 +764,11 @@ uint16_t drc_emit_run_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
             n1 = jcc8(0x75);                         // jnz nofast (wrap)
             B(0xF6); B(0xC2); B(0x08);               // test dl, 8
             uint8_t *live = jcc8(0x74);              // jz live
-            B(0xF6); B(0xC2); B(0x02);               // test dl, 2
-            n3 = jcc8(0x75);                         // jnz nofast (sprite table)
+            B(0xF6); B(0xC2); B(0x03);               // test dl, 3
+            n3 = jcc8(0x75);                         // jnz nofast (sprite table,
+                                                     // or a run from tile data into
+                                                     // the name table: the log copy
+                                                     // does not update the map)
             B(0x89); B(0xFA);                        // mov dx, di (k)
             B(0x03); B(0x16); W(SA(log_top));        // add dx, [log_top]
             B(0x83); B(0xC2); B(0x03);               // add dx, 3
@@ -1549,6 +1552,7 @@ static void inc_dec_flags(uint8_t dec, uint8_t live_c) {
 
 static int idle_body(const ins_t *I) {
     uint8_t op = I->op;
+    if (I->step) return 0;   // (interpreted: not known to be harmless)
     if (I->pre == 0xCB) return op >= 0x40 && op < 0x80;          // BIT b,r / (HL)
     if (I->pre == 0xDD || I->pre == 0xFD) {
         // BIT b,(IX+d) (Sonic waits for its frame interrupt with
@@ -1644,7 +1648,16 @@ static int idle_rest(int n) {
 static void idle_exit(uint16_t target, uint16_t extra) {
     materialize();
     sub_cycles(cyc + extra);
-    B(0x7E); B(0x06);                         // jle +6
+    if (idle_block == 2) {
+        // DI ... EI / JP: an interrupt already waiting is taken right after
+        // the EI's next instruction, not at the next event (ChatGPT's
+        // review of 89-98)
+        B(0x7E); B(0x0D);                     // jle +13
+        B(0x80); B(0x3E); W(ZA(irq)); B(0);   // cmp byte [irq], 0
+        B(0x75); B(0x06);                     // jne +6
+    } else {
+        B(0x7E); B(0x06);                     // jle +6
+    }
     B(0xC7); B(0x06); W(SA(cycles)); W(0);    // mov word [cycles], 0
     B(0xC7); B(0x06); W(ZA(pc)); W(target);
     set_link(0);
