@@ -6,7 +6,7 @@ emulated by a dynamic recompiler (Z80 to V30MZ code), with the original
 interpreter kept for the parts that need it. The Game Gear video memory is
 mapped onto the WonderSwan's own tile and screen hardware.
 
-Status: fairly stable (patch 126). It has been tested mostly in the
+Status: fairly stable (patch 127). It has been tested mostly in the
 nileswan-medem emulator and with the host test tools; tests on real
 hardware are still to come.
 
@@ -172,8 +172,8 @@ the picture while playing. The background priority is always on.
 Mappers: Sega's, and Codemasters' (found from the cartridge header).
 
 Not done: the 224-line mode (Codemasters games use it: Micro Machines
-runs, with the picture cut), register 0's fixed scroll areas (bits 6
-and 7), the sprite overflow and collision flags, the limit of 8
+runs, with the picture cut), register 0 bit 7 (the right columns not
+scrolled up and down), the sprite overflow and collision flags, the limit of 8
 sprites a line, FM sound, a second joypad, PAL timing.
 
 ## Changelog
@@ -276,7 +276,7 @@ it are listed in order without one.
 - lighter DYN lookup and class routine for deferred tile bytes
 - OUTI runs to CRAM handled in the run routine
 
-### Patches 90-126
+### Patches 90-127
 
 | Patch | Change |
 |---|---|
@@ -317,3 +317,4 @@ it are listed in order without one.
 | 124 | smsswan, step 3: the Pause button (START, a non-maskable interrupt) |
 | 125 | smsswan, steps 5 and 6: the view moved with the Y buttons, diagnostics with Y1 at the start, the Codemasters mapper |
 | 126 | smsswan: the whole picture squeezed vertically (START + Y3), an experiment; the scroll list prepared with interrupts on |
+| 127 | smsswan: the first 16 lines not scrolled sideways (register 0 bit 6: Wonder Boy III's status bar) |

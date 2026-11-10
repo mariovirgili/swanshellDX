@@ -959,8 +959,33 @@ static uint8_t cv_line[MAX_EVENTS], cv_val[MAX_EVENTS], cv_y[MAX_EVENTS], cv_n, 
 static uint8_t view_sq;   // (the frame being presented: video_present)
 static void splits_convert(void) {
     uint8_t dx = gg_view_x - 16, vy = gg_view_y, n = 1;
+    // the list over the picture's lines: as recorded, or, with register 0
+    // bit 6 (the first 16 lines not scrolled sideways: Wonder Boy III's
+    // status bar at the top), scroll 0 from line 0 and the value that
+    // holds at line 16 from there
+    static uint8_t pl_line[MAX_SPLITS + 1], pl_val[MAX_SPLITS + 1];
+    uint8_t pn = 1;
+    pl_val[0] = rec_val[0];
+    if (gg.vdp.reg[0] & 0x40) {
+        uint8_t i = 1, cur = rec_val[0];
+        while (i < rec_n && rec_line[i] <= 16)
+            cur = rec_val[i++];
+        pl_val[0] = 16;           // (16 - 0)
+        pl_line[1] = 16;
+        pl_val[1] = cur;
+        pn = 2;
+        for (; i < rec_n; i++) {
+            pl_line[pn] = rec_line[i];
+            pl_val[pn++] = rec_val[i];
+        }
+    } else {
+        for (uint8_t i = 1; i < rec_n; i++) {
+            pl_line[pn] = rec_line[i];
+            pl_val[pn++] = rec_val[i];
+        }
+    }
     cv_line[0] = 0;
-    cv_val[0] = rec_val[0] + dx;
+    cv_val[0] = pl_val[0] + dx;
     cv_sq = view_sq;
     if (view_sq) {
         // WS line L shows picture line L + L / 3: a split at picture line
@@ -968,8 +993,8 @@ static void splits_convert(void) {
         uint8_t x = cv_val[0], j = 1;
         for (uint8_t l = 1; l < GG_VIEW_H; l++) {
             uint8_t ev = (l % 3) == 0;
-            while (j < rec_n && (uint8_t) ((rec_line[j] * 3u + 3) >> 2) <= l) {
-                x = rec_val[j++] + dx;
+            while (j < pn && (uint8_t) ((pl_line[j] * 3u + 3) >> 2) <= l) {
+                x = pl_val[j++] + dx;
                 ev = 1;
             }
             if (ev && n < MAX_EVENTS) {
@@ -982,13 +1007,13 @@ static void splits_convert(void) {
         cv_n = n;
         return;
     }
-    for (uint8_t i = 1; i < rec_n; i++) {
-        uint8_t y = rec_line[i];
+    for (uint8_t i = 1; i < pn; i++) {
+        uint8_t y = pl_line[i];
         if (y <= vy) {
-            cv_val[0] = rec_val[i] + dx;
+            cv_val[0] = pl_val[i] + dx;
         } else if ((uint8_t) (y - vy) < GG_VIEW_H) {
             cv_line[n] = y - vy;
-            cv_val[n] = rec_val[i] + dx;
+            cv_val[n] = pl_val[i] + dx;
             n++;
         }
     }

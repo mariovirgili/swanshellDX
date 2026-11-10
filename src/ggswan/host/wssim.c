@@ -252,6 +252,7 @@ int main(int argc, char **argv) {
             if (!comma) break;
             k = comma + 1;
         }
+        if (getenv("GGSWAN_R0")) gg.vdp.reg[0] |= strtol(getenv("GGSWAN_R0"), NULL, 16);   // (tests: register 0 bits forced)
         gg_run_frame();   // (video_present at line 168)
         if (every && (fr + 1) % every == 0) {
             ws_render();
