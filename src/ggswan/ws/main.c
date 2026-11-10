@@ -1542,7 +1542,23 @@ GGSWAN_HOST_VISIBLE void read_keys(void) {
     if (k & WS_KEY_X2) g |= GG_KEY_RIGHT;
     if (k & WS_KEY_B) g |= GG_KEY_1;
     if (k & WS_KEY_A) g |= GG_KEY_2;
+#ifdef GGSWAN_SMS
+    // START is the Pause button, pressed for the game when it is let go
+    // (one frame: gg_run_frame takes the edge) unless Y1 (Y up) was held
+    // with it: START + Y1 goes back to the menu
+    {
+        static uint8_t start_held, start_y1;
+        if (k & WS_KEY_START) {
+            if (!start_held) { start_held = 1; start_y1 = 0; }
+            if (k & WS_KEY_Y1) start_y1 = 1;
+        } else {
+            if (start_held && !start_y1) g |= GG_KEY_START;
+            start_held = 0;
+        }
+    }
+#else
     if (k & WS_KEY_START) g |= GG_KEY_START;
+#endif
     gg.keys = g;
 }
 

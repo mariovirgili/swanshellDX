@@ -85,6 +85,7 @@ static uint8_t cache_bank;   // code bank being filled (0..DRC_CODE_BANKS-1)
 static uint16_t cache_top;
 static uint8_t victim;
 static uint16_t pending_link, pending_seg;   // exit to link to the next block
+static uint16_t run_pc;   // pc when drc_z80_run last returned
 static drc_env_t env;
 uint32_t drc_stat_blocks, drc_stat_flushes, drc_stat_interp, drc_stat_irq;
 uint16_t drc_diag_irq_line;   // (diagnostics: the line of the last interrupt taken in C)
@@ -1385,6 +1386,10 @@ int32_t drc_z80_run(int32_t cycles) {
 #endif
     prof_phase = PROF_DISPATCH;
     z80.cycles += cycles;
+    // (pc changed outside: smsswan's Pause, a non-maskable interrupt
+    // between two frames; the last block's exit must not be linked to it)
+    if (z80.pc != run_pc)
+        pending_link = 0;
     drc_st.nolink = drc_no_links;
     // IN from 00h and DCh in the generated code (z80_in's values)
     drc_st.keys_in[0] = ((gg.keys & GG_KEY_START) ? 0x00 : 0x80) | 0x40;
@@ -1574,6 +1579,7 @@ int32_t drc_z80_run(int32_t cycles) {
             check_end(pc, start - drc_st.cycles);
         z80.cycles -= start - drc_st.cycles;
     }
+    run_pc = z80.pc;
     prof_phase = PROF_OTHER;
     return z80.cycles;
 }

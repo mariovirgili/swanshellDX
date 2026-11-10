@@ -6,7 +6,7 @@ emulated by a dynamic recompiler (Z80 to V30MZ code), with the original
 interpreter kept for the parts that need it. The Game Gear video memory is
 mapped onto the WonderSwan's own tile and screen hardware.
 
-Status: fairly stable (patch 123). It has been tested mostly in the
+Status: fairly stable (patch 124). It has been tested mostly in the
 nileswan-medem emulator and with the host test tools; tests on real
 hardware are still to come.
 
@@ -269,7 +269,7 @@ it are listed in order without one.
 - lighter DYN lookup and class routine for deferred tile bytes
 - OUTI runs to CRAM handled in the run routine
 
-### Patches 90-123
+### Patches 90-124
 
 | Patch | Change |
 |---|---|
@@ -307,3 +307,4 @@ it are listed in order without one.
 | 121 | a frame's scroll list starts at the end of the WS screen, with its tiles and sprites (half the screen jerking sideways for an instant) |
 | 122 | a scroll split's line interrupt no longer lost when its line starts while it is being set (half the screen jerking sideways for an instant) |
 | 123 | the map laid out again after the end of the WS screen, ahead of the raster (Sonic: a few rows jumping when the camera moves up or down) |
+| 124 | smsswan, step 3: the Pause button (START, a non-maskable interrupt) |

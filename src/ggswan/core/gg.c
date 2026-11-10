@@ -544,6 +544,18 @@ int16_t gg_fast_line(int16_t left) {
 }
 
 void gg_run_frame(void) {
+#ifdef GGSWAN_SMS
+    // the Pause button (GG_KEY_START in gg.keys): a non-maskable interrupt
+    // when it is pressed, here between two frames (the CPU state is all
+    // in z80, also with the recompiler: nothing to stop inside a block)
+    {
+        static uint8_t pause_was;
+        uint8_t p = gg.keys & GG_KEY_START;
+        if (p && !pause_was)
+            z80_nmi();
+        pause_was = p;
+    }
+#endif
     set_started(0);
     // (left = z80.cycles, so the frame starts frame_carry cycles in)
     frame_given = (int32_t) frame_carry + (gg_cpu_left ? gg_cpu_left() : z80.cycles);
