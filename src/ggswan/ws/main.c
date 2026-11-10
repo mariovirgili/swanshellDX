@@ -1558,6 +1558,7 @@ static volatile uint16_t prof_count[PROF_COUNT];
  * again; while it is stopped, Y3 (Y down) runs one frame. The Game Gear
  * has no Y buttons: the game sees none of this.
  */
+static void put_value(uint8_t row, uint8_t col, char label, uint32_t v);
 static uint16_t step_keys = 0xFFFF;   // (keys held from the start: not presses)
 static uint8_t step_paused;
 static uint16_t step_pressed(void) {
@@ -1582,6 +1583,15 @@ static void exit_check(void) {
     outportb(WS_SDMA_CTRL_PORT, 0);
     outportb(WS_SOUND_CH_CTRL_PORT, 0);
     outportb(WS_DISPLAY_CTRL_PORT, 0);
+    // the cartridge as the menu's own soft reset finds it: the RAM window
+    // back on SRAM, no SPI device selected, cartridge features as at power
+    // on (the plugin set them for the Game Gear)
+    outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_DISABLE);
+    outportw(WS_CART_EXTBANK_RAM_PORT, 0);
+    outportw(WS_CART_EXTBANK_ROM0_PORT, 0xFFFF);
+    outportw(WS_CART_EXTBANK_ROM1_PORT, 0xFFFF);
+    outportw(IO_NILE_SPI_CNT, NILE_SPI_CLOCK_CART | NILE_SPI_DEV_NONE);
+    outportb(IO_NILE_EMU_CNT, 0);
     nile_soft_reset();
 }
 
@@ -1594,8 +1604,13 @@ static void frame_step(void) {
         return;
     outportb(WS_SOUND_CH_CTRL_PORT, 0);   // (sound off while stopped)
     for (;;) {
-        while (inportb(WS_DISPLAY_LINE_PORT) != 144) {}
-        while (inportb(WS_DISPLAY_LINE_PORT) == 144) {}
+        // the Game Gear frame number (left border, F: last 3 digits)
+        put_value(3, 0, 'F', gg.frame % 1000);
+        // a WS frame (the vblank count: polling the line counter for 144
+        // missed it, the line and vblank interrupts being served there)
+        uint8_t v = vblanks;
+        while (vblanks == v)
+            __asm__ volatile ("hlt");
         p = step_pressed();
         if ((p & STEP_PAUSE) && (step_keys & STEP_PAUSE) == STEP_PAUSE) {
             step_paused = 0;   // go on

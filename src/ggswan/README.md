@@ -6,7 +6,7 @@ emulated by a dynamic recompiler (Z80 to V30MZ code), with the original
 interpreter kept for the parts that need it. The Game Gear video memory is
 mapped onto the WonderSwan's own tile and screen hardware.
 
-Status: fairly stable (patch 116). It has been tested mostly in the
+Status: fairly stable (patch 117). It has been tested mostly in the
 nileswan-medem emulator and with the host test tools; tests on real
 hardware are still to come.
 
@@ -63,7 +63,7 @@ of the recompiler is behind a problem.
 | Keys | Function |
 |---|---|
 | Y2 (Y right) + Y4 (Y left) together | **Pause** (sound off) and resume: frame by frame, like Mednafen's Alt+A. |
-| Y3 (Y down), while paused | Runs **one frame**, then pauses again. |
+| Y3 (Y down), while paused | Runs **one frame**, then pauses again. While paused, `F` in the left border shows the Game Gear frame number (last 3 digits). |
 | START + Y1 (Y up), held for a second | **Back to the menu** (the cartridge RAM is then saved: see below). |
 
 ## Saves
@@ -247,7 +247,7 @@ it are listed in order without one.
 - lighter DYN lookup and class routine for deferred tile bytes
 - OUTI runs to CRAM handled in the run routine
 
-### Patches 90-116
+### Patches 90-117
 
 | Patch | Change |
 |---|---|
@@ -278,3 +278,4 @@ it are listed in order without one.
 | 114 | RRD / RLD without flags when nothing reads them |
 | 115 | tile bytes appended to the log inside the block |
 | 116 | START + Y1 held for a second goes back to the menu; cartridge RAM saved to .sav by the menu |
+| 117 | frame by frame fixed (the pause waited for a line it never saw), frame number F while paused; cartridge reset before the soft reset to the menu |
