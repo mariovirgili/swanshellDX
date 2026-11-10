@@ -996,12 +996,12 @@ static void sprites_publish(void) {
  * the name table entry: in front of the sprites; Sonic Spinball's tubes
  * hide Sonic), inside the 160x144 view, scrolling with screen 1; or the
  * borders' black mask and the diagnostics, outside the view (the default;
- * Y1 (Y up) pressed in the game switches, and back: with the priority the
- * borders show the map around the view). The WS has no priority per
- * tile: screen 2,
+ * Y1 (Y up) held at the start for the priority: the borders then show the
+ * map around the view, no diagnostics). The WS has no priority per tile:
+ * screen 2,
  * whose sprites are all behind it, is the only layer in front of them.
  */
-static uint8_t prio_wanted;   // (the PC tests: GGSWAN_PRIO)
+static uint8_t prio_wanted;   // (main: Y1 held; the PC tests: GGSWAN_PRIO)
 static void screen2_mode(uint8_t prio) {
     drc_st.prio_on = prio;
     if (prio) {
@@ -1429,14 +1429,9 @@ GGSWAN_HOST_VISIBLE void sound_init(void) {
 
 /* === Input === */
 
-static uint16_t keys_before = 0xFFFF;   // (a key held from the start: not a press)
-
 GGSWAN_HOST_VISIBLE void read_keys(void) {
     uint16_t k = ws_keypad_scan();
-    // Y1 (Y up) pressed: background priority on screen 2, and off again
-    if ((k & ~keys_before) & WS_KEY_Y1)
-        screen2_mode(!drc_st.prio_on);
-    keys_before = k;
+
 
     uint8_t g = 0;
     if (k & WS_KEY_X1) g |= GG_KEY_UP;
@@ -1546,14 +1541,6 @@ void drc_check_failed(uint16_t pc, const z80_t *before, const z80_t *drc,
     v[0] = gg.mapper[0]; v[1] = gg.mapper[1]; v[2] = gg.mapper[2]; v[3] = gg.mapper[3];
     hex_line("MAP", v, 4);
     while (1) {}
-}
-
-// the interpreter, marked for the profiler
-static int32_t interp_run(int32_t cycles) {
-    prof_phase = PROF_INTERP;
-    int32_t r = z80_run(cycles);
-    prof_phase = PROF_OTHER;
-    return r;
 }
 
 static volatile uint8_t vblanks;
@@ -1765,11 +1752,14 @@ int main(void) {
     uint16_t banks = load_rom();
     text_hex("BANKS", banks);
 
-    // CPU: the recompiler, or the interpreter if Y1 is held
+    // Y1 (Y up) held: background priority on screen 2 (see screen2_mode;
+    // it used to select the interpreter, no longer needed)
     if (ws_keypad_scan() & WS_KEY_Y1) {
-        text_print("CPU: INTERPRETER");
-        gg_cpu_run = interp_run;
-    } else {
+        prio_wanted = 1;
+        text_print("BACKGROUND PRIORITY");
+    }
+    // CPU: the recompiler
+    {
         // the code cache: the PSRAM bank behind linear segment DRC_CODE_SEG
         uint16_t code_bank = (((uint16_t) inportb(0xC0 /* linear bank */) << 4)
             | (DRC_CODE_SEG >> 12)) & (old_mask & NILE_SEG_MASK_ROM_MASK);
