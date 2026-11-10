@@ -188,7 +188,12 @@ spr_build:
     lodsb                       // y
     cmp al, 0xD0
     je .Lspr_done
+#ifdef GGSWAN_SMS
+    inc al
+    sub al, byte ptr [gg_view_y]   // the WS row (the view moves)
+#else
     add al, 1 - 24              // the WS row
+#endif
     mov ah, al
     sub ah, 144
     cmp ah, dh

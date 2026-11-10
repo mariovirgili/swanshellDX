@@ -6,7 +6,7 @@ emulated by a dynamic recompiler (Z80 to V30MZ code), with the original
 interpreter kept for the parts that need it. The Game Gear video memory is
 mapped onto the WonderSwan's own tile and screen hardware.
 
-Status: fairly stable (patch 124). It has been tested mostly in the
+Status: fairly stable (patch 125). It has been tested mostly in the
 nileswan-medem emulator and with the host test tools; tests on real
 hardware are still to come.
 
@@ -147,27 +147,33 @@ interrupts a second).
 - `host/`: PC test tools (comparison against the interpreter and a
   reference renderer, cycle profiling in an x86 emulator).
 
-## smsswan: the Master System plugin (in progress)
+## smsswan: the Master System plugin
 
 `PLUG_SMS.BIN` is built from the same sources with `-DGGSWAN_SMS`
 (`make -f Makefile.ggswan SMS=1`; the main build makes both plugins).
 Copy it to `/NILESWAN/PLUG_SMS.BIN`: the menu starts it for `.sms`
-files, with the same `.sav` saves and the same START + Y1 (Y up) exit.
+files, with the same `.sav` saves. What is written above for the Game
+Gear holds, with these differences.
 
-The Master System shows the whole 256x192 picture; the WonderSwan shows
-224x144 of it (columns 16-239, lines 24-167) on its whole screen, with
-the background priority always on (screen 2 holds the priority tiles,
-so there are no borders and no diagnostics on screen).
+The Master System shows a 256x192 picture; the WonderSwan shows 224x144
+of it on its whole screen (no borders), and the view can be moved over
+the picture while playing. The background priority is always on.
 
-Done: two plugins from one source tree, the Master System view,
-sprites and screen 2 over the whole WonderSwan screen, `.sms` in the
-menu, the host tools (`make sms` in `host/`) (patch 118); the Master
-System palette (32 colors of 6 bits) and ports (3E, 3F with the TH
-lines for the region check, DC, DD) (patch 120). Still to do, in this
-order: the Pause button (an NMI, from START), register 0's fixed scroll
-areas and the sprite status flags, moving the view over the picture and
-diagnostics on sprites, the Codemasters mapper. Controls are the Game
-Gear's (B is button 1, A is button 2); a second joypad is not there.
+| Keys | Function |
+|---|---|
+| X1-X4, B, A | D-pad, button 1, button 2 (joypad 1; there is no second joypad) |
+| START | The **Pause** button (sent to the game when START is let go) |
+| Y1 (Y up), Y3 (Y down), Y4 (Y left), Y2 (Y right) | **Move the view** over the picture, 2 pixels a frame (X 0-32, Y 0-48; it starts in the middle). Not into the first 8 columns while the game blanks them. |
+| Y2 (Y right) + Y4 (Y left) together | Pause and resume, frame by frame with Y3 (Y down), as on the Game Gear |
+| START + Y1 (Y up), held for a second | Back to the menu |
+| Y1 (Y up) held at the start | **Diagnostics** over the sides of the picture (the same numbers as in the Game Gear's borders) instead of the background priority |
+
+Mappers: Sega's, and Codemasters' (found from the cartridge header).
+
+Not done: the 224-line mode (Codemasters games use it: Micro Machines
+runs, with the picture cut), register 0's fixed scroll areas (bits 6
+and 7), the sprite overflow and collision flags, the limit of 8
+sprites a line, FM sound, a second joypad, PAL timing.
 
 ## Changelog
 
@@ -269,7 +275,7 @@ it are listed in order without one.
 - lighter DYN lookup and class routine for deferred tile bytes
 - OUTI runs to CRAM handled in the run routine
 
-### Patches 90-124
+### Patches 90-125
 
 | Patch | Change |
 |---|---|
@@ -308,3 +314,4 @@ it are listed in order without one.
 | 122 | a scroll split's line interrupt no longer lost when its line starts while it is being set (half the screen jerking sideways for an instant) |
 | 123 | the map laid out again after the end of the WS screen, ahead of the raster (Sonic: a few rows jumping when the camera moves up or down) |
 | 124 | smsswan, step 3: the Pause button (START, a non-maskable interrupt) |
+| 125 | smsswan, steps 5 and 6: the view moved with the Y buttons, diagnostics with Y1 at the start, the Codemasters mapper |

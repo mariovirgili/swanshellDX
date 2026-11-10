@@ -747,7 +747,7 @@ static void hscroll_write(uint8_t value) {
     if (v == rec_val[rec_n - 1])
         return;
     uint16_t line = gg_current_line() + 1;
-    if (line <= GG_VIEW_Y) {
+    if (line <= GG_REC_Y) {
         rec_val[0] = v;   // before the view: the value for its first line
         rec_n = 1;
         drc_st.hs_last = value;
@@ -761,8 +761,8 @@ static void hscroll_write(uint8_t value) {
         drc_st.hs_last = value;
         return;
     }
-    uint16_t y = line - GG_VIEW_Y;
-    if (y >= GG_VIEW_H || v == rec_val[rec_n - 1])
+    uint16_t y = line - GG_REC_Y;
+    if (y >= GG_REC_H || v == rec_val[rec_n - 1])
         return;
     // (diagnostics, as the generated routine)
     drc_st.diag_fg = (uint16_t) gg.vdp.frame_given;
@@ -917,23 +917,56 @@ void line_irq(void) {
 }
 #endif
 
+#ifdef GGSWAN_SMS
+// smsswan: the splits were recorded over the whole picture (lines 0-191,
+// with the view in the middle, X 16); here for the view where it is now:
+// those above it give its first line's value, those below it are dropped
+static uint8_t cv_line[MAX_SPLITS], cv_val[MAX_SPLITS], cv_n;
+static void splits_convert(void) {
+    uint8_t dx = gg_view_x - 16, vy = gg_view_y, n = 1;
+    cv_line[0] = 0;
+    cv_val[0] = rec_val[0] + dx;
+    for (uint8_t i = 1; i < rec_n; i++) {
+        uint8_t y = rec_line[i];
+        if (y <= vy) {
+            cv_val[0] = rec_val[i] + dx;
+        } else if ((uint8_t) (y - vy) < GG_VIEW_H) {
+            cv_line[n] = y - vy;
+            cv_val[n] = rec_val[i] + dx;
+            n++;
+        }
+    }
+    cv_n = n;
+}
+#define SPL_LINE cv_line
+#define SPL_VAL cv_val
+#define SPL_N cv_n
+#else
+#define SPL_LINE rec_line
+#define SPL_VAL rec_val
+#define SPL_N rec_n
+#endif
+
 static void splits_commit(void) {
+#ifdef GGSWAN_SMS
+    splits_convert();
+#endif
 #ifndef GGSWAN_HOST
     uint16_t f = irq_save();   // (video_present calls it with interrupts off)
 #endif
 #ifndef GGSWAN_HOST
     // (to the line interrupt at the end of the WS screen)
-    for (uint8_t i = 0; i < rec_n; i++) {
-        pend_line[i] = rec_line[i];
-        pend_val[i] = rec_val[i];
+    for (uint8_t i = 0; i < SPL_N; i++) {
+        pend_line[i] = SPL_LINE[i];
+        pend_val[i] = SPL_VAL[i];
     }
-    pend_n = rec_n;
+    pend_n = SPL_N;
 #else
-    for (uint8_t i = 0; i < rec_n; i++) {
-        act_line[i] = rec_line[i];
-        act_val[i] = rec_val[i];
+    for (uint8_t i = 0; i < SPL_N; i++) {
+        act_line[i] = SPL_LINE[i];
+        act_val[i] = SPL_VAL[i];
     }
-    act_n = rec_n;
+    act_n = SPL_N;
     act_vy = next_vy;
 #endif
     if (rec_n > diag_splits)
@@ -983,7 +1016,7 @@ NILEDBG_API_TABLE;   // (filled in by niledebug's injector)
 #endif
 
 #ifndef GGSWAN_HOST
-uint8_t spr_par[4], spr_cnt;   // (spr_build's)
+uint8_t spr_par[4], spr_cnt;   // (spr_build's; smsswan: gg_view_y too)
 uint8_t *spr_build(const uint8_t *sat, uint8_t *table);
 #endif
 static uint8_t spr_port04, spr_count, spr_ready;
@@ -1073,9 +1106,13 @@ static void sprites_publish(void) {
  * borders), so no diagnostics there either.
  */
 #ifdef GGSWAN_SMS
-#define prio_wanted 1
+// (smsswan: Y1 held at the start turns it off, for the diagnostics, shown
+// over the picture's sides: screen 2 empty but for the text)
+static uint8_t prio_wanted = 1;
+#define SCR2_OUTSIDE 0
 #else
 static uint8_t prio_wanted;   // (main: Y1 held; the PC tests: GGSWAN_PRIO)
+#define SCR2_OUTSIDE 0x10     // (screen 2 shown outside its window)
 #endif
 static void screen2_mode(uint8_t prio) {
     drc_st.prio_on = prio;
@@ -1085,7 +1122,11 @@ static void screen2_mode(uint8_t prio) {
         outportb(0x13, inportb(0x11));
     } else {
         for (uint16_t i = 0; i < 32 * 32; i++)
+#ifdef GGSWAN_SMS
+            map2[i] = WS_PRIO_BLANK;
+#else
             map2[i] = TILE_ENTRY(MASK_TILE) | PAL_ENTRY(MASK_PALETTE);
+#endif
         outportb(0x12, 0);
         outportb(0x13, 0);
     }
@@ -1107,8 +1148,18 @@ GGSWAN_HOST_VISIBLE void video_init(void) {
         t[r * 4 + 1] = t[r * 4 + 2] = t[r * 4 + 3] = 0;
     }
     memset(TILE_PTR(1023), 0, 32);
-#if defined(GGSWAN_HOST) && !defined(GGSWAN_SMS)
+#ifdef GGSWAN_HOST
+#ifdef GGSWAN_SMS
+    // (the PC tests: GGSWAN_NOPRIO, and GGSWAN_PAN=x,y for the view)
+    prio_wanted = getenv("GGSWAN_NOPRIO") == NULL;
+    if (getenv("GGSWAN_PAN")) {
+        int px = 16, py = 24;
+        sscanf(getenv("GGSWAN_PAN"), "%d,%d", &px, &py);
+        gg_view_x = px; gg_view_y = py;
+    }
+#else
     prio_wanted = getenv("GGSWAN_PRIO") != NULL;
+#endif
 #endif
     screen2_mode(prio_wanted);
     WS_DISPLAY_COLOR_MEM(MASK_PALETTE)[1] = 0x000;
@@ -1179,6 +1230,15 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
     pcm_frame();
     vp_lap(VP_PSG);
 
+#ifdef GGSWAN_SMS
+    // register 0 bit 5: the picture's first 8 columns are blanked (games
+    // that scroll sideways hide the column being redrawn): the view does
+    // not go there
+    if ((reg[0] & 0x20) && gg_view_x < 8) {
+        gg_view_x = 8;
+        drc_st.sprites_dirty = 1;
+    }
+#endif
     // vertical: the Game Gear view starts at row (24 + vscroll) mod 224
     uint16_t s = (GG_VIEW_Y + gg.vdp.vscroll_frame) % 224;
     uint16_t vy = s;
@@ -1287,10 +1347,10 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
         outportb(0x01, backdrop_palette << 4);        // backdrop: color 0
         // (screen 2: the tiles with priority inside the view, or the
         // borders' mask and diagnostics outside it)
-        outportb(0x00, 0x01 | 0x02 | 0x04 | 0x20 | (drc_st.prio_on ? 0 : 0x10));
+        outportb(0x00, 0x01 | 0x02 | 0x04 | 0x20 | (drc_st.prio_on ? 0 : SCR2_OUTSIDE));
     } else {
         outportb(0x01, 0x10 | (reg[7] & 0x0F));       // backdrop color
-        outportb(0x00, drc_st.prio_on ? 0 : 0x02 | 0x10 | 0x20);
+        outportb(0x00, drc_st.prio_on ? 0 : 0x02 | SCR2_OUTSIDE | 0x20);
     }
 #ifdef GGSWAN_HOST
     frame_waiting = 1;
@@ -1531,8 +1591,29 @@ GGSWAN_HOST_VISIBLE void sound_init(void) {
 
 /* === Input === */
 
+#if defined(GGSWAN_SMS) && !defined(GGSWAN_HOST)
+static uint8_t step_paused;   // (frame by frame: below)
+#endif
 GGSWAN_HOST_VISIBLE void read_keys(void) {
     uint16_t k = ws_keypad_scan();
+#if defined(GGSWAN_SMS) && !defined(GGSWAN_HOST)
+    // smsswan: the Y buttons move the 224x144 view over the 256x192
+    // picture, 2 pixels a frame (not with START held: START + Y1 is the
+    // way out; not Y2 and Y4 together nor while stopped: frame by frame)
+    if (!(k & WS_KEY_START) && !step_paused
+            && (k & (WS_KEY_Y2 | WS_KEY_Y4)) != (WS_KEY_Y2 | WS_KEY_Y4)) {
+        uint8_t x = gg_view_x, y = gg_view_y;
+        if ((k & WS_KEY_Y1) && y >= 2) y -= 2;
+        if ((k & WS_KEY_Y3) && y <= GG_VIEW_Y_MAX - 2) y += 2;
+        if ((k & WS_KEY_Y4) && x >= 2) x -= 2;
+        if ((k & WS_KEY_Y2) && x <= GG_VIEW_X_MAX - 2) x += 2;
+        if (x != gg_view_x || y != gg_view_y) {
+            gg_view_x = x;
+            gg_view_y = y;
+            drc_st.sprites_dirty = 1;
+        }
+    }
+#endif
 
 
     uint8_t g = 0;
@@ -1949,9 +2030,16 @@ int main(void) {
     uint16_t banks = load_rom();
     text_hex("BANKS", banks);
 
-#ifndef GGSWAN_SMS
+#ifdef GGSWAN_SMS
+    // Y1 (Y up) held: the diagnostics instead of the background priority
+    // (both use screen 2)
+    if (ws_keypad_scan() & WS_KEY_Y1) {
+        prio_wanted = 0;
+        text_print("DIAGNOSTICS, NO PRIORITY");
+    }
+#else
     // Y1 (Y up) held: background priority on screen 2 (see screen2_mode;
-    // it used to select the interpreter, no longer needed; smsswan: always)
+    // it used to select the interpreter, no longer needed)
     if (ws_keypad_scan() & WS_KEY_Y1) {
         prio_wanted = 1;
         text_print("BACKGROUND PRIORITY");

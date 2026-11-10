@@ -11,6 +11,9 @@
 #include "z80.h"
 
 gg_t gg;
+#ifdef GGSWAN_SMS
+uint8_t gg_view_x = 16, gg_view_y = 24;
+#endif
 // the CPU core: the interpreter, or the recompiler's z80_run equivalent
 int32_t (*gg_cpu_run)(int32_t cycles) = z80_run;
 const uint8_t GGFAR *gg_slot[3];
@@ -49,7 +52,7 @@ static void map_cart_ram(void) {
 uint8_t z80_read(uint16_t a) {
     if (a >= 0xC000)
         return gg_ram[a & 0x1FFF];
-    if (a < 0x0400) {
+    if (a < 0x0400 && !gg.codemasters) {
         // the first KiB is always bank 0 (interrupt vectors)
         return rom_first_kb[a];
     }
@@ -65,7 +68,7 @@ const uint8_t GGFAR *z80_read_span(uint16_t a, uint16_t *len) {
         *len = 0x2000 - (a & 0x1FFF);
         return gg_ram + (a & 0x1FFF);
     }
-    if (a < 0x0400) {
+    if (a < 0x0400 && !gg.codemasters) {
         *len = 0x0400 - a;
         return rom_first_kb + a;
     }
@@ -78,7 +81,7 @@ const uint8_t GGFAR *z80_read_span(uint16_t a, uint16_t *len) {
 void z80_write(uint16_t a, uint8_t v) {
     if (a >= 0xC000) {
         gg_ram[a & 0x1FFF] = v;
-        if (a >= 0xFFFC) {
+        if (a >= 0xFFFC && !gg.codemasters) {
             uint8_t r = a - 0xFFFC;
             gg.mapper[r] = v;
             if (r == 0)
@@ -88,6 +91,14 @@ void z80_write(uint16_t a, uint8_t v) {
         }
         return;
     }
+#ifdef GGSWAN_SMS
+    // the Codemasters mapper: the bank of each slot written at its start
+    if (gg.codemasters && !(a & 0x3FFF)) {
+        gg.mapper[1 + (a >> 14)] = v;
+        map_slot(a >> 14);
+        return;
+    }
+#endif
     if (a >= 0x8000 && cart_ram)
         cart_ram[a & 0x3FFF] = v;
     // writes to ROM are ignored
@@ -184,7 +195,7 @@ static void vdp_write_control(uint8_t v) {
             // display turned on before the end of the view: shown this
             // frame even if off again at the end (Sonic, slow frames: off
             // at line 0 and at the end, on in between; see video_present)
-            if (r == 1 && (gg.vdp.latch & 0x40) && gg_current_line() < GG_VIEW_Y + GG_VIEW_H)
+            if (r == 1 && (gg.vdp.latch & 0x40) && gg_current_line() < GG_PRESENT_LINE)
                 gg.vdp.reg1_frame |= 0x40;
             update_irq();
             // interrupt settings changed: plan the timing again (the same
@@ -328,6 +339,19 @@ void gg_reset(void) {
     gg.mapper[1] = 0;
     gg.mapper[2] = 1;
     gg.mapper[3] = 2;
+    gg.codemasters = 0;
+#ifdef GGSWAN_SMS
+    if (gg.rom_banks >= 2) {
+        // a Codemasters cartridge: its header at 7FE0h has a checksum
+        // (7FE6h) and, at 7FE8h, 10000h minus it; slots 0, 1, 0 at reset
+        const uint8_t GGFAR *b1 = gg_platform_bank(1, 1);
+        uint16_t sum = b1[0x3FE6] | (b1[0x3FE7] << 8), inv = b1[0x3FE8] | (b1[0x3FE9] << 8);
+        if (sum && (uint16_t) (sum + inv) == 0) {
+            gg.codemasters = 1;
+            gg.mapper[3] = 0;
+        }
+    }
+#endif
     {
         const uint8_t GGFAR *b0 = gg_platform_bank(0, 0);
         for (uint16_t i = 0; i < 0x400; i++)

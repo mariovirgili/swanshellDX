@@ -1490,15 +1490,15 @@ uint16_t drc_emit_ctl_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) {
         B(0x76); B(0x03);                            // jbe +3
         B(0xB8); W(GG_LINES - 1);                    // mov ax, 261
         B(0x40);                                     // inc ax (the next line)
-        B(0x3D); W(GG_VIEW_Y);                       // cmp ax, VIEW_Y
+        B(0x3D); W(GG_REC_Y);                        // cmp ax, VIEW_Y
         uint8_t *inview = jcc8(0x77);                // ja inview
         // before the view: the value for its first line
         B(0x88); B(0x16); W(SA(rec_val));            // mov [rec_val], dl
         B(0xC6); B(0x06); W(SA(rec_n)); B(1);        // rec_n = 1
         uint8_t *last1 = jcc8(0xEB);                 // jmp set_last
         land8(inview);
-        B(0x2D); W(GG_VIEW_Y);                       // sub ax, VIEW_Y (y)
-        B(0x3D); W(GG_VIEW_H);                       // cmp ax, VIEW_H
+        B(0x2D); W(GG_REC_Y);                        // sub ax, VIEW_Y (y)
+        B(0x3D); W(GG_REC_H);                        // cmp ax, VIEW_H
         uint8_t *below = jcc8(0x73);                 // jae below
         B(0x83); B(0xFE); B(1);                      // cmp si, 1
         uint8_t *app1 = jcc8(0x76);                  // jbe append
@@ -1515,7 +1515,7 @@ uint16_t drc_emit_ctl_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) {
         // at the start of line 168, main.c) the value for the next frame's
         // first line; before it, nothing
         land8(below);
-        B(0x3D); W(GG_PRESENT_LINE + 1 - GG_VIEW_Y); // cmp ax, 169 - VIEW_Y
+        B(0x3D); W(GG_PRESENT_LINE + 1 - GG_REC_Y);  // cmp ax, 169 - VIEW_Y
         uint8_t *mid = jcc8(0x72);                   // jb done
         B(0x88); B(0x16); W(SA(rec_val));            // mov [rec_val], dl
         B(0xC6); B(0x06); W(SA(rec_n)); B(1);        // rec_n = 1
@@ -1735,6 +1735,10 @@ static void decode(uint16_t pc, ins_t *I) {
                           if (y == 4 || y == 6) {
                               // LD (nn),HL / LD (nn),A: a mapper write ends the block
                               if (I->nn >= 0xFFFC - (y == 4)) I->term = T_END_AFTER;
+#ifdef GGSWAN_SMS
+                              // (the Codemasters mapper's: 0000h, 4000h, 8000h)
+                              if (!(I->nn & 0x3FFF) && I->nn < 0xC000) I->term = T_END_AFTER;
+#endif
                           } }
             return;
         case 3: return;                                       // INC/DEC rr

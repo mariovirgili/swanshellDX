@@ -26,11 +26,19 @@
 // smsswan (PLUG_SMS.BIN: these sources built with -DGGSWAN_SMS): the
 // Master System shows all of the 256x192 picture, the WS 224x144 of it,
 // on its whole screen
-#define GG_VIEW_X 16
-#define GG_VIEW_Y 24
+// on its whole screen: a view that can be moved over the picture (X 0-32,
+// Y 0-48; 16, 24 at the start: the middle)
+extern uint8_t gg_view_x, gg_view_y;
+#define GG_VIEW_X gg_view_x
+#define GG_VIEW_Y gg_view_y
+#define GG_VIEW_X_MAX 32
+#define GG_VIEW_Y_MAX 48
 #define GG_VIEW_W 224
 #define GG_VIEW_H 144
 #define WS_VIEW_ORIGIN_X 0      // the WS column where the view starts
+// scroll splits are recorded over the whole picture (the view moves)
+#define GG_REC_Y 0
+#define GG_REC_H GG_ACTIVE_LINES
 #else
 // the Game Gear shows a 160x144 window of the 256x192 picture
 #define GG_VIEW_X 48
@@ -38,18 +46,21 @@
 #define GG_VIEW_W 160
 #define GG_VIEW_H 144
 #define WS_VIEW_ORIGIN_X 32     // the WS column where the view starts
-#endif
-// WS column x shows picture column x + 16 in both (the horizontal scroll
-// is 16 - register 8: main.c hscroll_write, the CTL routine in drc.c; the
-// sprites' X offset)
+// scroll splits are recorded over the lines of the view
+#define GG_REC_Y GG_VIEW_Y
+#define GG_REC_H GG_VIEW_H
+// WS column x shows picture column x + 16 (the horizontal scroll is 16 -
+// register 8: main.c hscroll_write, the CTL routine in drc.c; the
+// sprites' X offset; smsswan: the same with its view in the middle, the
+// rest added when the frame is presented)
 #if GG_VIEW_X - WS_VIEW_ORIGIN_X != 16
 #error "the view must start 16 columns to the right of its WS column"
 #endif
+#endif
 // the frame is presented at the start of this line, right after the last
-// line the Game Gear shows (gg_platform_frame_end); smsswan: the same 168
-// while its view does not move (moving it is for later: then 192, the
-// end of the picture, as ChatGPT's review of the plan suggests)
-#define GG_PRESENT_LINE (GG_VIEW_Y + GG_VIEW_H)
+// line the Game Gear shows, 168 (gg_platform_frame_end); smsswan: 192,
+// the end of the picture, wherever the view is
+#define GG_PRESENT_LINE (GG_REC_Y + GG_REC_H)
 
 // Joypad bits (1 = pressed)
 #define GG_KEY_UP    0x01
@@ -95,6 +106,7 @@ typedef struct {
     uint16_t rom_banks;     // 16 KiB banks in the ROM
     uint32_t frame;
     uint8_t io_ctrl;        // smsswan: port 3Fh (I/O control: TH/TR direction and level)
+    uint8_t codemasters;    // smsswan: the Codemasters mapper (banks written at 0000h, 4000h, 8000h)
 } gg_t;
 
 extern gg_t gg;
