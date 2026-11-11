@@ -6,7 +6,7 @@ emulated by a dynamic recompiler (Z80 to V30MZ code), with the original
 interpreter kept for the parts that need it. The Game Gear video memory is
 mapped onto the WonderSwan's own tile and screen hardware.
 
-Status: fairly stable (patch 134). It has been tested mostly in the
+Status: fairly stable (patch 135). It has been tested mostly in the
 nileswan-medem emulator and with the host test tools; tests on real
 hardware are still to come.
 
@@ -284,7 +284,7 @@ it are listed in order without one.
 - lighter DYN lookup and class routine for deferred tile bytes
 - OUTI runs to CRAM handled in the run routine
 
-### Patches 90-134
+### Patches 90-135
 
 | Patch | Change |
 |---|---|
@@ -333,3 +333,4 @@ it are listed in order without one.
 | 132 | the loop OUTI / JR NZ (OTIR written as a loop: Shinobi, Columns, Alex Kidd) sent to VRAM in one go |
 | 133 | Sonic while playing: name table entries from two OUTIs in their own routine, nothing done for bytes already there, a single LDI and sprite table bytes without a routine call (about 14% less time a frame) |
 | 134 | routines for a tile row sent as OUTI x 3 + OUT (Sonic's own tiles) and for a name table entry sent as OUTI + OUT (Columns: its wells, 59 k cycles a frame to 37 k) |
+| 135 | an OUTI alone through the single write's code, sprite table words in the entry routine, name table runs already in VRAM skipped (Super Monaco GP II); wsrun counts cycles as Mednafen does |

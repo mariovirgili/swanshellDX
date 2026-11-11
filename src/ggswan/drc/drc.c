@@ -666,31 +666,46 @@ uint16_t drc_emit_cls_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) {
  * table routine), or nothing at all when it is the one already there (the
  * screen map is the one of VRAM as it is), then address, read buffer,
  * latch, HL, B as two OUTIs leave them; CF = 0, AH = the last byte (as
- * the run routine). Anything else: CF = 1, nothing done (the caller uses
- * the run routine). Uses SI, DI, ES.
+ * the run routine). The same for two bytes of the sprite table (a
+ * sprite's X and tile: Super Monaco GP II sends its 64 this way on every
+ * frame), stored with sprites_dirty set, or nothing when they are there
+ * already. Anything else: CF = 1, nothing done (the caller uses the run
+ * routine). Uses SI, DI, ES.
  */
 uint16_t drc_emit_ntw_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, uint16_t *entry_a) {
     env = e;
     o = o_start = out; o_base = out_off;
     uint8_t *f[5]; uint8_t nf = 0;
+    // (fail first, the jumps to it go backwards; the entry at + DRC_NTW_ENTRY)
+    uint8_t *fail = o;
+    B(0xF9);                                         // fail: stc
+    B(0xC3);                                         // ret
+#ifdef GGSWAN_HOST
+#define NFAIL(op) do { if (o + 2 - fail > 128) { extern void abort(void); abort(); } \
+        B(op); B((uint8_t) (fail - (o + 1))); } while (0)
+#else
+#define NFAIL(op) do { B(op); B((uint8_t) (fail - (o + 1))); } while (0)
+#endif
     B(0x89); B(0xCE);                                // mov si, cx
     B(0x81); B(0xE6); W(0x00C1);                     // and si, C1h
     B(0x81); B(0xFE); W(0x0080);                     // cmp si, 80h (port BEh)
-    f[nf++] = jcc8(0x75);                            // jne fail
+    NFAIL(0x75);                                      // jne fail
     B(0x80); B(0x3E); W(VA(code)); B(3);             // cmp byte [code], 3
-    f[nf++] = jcc8(0x74);                            // je fail (CRAM)
+    NFAIL(0x74);                                      // je fail (CRAM)
     B(0x8B); B(0x3E); W(VA(addr));                   // mov di, [addr]
     B(0x81); B(0xE7); W(0x3FFF);                     // and di, 3FFFh
     B(0xF7); B(0xC7); W(0x0001);                     // test di, 1
-    f[nf++] = jcc8(0x75);                            // jnz fail (not a whole entry)
+    NFAIL(0x75);                                      // jnz fail (not a whole entry)
     B(0x89); B(0xFE);                                // mov si, di
     B(0xC1); B(0xEE); B(0x08);                       // shr si, 8
     B(0x80); B(0xBC); W(SA(vram_class)); B(1);       // cmp byte [si + class], 1
-    f[nf++] = jcc8(0x75);                            // jne fail
+    B(0x74); B(0x07);                                // je +7 (the name table)
+    B(0x80); B(0xBC); W(SA(vram_class)); B(2);       // cmp byte [si + class], 2
+    NFAIL(0x75);                                      // jne fail (not the sprite table either)
     B(0x89); B(0xDE);                                // mov si, bx
     B(0x81); B(0xE6); W(0x1FFF);                     // and si, 1FFFh
     B(0x81); B(0xFE); W(0x1FFE);                     // cmp si, 1FFEh
-    f[nf++] = jcc8(0x77);                            // ja fail (the page ends)
+    NFAIL(0x77);                                      // ja fail (the page ends)
     B(0x89); B(0xDE);                                // mov si, bx
     B(0xC1); B(0xC6); B(0x04);                       // rol si, 4
     B(0x83); B(0xE6); B(0x0E);                       // and si, 14
@@ -706,16 +721,22 @@ uint16_t drc_emit_ntw_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
     uint8_t *same = jcc8(0x74);                      // je same
     B(0x89); B(0xB5); W(env->vram_addr);             // mov [di + vram], si
     B(0x89); B(0xFE);                                // mov si, di
+    B(0xC1); B(0xEE); B(0x08);                       // shr si, 8
+    B(0x80); B(0xBC); W(SA(vram_class)); B(1);       // cmp byte [si + class], 1
+    uint8_t *sat = jcc8(0x75);                       // jne sat
+    B(0x89); B(0xFE);                                // mov si, di
     call_near(env->nt_stub_off);                     // (keeps the registers)
+    uint8_t *same2 = jcc8(0xEB);                     // jmp same
+    land8(sat);
+    B(0xC6); B(0x06); W(SA(sprites_dirty)); B(1);    // sat: sprites_dirty = 1
+    land8(same2);
     land8(same);
     B(0x83); B(0xC7); B(0x02);                       // add di, 2
     B(0x81); B(0xE7); W(0x3FFF);                     // and di, 3FFFh
     B(0x89); B(0x3E); W(VA(addr));                   // mov [addr], di
     B(0xF8);                                         // clc
     B(0xC3);                                         // ret
-    for (uint8_t i = 0; i < nf; i++) land8(f[i]);
-    B(0xF9);                                         // stc
-    B(0xC3);                                         // ret
+#undef NFAIL
     /*
      * The entry for OUTI / OUT (BEh),A: an entry whose tile comes from
      * (HL) and whose second byte is A. Columns draws its two wells this
@@ -740,7 +761,9 @@ uint16_t drc_emit_ntw_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
     B(0x89); B(0xFE);                                // mov si, di
     B(0xC1); B(0xEE); B(0x08);                       // shr si, 8
     B(0x80); B(0xBC); W(SA(vram_class)); B(1);       // cmp byte [si + class], 1
-    f[nf++] = jcc8(0x75);                            // jne fail
+    B(0x74); B(0x07);                                // je +7 (the name table)
+    B(0x80); B(0xBC); W(SA(vram_class)); B(2);       // cmp byte [si + class], 2
+    f[nf++] = jcc8(0x75);                            // jne fail (not the sprite table either)
     B(0x89); B(0xDE);                                // mov si, bx
     B(0xC1); B(0xC6); B(0x04);                       // rol si, 4
     B(0x83); B(0xE6); B(0x0E);                       // and si, 14
@@ -873,7 +896,7 @@ uint16_t drc_emit_trow_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) 
  */
 #define OUTI_SHORT 4   // runs up to this long: a byte loop instead of REP MOVSB
 
-uint16_t drc_emit_run_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, uint8_t dec) {
+uint16_t drc_emit_run_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, uint8_t dec, uint16_t *one) {
     env = e;
     o = o_start = out; o_base = out_off;
     uint8_t inc = dec ? 0xFF : 0x01;
@@ -886,6 +909,7 @@ uint16_t drc_emit_run_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
     B(0x89); B(0xCE);                                // mov si, cx
     B(0x81); B(0xE6); W(0x00C1);                     // and si, C1h
     B(0x81); B(0xFE); W(0x0080);                     // cmp si, 80h (port BEh)
+    uint8_t *after_cmp = o;
     uint8_t *s0 = 0, *to_ctl = 0;
     if (!dec && !env->no_fast && env->ctl_off) {
         B(0x74); B(3);                               // je +3
@@ -1109,9 +1133,13 @@ uint16_t drc_emit_run_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
             B(0xE9); W((uint16_t) (flags - (o + 2)));    // jmp flags
             land8(live);
             B(0xF6); B(0xC2); B(0x03);               // test dl, 3 (name or sprite table)
-            plain = jcc8(0x74);                      // jz plain (the usual case)
+            B(0x75); B(3);                           // jnz +3
+            B(0xE9); W(0);                           // jmp plain (tile data, not deferred)
+            plain = o - 2;
             B(0xF6); B(0xC2); B(0x01);               // test dl, 1 (name table)
-            uint8_t *not_nt = jcc8(0x74);            // jz (sprite table only)
+            B(0x75); B(3);                           // jnz +3
+            B(0xE9); W(0);                           // jmp not_nt (sprite table only)
+            uint8_t *not_nt = o - 2;
             B(0xF6); B(0xC2); B(0x02);               // test dl, 2 (both)
 #ifdef GGSWAN_HOST
             if (o + 2 - nofast > 128) { extern void abort(void); abort(); }   // (short jump too far)
@@ -1124,6 +1152,46 @@ uint16_t drc_emit_run_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
              * routines for every byte. Sonic writes its map entries as
              * runs of 2 OUTIs, ~50 a frame.
              */
+            /*
+             * First: the bytes already there? Then nothing to store or
+             * convert (the screen map is the one of VRAM as it is). Games
+             * send whole parts of the name table again on every frame:
+             * Super Monaco GP II's screen before the race some 380 bytes
+             * a frame, all the same, the name table routine once for
+             * every two of them.
+             */
+            B(0x56);                                 // push si
+            B(0x57);                                 // push di
+            B(0x51);                                 // push cx
+            B(0x89); B(0xF9);                        // mov cx, di (k)
+            B(0x8D); B(0xBC); W(env->vram_addr);     // lea di, [si + vram]
+            B(0x89); B(0xDE);                        // mov si, bx
+            B(0x1E); B(0x06); B(0x1F); B(0x07);      // push ds; push es; pop ds; pop es
+            B(0xFC);                                 // cld
+            B(0xF3); B(0xA6);                        // repe cmpsb
+            B(0x8A); B(0x64); B(0xFF);               // mov ah, [si - 1] (the last one compared)
+            B(0x06); B(0x1F);                        // push es; pop ds (DS, ES: data)
+            B(0x59);                                 // pop cx
+            B(0x5F);                                 // pop di
+            B(0x5E);                                 // pop si
+            uint8_t *differ = jcc8(0x75);            // jne differ
+            B(0x01); B(0xFB);                        // add bx, di (HL + k)
+            B(0x89); B(0xFA);                        // mov dx, di
+            B(0x28); B(0xD5);                        // sub ch, dl (B -= k)
+            B(0x01); B(0xFE);                        // add si, di
+            B(0x81); B(0xE6); W(0x3FFF);             // and si, 3FFFh
+            B(0x89); B(0x36); W(VA(addr));           // mov [addr], si
+            B(0x88); B(0x26); W(VA(read_buffer));    // mov [read_buffer], ah
+            B(0xC6); B(0x06); W(VA(latch_full)); B(0);   // mov byte [latch_full], 0
+            B(0x5A);                                 // pop dx
+            B(0xE9); W((uint16_t) (flags - (o + 2)));    // jmp flags
+            land8(differ);
+            B(0x56);                                 // push si (ES: the source again)
+            B(0x89); B(0xDE);                        // mov si, bx
+            B(0xC1); B(0xC6); B(0x04);               // rol si, 4
+            B(0x83); B(0xE6); B(0x0E);               // and si, 14
+            B(0x8E); B(0x84); W(SA(segtab));         // mov es, [si + segtab]
+            B(0x5E);                                 // pop si
             B(0x89); B(0xFA);                        // mov dx, di (k)
             B(0x28); B(0xD5);                        // sub ch, dl (B -= k)
             B(0x51);                                 // push cx
@@ -1155,7 +1223,7 @@ uint16_t drc_emit_run_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
             B(0x59);                                 // pop cx
             B(0x5A);                                 // pop dx
             B(0xE9); W((uint16_t) (flags - (o + 2)));    // jmp flags
-            land8(not_nt);
+            { uint16_t r_ = (uint16_t) (o - (not_nt + 2)); not_nt[0] = (uint8_t) r_; not_nt[1] = (uint8_t) (r_ >> 8); }
             (void) n4; (void) logged;
         } else {
             B(0xF6); B(0xC2); B(0x01);               // test dl, 1
@@ -1172,7 +1240,7 @@ uint16_t drc_emit_run_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
         uint8_t *clean = jcc8(0x74);                 // jz clean
         B(0xC6); B(0x06); W(SA(sprites_dirty)); B(1);   // sprites_dirty = 1
         land8(clean);
-        land8(plain);
+        if (plain) { uint16_t r_ = (uint16_t) (o - (plain + 2)); plain[0] = (uint8_t) r_; plain[1] = (uint8_t) (r_ >> 8); }
         B(0x89); B(0xFA);                            // mov dx, di (k)
         B(0x28); B(0xD5);                            // sub ch, dl (B -= k)
         // a short run (Super Monaco GP's sprite table): a byte loop
@@ -1290,6 +1358,31 @@ uint16_t drc_emit_run_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
         B(0x75); B((uint8_t) (cl - (o + 1)));        // jnz L
         B(0x8A); B(0x26); W(SA(val));                // mov ah, [val]
         B(0xE9); W((uint16_t) (flags - (o + 2)));    // jmp flags
+    }
+    if (one) {
+        /*
+         * The entry for an OUTI alone (DI = 1): to port BEh straight to
+         * the loop, a byte through the single write's code, which stores
+         * it or logs it (added to the log's open entry) or calls the
+         * class routine; the path above sets up a run first, classes of
+         * its first and last page and a log entry of its own, and for
+         * the name table converts the entry whatever it holds: about 130
+         * instructions for the byte. Super Monaco GP II draws the screen
+         * before the race with OUTIs one at a time, some 380 a frame.
+         */
+        *one = (uint16_t) (o_base + (o - o_start));
+        B(0x56);                                     // push si (address)
+        B(0x57);                                     // push di (k)
+        B(0x89); B(0xDE);                            // mov si, bx
+        B(0xC1); B(0xC6); B(0x04);                   // rol si, 4
+        B(0x83); B(0xE6); B(0x0E);                   // and si, 14
+        B(0x8E); B(0x84); W(SA(segtab));             // mov es, [si + segtab]
+        B(0x89); B(0xCE);                            // mov si, cx
+        B(0x81); B(0xE6); W(0x00C1);                 // and si, C1h
+        B(0x81); B(0xFE); W(0x0080);                 // cmp si, 80h (port BEh)
+        B(0x75); B(3);                               // jne +3
+        B(0xE9); W((uint16_t) (loop - (o + 2)));     // jmp loop
+        B(0xE9); W((uint16_t) (after_cmp - (o + 2)));    // jmp: the other ports, as above
     }
     return (uint16_t) (o - o_start);
 }
@@ -2780,7 +2873,8 @@ static int emit(int i) {
             }
             B(0xBF); W(I->count);                            // mov di, k
             B(0xBE); W(I->pc);                               // mov si, pc
-            call_near(op == 0xA3 ? env->outi_off : env->outi_off + DRC_OUTD_DELTA);
+            call_near(op != 0xA3 ? env->outi_off + DRC_OUTD_DELTA
+                : I->count == 1 && env->outi1_off ? env->outi1_off : env->outi_off);
             land8(ntw);   // (CF = 0, as from the run routine)
             run_flags(op == 0xA3 ? DRC_H_OUTI_RUN : DRC_H_OUTD_RUN, live_out[i] & FALL);
             fkind = K_AH; hl_es = 0;

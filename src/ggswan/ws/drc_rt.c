@@ -41,7 +41,7 @@ uint16_t drc_entry[2];   // far pointer used by drc_enter: offset, segment
 #define STUB_HELPER 0x0020
 #define STUB_DYN    0x0040
 #define STUB_CLS    0x0DA0   // a VRAM byte outside tile data (drc.c)
-#define STUB_NTW    0x0AA0   // OUTI / OUTI to a name table entry (drc.c)
+#define STUB_NTW    0x1010   // OUTI / OUTI to a name table entry (drc.c)
 #define STUB_TROW   0x0E90   // OUTI x 3 / OUT (BEh),A: a tile row (drc.c)
 #define STUB_CRAM   0x01E0   // a byte to CRAM
 #define STUB_OUTI   0x0240   // (OUTD: + DRC_OUTD_DELTA)
@@ -53,7 +53,7 @@ uint16_t drc_entry[2];   // far pointer used by drc_enter: offset, segment
 #define STUB_VCNT   0x0BF8   // IN A,(7Eh) (drc_emit_vcnt_stub)
 #define STUB_PAIRS  0x0C48   // OUTI / OUTI / DEC L x 4 repeated (drc.c)
 #define STUB_NT     0x0D20   // a name table byte (put_nt)
-#define CACHE_START 0x0F70
+#define CACHE_START 0x1110
 // translation buffer in free IRAM (between the font tiles and the mask tile)
 #define BUF_ADDR    0xA600
 /// DYN L0 cache: 512 direct-mapped entries of 8 bytes in free IRAM (in the
@@ -839,7 +839,7 @@ void drc_rt_init(uint16_t bank) {
 #endif
         uint16_t l6 = drc_emit_cls_stub(&env, stub + STUB_CLS, STUB_CLS);
 #ifdef GGSWAN_HOST
-        if (STUB_CTL + l5 > STUB_NTW || end > STUB_CLS || STUB_CLS + l6 > STUB_TROW) { printf("CLS stub: no room\n"); exit(1); }
+        if (STUB_CTL + l5 > STUB_MAP || end > STUB_CLS || STUB_CLS + l6 > STUB_TROW) { printf("CLS stub: no room\n"); exit(1); }
         if (getenv("GGSWAN_STUBS")) printf("CLS stub %X bytes\n", l6);
 #else
         (void) l6;
@@ -863,8 +863,10 @@ void drc_rt_init(uint16_t bank) {
                 env.vcnt_off = STUB_VCNT;
         }
         env.outi_off = STUB_OUTI;
-        uint16_t l1 = drc_emit_run_stub(&env, stub + STUB_OUTI, STUB_OUTI, 0);
-        uint16_t l2 = drc_emit_run_stub(&env, stub + STUB_OUTI + DRC_OUTD_DELTA, STUB_OUTI + DRC_OUTD_DELTA, 1);
+        uint16_t outi1 = 0;
+        uint16_t l1 = drc_emit_run_stub(&env, stub + STUB_OUTI, STUB_OUTI, 0, drc_no_fast ? 0 : &outi1);
+        uint16_t l2 = drc_emit_run_stub(&env, stub + STUB_OUTI + DRC_OUTD_DELTA, STUB_OUTI + DRC_OUTD_DELTA, 1, 0);
+        env.outi1_off = outi1;
         env.pairs_off = 0;
         env.ntw_off = 0;
         env.ntwa_off = 0;
@@ -873,12 +875,12 @@ void drc_rt_init(uint16_t bank) {
             uint16_t ntwa = 0;
             uint16_t l9 = drc_emit_ntw_stub(&env, stub + STUB_NTW, STUB_NTW, &ntwa);
 #ifdef GGSWAN_HOST
-            if (STUB_NTW + l9 > STUB_MAP) { printf("NTW stub: no room (%X)\n", l9); exit(1); }
+            if (STUB_NTW + l9 > CACHE_START) { printf("NTW stub: no room (%X)\n", l9); exit(1); }
             if (getenv("GGSWAN_STUBS")) printf("NTW stub %X bytes\n", l9);
 #else
             (void) l9;
 #endif
-            env.ntw_off = STUB_NTW;
+            env.ntw_off = STUB_NTW + DRC_NTW_ENTRY;
             env.ntwa_off = ntwa;
             env.trow_off = 0;
             if (env.cls_off) {
@@ -905,7 +907,8 @@ void drc_rt_init(uint16_t bank) {
         uint16_t l4 = drc_emit_ldi_stub(&env, stub + STUB_LDI + DRC_LDD_DELTA, STUB_LDI + DRC_LDD_DELTA, 1);
 #ifdef GGSWAN_HOST
         if (getenv("GGSWAN_STUBS")) printf("stubs: NT end %X, CRAM end %X, OUTI %X, OUTD %X, LDI %X, LDD %X\n", end, cram_end, l1, l2, l3, l4);
-        if (cram_end > STUB_OUTI || l1 > DRC_OUTD_DELTA || STUB_OUTI + DRC_OUTD_DELTA + l2 > STUB_LDI
+        if (cram_end > STUB_OUTI || STUB_OUTI + l1 > STUB_LDI || STUB_OUTI + DRC_OUTD_DELTA < STUB_TROW + 0xE0
+            || STUB_OUTI + DRC_OUTD_DELTA + l2 > STUB_NTW
             || l3 > DRC_LDD_DELTA || STUB_LDI + DRC_LDD_DELTA + l4 > STUB_HCALL) { printf("stubs too long\n"); exit(1); }
 #else
         (void) end; (void) cram_end; (void) l1; (void) l2; (void) l3; (void) l4;

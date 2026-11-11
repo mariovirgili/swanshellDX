@@ -67,6 +67,99 @@ remap()
 
 md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_16)
 cost_cache = {}
+# The cycles of an instruction as Mednafen's V30MZ core counts them (v30mz.c:
+# what nileswan-medem runs; CLKM(memory, register) by the ModRM byte, a
+# conditional jump 1 not taken and 3 taken, a segment prefix 1). WSRUN_ROUGH=1:
+# the older rough estimate below (1 + 1 per memory operand, jumps 3), about
+# a third higher on the translated code.
+ROUGH = bool(os.environ.get('WSRUN_ROUGH'))
+STR_CYC = {0xA4: 5, 0xA5: 5, 0xA6: 9, 0xA7: 9, 0xAA: 3, 0xAB: 3, 0xAC: 3, 0xAD: 3, 0xAE: 4, 0xAF: 4,
+           0x6C: 6, 0x6D: 6, 0x6E: 7, 0x6F: 7}
+def cost_m(code, cx, first):
+    """(cycles, extra if the jump is taken)"""
+    i = 0; c = 0; rep = False
+    while i < len(code) and code[i] in (0x26, 0x2E, 0x36, 0x3E, 0xF2, 0xF3):
+        if code[i] in (0xF2, 0xF3): rep = True
+        else: c += 2 if rep else 1
+        i += 1
+    if i >= len(code): return c + 1, 0
+    op = code[i]
+    m = code[i + 1] if i + 1 < len(code) else 0xC0
+    mem = m < 0xC0
+    def clkm(a, b): return a if mem else b
+    if rep and op in STR_CYC:
+        # (the hook runs once for each turn and once more with CX = 0)
+        return c + (5 if first else 0) + (STR_CYC[op] if cx else 0), 0
+    if op in STR_CYC: return c + (6 if op in (0xA6, 0xA7) else STR_CYC[op]), 0
+    if op < 0x40:
+        k = op & 7
+        if k < 4:
+            if (op & 0x38) == 0x38: return c + clkm(2, 1), 0          # CMP
+            return c + (clkm(3, 1) if k < 2 else clkm(2, 1)), 0
+        if k < 6: return c + 1, 0
+        if op in (0x27, 0x2F): return c + 10, 0
+        if op in (0x37, 0x3F): return c + 9, 0
+        return c + (2 if k == 6 else 3), 0                           # push / pop of a segment
+    if op < 0x60: return c + 1, 0
+    if op == 0x60: return c + 9, 0
+    if op == 0x61: return c + 8, 0
+    if op in (0x68, 0x6A): return c + 1, 0
+    if op in (0x69, 0x6B): return c + clkm(4, 3), 0
+    if 0x70 <= op < 0x80: return c + 1, 2
+    if op < 0x84: return c + clkm(3, 1), 0
+    if op < 0x86: return c + clkm(2, 1), 0
+    if op < 0x88: return c + clkm(5, 3), 0
+    if op < 0x8E: return c + 1, 0
+    if op == 0x8E: return c + clkm(3, 2), 0
+    if op == 0x8F: return c + clkm(3, 1), 0
+    if op < 0x98: return c + 3, 0
+    if op < 0x9A: return c + 1, 0
+    if op == 0x9A: return c + 10, 0
+    if op == 0x9C: return c + 2, 0
+    if op == 0x9D: return c + 3, 0
+    if op == 0x9E: return c + 4, 0
+    if op == 0x9F: return c + 2, 0
+    if op < 0xC0: return c + 1, 0                                    # A0-A3, A8, A9, B0-BF
+    if op < 0xC2: return c + clkm(5, 3), 0
+    if op < 0xC4: return c + 6, 0
+    if op < 0xC6: return c + 6, 0
+    if op < 0xC8: return c + 1, 0
+    if op == 0xC8: return c + 19, 0
+    if op == 0xC9: return c + 2, 0
+    if op == 0xCA: return c + 9, 0
+    if op == 0xCB: return c + 8, 0
+    if op in (0xCC, 0xCD): return c + 10, 0
+    if op == 0xCF: return c + 10, 0
+    if op in (0xD0, 0xD1): return c + clkm(3, 1), 0
+    if op in (0xD2, 0xD3): return c + clkm(5, 3), 0
+    if op == 0xD4: return c + 17, 0
+    if op == 0xD5: return c + 6, 0
+    if op == 0xD6: return c + 3, 0
+    if op == 0xD7: return c + 5, 0
+    if op < 0xE0: return c + 1, 0
+    if op < 0xE2: return c + 3, 3
+    if op == 0xE2: return c + 2, 3
+    if op == 0xE3: return c + 1, 3
+    if op < 0xE8: return c + 6, 0
+    if op == 0xE8: return c + 5, 0
+    if op == 0xE9: return c + 4, 0
+    if op == 0xEA: return c + 7, 0
+    if op == 0xEB: return c + 4, 0
+    if op < 0xF0: return c + 6, 0
+    if op in (0xF6, 0xF7):
+        r = (m >> 3) & 7; w = op & 1
+        if r < 2: return c + clkm(2, 1), 0
+        if r < 4: return c + clkm(3, 1), 0
+        if r < 6: return c + clkm(4, 3), 0
+        if r == 6: return c + (clkm(24, 23) if w else clkm(16, 15)), 0
+        return c + (clkm(25, 24) if w else clkm(18, 17)), 0
+    if op == 0xFE: return c + clkm(3, 1), 0
+    if op == 0xFF:
+        r = (m >> 3) & 7
+        return c + (clkm(3, 1), clkm(3, 1), clkm(6, 5), 12, clkm(5, 4), 10, clkm(2, 1), 1)[r], 0
+    if op == 0xF4: return c + 1, 0
+    return c + 4, 0                                                  # F5, F8-FD
+
 def cost(code):
     c = cost_cache.get(code)
     if c is not None: return c
@@ -156,6 +249,7 @@ FAIL, FRAME, TRANS = syms['fail'], syms['gg_run_frame'], syms['drc_translate']
 KEYSYM = syms['gg'] + 0   # (gg.keys: found below)
 
 trail = collections.deque(maxlen=40)
+jst = [0, 0, 0]   # taken-jump extra, the address after it, the last address
 def h_code(uc, addr, size, ud):
     n = fname(addr)
     if n[0] == '?': n = '?%03X' % (addr >> 8)
@@ -194,7 +288,12 @@ def h_code(uc, addr, size, ud):
             dyn_c['same' if last == tgt else ('first' if last is None else 'other')] += 1
             dyn_last[site] = tgt; dyn_sites[site] += 1
         prev_addr[0] = addr
-    c = cost(bytes(uc.mem_read(addr, size)))
+    if ROUGH:
+        c = cost(bytes(uc.mem_read(addr, size)))
+    else:
+        c, ex = cost_m(bytes(uc.mem_read(addr, size)), uc.reg_read(UC_X86_REG_CX), jst[2] != addr)
+        if jst[0] and addr != jst[1]: c += jst[0]     # the jump before this one was taken
+        jst[0] = ex; jst[1] = addr + size; jst[2] = addr
     st['cyc'] += c
     if CLIX:
         # WSRUN_CLI=1: stretches with interrupts off (cycles), by the
@@ -238,7 +337,7 @@ def h_code(uc, addr, size, ud):
                 mn_c[k] += c
         else:
             o = addr & 0xFFFF
-            if STUBX and 0x40 <= o < 0xF70: stub_n[o] += 1
+            if STUBX and 0x40 <= o < 0x1110: stub_n[o] += 1
             blk_c[next((n for lo, hi, n in STUBS if lo <= o < hi), 'unmapped')] += c
     fn_c[fname(addr)] += c
     if FOCUS and fname(addr) == FOCUS: focus_c[addr] += c
@@ -262,8 +361,8 @@ def mn_class(t):
 # the routines at the start of each code bank (drc_rt.c STUB_*)
 STUBS = [(0x0000, 0x0020, 'EXIT'), (0x0020, 0x0040, 'HELPER'), (0x0040, 0x01E0, 'DYN'),
          (0x01E0, 0x0240, 'CRAM'), (0x0240, 0x0600, 'OUTI/OUTD'), (0x0600, 0x0730, 'LDI/LDD'), (0x0730, 0x0780, 'HCALL'),
-         (0x0780, 0x0920, 'LINE'), (0x0920, 0x0AA0, 'CTL'), (0x0AA0, 0x0B80, 'NTW'), (0x0B80, 0x0BF8, 'MAP'),
-         (0x0BF8, 0x0C48, 'VCNT'), (0x0C48, 0x0D20, 'PAIRS'), (0x0D20, 0x0DA0, 'NT'), (0x0DA0, 0x0E90, 'CLS'), (0x0E90, 0x0F70, 'TROW')]
+         (0x0780, 0x0920, 'LINE'), (0x0920, 0x0AA0, 'CTL'), (0x0B80, 0x0BF8, 'MAP'),
+         (0x0BF8, 0x0C48, 'VCNT'), (0x0C48, 0x0D20, 'PAIRS'), (0x0D20, 0x0DA0, 'NT'), (0x0DA0, 0x0E90, 'CLS'), (0x0E90, 0x0F70, 'TROW'), (0x0F70, 0x1010, 'OUTI/OUTD'), (0x1010, 0x1110, 'NTW')]
 
 def report(fr):
     if CLIX:
