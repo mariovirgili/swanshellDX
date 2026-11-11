@@ -2625,7 +2625,7 @@ static void decode(uint16_t pc, ins_t *I) {
             switch (y) {
             case 0: I->nn = rd(pc + 1) | (rd(pc + 2) << 8); I->len = 3; I->term = T_END; return;
             case 2: case 3: I->nn = rd(pc + 1); I->len = 2;           // OUT (n),A / IN A,(n)
-#ifdef GGSWAN_SMS
+#ifndef GGSWAN_SG1000
                 // (a read of the VDP status: does the game test the
                 // sprite collision flag after it? gg.c)
                 if (y == 3 && (I->nn & 0xC1) == 0x81)

@@ -85,7 +85,7 @@ class X86:
     def port_out(self, uc, port, size, value, ud):
         for i in range(size):
             self.ports[(port + i) & 255] = (value >> (8 * i)) & 255
-        if 0xC0 <= port <= 0xCE:
+        if 0xC0 <= port <= 0xD5:   # (the bank ports: D0h-D5h)
             self.map_windows()
 
     def map_windows(self):

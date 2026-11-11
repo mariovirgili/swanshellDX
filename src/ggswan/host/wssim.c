@@ -373,7 +373,7 @@ int main(int argc, char **argv) {
         type_frame(fr, getenv("SF_TYPE"));
 #endif
         gg_run_frame();   // (video_present at line 168)
-#ifdef GGSWAN_SMS
+#ifndef GGSWAN_SG1000
         if (getenv("GGSWAN_COLL")) {
             gg.coll_used = 1;   // (forced for the test)
             // the collision flag against a count of the sprites on each pixel

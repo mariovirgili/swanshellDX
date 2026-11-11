@@ -194,10 +194,12 @@ void gg_remap(void) {
 
 /* === VDP === */
 
-// smsswan: the sprite collision flag (status bit 5), worked out by the
-// platform once a frame, when the frame interrupt is requested (the
-// recompiler reads the status without coming to C)
-#ifdef GGSWAN_SMS
+// The sprite collision flag (status bit 5), worked out by the platform
+// once a frame, when the frame interrupt is requested (the recompiler
+// reads the status without coming to C). smsswan's at first; ggswan's from
+// patch 149: Batman Returns hits nothing without it (IN A,(BFh) / AND 20h
+// at 1754h)
+#ifndef GGSWAN_SG1000
 // (only for the games that look at it: the check takes some 3500 cycles a
 // frame in Sonic, 8% of it. Looked for in the 8 bytes after a status
 // read: AND n with bit 5, or BIT 5,A)
@@ -243,10 +245,8 @@ void gg_status_read_at(uint16_t pc) {
         }
     }
 }
-#elif defined(GGSWAN_SG1000)
-#define SPRITE_STATUS() sg_sprite_status()
 #else
-#define SPRITE_STATUS() 0
+#define SPRITE_STATUS() sg_sprite_status()
 #endif
 
 #ifdef GGSWAN_SMS
@@ -515,6 +515,10 @@ uint8_t z80_in(uint8_t port) {
     }
     if (port < 0x80)
         return (port & 1) ? 0x80 /* H counter: approximation */ : vdp_vcounter();
+#if !defined(GGSWAN_SMS) && !defined(GGSWAN_SG1000)
+    if (port < 0xC0 && (port & 1))
+        gg_status_read_at(z80.pc);
+#endif
     if (port < 0xC0)
 #ifdef GGSWAN_SMS
     {

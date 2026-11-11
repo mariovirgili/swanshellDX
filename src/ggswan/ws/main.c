@@ -1487,7 +1487,7 @@ static void build_sprites(void) {
     drc_st.sprites_dirty = false;
 }
 
-#ifdef GGSWAN_SMS
+#ifndef GGSWAN_SG1000   // (sgswan: sg_vdp.c has its own)
 /*
  * The sprite collision flag (VDP status bit 5: two sprites with a pixel
  * of each on the same spot; Fantastic Dizzy, Taz-Mania, Ecco, Impossible
@@ -1509,11 +1509,19 @@ uint8_t gg_platform_sprite_status(void) {
     if (!(reg[1] & 0x40))
         return 0;
     static uint8_t head[16], nxt[64], sy[64];
+    // (a sprite with no pixel hits nothing: 1 here once that is found, 2
+    // if it has one. A table never written is 64 empty sprites in one
+    // place, 2016 pairs with all their rows to compare: 1.4 million
+    // cycles a frame in Batman Returns before its first screen)
+    static uint8_t emp[64];
     const uint8_t *sat = gg_vram + sat_base;
     uint8_t h = (reg[1] & 0x02) ? 16 : 8;
     uint16_t tb = (reg[6] & 0x04) ? 0x100 : 0;
     uint8_t lines = (uint8_t) GG_ACTIVE;
     memset(head, 0xFF, sizeof(head));
+    memset(emp, 0, sizeof(emp));
+    uint16_t emp_tile = 0xFFFF;
+    uint8_t emp_is = 0;
     for (uint8_t i = 0; i < 64; i++) {
         uint8_t y = sat[i];
         if (GG_SPR_END(y))
@@ -1537,6 +1545,22 @@ uint8_t gg_platform_sprite_status(void) {
                     ti &= ~1;
                     tj &= ~1;
                 }
+                if (!emp[i]) {
+                    // (the last tile looked at is remembered: the empty
+                    // sprites of a table are mostly one tile)
+                    if (ti != emp_tile) {
+                        uint8_t m = 0;
+                        for (uint8_t r = 0; r < h && !m; r++)
+                            m = spr_row_mask((ti + (r >> 3)) & 0x1FF, r & 7);
+                        emp_tile = ti;
+                        emp_is = m ? 2 : 1;
+                    }
+                    emp[i] = emp_is;
+                }
+                if (emp[i] == 1)
+                    goto listed;   // (none of its pairs)
+                if (emp[j] == 1)
+                    continue;
                 // (rows: i's from ri, j's from rj, n of them)
                 uint8_t ri = oy < 0 ? -oy : 0, rj = oy > 0 ? oy : 0;
                 uint8_t n = h - (oy < 0 ? -oy : oy);
@@ -1548,6 +1572,7 @@ uint8_t gg_platform_sprite_status(void) {
                 }
             }
         }
+    listed:
         sy[i] = y;
         nxt[i] = head[b];
         head[b] = i;

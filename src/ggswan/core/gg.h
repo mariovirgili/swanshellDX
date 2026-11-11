@@ -151,7 +151,7 @@ typedef struct {
     uint32_t frame;
     uint8_t io_ctrl;        // smsswan: port 3Fh (I/O control: TH/TR direction and level)
     uint8_t codemasters;    // smsswan: the Codemasters mapper (banks written at 0000h, 4000h, 8000h)
-    uint8_t coll_used;      // smsswan: the game looks at the sprite collision flag (gg_status_read_at)
+    uint8_t coll_used;      // the game looks at the sprite collision flag (gg_status_read_at)
 } gg_t;
 
 extern gg_t gg;

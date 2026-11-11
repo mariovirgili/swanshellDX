@@ -6,7 +6,7 @@ emulated by a dynamic recompiler (Z80 to V30MZ code), with the original
 interpreter kept for the parts that need it. The Game Gear video memory is
 mapped onto the WonderSwan's own tile and screen hardware.
 
-Status: fairly stable (patch 148). It has been tested mostly in the
+Status: fairly stable (patch 149). It has been tested mostly in the
 nileswan-medem emulator and with the host test tools; tests on real
 hardware are still to come.
 
@@ -353,7 +353,7 @@ it are listed in order without one.
 - lighter DYN lookup and class routine for deferred tile bytes
 - OUTI runs to CRAM handled in the run routine
 
-### Patches 90-148
+### Patches 90-149
 
 | Patch | Change |
 |---|---|
@@ -416,3 +416,4 @@ it are listed in order without one.
 | 146 | The SF-7000 (the SC-3000's disk unit), step 1, nothing on the WonderSwan yet: the machine in `core/` under `-DGGSWAN_SF7000` (64 KiB of RAM with the IPL over the first 16, the two 8255s, the keyboard matrix, the uPD765 and its disk with the index hole Disk BASIC times), an IPL of its own in place of Sega's (`host/mksfipl.py`), `host/sftest` (keys typed, the disk changed) and `host/sf_unit` (56 checks through the ports). On the PC the three disks tried start: Disk BASIC 1.0p and Astro from The Complete Arcade Pack, Kamikaze with `BOOT`, Poseidon Wars. `SF7000.md`. `PLUG_GG.BIN`, `PLUG_SMS.BIN` and `PLUG_SG.BIN` are the same bytes as patch 145 but for this number |
 | 147 | The palette with the frame, in ggswan and smsswan: a color the game writes goes to the WonderSwan's palettes at the end of the WS screen, with the scroll, the tiles and the sprites of the frame it belongs to, and no longer at once, in the middle of the screen being drawn and a WS screen or two before the rest. Shinobi moves the bars of its fence by turning four colors round: the fence was broken in two, one part two pixels ahead of the other. In `wssim` the WS picture of Sonic, Shinobi, Super Monaco GP, Aladdin, Columns, Batman Returns and Sailor Moon S differs from the Game Gear's by 0.0-1.4% of the pixels on average, from 1.0-9.0%. `drcsys.py --pal`. The menu: Settings > System > Save data management, first in the list and on by default; off, no save data is loaded into the cartridge at launch and none is written back to the card when the menu starts again (for where the save memory is not the physical cartridge's). `PLUG_SG.BIN`: the same bytes as patch 146 but for this number |
 | 148 | sfswan, the SC-3000 with the SF-7000's disks: `PLUG_SF.BIN` (`SF=1`), `.sf` in the menu. The recompiler with all of the memory RAM (one WonderSwan segment, a map of where code was translated from, code that writes over code run by the interpreter where it is), the disk and a system disk (`/NILESWAN/SF7000.SF`) in PSRAM, the TMS9918A's text mode (in sgswan too), a keyboard on the screen (START), the built-in IPL's long parts done by the machine. Run in the PC tools only, the device build in `wsrun.py` too (to Disk BASIC's prompt and `FILES` through the keyboard on the screen); about half the SF-7000's speed at the prompt. `SF7000.md`. sgswan and sfswan: the four sprites to a line are START + Y2 (Y right) now, START + Y3 (Y down) is kept in every plugin for the whole picture squeezed. ggswan, smsswan, sgswan: the translator writes the same bytes as patch 147 (`drcsys.py --same-code`); `wsrun.py` with the WonderSwan's keys (`WSRUN_WSKEYS`) and a second file (`WSRUN_SYS`) |
+| 149 | ggswan: the sprite collision flag (VDP status bit 5), which only smsswan had: Batman Returns reads it for its hits (`IN A,(BFh)` / `AND 20h`) and walked through everything. As smsswan's: worked out once a frame, only for a game found to test the flag (of seven games tried only Batman Returns), and it costs: Batman Returns in its first level goes from about 70 k to 84-98 k cycles a frame in `wsrun.py`. In both plugins a sprite with no pixel is left out early (a sprite table never written, 64 empty sprites in one place, took 1.4 million cycles a frame); the flag is the same as a count of the sprites on each pixel in every frame tried (`GGSWAN_COLL=1` in `wssim`, now for ggswan too). The menu: the game icon for `.gg`, `.sms`, `.sg` and `.sf` files. `drcsys.py` moved the windows only for ports C0h-CEh: with the bank ports at D0h-D5h since patch 148, games with a mapper ran wrong in it (patch 148's `--same-code` check was repeated with this corrected: the same result). The sgswan and sfswan binaries are not the same from one build to the next (their size changes by a few bytes with the same sources: to be looked at) |
