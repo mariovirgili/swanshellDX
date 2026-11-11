@@ -1213,6 +1213,18 @@ static void update_backdrop(void) {
     uint8_t left = (GG_VIEW_X - gg.vdp.reg[8]) >> 3;
     uint8_t n[2] = { 0, 0 };
     // (every other tile of the view: 18 rows, 20 columns; smsswan 28)
+    // First their palettes alone: all of one (most screens), that one,
+    // and the tiles need not be looked at
+    for (uint8_t r = 0; r < GG_VIEW_H / 8; r += 2) {
+        uint8_t row = (top + r) % NT_H;
+        for (uint8_t c = 0; c < GG_VIEW_W / 8; c += 2)
+            n[(gg_entry(row, (left + c) & 31) >> 11) & 1]++;
+    }
+    if (!n[0] || !n[1]) {
+        backdrop_palette = n[1] != 0;
+        return;
+    }
+    n[0] = n[1] = 0;
     for (uint8_t r = 0; r < GG_VIEW_H / 8; r += 2) {
         uint8_t row = (top + r) % NT_H;
         for (uint8_t c = 0; c < GG_VIEW_W / 8; c += 2) {
@@ -1783,6 +1795,7 @@ static void psg_volume(uint8_t ch) {
     outportb(0x88 + ch, psg_volume_table[psg_vol[ch]] * ((psg_stereo >> ch) & 0x11));
 }
 
+static uint8_t noise_slow;   // channel 4's wave: one pulse in 32 samples
 static void psg_noise_freq(void) {
     uint16_t tone;
     switch (psg_noise & 3) {
@@ -1791,9 +1804,33 @@ static void psg_noise_freq(void) {
     case 2: tone = 0x40; break;
     default: tone = psg_tone[2]; break;
     }
+    if (!tone)
+        tone = 1;   // (as the tone channels: 0 counts as 1)
     // 3072000 * tone / (3579545 >> 5)
-    uint16_t divider = ((uint32_t) tone * 28118) >> 10;
-    outportw(0x80 + 3 * 2, -divider);
+    uint32_t divider = ((uint32_t) tone * 28118) >> 10;
+    /*
+     * The WS divider has 11 bits: with the rate taken from tone 2 (basses
+     * of periodic noise, low rumbles) anything over 74 did not fit, and
+     * what was left of it gave some other pitch. Periodic noise (the
+     * wave: two pulses in its 32 samples) goes on an octave lower with
+     * one pulse, twice as wide, at twice the rate; below that, and for
+     * white noise, the slowest there is.
+     */
+    uint8_t slow = 0;
+    if (divider > 2047) {
+        if (!(psg_noise & 4)) {
+            slow = 1;
+            divider >>= 1;
+        }
+        if (divider > 2047)
+            divider = 2047;
+    }
+    if (slow != noise_slow) {
+        noise_slow = slow;
+        wave_table[48] = slow ? 0xFF : 0x0F;
+        wave_table[56] = slow ? 0x00 : 0x0F;
+    }
+    outportw(0x80 + 3 * 2, -(uint16_t) divider);
     outportb(WS_SOUND_CH_CTRL_PORT, ((psg_noise & 4) ? 0x8F : 0x0F) | (voice_on ? 0x20 : 0));
 }
 
@@ -1840,8 +1877,10 @@ static void psg_output(void) {
     for (uint8_t ch = 0; ch < 3; ch++)
         if (d & (0x10 << ch))
             // 3072000 * tone / (3579545 >> 1): the wave holds two periods
-            // (a table: no 32-bit multiplication)
-            outportw(0x80 + ch * 2, -psg_divider[psg_tone[ch]]);
+            // (a table: no 32-bit multiplication). Tone 0 counts as 1, a
+            // steady level (samples played through the volume): its
+            // divider 0 was the slowest the WS has, a hum at 94 Hz
+            outportw(0x80 + ch * 2, -psg_divider[psg_tone[ch] ? psg_tone[ch] : 1]);
     if (d & 0x70)
         pcm_on = psg_tone[0] <= 1 && psg_tone[1] <= 1 && psg_tone[2] <= 1;
     if (d & 0x80)
@@ -1952,9 +1991,13 @@ GGSWAN_HOST_VISIBLE void read_keys(void) {
     if (!(k & WS_KEY_START) && !step_paused
             && (k & (WS_KEY_Y2 | WS_KEY_Y4)) != (WS_KEY_Y2 | WS_KEY_Y4)) {
         uint8_t x = gg_view_x, y = gg_view_y;
+        // (register 0 bit 5: not into the first 8 columns, blanked; held
+        // there, Y4 moved the view in and video_present moved it back,
+        // the sprite table built again on every frame)
+        uint8_t x_min = (gg.vdp.reg[0] & 0x20) ? 8 : 0;
         if ((k & WS_KEY_Y1) && y >= 2) y -= 2;
         if ((k & WS_KEY_Y3) && y <= GG_VIEW_Y_MAX - 2) y += 2;
-        if ((k & WS_KEY_Y4) && x >= 2) x -= 2;
+        if ((k & WS_KEY_Y4) && x >= x_min + 2) x -= 2;
         if ((k & WS_KEY_Y2) && x <= GG_VIEW_X_MAX - 2) x += 2;
         if (x != gg_view_x || y != gg_view_y) {
             gg_view_x = x;

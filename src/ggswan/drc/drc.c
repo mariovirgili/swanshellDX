@@ -176,6 +176,8 @@ static uint16_t cyc;   // cycles of the instructions translated so far
 static uint16_t block_start_off;
 static uint16_t block_pc;
 
+// (the stack where the translated code can reach it: see sp_loaded_exit)
+#define SP_IN_RAM(v) ((uint16_t) ((v) - 0xC002u) <= 0x1FFEu)
 static uint8_t force_nolink;   // the next exit must return to the runtime
 // (a helper that changes the mapping makes the runtime end the block
 // without following links: see drc_rt.c)
@@ -2018,7 +2020,9 @@ static void decode(uint16_t pc, ins_t *I) {
             if (I->nn < 0xC000 || I->nn >= 0xDFFF) I->step = 1;
             return;
         case 0x4B: case 0x5B: case 0x7B:                            // LD rr,(nn)
-            I->nn = rd(pc + 2) | (rd(pc + 3) << 8); I->len = 4; return;
+            I->nn = rd(pc + 2) | (rd(pc + 3) << 8); I->len = 4;
+            if (op == 0x7B) I->term = T_END_AFTER;                  // (SP: sp_loaded_exit)
+            return;
         case 0x45: case 0x4D: case 0x55: case 0x5D:
         case 0x65: case 0x6D: case 0x75: case 0x7D:                 // RETN, RETI
             I->term = T_END; return;
@@ -2102,6 +2106,7 @@ static void decode(uint16_t pc, ins_t *I) {
             if (op2 == 0x22 && (I->nn < 0xC000 || I->nn >= 0xDFFF)) I->step = 1;
             return;
         case 0x23: case 0x2B: case 0xE1: case 0xE5: case 0xF9: case 0xE3:
+            if (op2 == 0xF9) I->term = T_END_AFTER;                   // LD SP,IX (sp_loaded_exit)
             return;
         case 0xE9: I->term = T_END; return;                           // JP (IX)
         case 0x09: case 0x19: case 0x29: case 0x39:                   // ADD IX,rr
@@ -2169,7 +2174,9 @@ static void decode(uint16_t pc, ins_t *I) {
             return;
         case 1:
             if (y & 1) { I->fwrite = FH | FN | FC; I->fread = FS | FZ | FP; return; }   // ADD HL,rr
-            I->nn = rd(pc + 1) | (rd(pc + 2) << 8); I->len = 3; return;              // LD rr,nn
+            I->nn = rd(pc + 1) | (rd(pc + 2) << 8); I->len = 3;                      // LD rr,nn
+            if (y == 6 && !SP_IN_RAM(I->nn)) I->term = T_END_AFTER;                  // (SP: sp_loaded_exit)
+            return;
         case 2:
             if (y >= 4) { I->nn = rd(pc + 1) | (rd(pc + 2) << 8); I->len = 3;
                           if (y == 4 || y == 6) {
@@ -2206,7 +2213,7 @@ static void decode(uint16_t pc, ins_t *I) {
         case 1:
             if (y == 1 || y == 5) { I->term = T_END; return; }   // RET, JP (HL)
             if (y == 3) return;                                  // EXX
-            if (y == 7) return;                                  // LD SP,HL
+            if (y == 7) { I->term = T_END_AFTER; return; }       // LD SP,HL (sp_loaded_exit)
             if (y == 2 || y == 0 || y == 4) return;              // POP
             I->fwrite = FALL;                                    // POP AF
             return;
@@ -2422,6 +2429,29 @@ static void branch_to(uint16_t target, uint16_t extra) {
         return;
     }
     exit_const(target, extra);
+}
+
+/*
+ * After an instruction that loaded SP (BP here). The translated code
+ * reaches the stack in place, [bp + ram_delta]: the work RAM, C000-DFFF,
+ * in IRAM. With SP anywhere else (the RAM's mirror at E000h, a table in
+ * ROM read with POPs, the cartridge RAM) those were other bytes of IRAM:
+ * the font, the tiles. So the block ends here, and with SP outside
+ * C002h-E000h at an exit that is never linked: the runtime goes on with
+ * the interpreter until SP is back (drc_rt.c, SP_OK). bad: known when
+ * translating (LD SP,nn).
+ */
+static void sp_loaded_exit(uint16_t next, uint8_t bad) {
+    if (!bad) {
+        materialize();
+        B(0x8D); B(0xB6); W((uint16_t) (0u - 0xC002u));   // lea si, [bp - C002h]
+        B(0x81); B(0xFE); W(0x1FFE);                      // cmp si, 1FFEh
+        uint8_t *out = jcc8(0x77);                        // ja out
+        exit_const(next, 0);
+        land8(out);
+    }
+    force_nolink = 1;
+    exit_const(next, 0);
 }
 
 static void push_imm(uint16_t value) {
@@ -2737,14 +2767,19 @@ static int emit1(int i) {
             return 0;
         case 0x5F:   // LD A,R: as the interpreter (the step it was, ~1800
                      // a minute in Aladdin): R + 2 (the two opcode
-                     // fetches, bit 7 kept), A = R, flags as LD A,I. (The
-                     // translated code does not count R otherwise.)
+                     // fetches, bit 7 kept), A = R, flags as LD A,I. The
+                     // translated code does not count R otherwise: the
+                     // cycles left in the run (their low byte) stand for
+                     // the instructions since the last time, or R would
+                     // go 2, 4, 6... for a game that draws its random
+                     // numbers from it.
             clobber(live);
             B(0x50);                                  // push ax
             B(0xA0); W(ZA(r));                        // mov al, [r]
             B(0x88); B(0xC4);                         // mov ah, al
             B(0x80); B(0xE4); B(0x80);                // and ah, 80h
             B(0x04); B(0x02);                         // add al, 2
+            B(0x2A); B(0x06); W(SA(cycles));          // sub al, [cycles]
             B(0x24); B(0x7F);                         // and al, 7Fh
             B(0x08); B(0xE0);                         // or al, ah
             B(0xA2); W(ZA(r));                        // mov [r], al
@@ -2993,6 +3028,7 @@ static int emit1(int i) {
             read_const16(I->nn, r16x[(op >> 4) & 3]);
             if (op == 0x6B) hl_es = 0;
             cyc += 20;
+            if (op == 0x7B) sp_loaded_exit(next, 0);
             return 1;
         }
         }
@@ -3084,7 +3120,7 @@ static int emit1(int i) {
             B(0x89); B(0x36); W(ixa);
             cyc += 23;
             return 1;
-        case 0xF9: B(0x8B); B(0x2E); W(ixa); cyc += 10; return 1;   // LD SP,IX
+        case 0xF9: B(0x8B); B(0x2E); W(ixa); cyc += 10; sp_loaded_exit(next, 0); return 1;   // LD SP,IX
         case 0xE9:   // JP (IX)
             B(0x8B); B(0x36); W(ixa);
             cyc += 8;
@@ -3333,6 +3369,7 @@ static int emit1(int i) {
             B(0xB8 + r16x[y >> 1]); W(I->nn);   // LD rr,nn
             if (y == 4) hl_es = 0;
             cyc += 10;
+            if (I->term == T_END_AFTER) sp_loaded_exit(next, 1);   // (SP out of the work RAM)
             return 1;
         case 2:
             switch (y) {
@@ -3512,7 +3549,7 @@ static int emit1(int i) {
                 cyc += 4;
                 return 1;
             }
-            if (y == 7) { B(0x89); B(0xDD); cyc += 6; return 1; }   // LD SP,HL
+            if (y == 7) { B(0x89); B(0xDD); cyc += 6; sp_loaded_exit(next, 0); return 1; }   // LD SP,HL
             // POP
             if (y == 6) {
                 B(0x8B); B(0x86); W(env->ram_delta);   // mov ax, [bp+d]

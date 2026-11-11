@@ -122,14 +122,44 @@ void gg_remap(void) {
 // frame in Sonic, 8% of it. Looked for in the 8 bytes after a status
 // read: AND n with bit 5, or BIT 5,A)
 #define SPRITE_STATUS() (gg.coll_used ? gg_platform_sprite_status() : 0)
+// (bit 5 of A tested in the 8 bytes from a: AND n with it, or BIT 5,A)
+static uint8_t coll_test_at(uint16_t a) {
+    for (uint8_t k = 0; k < 8; k++) {
+        uint8_t b = z80_read(a + k), n = z80_read(a + k + 1);
+        if ((b == 0xE6 && (n & 0x20) && n != 0xFF) || (b == 0xCB && n == 0x6F))
+            return 1;
+    }
+    return 0;
+}
 void gg_status_read_at(uint16_t pc) {
     if (gg.coll_used)
         return;
+    if (coll_test_at(pc)) {
+        gg.coll_used = 1;
+        return;
+    }
+    // The status kept for later (LD (nn),A in those 8 bytes): tested
+    // where it is read back? LD A,(nn) followed by the test, or LD HL,nn
+    // and BIT 5,(HL), anywhere in the ROM as it is mapped now. Once for
+    // each address (the scan takes about half a second on the WS).
+    static uint16_t scanned;
     for (uint8_t k = 0; k < 8; k++) {
-        uint8_t b = z80_read(pc + k), n = z80_read(pc + k + 1);
-        if ((b == 0xE6 && (n & 0x20) && n != 0xFF) || (b == 0xCB && n == 0x6F)) {
-            gg.coll_used = 1;
-            return;
+        if (z80_read(pc + k) != 0x32)
+            continue;
+        uint8_t lo = z80_read(pc + k + 1), hi = z80_read(pc + k + 2);
+        uint16_t nn = lo | (hi << 8);
+        if (nn < 0xC000 || nn == scanned)
+            continue;
+        scanned = nn;
+        for (uint16_t a = 0; a < 0xBFF0; a++) {
+            uint8_t b = z80_read(a);
+            if ((b != 0x3A && b != 0x21) || z80_read(a + 1) != lo || z80_read(a + 2) != hi)
+                continue;
+            if (b == 0x3A ? coll_test_at(a + 3)
+                          : (z80_read(a + 3) == 0xCB && z80_read(a + 4) == 0x6E)) {
+                gg.coll_used = 1;
+                return;
+            }
         }
     }
 }
@@ -422,6 +452,22 @@ void gg_reset(void) {
     gg.frame = 0;
 #ifdef GGSWAN_SMS
     vdp_mode_update();   // (192 lines)
+    {
+        // The registers as the console's BIOS leaves them (there is none
+        // here): mode 4 with the display off, the tables at the top of
+        // VRAM, no line interrupts. A game that sets only some of them
+        // (California Games II and Speedball need this, by Genesis Plus
+        // GX's notes, whose values these are) found them all 0: the name
+        // table and the sprite table at 0000h, on top of the tiles.
+        static const uint8_t bios[11] = {
+            0x36, 0x80, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0xFF
+        };
+        for (uint8_t r = 0; r < 11; r++) {
+            gg.vdp.reg[r] = bios[r];
+            gg_platform_vdp_reg(r, bios[r]);
+        }
+        vdp_mode_update();
+    }
 #endif
     gg.io_ctrl = 0xFF;   // (all inputs)
     z80_reset();

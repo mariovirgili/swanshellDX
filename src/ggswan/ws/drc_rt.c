@@ -711,7 +711,10 @@ static uint16_t put_map(uint8_t *stub, uint16_t at, uint16_t *map2) {
 static uint16_t map2_at;
 void drc_rt_rom_banks(uint16_t b) {
     drc_st.rom_mask = (uint8_t) (b - 1);
-    if (!drc_no_fast && b && b <= 256 && !(b & (b - 1))
+    // (not with a Codemasters cartridge, whose banks are written at 0000h,
+    // 4000h and 8000h: FFFEh and FFFFh are plain RAM there, and these
+    // routines would map a bank for a byte stored in them)
+    if (!drc_no_fast && b && b <= 256 && !(b & (b - 1)) && !gg.codemasters
 #ifdef GGSWAN_HOST
         && !getenv("GGSWAN_NOMAP")
 #endif
@@ -1386,6 +1389,10 @@ static void check_end(uint16_t pc, int16_t used) {
  * dispatcher and the frame loop. Returns 1 with drc_entry set, 0 when
  * anything differs (the dispatcher does it all as usual).
  */
+/// The stack where the translated code reaches it in place (drc.c,
+/// sp_loaded_exit): anywhere else, the interpreter
+#define SP_OK(sp) ((uint16_t) ((sp) - 0xC002u) <= 0x1FFEu)
+
 uint8_t drc_fast_reentry(void) {
     drc_map_sync();
     // A block that ended at an exit that can not be linked (RET, JP (HL),
@@ -1409,7 +1416,7 @@ uint8_t drc_fast_reentry(void) {
     }
     if (drc_st.cycles > 0 && !drc_st.reason && !link && !drc_no_fast && !drc_check
         && !z80_break && !drc_flush_request && !drc_st.ram_fail && !remapped
-        && !z80.ei_pending && !z80.halted && !(z80.irq && z80.iff1)) {
+        && !z80.ei_pending && !z80.halted && !(z80.irq && z80.iff1) && SP_OK(z80.sp)) {
         uint16_t pc = z80.pc;
         if (pc < 0x8000 || (pc < 0xC000 && !(drc_st.keys[0] & 0x08))) {
             uint8_t bank = bank_key(pc);
@@ -1426,7 +1433,7 @@ uint8_t drc_fast_reentry(void) {
     }
     if (drc_no_fast || drc_st.reason || drc_st.cycles > 0 || drc_check || z80_break
         || drc_flush_request || drc_st.ram_fail || remapped
-        || z80.ei_pending || z80.halted)
+        || z80.ei_pending || z80.halted || !SP_OK(z80.sp))
         return 0;
     // an interrupt accepted at once: IM 1 with the stack in work RAM only
     uint16_t sp = z80.sp - 2;
@@ -1533,8 +1540,10 @@ int32_t drc_z80_run(int32_t cycles) {
         // work RAM C000-DFFF: translated blocks that check their bytes
         // (key RAM_KEY); the mirror and cartridge RAM: interpreter
         uint8_t ram_code = pc >= 0xC000 && pc < 0xDFC0;
-        if ((pc >= 0xC000 && !ram_code) || (pc >= 0x8000 && pc < 0xC000 && (drc_st.keys[0] & 0x08))) {
-            // code in RAM (it may change): interpreter
+        if ((pc >= 0xC000 && !ram_code) || (pc >= 0x8000 && pc < 0xC000 && (drc_st.keys[0] & 0x08))
+                || !SP_OK(z80.sp)) {
+            // code in RAM (it may change): interpreter. And any code
+            // while the stack is not in the work RAM (SP_OK)
             pending_link = 0;
             drc_last_interp_pc = pc;
 #ifdef GGSWAN_HOST
