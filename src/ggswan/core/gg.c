@@ -603,19 +603,23 @@ int32_t gg_line_event(int32_t left) {
 }
 
 int16_t gg_fast_line(int16_t left) {
-    // the event waited for is the start of line e = started, reached with
-    // frame_given = e * 228 exactly (left: 0 down to -227), where the line
-    // counter (0) reloads and requests the interrupt; the next one is r + 1
-    // lines later (r: register 10), still inside the picture (and r below
-    // 128, so that the cycles fit the 16-bit run budget)
-    uint16_t e = started;
+    // the event waited for is the start of line e = started + line_counter,
+    // reached with frame_given = e * 228 exactly (left: 0 down to -227),
+    // where the line counter reloads and requests the interrupt; the next
+    // one is r + 1 lines later (r: register 10), still inside the picture
+    // (and r below 128, so that the cycles fit the 16-bit run budget).
+    // The lines before e are started here too (nothing happens on them):
+    // a wait loop ends its run early, lines before the interrupt's
+    // (Sonic Spinball, one every 8 lines: each went back to the
+    // dispatcher and event_step, some 700 cycles)
+    uint16_t e = started + gg.vdp.line_counter;
     uint8_t r = gg.vdp.reg[10];
     if (gg_every_line || left > 0 || left <= -GG_CYCLES_PER_LINE
-        || e == 0 || r >= 128 || e + r + 1 >= GG_PRESENT_LINE - 1
-        || gg.vdp.line_counter || !(gg.vdp.reg[0] & 0x10)
+        || started == 0 || r >= 128 || e + r + 1 >= GG_PRESENT_LINE - 1
+        || !(gg.vdp.reg[0] & 0x10)
         || frame_given != (int32_t) (uint16_t) (e * (unsigned) GG_CYCLES_PER_LINE))
         return 0;
-    // vdp_lines(e, e + 1) for this case, then next_event(e + 1) = e + 1 + r
+    // vdp_lines(started, e + 1) for this case, then next_event(e + 1) = e + 1 + r
     gg.vdp.line_pending = 1;
     gg.vdp.line_counter = r;
     gg.vdp.vcounter = e;

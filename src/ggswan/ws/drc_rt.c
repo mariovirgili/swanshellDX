@@ -201,7 +201,8 @@ static uint8_t *put_store_regs(uint8_t *p) {
  * LINE (at STUB_LINE; EXIT jumps here): the common part of the exits, and
  * before it the line routine. A block that ran out of cycles at the start
  * of the line of the next line interrupt (the common case in games with
- * line interrupts on many lines: Super Monaco GP) does not go back to C:
+ * line interrupts on many lines: Super Monaco GP on every line, Sonic
+ * Spinball every 8) does not go back to C:
  * the line starts here (as gg_fast_line), the interrupt is taken (IM 1, as
  * the dispatcher) and the code goes on at the block of 0038h, or through
  * DYN at pc if the Z80 does not take it now. Anything else: the usual exit
@@ -252,9 +253,10 @@ static uint16_t put_line(uint8_t *stub) {
     BAIL(0x7E);                                      // jle common
     PB(0xF6); PB(0x06); PW(V_(reg)); PB(0x10);       // test byte [reg0], 10h
     BAIL(0x74);                                      // jz common (no line interrupt)
-    PB(0x80); PB(0x3E); PW(V_(line_counter)); PB(0); // cmp byte [line_counter], 0
-    BAIL(0x75);                                      // jne common
-    PB(0x8B); PB(0x36); PW(V_(started));             // mov si, [started] (e)
+    // (the interrupt's line: started + line_counter, where the counter
+    // reaches zero; the lines before it start here too, nothing happens
+    // on them: a wait loop ends its run early, lines before)
+    PB(0x8B); PB(0x36); PW(V_(started));             // mov si, [started]
     PB(0x85); PB(0xF6);                              // test si, si
     BAIL(0x74);                                      // jz common (line 0)
     PB(0x8B); PB(0x3E); PW(V_(reg) + 10);            // mov di, [reg10]
@@ -262,7 +264,16 @@ static uint16_t put_line(uint8_t *stub) {
     PB(0x81); PB(0xFF); PW(128);                     // cmp di, 128
     BAIL(0x73);                                      // jae common
     PB(0x01); PB(0xF7);                              // add di, si
-    PB(0x47);                                        // inc di (e + r + 1)
+    PB(0x47);                                        // inc di
+    PB(0x50);                                        // push ax
+    PB(0xA0); PW(V_(line_counter));                  // mov al, [line_counter]
+    PB(0x30); PB(0xE4);                              // xor ah, ah
+    PB(0x01); PB(0xC7);                              // add di, ax (e + r + 1)
+    PB(0xB4); PB(GG_CYCLES_PER_LINE);                // mov ah, 228
+    PB(0xF6); PB(0xE4);                              // mul ah (line_counter * 228)
+    PB(0x03); PB(0x06); PW(V_(line_pos));            // add ax, [line_pos] (e * 228)
+    PB(0x89); PB(0xC6);                              // mov si, ax
+    PB(0x58);                                        // pop ax
 #ifdef GGSWAN_SMS
     PB(0x3B); PB(0x3E); PW(V_(present_m1));          // cmp di, [present - 1] (191 or 223)
 #else
@@ -271,8 +282,7 @@ static uint16_t put_line(uint8_t *stub) {
     BAIL(0x73);                                      // jae common (next not in the view)
     PB(0x83); PB(0x3E); PW(V_(frame_given) + 2); PB(0);   // cmp word [frame_given + 2], 0
     BAIL(0x75);                                      // jne common
-    PB(0x8B); PB(0x3E); PW(V_(line_pos));            // mov di, [line_pos] (e * 228)
-    PB(0x3B); PB(0x3E); PW(V_(frame_given));         // cmp di, [frame_given]
+    PB(0x3B); PB(0x36); PW(V_(frame_given));         // cmp si, [frame_given] (e * 228)
     BAIL(0x75);                                      // jne common
     PB(0x80); PB(0x3E); PW(Z_(ei_pending)); PB(0);   // cmp byte [ei_pending], 0
     BAIL(0x75);                                      // jne common
@@ -337,14 +347,18 @@ static uint16_t put_line(uint8_t *stub) {
     PB(0x8B); PB(0x36); PW(V_(reg) + 10);            // mov si, [reg10]
     PB(0x81); PB(0xE6); PW(0x00FF);                  // and si, FFh (r)
     PB(0x50);                                        // push ax
+    PB(0xA0); PW(V_(line_counter));                  // mov al, [line_counter]
+    PB(0x30); PB(0xE4);                              // xor ah, ah
+    PB(0x03); PB(0x06); PW(V_(started));             // add ax, [started] (e)
+    PB(0xA3); PW(V_(vcounter));                      // mov [vcounter], ax
+    PB(0x40);                                        // inc ax
+    PB(0xA3); PW(V_(started));                       // mov [started], ax
+    PB(0xA1); PW(V_(frame_given));                   // mov ax, [frame_given] (e * 228)
+    PB(0x05); PW(GG_CYCLES_PER_LINE);                // add ax, 228
+    PB(0xA3); PW(V_(line_pos));                      // mov [line_pos], ax
     PB(0xA0); PW(V_(reg) + 10);                      // mov al, [reg10]
     PB(0xA2); PW(V_(line_counter));                  // mov [line_counter], al
     PB(0x58);                                        // pop ax
-    PB(0x8B); PB(0x3E); PW(V_(started));             // mov di, [started]
-    PB(0x89); PB(0x3E); PW(V_(vcounter));            // mov [vcounter], di
-    PB(0x47);                                        // inc di
-    PB(0x89); PB(0x3E); PW(V_(started));             // mov [started], di
-    PB(0x81); PB(0x06); PW(V_(line_pos)); PW(GG_CYCLES_PER_LINE);   // add word [line_pos], 228
     PB(0xC6); PB(0x06); PW(Z_(irq)); PB(1);          // irq = 1 (update_irq: line, on)
     // want = (r + 1) * 228 = 256x + 4x - 32x
     PB(0x46);                                        // inc si (x)
