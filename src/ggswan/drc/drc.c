@@ -1620,6 +1620,27 @@ static void decode(uint16_t pc, ins_t *I) {
         if ((op & 0xC7) == 0x42) {                                  // SBC/ADC HL,rr
             I->fwrite = FALL; I->fread = FC; return;
         }
+        if (op == 0xA3 && env->outi_off && !env->no_fast) {
+            /*
+             * OUTI / JR NZ back to it (or JP NZ): OTIR written as a loop,
+             * in Sega's older games (Shinobi, Columns, Batman Returns, Alex
+             * Kidd). As two instructions each turn was a block and a call
+             * of the OUTI routine for one byte, about 126 cycles: Shinobi
+             * sends 53 bytes a frame this way. Translated as OTIR (op B3h,
+             * the routine with up to 32 bytes at a time) with the loop's
+             * length and cycles: nn = those of a turn, d = how many less
+             * the last one takes (the jump not taken).
+             */
+            uint8_t j = rd(pc + 2);
+            if (j == 0x20 && rd(pc + 3) == 0xFC) {
+                I->op = 0xB3; I->len = 4; I->nn = 16 + 12; I->d = 5;
+                I->term = T_END; I->fwrite = FALL; return;
+            }
+            if (j == 0xC2 && (uint16_t) (rd(pc + 3) | (rd(pc + 4) << 8)) == pc) {
+                I->op = 0xB3; I->len = 5; I->nn = 16 + 10; I->d = 0;
+                I->term = T_END; I->fwrite = FALL; return;
+            }
+        }
         if (op == 0xA0 || op == 0xA8 || op == 0xA3 || op == 0xAB) {
             // LDI LDD OUTI OUTD: games unroll long runs of them (VRAM
             // uploads); a run is one interpreted step of n instructions
@@ -1641,6 +1662,7 @@ static void decode(uint16_t pc, ins_t *I) {
         }
         if (op == 0xB3 && env->outi_off && !env->no_fast) {
             // OTIR: the OUTI routine, 64 bytes per turn
+            I->nn = 21; I->d = 5;
             I->term = T_END; I->fwrite = FALL; return;
         }
         if (op >= 0xB0 && op <= 0xBB && !(op & 4)) {
@@ -2433,27 +2455,46 @@ static int emit(int i) {
             return 1;
         }
         case 0xB3: {   // OTIR (the OUTI routine, up to 64 per turn)
+            // (also OUTI / JR NZ or JP NZ back to it, see decode: up to
+            // 32 per turn, their cycles in nn and d)
+            uint8_t most = I->len == 2 ? 64 : 32;
             materialize();
             B(0x89); B(0xCF);                                // mov di, cx
             B(0xC1); B(0xEF); B(0x08);                       // shr di, 8 (B)
             B(0x4F);                                         // dec di
-            B(0x83); B(0xFF); B(63);                         // cmp di, 63
-            B(0x72); B(0x03); B(0xBF); W(63);                // jb +3; mov di, 63
+            B(0x83); B(0xFF); B(most - 1);                   // cmp di, 63
+            B(0x72); B(0x03); B(0xBF); W(most - 1);          // jb +3; mov di, 63
             B(0x47);                                         // inc di (B = 0: 64)
+            if (I->len != 2) {
+                // the loop: no more turns than the cycles left pay for
+                // (cycles / 32 + 1, their 28 or 26 each: it ends less
+                // than a turn past them, as the block for each turn did;
+                // an interrupt is taken where it was)
+                B(0x8B); B(0x36); W(SA(cycles));             // mov si, [cycles]
+                if (cyc) { B(0x81); B(0xEE); W(cyc); }       // sub si, the block's so far
+                B(0xC1); B(0xFE); B(0x05);                   // sar si, 5
+                B(0x46);                                     // inc si
+                B(0x83); B(0xFE); B(0x01);                   // cmp si, 1
+                B(0x7D); B(0x03); B(0xBE); W(1);             // jge +3; mov si, 1
+                B(0x39); B(0xF7);                            // cmp di, si
+                B(0x76); B(0x02); B(0x89); B(0xF7);          // jbe +2; mov di, si
+            }
             B(0x57);                                         // push di (k)
             B(0xBE); W(I->pc);                               // mov si, pc
             call_near(env->outi_off);
             run_flags(DRC_H_OUTI_RUN, 1);
             B(0x5E);                                         // pop si (k)
-            B(0x6B); B(0xF6); B(21);                         // imul si, si, 21
+            B(0x6B); B(0xF6); B((uint8_t) I->nn);            // imul si, si, 21
             B(0x29); B(0x36); W(SA(cycles));                 // sub [cycles], si
             fkind = K_AH; hl_es = 0;
             B(0x84); B(0xED);                                // test ch, ch
             uint8_t *fin = jcc8(0x74);                       // jz fin
             exit_const(I->pc, 0);                            // more to send
             land8(fin);
-            B(0x83); B(0x06); W(SA(cycles)); B(5);           // add [cycles], 5 (the last: 16)
-            exit_const(I->pc + 2, 0);
+            if (I->d) {
+                B(0x83); B(0x06); W(SA(cycles)); B((uint8_t) I->d);   // add [cycles], 5 (the last: 16)
+            }
+            exit_const(I->pc + I->len, 0);
             return 1;
         }
         case 0xA3: case 0xAB: {   // a run of OUTI / OUTD (routine in the stubs)

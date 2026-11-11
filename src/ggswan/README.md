@@ -6,7 +6,7 @@ emulated by a dynamic recompiler (Z80 to V30MZ code), with the original
 interpreter kept for the parts that need it. The Game Gear video memory is
 mapped onto the WonderSwan's own tile and screen hardware.
 
-Status: fairly stable (patch 131). It has been tested mostly in the
+Status: fairly stable (patch 132). It has been tested mostly in the
 nileswan-medem emulator and with the host test tools; tests on real
 hardware are still to come.
 
@@ -284,7 +284,7 @@ it are listed in order without one.
 - lighter DYN lookup and class routine for deferred tile bytes
 - OUTI runs to CRAM handled in the run routine
 
-### Patches 90-131
+### Patches 90-132
 
 | Patch | Change |
 |---|---|
@@ -330,3 +330,4 @@ it are listed in order without one.
 | 129 | smsswan: the 224-line mode (Micro Machines and the other Codemasters games) |
 | 130 | smsswan: the sprite collision flag, for the games that test it |
 | 131 | line interrupts every few lines taken without going back to C (Sonic Spinball: about a fifth less time a frame) |
+| 132 | the loop OUTI / JR NZ (OTIR written as a loop: Shinobi, Columns, Alex Kidd) sent to VRAM in one go |
