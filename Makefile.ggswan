@@ -4,6 +4,8 @@
 # Built from the main Makefile; output: dist/NILESWAN/PLUG_GG.BIN
 # SMS=1: smsswan, the Master System plugin from the same sources built
 # with -DGGSWAN_SMS; output: dist/NILESWAN/PLUG_SMS.BIN
+# SG=1: sgswan, the SG-1000 plugin, with -DGGSWAN_SG1000; output:
+# dist/NILESWAN/PLUG_SG.BIN
 
 WONDERFUL_TOOLCHAIN ?= /opt/wonderful
 TARGET = wswan/medium
@@ -16,6 +18,10 @@ ifeq ($(SMS),1)
 NAME		:= smsswan
 DEFINES		+= -DGGSWAN_SMS
 ROM		:= dist/NILESWAN/PLUG_SMS.BIN
+else ifeq ($(SG),1)
+NAME		:= sgswan
+DEFINES		+= -DGGSWAN_SG1000
+ROM		:= dist/NILESWAN/PLUG_SG.BIN
 else
 NAME		:= ggswan
 ROM		:= dist/NILESWAN/PLUG_GG.BIN

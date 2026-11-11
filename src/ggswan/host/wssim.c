@@ -31,6 +31,26 @@ void *MK_FP(uint16_t seg, uint16_t off) {
 }
 uint16_t ws_keypad_scan(void) { return 0; }
 
+#ifdef GGSWAN_SG1000
+/* === Reference renderer: the TMS9918A's (sg_ref.h), the view of it === */
+#include "sg_ref.h"
+
+void host_line_hook(uint16_t line) {
+    static uint8_t color[256];
+    int fifth;
+    if (line >= GG_ACTIVE_LINES)
+        return;
+    sg_ref_line(line, color, &fifth);
+    if (line < GG_VIEW_Y || line >= GG_VIEW_Y + GG_VIEW_H)
+        return;
+    for (uint16_t x = 0; x < GG_VIEW_W; x++) {
+        uint16_t c = gg_color12(color[x + GG_VIEW_X]);
+        fb[line - GG_VIEW_Y][x][0] = ((c >> 8) & 0xF) * 17;
+        fb[line - GG_VIEW_Y][x][1] = ((c >> 4) & 0xF) * 17;
+        fb[line - GG_VIEW_Y][x][2] = (c & 0xF) * 17;
+    }
+}
+#else
 /* === Reference renderer (one line of the 256-pixel picture) === */
 
 static inline uint8_t tile_pixel(uint16_t tile, uint8_t row, uint8_t col) {
@@ -137,6 +157,7 @@ void host_line_hook(uint16_t line) {
     if (line < GG_ACTIVE)
         render_line(line);
 }
+#endif
 
 /* === WonderSwan Color renderer (4bpp planar) === */
 
@@ -149,6 +170,10 @@ static uint8_t ws_pixel(uint16_t tile, uint8_t row, uint8_t col) {
 
 extern volatile uint8_t act_line[], act_val[], act_n;
 static uint8_t scr1_x(int y) {
+#ifdef GGSWAN_SG1000
+    (void) y;
+    return ports[0x10];   // (no splits: the view)
+#endif
     uint8_t v = act_val[0];
     for (int i = 1; i < act_n; i++)
         if (y >= act_line[i]) v = act_val[i];
@@ -193,8 +218,10 @@ static void ws_probe(int x, int y) {
     printf("  probe WS (%d,%d): control %02X, scroll 1 %d,%d, GG reg 0-9:", x, y, ctrl, scr1_x(y), scr1_y(y));
     for (int i = 0; i < 10; i++) printf(" %02X", gg.vdp.reg[i]);
     printf(" vscroll %d\n", gg.vdp.vscroll_frame);
+#ifndef GGSWAN_SG1000
     printf("    backdrop: port 01h %02X = %03X; Game Gear colour 0 %03X, colour 16 %03X, register 7 colour %03X\n", ports[1],
         ((uint16_t*) (iram + 0xFE00))[((ports[1] >> 4) & 15) * 16 + (ports[1] & 15)], gg_color12(0), gg_color12(16), gg_color12(16 + (gg.vdp.reg[7] & 15)));
+#endif
     for (int scr = 0; scr < 2; scr++) {
         uint16_t base = scr ? (ports[7] >> 4) << 11 : (ports[7] & 15) << 11;
         int with1 = scr && !(ports[0] & 0x10);
@@ -212,6 +239,7 @@ static void ws_probe(int x, int y) {
         if (dy >= 8 || dx >= 8) continue;
         printf("    sprite %d: tile %d attr %02X at %d,%d\n", i, sp[0] | ((sp[1] & 1) << 8), sp[1], sp[3], sp[2]);
     }
+#ifndef GGSWAN_SG1000
     // the Game Gear side: the name table entry under that pixel
     {
         int gx = x - WS_VIEW_ORIGIN_X + GG_VIEW_X, gy = y + GG_VIEW_Y;
@@ -230,6 +258,7 @@ static void ws_probe(int x, int y) {
         }
         printf("\n");
     }
+#endif
 }
 
 static void ws_render(void) {
@@ -277,6 +306,9 @@ int main(int argc, char **argv) {
     if (argc < 4) { fprintf(stderr, "usage: wssim rom frames prefix [keys] [every]\n"); return 1; }
     FILE *f = fopen(argv[1], "rb");
     if (!f) { perror(argv[1]); return 1; }
+#ifdef GGSWAN_SG1000
+    memset(psram, 0xFF, 65536);   // (as the plugin loads it)
+#endif
     size_t n = fread(psram, 1, sizeof(psram), f);
     fclose(f);
     uint16_t banks = (n + 0x3FFF) >> 14;

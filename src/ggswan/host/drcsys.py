@@ -99,7 +99,9 @@ class X86:
             self.uc.ctl_flush_tb()
             self.code_version = v
         uc = self.uc
-        z = ctypes.string_at(self.iram + 0xC000, 22)
+        # (the z80 structure's mirror: C000h, elsewhere in sgswan's library)
+        za = self.lib.sys_z80_addr() if hasattr(self.lib, "sys_z80_addr") else 0xC000
+        z = ctypes.string_at(self.iram + za, 22)
         r16 = lambda o: z[o] | z[o + 1] << 8
         uc.reg_write(UC_X86_REG_AX, r16(0)); uc.reg_write(UC_X86_REG_CX, r16(2))
         uc.reg_write(UC_X86_REG_DX, r16(4)); uc.reg_write(UC_X86_REG_BX, r16(6))

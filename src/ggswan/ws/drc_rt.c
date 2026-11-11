@@ -57,17 +57,28 @@ uint16_t drc_entry[2];   // far pointer used by drc_enter: offset, segment
 #define STUB_NT     0x0D20   // a name table byte (put_nt)
 #define CACHE_START 0x1110
 // translation buffer in free IRAM (between the font tiles and the mask tile)
+#ifdef GGSWAN_SG1000
+// sgswan: A600h-BEFFh are tiles there (main.c, sg_video.inc: the Game
+// Gear's VRAM is not the WS's tiles, which leaves only what the screen
+// needs of them): the buffer at C000h-D8FFh, the L0 cache after the flag
+// tables, half the size (256 entries)
+#define BUF_ADDR    0xC000
+#define L0_ADDR     0xF200
+#define L0_SIZE     0x0800
+#else
 #define BUF_ADDR    0xA600
 /// DYN L0 cache: 512 direct-mapped entries of 8 bytes in free IRAM (in the
 /// WS Color 4bpp mode C000-FDFF is free): Z80 pc (FFFF: empty), bank,
 /// -, offset, segment of the block
 #define L0_ADDR     0xD000
+#define L0_SIZE     0x1000
+#endif
 /// block table key of the code in work RAM (banks are below 64)
 #define RAM_KEY     0xFE
-#define L0_SIZE     0x1000
 /// the L0 entry of Z80 address pc (the bank is in the entry): DYN and the
 /// dispatcher index it the same way
-#define L0_ENTRY(pc) (L0_ADDR + (((pc) << 3) & 0x0FF8))
+#define L0_MASK     (L0_SIZE - 8)
+#define L0_ENTRY(pc) (L0_ADDR + (((pc) << 3) & L0_MASK))
 #define BUF_SIZE    0x1900
 
 /*
@@ -464,7 +475,7 @@ static uint16_t put_dyn(uint8_t *stub, uint8_t bank_index) {
     // L0 first: entry (pc << 3) & FF8h (L0_ENTRY)
     PB(0x89); PB(0xC6);                              // mov si, ax
     PB(0xC1); PB(0xE6); PB(0x03);                    // shl si, 3
-    PB(0x81); PB(0xE6); PW(0x0FF8);                  // and si, FF8h
+    PB(0x81); PB(0xE6); PW(L0_MASK);                 // and si, FF8h
     PB(0x3B); PB(0x84); PW(L0_ADDR);                 // cmp ax, [si + L0]
     PB(0x75); uint8_t *l0miss1 = p++;                // jne
     PB(0x3A); PB(0x9C); PW(L0_ADDR + 2);             // cmp bl, [si + L0 + 2]
@@ -715,6 +726,9 @@ void drc_rt_rom_banks(uint16_t b) {
     // 4000h and 8000h: FFFEh and FFFFh are plain RAM there, and these
     // routines would map a bank for a byte stored in them)
     if (!drc_no_fast && b && b <= 256 && !(b & (b - 1)) && !gg.codemasters
+#ifdef GGSWAN_SG1000
+        && 0   // (no mapper: FFFCh-FFFFh are RAM)
+#endif
 #ifdef GGSWAN_HOST
         && !getenv("GGSWAN_NOMAP")
 #endif
@@ -782,6 +796,9 @@ void drc_rt_known_starts(uint8_t on) {
     env.known_start = on ? known_start : 0;
 }
 
+#ifdef GGSWAN_SG1000
+static uint16_t sg_at[4];   // (the offsets of drc_emit_sg_stubs' routines)
+#endif
 void drc_rt_init(uint16_t bank) {
     code_bank = bank;
 #ifdef GGSWAN_HOST
@@ -939,8 +956,50 @@ void drc_rt_init(uint16_t bank) {
 #else
         (void) end; (void) cram_end; (void) l1; (void) l2; (void) l3; (void) l4;
 #endif
+#ifdef GGSWAN_SG1000
+        // sgswan: its own routines for the ports, where the Game Gear's
+        // control port routine is (not used: see below)
+        {
+            env.sg_vdp = env.vdp_addr;
+            uint16_t ls = drc_emit_sg_stubs(&env, stub + STUB_CTL, STUB_CTL, sg_at);
+#ifdef GGSWAN_HOST
+            if (STUB_CTL + ls > STUB_MAP) { printf("SG stubs: no room (%X)\n", ls); exit(1); }
+#else
+            (void) ls;
+#endif
+        }
+#endif
         code_write(0, stub, CACHE_START);
     }
+#ifdef GGSWAN_SG1000
+    // sgswan: the routines above are for the Game Gear's VDP, whose VRAM
+    // is the WS's tiles. The TMS9918A's is not (main.c, sg_video.inc):
+    // its ports go to z80_out and z80_in, runs of OUTI to the interpreter
+    env.vdp_addr = 0;
+    env.ctl_off = 0;
+    env.cram_off = 0;
+    env.cls_off = 0;
+    env.nt_stub_off = 0;
+    env.vcnt_off = 0;
+    env.outi_off = 0;
+    env.outi1_off = 0;
+    env.pairs_off = 0;
+    env.ntw_off = 0;
+    env.ntwa_off = 0;
+    env.trow_off = 0;
+    // (GGSWAN_SG_NOSTUBS: a build for the tests, every port by the helper)
+#ifndef GGSWAN_SG_NOSTUBS
+    if (!drc_no_fast)
+#else
+    if (0)
+#endif
+    {
+        env.sg_out_off = sg_at[0];
+        env.sg_in_off = sg_at[1];
+        env.sg_st_off = sg_at[2];
+        env.sg_ctl_off = sg_at[3];
+    }
+#endif
     drc_st.segtab[6] = (uint16_t) (0x0800 - 0x0C00);
     drc_st.segtab[7] = (uint16_t) (0x0800 - 0x0E00);
     flush();
@@ -1616,6 +1675,9 @@ int32_t drc_z80_run(int32_t cycles) {
         drc_st.left_base = (int16_t) lb;
         drc_st.fl_off = drc_no_fast || drc_check || gg_every_line || lb > 30000
             || z80_break || drc_flush_request;
+#ifdef GGSWAN_SG1000
+        drc_st.fl_off = 1;   // (no line interrupts: nothing for the routine)
+#endif
         uint32_t io_before = 0;
         if (drc_check) {
             io_before = drc_stat_helper[1] + drc_stat_helper[2] + drc_stat_helper[3] + drc_stat_helper[4];

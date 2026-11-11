@@ -207,6 +207,8 @@ def h_out(uc, port, size, value, ud):
             sdma_chunks.append((st['cyc'] // 256, bytes(uc.mem_read(src, n))))
             sdma_n[0] += 1
     if 0xC0 <= port <= 0xD5: remap()
+SHOT = os.environ.get('WSRUN_SHOT'); shot = set()
+STUCK = int(os.environ.get('WSRUN_STUCK', '0'))
 SDMA = os.environ.get('WSRUN_SDMA')
 sdma_n = [0]; sdma_chunks = []
 def sdma_save():
@@ -296,6 +298,7 @@ def h_code(uc, addr, size, ud):
             blk_starts.insert(i, base); blk_info.insert(i, (base + ln, last_tr[0]))
         last_tr[0] = None
     if addr == FRAME:
+        st['f0'] = st['cyc']
         st['frame'] += 1
         fr = st['frame']
         if fr in KEYS: pending_keys[0] = KEYS[fr]
@@ -316,6 +319,14 @@ def h_code(uc, addr, size, ud):
         if jst[0] and addr != jst[1]: c += jst[0]     # the jump before this one was taken
         jst[0] = ex; jst[1] = addr + size; jst[2] = addr
     st['cyc'] += c
+    # WSRUN_STUCK=cycles: a frame that takes more than that many (a loop
+    # that does not end): where it is, and stop
+    if STUCK and st['cyc'] - st.get('f0', 0) > STUCK:
+        cs = uc.reg_read(UC_X86_REG_CS); ip = uc.reg_read(UC_X86_REG_IP)
+        print('STUCK in frame %d at %04X:%04X (%s); Z80 pc %04X; trail %s' % (st['frame'], cs, ip, fname(addr),
+            int.from_bytes(uc.mem_read(PCSYM, 2), 'little'), ' '.join('%s@%05X' % (n, a) for n, a in trail)))
+        sys.stdout.flush()
+        os._exit(3)
     # an instruction no interrupt gets into (a REP: Mednafen's V30MZ runs
     # all of it in one step, so a line interrupt waits that long in
     # nileswan-medem; the real CPU takes interrupts between its turns).
@@ -479,6 +490,11 @@ def report(fr):
 FC, FW, VB = syms['frame_credit'], syms['frame_waiting'], syms['vblanks']
 DUMP = os.environ.get('WSRUN_DUMP'); dumped = set()
 cs, ip = syms['_start'] >> 4, syms['_start'] & 15   # (crt0: stack 0000:4000, data)
+# WSRUN_STACK=hex address (the end of the C data, from the ELF's symbols):
+# how far down the stack went, at the end (the memory between is filled
+# with A5h before the start)
+STACK = int(os.environ['WSRUN_STACK'], 16) if os.environ.get('WSRUN_STACK') else 0
+if STACK: uc.mem_write(STACK, b'\xA5' * (0x3E00 - STACK))
 uc.mem_write(0x3EFC, b'\0\0\0\0')
 uc.reg_write(UC_X86_REG_SS, 0); uc.reg_write(UC_X86_REG_SP, 0x3EFC)
 uc.reg_write(UC_X86_REG_DS, 0); uc.reg_write(UC_X86_REG_ES, 0)
@@ -514,6 +530,13 @@ while st['frame'] < FRAMES:
                 if ps: apply(ps, r16(syms['pend_top']))
                 apply(r16(syms['log_start']), r16(syms['drc_st'] + 304))
                 open('%s/vram%05d.bin' % (DUMP, gf), 'wb').write(bytes(vr))
+        if SHOT:
+            # WSRUN_SHOT=prefix: the internal RAM and the ports at every
+            # EVERY-th frame, for wsshot.py (the WS screen they make)
+            gf = st['frame']
+            if gf and gf % EVERY == 0 and gf not in shot:
+                shot.add(gf)
+                open('%s_%05d.wsd' % (SHOT, gf), 'wb').write(bytes(uc.mem_read(0, 0x10000)) + bytes(ports))
         uc.mem_write(FC, (7547 * 2).to_bytes(2, 'little'))
         uc.mem_write(FW, b'\0')
         if CLIX: uc.mem_write(syms['pend_start'], b'\0\0')   # (as if the line interrupt had written the log: not in VRAM here)
@@ -522,3 +545,7 @@ while st['frame'] < FRAMES:
         start = a
         continue
     raise SystemExit('stopped at %04X:%04X (%s)' % (cs, ip, fname(a)))
+if STACK:
+    m = bytes(uc.mem_read(STACK, 0x3E00 - STACK))
+    low = next((i for i, v in enumerate(m) if v != 0xA5), len(m))
+    print('stack: down to %04X (%d bytes used of the %d between %04X and 4000h)' % (STACK + low, 0x4000 - STACK - low, 0x4000 - STACK, STACK))

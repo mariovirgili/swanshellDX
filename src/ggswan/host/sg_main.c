@@ -42,7 +42,32 @@ uint8_t *gg_platform_cart_ram(uint8_t page) { (void) page; return NULL; }
 void gg_platform_psg(uint8_t v) { (void) v; psg_writes++; }
 void gg_platform_stereo(uint8_t v) { (void) v; }
 uint8_t gg_platform_sprite_status(void) { return 0; }
-void gg_platform_vram_write(uint16_t a, uint8_t v) { (void) a; (void) v; vram_changes++; }
+// bytes changed this frame: patterns and colors, names, sprite table, rest
+static uint32_t fr_pat, fr_name, fr_sat, fr_other;
+static uint8_t spr_written = 1;
+uint8_t gg_platform_sprites_written(void) {
+    uint8_t w = spr_written;
+    spr_written = 0;
+    return w;
+}
+void gg_platform_vram_write(uint16_t a, uint8_t v) {
+    (void) v;
+    vram_changes++;
+    uint16_t nt = gg_name_table_base(), sat = gg_sat_base();
+    if ((a >= sat && a < sat + 128) || (uint16_t) (a - ((gg.vdp.reg[6] & 7) << 11)) < 0x800)
+        spr_written = 1;
+    if (a >= sat && a < sat + 128)
+        fr_sat++;
+    else if (a >= nt && a < nt + 768)
+        fr_name++;
+    else if (sg_mode() == SG_MODE_G2 && a < 0x3800
+             && (uint16_t) (a - ((gg.vdp.reg[4] & 4) << 11)) < 0x1800)
+        fr_pat++;
+    else if (sg_mode() == SG_MODE_G2 && a < 0x3800)
+        fr_pat++;
+    else
+        fr_other++;
+}
 void gg_platform_cram_write(uint8_t i) { (void) i; }
 void gg_platform_vdp_reg(uint8_t r, uint8_t v) { (void) r; (void) v; reg_writes++; }
 void gg_platform_vram_sync(void) {}
@@ -52,124 +77,53 @@ uint8_t gg_platform_vram_defer(uint16_t a, uint8_t v) { (void) a; (void) v; retu
 
 /* === Reference renderer === */
 
-static inline uint8_t vr(uint16_t a) { return gg_vram[a & 0x3FFF]; }
+#include "sg_ref.h"
 
 // what the game used
 static uint32_t st_mode[4], st_off, st_mag, st_16, st_over4, st_frames;
-static uint8_t st_max_line, st_max_sprites;
+static uint8_t st_max_sprites;
 static uint32_t st_status_bad;
+static uint8_t st_vis, st_kinds, st_vis_mag, st_kinds_mag;
+// the characters of the screen with a pattern and colors of their own (the
+// tiles the WonderSwan side needs): all 32x24, and the 29x19 of a view
+static uint16_t st_chars_all, st_chars_view;
+static uint32_t st_pat_max, st_pat_frames, st_pat_sum, st_name_max, st_name_sum;
 
-// the sprites of a line: the first four of the table that are on it.
-// Returns how many; *fifth: the number of the fifth, or -1.
-static uint8_t line_sprites(uint16_t line, sg_sprite_t *out, uint8_t *index, int *fifth) {
-    uint8_t n = 0, side = sg_sprite_size() * sg_sprite_mag();
-    sg_sprite_t s;
-    *fifth = -1;
-    for (uint8_t i = 0; i < 32 && sg_sprite(i, &s); i++) {
-        if ((int) line < s.y || (int) line >= s.y + side)
-            continue;
-        if (n == 4) {
-            *fifth = i;
-            break;
-        }
-        index[n] = i;
-        out[n++] = s;
-    }
-    return n;
-}
-
-// the sprites of a line over color[] (or nowhere: color = NULL). Returns
-// 1 if two of them overlap on it; *fifth as line_sprites.
-static uint8_t sprite_line(uint16_t line, uint8_t *color, int *fifth) {
-    sg_sprite_t s[4];
-    uint8_t index[4];
-    uint8_t n = line_sprites(line, s, index, fifth);
-    uint8_t mag = sg_sprite_mag(), side = sg_sprite_size() * mag;
-    uint8_t taken[256], hit = 0;
-    memset(taken, 0, sizeof(taken));
-    for (uint8_t i = 0; i < n; i++) {
-        uint16_t bits = sg_sprite_row(&s[i], (line - s[i].y) / mag);
-        for (uint8_t k = 0; k < side; k++) {
-            int x = s[i].x + k;
-            if (x < 0 || x > 255 || !((bits << (k / mag)) & 0x8000))
-                continue;
-            if (taken[x]) {
-                hit = 1;
-                continue;   // (the first of the table is in front)
-            }
-            taken[x] = 1;
-            if (color && s[i].color)
-                color[x] = s[i].color;
-        }
-    }
-    if (n + (*fifth >= 0) > st_max_line)
-        st_max_line = n + (*fifth >= 0);
-    return hit;
-}
-
-// one line: color[] gets the TMS color (0-15) of each pixel, colour 0
-// being the backdrop's already. Returns 1 if two sprites overlap on it.
-static uint8_t render_line(uint16_t line, uint8_t *color, int *fifth) {
-    const uint8_t *reg = gg.vdp.reg;
-    uint8_t backdrop = reg[7] & 0x0F;
+static void count_chars(void) {
+    static uint8_t seen[1024];
+    uint16_t nt = gg_name_table_base(), all = 0, view = 0;
+    uint16_t cmask = 0x3FF, pmask = 0x3FF;
     uint8_t mode = sg_mode();
-    *fifth = -1;
-    if (!(reg[1] & 0x40)) {
-        memset(color, backdrop, 256);
-        return 0;
+    if (mode == SG_MODE_TEXT || !(gg.vdp.reg[1] & 0x40))
+        return;
+    if (mode == SG_MODE_G2) {
+        cmask = ((gg.vdp.reg[3] & 0x7F) << 3) | 7;
+        pmask = ((gg.vdp.reg[4] & 3) << 8) | (cmask & 0xFF);
     }
-    uint16_t nt = gg_name_table_base();
-    uint8_t row = line >> 3, y = line & 7;
-    if (mode == SG_MODE_TEXT) {
-        // 40 columns of 6 pixels, 8 pixels of backdrop on each side; the
-        // two colors of register 7
-        uint8_t fg = reg[7] >> 4, bg = backdrop;
-        uint16_t pg = (reg[4] & 7) << 11;
-        memset(color, backdrop, 256);
-        for (uint16_t x = 0; x < 240; x++) {
-            uint8_t name = vr(nt + row * 40 + x / 6);
-            uint8_t p = vr(pg + name * 8 + y);
-            color[8 + x] = ((p << (x % 6)) & 0x80) ? fg : bg;
-        }
-    } else {
-        for (uint16_t x = 0; x < 256; x++) {
-            uint16_t name = vr(nt + row * 32 + (x >> 3));
-            uint8_t bit = 0x80 >> (x & 7), c;
-            if (mode == SG_MODE_G2) {
-                // 768 patterns and 8 colors bytes each: the tables are
-                // at 0000h or 2000h, with masks from registers 3 and 4
-                uint16_t cmask = ((reg[3] & 0x7F) << 3) | 7;
-                uint16_t pmask = ((reg[4] & 3) << 8) | (cmask & 0xFF);
-                uint16_t ch = name + (row >> 3) * 256;
-                uint8_t p = vr(((reg[4] & 4) << 11) + ((ch & pmask) << 3) + y);
-                uint8_t k = vr(((reg[3] & 0x80) << 6) + ((ch & cmask) << 3) + y);
-                c = (p & bit) ? k >> 4 : k & 15;
-            } else if (mode == SG_MODE_MC) {
-                // blocks of 4x4 pixels: two colors a byte, two bytes of
-                // the pattern a row of characters
-                uint8_t k = vr(((reg[4] & 7) << 11) + name * 8 + ((row & 3) << 1) + (y >> 2));
-                c = (x & 4) ? k & 15 : k >> 4;
-            } else {
-                uint8_t p = vr(((reg[4] & 7) << 11) + name * 8 + y);
-                uint8_t k = vr((reg[3] << 6) + (name >> 3));
-                c = (p & bit) ? k >> 4 : k & 15;
+    for (uint8_t pass = 0; pass < 2; pass++) {
+        memset(seen, 0, sizeof(seen));
+        for (uint8_t row = pass ? 3 : 0; row < (pass ? 22 : 24); row++)
+            for (uint8_t col = pass ? 2 : 0; col < (pass ? 31 : 32); col++) {
+                uint16_t ch = vr(nt + row * 32 + col);
+                if (mode == SG_MODE_G2)
+                    ch = (ch + (row >> 3) * 256) & (pmask | cmask);
+                else if (mode == SG_MODE_MC)
+                    ch |= (row & 3) << 8;
+                if (!seen[ch]) {
+                    seen[ch] = 1;
+                    if (pass) view++; else all++;
+                }
             }
-            color[x] = c;
-        }
     }
-    for (uint16_t x = 0; x < 256; x++)
-        if (!color[x])
-            color[x] = backdrop;
-    if (mode == SG_MODE_TEXT)
-        return 0;   // (no sprites)
-    return sprite_line(line, color, fifth);
+    if (all > st_chars_all) st_chars_all = all;
+    if (view > st_chars_view) st_chars_view = view;
 }
 
 void gg_platform_line(uint16_t line) {
     static uint8_t color[256];
     if (line < GG_ACTIVE_LINES) {
         int fifth;
-        render_line(line, color, &fifth);
+        sg_ref_line(line, color, &fifth);
         for (uint16_t x = 0; x < 256; x++) {
             uint16_t c = gg_color12(color[x]);
             fb[line][x][0] = ((c >> 8) & 15) * 17;
@@ -187,7 +141,7 @@ void gg_platform_line(uint16_t line) {
         if ((gg.vdp.reg[1] & 0x40) && sg_mode() != SG_MODE_TEXT) {
             for (uint16_t l = 0; l < GG_ACTIVE_LINES; l++) {
                 int fifth;
-                if (sprite_line(l, NULL, &fifth))
+                if (sg_ref_sprite_line(l, NULL, &fifth))
                     ref |= 0x20;
                 if (fifth >= 0 && !(ref & 0x40))
                     ref = (ref & 0x20) | 0x40 | fifth;
@@ -198,6 +152,35 @@ void gg_platform_line(uint16_t line) {
             if (st_status_bad < 5)
                 fprintf(stderr, "frame %u: sprite status %02X, the reference says %02X\n", gg.frame, got, ref);
             st_status_bad++;
+        }
+        count_chars();
+        if (fr_pat > st_pat_max) st_pat_max = fr_pat;
+        if (fr_pat) st_pat_frames++;
+        st_pat_sum += fr_pat;
+        if (fr_name > st_name_max) st_name_max = fr_name;
+        st_name_sum += fr_name;
+        if (getenv("SGTEST_WRITES") && (fr_pat || fr_name > 64))
+            fprintf(stderr, "frame %u: patterns %u names %u sprites %u other %u\n", gg.frame, fr_pat, fr_name, fr_sat, fr_other);
+        fr_pat = fr_name = fr_sat = fr_other = 0;
+        {
+            // sprites on the picture, and their different pattern and color
+            static uint16_t keys[32];
+            uint8_t vis = 0, nk = 0, side = sg_sprite_size() * sg_sprite_mag();
+            for (uint8_t i = 0; i < 32 && sg_sprite(i, &s); i++) {
+                if (s.y >= GG_ACTIVE_LINES || s.y + side <= 0 || s.x >= 256 || s.x + side <= 0 || !s.color)
+                    continue;
+                vis++;
+                uint16_t key = (s.pattern >> 3) | (s.color << 12);
+                uint8_t k = 0;
+                while (k < nk && keys[k] != key) k++;
+                if (k == nk) keys[nk++] = key;
+            }
+            if ((gg.vdp.reg[1] & 0x40) && sg_mode() != SG_MODE_TEXT) {
+                if (vis > st_vis) st_vis = vis;
+                if (nk > st_kinds) st_kinds = nk;
+                if (sg_sprite_mag() == 2 && vis > st_vis_mag) st_vis_mag = vis;
+                if (sg_sprite_mag() == 2 && nk > st_kinds_mag) st_kinds_mag = nk;
+            }
         }
         while (n < 32 && sg_sprite(n, &s))
             n++;
@@ -238,10 +221,10 @@ int main(int argc, char **argv) {
         return 1;
     }
     fclose(f);
-    // (a ROM shorter than its 16 KiB bank is there again and again)
+    // (a ROM shorter than its 16 KiB bank: FFh after it, as the plugin loads it)
     uint32_t alloc = (rom_size + 0x3FFF) & ~0x3FFFu;
     for (uint32_t a = rom_size; a < alloc; a++)
-        rom[a] = rom[a % rom_size];
+        rom[a] = 0xFF;
 
     gg_every_line = 1;   // the reference renderer draws line by line
     gg_init(alloc / 0x4000);
@@ -274,7 +257,12 @@ int main(int argc, char **argv) {
     printf("screen: off %u, Graphics I %u, Graphics II %u, multicolor %u, text %u frames\n",
         st_off, st_mode[SG_MODE_G1], st_mode[SG_MODE_G2], st_mode[SG_MODE_MC], st_mode[SG_MODE_TEXT]);
     printf("sprites: up to %u in the table, %u on a line; frames with a fifth sprite %u, 16x16 %u, magnified %u\n",
-        st_max_sprites, st_max_line, st_over4, st_16, st_mag);
+        st_max_sprites, sg_ref_max_line, st_over4, st_16, st_mag);
+    printf("sprites on the picture: up to %u, of %u kinds (pattern and color); magnified: %u, of %u kinds\n",
+        st_vis, st_kinds, st_vis_mag, st_kinds_mag);
+    printf("characters with their own pattern: up to %u on the screen, %u in a 29x19 view\n", st_chars_all, st_chars_view);
+    printf("bytes changed a frame: patterns and colors up to %u (in %u frames, %u in all), names up to %u (%u in all)\n",
+        st_pat_max, st_pat_frames, st_pat_sum, st_name_max, st_name_sum);
     printf("registers:");
     for (int r = 0; r < 8; r++)
         printf(" %02X", gg.vdp.reg[r]);

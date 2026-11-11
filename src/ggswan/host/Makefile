@@ -64,17 +64,23 @@ libdrcsys_sms.so: drcsys.c ../ws/main.c ../ws/drc_rt.c ../drc/drc.c ../core/gg.c
 
 # sgswan (the SG-1000 plugin, -DGGSWAN_SG1000): the machine with a
 # reference renderer of the TMS9918A (see ../SG1000.md), and a test ROM
-sg: sgtest
+sg: sgtest wssim_sg libdrcsys_sg.so
 
-sgtest: sg_main.c ../core/gg.c ../core/sg_vdp.c ../core/z80.c
-	$(CC) $(CFLAGS) -DGGSWAN_SG1000 -o $@ $^
+sgtest: sg_main.c sg_ref.h ../core/gg.c ../core/sg_vdp.c ../core/z80.c
+	$(CC) $(CFLAGS) -DGGSWAN_SG1000 -o $@ $(filter %.c,$^)
+
+wssim_sg: wssim.c wssim_drcst.c sg_ref.h ../ws/main.c ../ws/sg_video.inc ../core/gg.c ../core/sg_vdp.c ../core/z80.c
+	$(CC) $(CFLAGS) -DGGSWAN_SG1000 -DGGSWAN_HOST -DGGSWAN_HOST_VISIBLE= -I. -I../core -I../ws -o $@ $(filter %.c,$^)
+
+libdrcsys_sg.so: drcsys.c sg_ref.h ../ws/main.c ../ws/sg_video.inc ../ws/drc_rt.c ../drc/drc.c ../core/gg.c ../core/sg_vdp.c ../core/z80.c
+	$(CC) $(CFLAGS) -shared -fPIC -DGGSWAN_SG1000 -DGGSWAN_HOST -DGGSWAN_HOST_VISIBLE= -I. -I../core -I../ws -o $@ $(filter %.c,$^)
 
 sgcheck: sgtest
 	for m in g1 g2 mc text; do python3 mksgtest.py sgtest_$$m.sg $$m && ./sgtest sgtest_$$m.sg 120 sgtest_$$m "" 0 || exit 1; done
 
 clean:
 	rm -f ggtest wssim libztest.so libdrctest.so libdrcgame.so libdrcsys.so *.ppm
-	rm -f ggtest_sms wssim_sms libdrcsys_sms.so sgtest sgtest_*.sg
+	rm -f ggtest_sms wssim_sms libdrcsys_sms.so sgtest wssim_sg libdrcsys_sg.so sgtest_*.sg
 
 .PHONY: all sms sg sgcheck ztest drctest drcgame drcsys clean
 

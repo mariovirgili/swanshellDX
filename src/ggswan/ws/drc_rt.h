@@ -71,6 +71,7 @@ uint16_t ws_map2_iram(void);
 /// screen 2 entry of a background tile without priority: tile 1023, empty
 /// (main.c clears it): the sprites show through
 #define WS_PRIO_BLANK 0x21FF
+
 /// main.c: put the RAM window back as Game Gear slot 2 needs it
 void ws_ram_window_restore(void);
 /// check the PSRAM banks of the recompiler (0: all right)
@@ -90,6 +91,14 @@ void drc_enter(uint16_t offset);
 void drc_helper_direct(void);
 
 #ifdef GGSWAN_HOST
+#ifdef GGSWAN_SG1000
+// (sgswan: C000h is the translation buffer; the mirrors where the device
+// keeps the ROM's first KiB, an array of its own on the PC)
+#define HOST_Z80_ADDR 0xEC00
+#define HOST_VDP_ADDR 0xEC40
+#define HOST_ST_ADDR  0xED00
+#define HOST_ST_END   0xEF80   // (drcsys.py's x86 stack is at EFFCh)
+#else
 #define HOST_Z80_ADDR 0xC000
 // (the PC tests' mirrors in IRAM: z80 at C000h, the VDP's registers after
 // it, the state from C100h up to the log of deferred VRAM writes, main.c
@@ -97,6 +106,7 @@ void drc_helper_direct(void);
 #define HOST_VDP_ADDR 0xC040
 #define HOST_ST_ADDR  0xC100
 #define HOST_ST_END   0xC400
+#endif
 void host_code_changed(void);
 void host_miss(int evict);
 void host_step(uint16_t pc);

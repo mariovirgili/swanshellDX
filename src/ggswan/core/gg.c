@@ -28,18 +28,38 @@ static uint8_t rom_first_kb[0x400];
 
 /* === Memory === */
 
+#ifdef GGSWAN_SG1000
+// sgswan: 8 KiB of RAM at 2000h-3FFFh (the "8kB RAM adapter" some later
+// games were sold with, in place of that part of the ROM), or NULL
+static uint8_t GGFAR *sg_low_ram;
+#endif
+
 static void map_slot(uint8_t slot) {
     // on some platforms slot 2 and the cartridge RAM share one window: while
     // the cartridge RAM is enabled, slot 2 is not mapped
     if (slot == 2 && (gg.mapper[0] & 0x08))
         return;
     uint16_t bank = gg.mapper[1 + slot];
+#ifndef GGSWAN_SG1000   // (no mapper: a short ROM is not there again)
     if (gg.rom_banks)
         bank %= gg.rom_banks;
+#endif
     gg_slot[slot] = gg_platform_bank(slot, bank);
 }
 
 static void map_cart_ram(void) {
+#ifdef GGSWAN_SG1000
+    /*
+     * sgswan: no mapper register. The memory after a ROM of 32 KiB or
+     * less, 8000h-BFFFh, is RAM: where the cartridges with their own have
+     * it (The Castle, 8 KiB). The platform's bank for slot 2 is memory
+     * that can be written (the ROM's 64 KiB, FFh after the ROM), and the
+     * recompiler reads it as it reads the ROM.
+     */
+    map_slot(2);
+    cart_ram = gg.rom_banks <= 2 ? (uint8_t GGFAR*) gg_slot[2] : 0;
+    return;
+#endif
     // $FFFC bit 3: cartridge RAM at $8000 (bit 2: which 16 KiB page)
     if (gg.mapper[0] & 0x08) {
         cart_ram = gg_platform_cart_ram((gg.mapper[0] >> 2) & 1);
@@ -93,6 +113,12 @@ void z80_write(uint16_t a, uint8_t v) {
 #endif
         return;
     }
+#ifdef GGSWAN_SG1000
+    if (sg_low_ram && (a & 0xE000) == 0x2000) {
+        sg_low_ram[a & 0x1FFF] = v;
+        return;
+    }
+#endif
 #ifdef GGSWAN_SMS
     // the Codemasters mapper: the bank of each slot written at its start
     if (gg.codemasters && !(a & 0x3FFF)) {
@@ -511,6 +537,19 @@ void gg_reset(void) {
     for (uint8_t s = 0; s < 3; s++)
         map_slot(s);
     map_cart_ram();
+#ifdef GGSWAN_SG1000
+    {
+        // 2000h-3FFFh of the ROM all FFh: RAM there (TwinBee, Bomberman
+        // Special and the others made for the adapter have nothing else
+        // in that part; a game that has no use for it never looks). In
+        // the same 64 KiB as slot 2, 6000h before it
+        const uint8_t GGFAR *b0 = gg_slot[0];
+        uint16_t i = 0x2000;
+        while (i < 0x4000 && b0[i] == 0xFF)
+            i++;
+        sg_low_ram = i == 0x4000 ? (uint8_t GGFAR*) gg_slot[2] - 0x6000 : 0;
+    }
+#endif
     gg.frame = 0;
 #ifdef GGSWAN_SMS
     vdp_mode_update();   // (192 lines)

@@ -84,6 +84,11 @@ exit_no_launch:
             return launch_com(path);
         } else if (!strcasecmp(ext, s_file_ext_rom)) {
             return launch_plugin_via_ipc(s_path_plugin_uxn, path);
+        } else if (!strcasecmp(ext, s_file_ext_sg)) {
+            // SG-1000 ROM: sgswan, from ggswan's sources (no cartridge RAM
+            // to save)
+            if (flags & LAUNCH_ROUTER_USE_SERIAL_OUT) return ERR_FILE_NOT_EXECUTABLE;
+            return launch_plugin_via_ipc(s_path_plugin_sg, path);
         } else if (!strcasecmp(ext, s_file_ext_gg) || !strcasecmp(ext, s_file_ext_sms)) {
             // Game Gear ROM: ggswan emulator plugin; Master System ROM:
             // smsswan, built from the same sources

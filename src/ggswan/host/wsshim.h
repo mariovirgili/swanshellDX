@@ -4,6 +4,7 @@
 #include <string.h>
 #define __far
 #define _fmemcpy memcpy
+#define _fmemset memset
 extern uint8_t iram[65536];
 extern uint8_t ports[256];
 void outportb(uint8_t p, uint8_t v);

@@ -201,10 +201,12 @@ plugin-uxnws:
 	@$(MAKE) -C vendor/uxnws PLATFORM=nileswan
 
 # Game Gear emulator plugin (dist/NILESWAN/PLUG_GG.BIN) and, from the
-# same sources, the Master System one (dist/NILESWAN/PLUG_SMS.BIN)
+# same sources, the Master System one (dist/NILESWAN/PLUG_SMS.BIN) and the
+# SG-1000 one (dist/NILESWAN/PLUG_SG.BIN)
 plugin-ggswan: libnile-medium
 	$(_V)$(MAKE) -f Makefile.ggswan --no-print-directory
 	$(_V)$(MAKE) -f Makefile.ggswan SMS=1 --no-print-directory
+	$(_V)$(MAKE) -f Makefile.ggswan SG=1 --no-print-directory
 
 build/bootstub.bin: libnile-bootfriend
 	$(_V)$(MAKE) -f Makefile.bootstub --no-print-directory
@@ -224,6 +226,7 @@ clean:
 	$(_V)$(MAKE) -f Makefile.bootstub clean --no-print-directory
 	$(_V)$(MAKE) -f Makefile.ggswan clean --no-print-directory
 	$(_V)$(MAKE) -f Makefile.ggswan SMS=1 clean --no-print-directory
+	$(_V)$(MAKE) -f Makefile.ggswan SG=1 clean --no-print-directory
 	$(_V)$(RM) $(ELF_STAGE1) $(ELF) dist/ $(BUILDDIR) compile_commands.json || true
 	$(_V)cd $(LIBNILE_PATH) && $(MAKE) TARGET=wswan/bootfriend clean
 	$(_V)cd $(LIBNILE_PATH) && $(MAKE) TARGET=wswan/medium clean

@@ -190,6 +190,17 @@ typedef struct {
     // routine for OUTI x 3 / OUT (BEh),A: a tile row of three planes and
     // a fourth from A (drc_emit_trow_stub; 0: none)
     uint16_t trow_off;
+#ifdef GGSWAN_SG1000
+    // sgswan: the TMS9918A's ports (drc_emit_sg_stubs; 0: the helper).
+    // sg_vdp: IRAM address of gg.vdp (vdp_addr is 0: none of the Game
+    // Gear's routines)
+    uint16_t sg_vdp;
+    uint16_t sg_out_off;   // a byte to the data port (AL)
+    uint16_t sg_in_off;    // a byte from the data port (AL)
+    uint16_t sg_st_off;    // the status (AL)
+    uint16_t sg_ctl_off;   // a byte to the control port (AL; CF = 1: a
+                           // register, the caller uses the helper)
+#endif
 } drc_env_t;
 
 #define DRC_OUTD_DELTA 0xD30   // (after the other routines: OUTI's has the room up to LDI's)
@@ -214,6 +225,18 @@ uint16_t drc_emit_ldi_stub(const drc_env_t *env, uint8_t *out, uint16_t out_off,
 
 /// Write the routine for OUT (BFh),A; returns its length
 uint16_t drc_emit_ctl_stub(const drc_env_t *env, uint8_t *out, uint16_t out_off);
+#ifdef GGSWAN_SG1000
+// sgswan (ws/sg_video.inc, and the routine for the TMS9918A's data port): what was written to the VRAM since the last frame shown: a
+// byte for 16 bytes of VRAM, a byte for 512 of them, a byte for all
+#define SG_VRAM_SEG 0x1000
+#define SG_VRAM_OFF 0xC000
+#define SG_DIRTY_ADDR 0xFA00   // [1024]
+#define SG_PAGE_ADDR 0xD900    // [32]
+#define SG_ANY_ADDR 0xD920
+/// sgswan: the routines for the TMS9918A's ports (see drc_env_t), at[0..3]
+/// their offsets: data out, data in, status, control. Returns the length.
+uint16_t drc_emit_sg_stubs(const drc_env_t *e, uint8_t *out, uint16_t out_off, uint16_t *at);
+#endif
 uint16_t drc_emit_vcnt_stub(const drc_env_t *env, uint8_t *out, uint16_t out_off);
 
 /// Write the routine for OUTI / OUTI / DEC L x 4 repeated (entry at +

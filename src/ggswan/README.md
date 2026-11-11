@@ -6,7 +6,7 @@ emulated by a dynamic recompiler (Z80 to V30MZ code), with the original
 interpreter kept for the parts that need it. The Game Gear video memory is
 mapped onto the WonderSwan's own tile and screen hardware.
 
-Status: fairly stable (patch 142). It has been tested mostly in the
+Status: fairly stable (patch 143). It has been tested mostly in the
 nileswan-medem emulator and with the host test tools; tests on real
 hardware are still to come.
 
@@ -187,6 +187,40 @@ The sprite collision flag is worked out only for games seen to test
 it right after reading the VDP status (it takes time: about 8% of a
 frame in Sonic, which does not use it).
 
+## sgswan: the SG-1000 plugin
+
+`PLUG_SG.BIN` is built from the same sources with `-DGGSWAN_SG1000`
+(`make -f Makefile.ggswan SG=1`; the main build makes all three
+plugins). Copy it to `/NILESWAN/PLUG_SG.BIN`: the menu starts it for
+`.sg` files (up to 48 KiB, no mapper). New in patch 143 and tried only
+in the PC tools so far: see `SG1000.md` for how it is made and what was
+measured.
+
+The SG-1000 shows a 256x192 picture; the WonderSwan shows 224x144 of it
+on its whole screen, and the view can be moved over the picture while
+playing, as smsswan's.
+
+| Keys | Function |
+|---|---|
+| X1-X4, B, A | D-pad, button 1, button 2 (joypad 1; there is no second joypad) |
+| START | The **Pause** button (sent to the game when START is let go) |
+| Y1 (Y up), Y3 (Y down), Y4 (Y left), Y2 (Y right) | **Move the view** over the picture, 2 pixels a frame (X 0-32, Y 0-48; it starts in the middle) |
+| Y2 (Y right) + Y4 (Y left) together | Pause and resume, frame by frame with Y3 (Y down), as on the Game Gear |
+| START + Y1 (Y up), held for a second | Back to the menu |
+| Y1 (Y up) held at the start | **Diagnostics** over the sides of the picture (FPS and the recompiler's numbers; on the right, with Y4 (Y left) held too: K the tiles drawn in the last second, M the background tiles in use) |
+
+There: Graphics I and II, multicolor, sprites of 8x8 and 16x16 pixels,
+magnified too, the backdrop color, the sprite flags of the status
+register (fifth sprite, overlap), the three sound channels and the noise.
+Cartridges with their own RAM at 8000h (The Castle) and the games made
+for the 8 KiB RAM adapter (TwinBee, Bomberman Special) run. No saves:
+the SG-1000 has none.
+
+Not done: text mode (the backdrop is shown instead), the limit of four
+sprites a line (all of them are shown: no flicker), a second joypad, the
+SC-3000's keyboard and the SF-7000's disks (`.sc` and `.sf` files are not
+for this).
+
 ## Changelog
 
 One line per commit, oldest first. The patch number (shown as `P` at
@@ -287,7 +321,7 @@ it are listed in order without one.
 - lighter DYN lookup and class routine for deferred tile bytes
 - OUTI runs to CRAM handled in the run routine
 
-### Patches 90-142
+### Patches 90-143
 
 | Patch | Change |
 |---|---|
@@ -344,3 +378,4 @@ it are listed in order without one.
 | 140 | from a review of smsswan: the stack outside the work RAM (a table in ROM read with POPs, the RAM's mirror) goes to the interpreter instead of other bytes of IRAM; smsswan starts with the VDP registers as the BIOS leaves them; PSG: tone 0 as 1, noise that follows tone 2 below the WS's slowest rate; the collision flag also for a status kept and tested later; LD A,R moves with the cycles; Codemasters cartridges without the Sega mapper's routines; mksptest.py |
 | 141 | diagnostics: Z and the bank, under the FPS, when a game maps a ROM bank other than 0 in slot 0 (the one case left from the review of patch 140) |
 | 142 | sgswan (the SG-1000), step 1, nothing on the WonderSwan yet: the machine in `core/` under `-DGGSWAN_SG1000` (ports, the TMS9918A's registers and status, the sprites' flags worked out once a frame), `host/sgtest` with a reference renderer of the four screen modes and the sprites, the test ROMs of `mksgtest.py`; the plan and the memory map in `SG1000.md`. `PLUG_GG.BIN` and `PLUG_SMS.BIN` are the same bytes as patch 141 but for this number |
+| 143 | sgswan, the SG-1000 plugin: `PLUG_SG.BIN` (`SG=1`), `.sg` in the menu. The TMS9918A's screen on the WonderSwan (`ws/sg_video.inc`: patterns turned into tiles when a character in the view shows them, sprites 8x8, 16x16 and magnified, the 224x144 view), its ports and block I/O in the recompiler, RAM at 8000h after a short ROM (The Castle) and at 2000h where the ROM is empty (the 8 KiB RAM adapter's games); `wssim_sg`, `libdrcsys_sg.so`, `wsshot.py`. Not yet tried on a device or in nileswan-medem. `PLUG_GG.BIN` and `PLUG_SMS.BIN`: the same bytes as patch 142 but for this number |

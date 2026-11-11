@@ -66,7 +66,11 @@
 
 #ifdef GGSWAN_HOST
 uint8_t *gg_ram = iram + GG_RAM_ADDR;
+#ifdef GGSWAN_SG1000
+uint8_t *gg_vram;   // (the TMS9918A's: sg_video.inc)
+#else
 uint8_t *gg_vram = iram + GG_VRAM_ADDR;
+#endif
 #define map1 ((uint16_t*) (iram + 0x2000))
 #define map2 ((uint16_t*) (iram + 0x2800))
 #define sprite_table (iram + 0x3000)
@@ -75,7 +79,11 @@ uint8_t *gg_vram = iram + GG_VRAM_ADDR;
 #define MAP_SIZE 2048
 #else
 uint8_t *gg_ram = (uint8_t*) GG_RAM_ADDR;
+#ifdef GGSWAN_SG1000
+uint8_t __far *gg_vram;   // (the TMS9918A's: sg_video.inc)
+#else
 uint8_t *gg_vram = (uint8_t*) GG_VRAM_ADDR;
+#endif
 
 static uint16_t map1[32 * 32] __attribute__((aligned(2048)));
 static uint16_t map2[32 * 32] __attribute__((aligned(2048)));
@@ -258,6 +266,9 @@ uint8_t __far *gg_platform_cart_ram(uint8_t page) {
 
 /* === Video: VDP to WS === */
 
+#ifdef GGSWAN_SG1000
+#include "sg_video.inc"
+#else
 static uint16_t nt_base = 0x3800;
 static uint16_t sat_base = 0x3F00;
 static uint8_t map_top;        // first "virtual" Game Gear row in map1
@@ -1728,6 +1739,7 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
     vp_lap(VP_ALL);
     prof_phase = PROF_OTHER;
 }
+#endif   // (not GGSWAN_SG1000)
 
 /* === Sound: SN76489 to WS === */
 
@@ -1987,11 +1999,22 @@ GGSWAN_HOST_VISIBLE void sound_init(void) {
 
 /* === Input === */
 
-#if defined(GGSWAN_SMS) && !defined(GGSWAN_HOST)
+#if (defined(GGSWAN_SMS) || defined(GGSWAN_SG1000)) && !defined(GGSWAN_HOST)
 static uint8_t step_paused;   // (frame by frame: below)
 #endif
 GGSWAN_HOST_VISIBLE void read_keys(void) {
     uint16_t k = ws_keypad_scan();
+#if defined(GGSWAN_SG1000) && !defined(GGSWAN_HOST)
+    // sgswan: the Y buttons move the 224x144 view over the 256x192
+    // picture, as smsswan's
+    if (!(k & WS_KEY_START) && !step_paused
+            && (k & (WS_KEY_Y2 | WS_KEY_Y4)) != (WS_KEY_Y2 | WS_KEY_Y4)) {
+        if ((k & WS_KEY_Y1) && gg_view_y >= 2) gg_view_y -= 2;
+        if ((k & WS_KEY_Y3) && gg_view_y <= GG_VIEW_Y_MAX - 2) gg_view_y += 2;
+        if ((k & WS_KEY_Y4) && gg_view_x >= 2) gg_view_x -= 2;
+        if ((k & WS_KEY_Y2) && gg_view_x <= GG_VIEW_X_MAX - 2) gg_view_x += 2;
+    }
+#endif
 #if defined(GGSWAN_SMS) && !defined(GGSWAN_HOST)
     // smsswan: the Y buttons move the 224x144 view over the 256x192
     // picture, 2 pixels a frame (not with START held: START + Y1 is the
@@ -2047,6 +2070,19 @@ GGSWAN_HOST_VISIBLE void read_keys(void) {
             start_held = 0;
         }
     }
+#elif defined(GGSWAN_SG1000)
+    // START is the Pause button, pressed for the game when it is let go,
+    // unless Y1 (Y up) was held with it (the way back to the menu)
+    {
+        static uint8_t start_held, start_y1;
+        if (k & WS_KEY_START) {
+            if (!start_held) { start_held = 1; start_y1 = 0; }
+            if (k & WS_KEY_Y1) start_y1 = 1;
+        } else {
+            if (start_held && !start_y1) g |= GG_KEY_START;
+            start_held = 0;
+        }
+    }
 #else
     if (k & WS_KEY_START) g |= GG_KEY_START;
 #endif
@@ -2066,6 +2102,11 @@ static uint16_t load_rom(void) {
     text_hex("SIZE", size);
     if (size > GG_ROM_MAX || size < 0x400)
         fail("ROM SIZE", size);
+#ifdef GGSWAN_SG1000
+    // (no mapper: 48 KiB at most; the rest of the bank is the VRAM)
+    if (size > 0xC000)
+        fail("ROM SIZE", size);
+#endif
 
     // FatFs must run with the RAM window on SRAM (it uses the IPC bank),
     // so read 8 KiB at a time into IRAM ($8000, the future Game Gear RAM)
@@ -2399,9 +2440,15 @@ int main(void) {
 
     ws_system_set_mode(WS_MODE_COLOR_4BPP);
     outportb(WS_DISPLAY_CTRL_PORT, 0);
+#ifdef GGSWAN_SG1000
+    memset(TILE_PTR(0), 0, 0x4000);
+#else
     memset(gg_vram, 0, 0x4000);
+#endif
     text_init();
-#ifdef GGSWAN_SMS
+#ifdef GGSWAN_SG1000
+    text_print("SGSWAN 0.1 - SG-1000");
+#elif defined(GGSWAN_SMS)
     text_print("SMSSWAN 0.1 - MASTER SYSTEM");
 #else
     text_print("GGSWAN 0.1 - GAME GEAR");
@@ -2442,7 +2489,13 @@ int main(void) {
     uint16_t banks = load_rom();
     text_hex("BANKS", banks);
 
-#ifdef GGSWAN_SMS
+#ifdef GGSWAN_SG1000
+    // Y1 (Y up) held: the diagnostics, over the sides of the picture
+    if (ws_keypad_scan() & WS_KEY_Y1) {
+        sg_diag = 1;
+        text_print("DIAGNOSTICS");
+    }
+#elif defined(GGSWAN_SMS)
     // Y1 (Y up) held: the diagnostics instead of the background priority
     // (both use screen 2)
     if (ws_keypad_scan() & WS_KEY_Y1) {
@@ -2467,6 +2520,11 @@ int main(void) {
         // cache (segments 4000h-A000h) must start above them
         if (code_bank < GG_PSRAM_FIRST_BANK + ((banks + 3) >> 2))
             fail("CODE BANK", code_bank);
+#ifdef GGSWAN_SG1000
+        // (and above the bank of the screen's tables: sg_video.inc)
+        if (code_bank <= SG_TABLE_BANK)
+            fail("CODE BANK", code_bank);
+#endif
         // X4 (X left) held: diagnostics, the recompiler without patches
         // 29-32 (see drc_rt.h)
         if (ws_keypad_scan() & WS_KEY_X4)
@@ -2524,8 +2582,10 @@ int main(void) {
     }
 
     memset(gg_ram, 0, 0x2000);
+#ifndef GGSWAN_SG1000
     drc_st.hs_last = 16;   // (rec_val[0] = 0: register value 16)
     rec_n = 1;
+#endif
     video_init();
     sound_init();
     gg_init(banks);

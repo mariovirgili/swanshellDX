@@ -143,6 +143,22 @@ void sys_tr_report(void) {
 }
 
 /* reference renderer (screenshots) */
+#ifdef GGSWAN_SG1000
+// (sgswan: the TMS9918A's, sg_ref.h; the view of it)
+#include "sg_ref.h"
+static void render_line(uint16_t line) {
+    static uint8_t color[256];
+    int fifth;
+    sg_ref_line(line, color, &fifth);
+    if (line >= GG_VIEW_Y && line < GG_VIEW_Y + GG_VIEW_H)
+        for (uint16_t x = 0; x < GG_VIEW_W; x++) {
+            uint16_t c = gg_color12(color[x + GG_VIEW_X]);
+            fb[line - GG_VIEW_Y][x][0] = ((c >> 8) & 0xF) * 17;
+            fb[line - GG_VIEW_Y][x][1] = ((c >> 4) & 0xF) * 17;
+            fb[line - GG_VIEW_Y][x][2] = (c & 0xF) * 17;
+        }
+}
+#else
 static inline uint8_t tile_pixel(uint16_t tile, uint8_t row, uint8_t col) {
     const uint8_t *p = gg_vram + ((tile * 32 + row * 4) & 0x3FFF);
     uint8_t bit = 7 - col;
@@ -206,6 +222,7 @@ static void render_line(uint16_t line) {
             fb[line - GG_VIEW_Y][x][2] = ((c >> 8) & 0xF) * 17;
         }
 }
+#endif
 void host_line_hook(uint16_t line) { if (line < GG_ACTIVE) render_line(line); }
 
 /* drc_enter: Python runs the code (z80 and drc_st are mirrored in IRAM) */
@@ -245,6 +262,9 @@ int sys_init(const char *path, int use_drc, int every_line) {
     gg_every_line = every_line;
     FILE *f = fopen(path, "rb");
     if (!f) return 0;
+#ifdef GGSWAN_SG1000
+    memset(psram, 0xFF, 65536);   // (as the plugin loads it)
+#endif
     size_t n = fread(psram, 1, 512 * 1024, f);
     fclose(f);
     uint16_t banks = (n + 0x3FFF) >> 14;
@@ -295,6 +315,8 @@ uint8_t *sys_fb(void) { return &fb[0][0][0]; }
 // the view's width (160; smsswan 224)
 int sys_view_w(void) { return GG_VIEW_W; }
 uint8_t *sys_iram(void) { return iram; }
+// where the z80 structure is mirrored in the internal RAM (drc_rt.h)
+int sys_z80_addr(void) { return HOST_Z80_ADDR; }
 uint8_t *sys_psram(void) { return psram; }
 uint8_t *sys_sram(void) { return sram; }
 uint8_t *sys_ports(void) { return ports; }

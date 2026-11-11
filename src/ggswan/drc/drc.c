@@ -1761,6 +1761,103 @@ uint16_t drc_emit_vcnt_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) 
     return (uint16_t) (o - o_start);
 }
 
+#ifdef GGSWAN_SG1000
+/*
+ * sgswan: the TMS9918A's ports without the C helper (gg.c: vdp_write_data,
+ * vdp_read_data, vdp_read_status, vdp_write_control). The VRAM is at
+ * SG_VRAM_SEG:SG_VRAM_OFF (the RAM window, main.c); a byte that changes
+ * marks what the screen is made from again (sg_video.inc). AL the byte in
+ * or out; SI, DI, ES and the flags used, the rest kept.
+ */
+#define VS(field) ((uint16_t) (env->sg_vdp + offsetof(gg_vdp_t, field)))
+static void sg_vram_es(void) {
+    B(0xBF); W(SG_VRAM_SEG);                         // mov di, the VRAM's segment
+    B(0x8E); B(0xC7);                                // mov es, di
+}
+static void sg_addr_next(void) {
+    B(0x46);                                         // inc si
+    B(0x81); B(0xE6); W(0x3FFF);                     // and si, 3FFFh
+    B(0x89); B(0x36); W(VS(addr));                   // mov [addr], si
+}
+uint16_t drc_emit_sg_stubs(const drc_env_t *e, uint8_t *out, uint16_t out_off, uint16_t *at) {
+    env = e;
+    o = o_start = out; o_base = out_off;
+    // the data port, out: always VRAM
+    at[0] = here();
+    B(0x8B); B(0x36); W(VS(addr));                   // mov si, [addr]
+    sg_vram_es();
+    B(0x26); B(0x38); B(0x84); W(SG_VRAM_OFF);       // cmp es:[si + vram], al
+    uint8_t *same = jcc8(0x74);                      // je same
+    B(0x26); B(0x88); B(0x84); W(SG_VRAM_OFF);       // mov es:[si + vram], al
+    B(0x89); B(0xF7);                                // mov di, si
+    B(0xC1); B(0xEF); B(0x04);                       // shr di, 4
+    B(0xC6); B(0x85); W(SG_DIRTY_ADDR); B(1);        // mov byte [di + dirty], 1
+    B(0xC1); B(0xEF); B(0x05);                       // shr di, 5
+    B(0xC6); B(0x85); W(SG_PAGE_ADDR); B(1);         // mov byte [di + page], 1
+    B(0xC6); B(0x06); W(SG_ANY_ADDR); B(1);          // mov byte [any], 1
+    land8(same);
+    B(0xA2); W(VS(read_buffer));                     // mov [read_buffer], al
+    sg_addr_next();
+    B(0xC6); B(0x06); W(VS(latch_full)); B(0);       // latch_full = 0
+    B(0xC3);                                         // ret
+    // the data port, in: the byte read ahead, the next one read
+    at[1] = here();
+    B(0x8B); B(0x36); W(VS(addr));                   // mov si, [addr]
+    sg_vram_es();
+    B(0x26); B(0x8A); B(0x84); W(SG_VRAM_OFF);       // mov al, es:[si + vram]
+    B(0x86); B(0x06); W(VS(read_buffer));            // xchg al, [read_buffer]
+    sg_addr_next();
+    B(0xC6); B(0x06); W(VS(latch_full)); B(0);       // latch_full = 0
+    B(0xC3);                                         // ret
+    // the status: bits 0-4 are 1 without a fifth sprite; read, it clears
+    at[2] = here();
+    B(0xA0); W(VS(status));                          // mov al, [status]
+    B(0xA8); B(0x40);                                // test al, 40h
+    B(0x75); B(0x02);                                // jnz +2
+    B(0x0C); B(0x1F);                                // or al, 1Fh
+    B(0xC6); B(0x06); W(VS(status)); B(0);           // status = 0
+    B(0xC6); B(0x06); W(VS(line_pending)); B(0);     // line_pending = 0
+    B(0xC6); B(0x06); W(VS(latch_full)); B(0);       // latch_full = 0
+    B(0xC6); B(0x06); W(ZA(irq)); B(0);              // (no request left)
+    B(0xC3);                                         // ret
+    // the control port: the first byte kept, the second an address (and
+    // the byte read ahead) or a register (the helper)
+    at[3] = here();
+    B(0x80); B(0x3E); W(VS(latch_full)); B(0);       // cmp byte [latch_full], 0
+    uint8_t *second = jcc8(0x75);                    // jne second
+    B(0xA2); W(VS(latch));                           // mov [latch], al
+    B(0xA2); W(VS(addr));                            // mov [addr], al (low byte)
+    B(0xC6); B(0x06); W(VS(latch_full)); B(1);       // latch_full = 1
+    B(0xF8); B(0xC3);                                // clc; ret
+    land8(second);
+    B(0xA8); B(0x80);                                // test al, 80h
+    uint8_t *adr = jcc8(0x74);                       // jz address
+    B(0xF9); B(0xC3);                                // stc; ret
+    land8(adr);
+    B(0x50);                                         // push ax
+    B(0xC6); B(0x06); W(VS(latch_full)); B(0);       // latch_full = 0
+    B(0x88); B(0xC4);                                // mov ah, al
+    B(0xC0); B(0xEC); B(0x06);                       // shr ah, 6
+    B(0x88); B(0x26); W(VS(code));                   // mov [code], ah
+    B(0x88); B(0xC4);                                // mov ah, al
+    B(0x80); B(0xE4); B(0x3F);                       // and ah, 3Fh
+    B(0x88); B(0x26); W(VS(addr) + 1);               // mov [addr + 1], ah
+    B(0x8A); B(0x26); W(VS(latch));                  // mov ah, [latch]
+    B(0x88); B(0x26); W(VS(addr));                   // mov [addr], ah
+    B(0xA8); B(0x40);                                // test al, 40h
+    uint8_t *done = jcc8(0x75);                      // jnz done (to write)
+    B(0x8B); B(0x36); W(VS(addr));                   // mov si, [addr]
+    sg_vram_es();
+    B(0x26); B(0x8A); B(0x84); W(SG_VRAM_OFF);       // mov al, es:[si + vram]
+    B(0xA2); W(VS(read_buffer));                     // mov [read_buffer], al
+    sg_addr_next();
+    land8(done);
+    B(0x58);                                         // pop ax
+    B(0xF8); B(0xC3);                                // clc; ret
+    return (uint16_t) (o - o_start);
+}
+#endif
+
 uint16_t drc_emit_ctl_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) {
     env = e;
     o = o_start = out; o_base = out_off;
@@ -2030,6 +2127,21 @@ static void decode(uint16_t pc, ins_t *I) {
         if ((op & 0xC7) == 0x42) {                                  // SBC/ADC HL,rr
             I->fwrite = FALL; I->fread = FC; return;
         }
+#ifdef GGSWAN_SG1000
+        if ((op == 0xA2 || op == 0xAA || op == 0xA3 || op == 0xAB) && env->sg_out_off) {
+            // sgswan: a run of INI, IND, OUTI or OUTD, with the
+            // TMS9918A's data port (sg_block_io)
+            uint8_t k = 1;
+            while (k < 64 && rd(pc + k * 2) == 0xED && rd(pc + k * 2 + 1) == op) k++;
+            I->len = k * 2; I->count = k; I->fwrite = FALL;
+            return;
+        }
+        if ((op == 0xB2 || op == 0xB3) && env->sg_out_off) {
+            // INIR, OTIR: up to 64 bytes a turn
+            I->term = T_END; I->fwrite = FALL;
+            return;
+        }
+#endif
         if (op == 0xA3 && env->outi_off && !env->no_fast) {
             /*
              * OUTI / JR NZ back to it (or JP NZ): OTIR written as a loop,
@@ -2482,6 +2594,148 @@ static void run_flags(uint8_t h, int live) {
     land8(done);
 }
 
+#ifdef GGSWAN_SG1000
+/*
+ * sgswan: INI, IND, OUTI, OUTD (a run of them) and INIR, OTIR with the
+ * TMS9918A's data port (C: 80h-BEh, even), a loop around the port's
+ * routine (drc_emit_sg_stubs): the way games fill the VRAM and read it
+ * back (Doki Doki Penguin Land: some 110 of them a frame, each an
+ * interpreted step before). INI's bytes go to the work RAM in place.
+ * Another port, or INI to somewhere else: the interpreter, as before.
+ * Flags as the Game Gear's runs (run_flags): S and Z of B, N bit 7 of the
+ * last byte. INIR and OTIR: up to 64 bytes, then the instruction again
+ * (the cycles checked in between, as OTIR's on the Game Gear).
+ */
+static int sg_block_io(int i) {
+    ins_t *I = &ins[i];
+    uint8_t op = I->op;
+    uint8_t in = !(op & 1), rep_ = (op & 0x10) != 0, down = (op & 0x08) != 0;
+    uint16_t last = in ? SA(val) : VS(read_buffer);
+    uint8_t *slow0, *slow1 = 0, *slow2 = 0;
+    if (rep_) {
+        materialize();
+        B(0x89); B(0xCF);                                // mov di, cx
+        B(0xC1); B(0xEF); B(0x08);                       // shr di, 8 (B)
+        B(0x4F);                                         // dec di
+        B(0x83); B(0xFF); B(63);                         // cmp di, 63
+        B(0x72); B(0x03); B(0xBF); W(63);                // jb +3; mov di, 63
+        B(0x47);                                         // inc di (B = 0: 64)
+    } else {
+        clobber(0);
+        B(0xBF); W(I->count);                            // mov di, k
+    }
+    B(0x89); B(0xCE);                                    // mov si, cx
+    B(0x81); B(0xE6); W(0x00C1);                         // and si, C1h
+    B(0x81); B(0xFE); W(0x0080);                         // cmp si, 80h (the data port)
+    slow0 = jcc8(0x75);                                  // jne slow
+    if (in) {
+        // the bytes' place: all of them in C000h-DFFFh
+        B(0x8D); B(0xB7); W(0x4000);                     // lea si, [bx + 4000h] (HL - C000h)
+        B(0x81); B(0xFE); W(0x2000);                     // cmp si, 2000h
+        slow1 = jcc8(0x73);                              // jae slow
+        if (down) {
+            B(0x46);                                     // inc si
+            B(0x39); B(0xFE);                            // cmp si, di
+            slow2 = jcc8(0x72);                          // jb slow (below C000h)
+        } else {
+            B(0x01); B(0xFE);                            // add si, di
+            B(0x81); B(0xFE); W(0x2000);                 // cmp si, 2000h
+            slow2 = jcc8(0x77);                          // ja slow (past DFFFh)
+        }
+    }
+    if (rep_)
+        B(0x57);                                         // push di (the turns, for the cycles)
+    B(0x89); B(0x3E); W(SA(arg));                        // mov [arg], di
+    B(0x50);                                             // push ax (A)
+    uint8_t *loop = o;
+    if (in) {
+        call_near(env->sg_in_off);
+        B(0x88); B(0x87); W(env->ram_delta);             // mov [bx + ram], al
+    } else {
+        B(0x89); B(0xDE);                                // mov si, bx
+        B(0xC1); B(0xC6); B(0x04);                       // rol si, 4
+        B(0x83); B(0xE6); B(0x0E);                       // and si, 14
+        B(0x8E); B(0x84); W(SA(segtab));                 // mov es, [si + segtab]
+        B(0x26); B(0x8A); B(0x07);                       // mov al, es:[bx]
+        call_near(env->sg_out_off);
+    }
+    B(down ? 0x4B : 0x43);                               // dec / inc bx
+    B(0xFE); B(0xCD);                                    // dec ch
+    B(0xFF); B(0x0E); W(SA(arg));                        // dec word [arg]
+    B(0x75); B((uint8_t) (loop - (o + 1)));              // jnz loop
+    if (in) {
+        B(0xA2); W(SA(val));                             // mov [val], al (the last byte)
+    }
+    B(0x58);                                             // pop ax
+    B(0x84); B(0xED);                                    // test ch, ch
+    B(0x9F);                                             // lahf
+    B(0x80); B(0xE4); B(0xC0);                           // and ah, C0h
+    B(0xF6); B(0x06); W(last); B(0x80);                  // test byte [last], 80h
+    B(0x74); B(0x03); B(0x80); B(0xCC); B(0x02);         // jz +3; or ah, 2
+    fkind = K_AH; hl_es = 0;
+    if (!rep_) {
+        uint8_t *done = jcc8(0xEB);                      // jmp done
+        land8(slow0);
+        if (slow1) { land8(slow1); land8(slow2); }
+        // (the helper counts their cycles: not twice). Out, to another
+        // port (the control port, the PSG): in C as the Game Gear's runs,
+        // not as a step of the interpreter, which leaves the interrupt
+        // request as it was before (a register written may raise it)
+        B(0x81); B(0x06); W(SA(cycles)); W(16 * I->count);   // add word [cycles], 16 k
+        B(0xC6); B(0x06); W(SA(val)); B(I->count);
+        if (in) {
+            B(0xC7); B(0x06); W(SA(arg)); W(I->pc);
+            helper(DRC_H_STEP);
+        } else {
+            helper(down ? DRC_H_OUTD_RUN : DRC_H_OUTI_RUN);
+        }
+        land8(done);
+        cyc += 16 * I->count;
+        return 1;
+    }
+    B(0x5E);                                             // pop si (the turns)
+    B(0x6B); B(0xF6); B(21);                             // imul si, si, 21
+    B(0x29); B(0x36); W(SA(cycles));                     // sub [cycles], si
+    B(0x84); B(0xED);                                    // test ch, ch
+    uint8_t *fin = jcc8(0x74);                           // jz fin
+    exit_const(I->pc, 0);                                // more to do
+    land8(fin);
+    B(0x83); B(0x06); W(SA(cycles)); B(5);               // add word [cycles], 5 (the last: 16)
+    exit_const(I->pc + 2, 0);
+    land8(slow0);
+    if (slow1) { land8(slow1); land8(slow2); }
+    if (!in) {
+        // OTIR to another port (The Castle sets the registers this way):
+        // this turn's bytes in C (see above), then as the other way
+        B(0x57);                                         // push di (the turns)
+        B(0x97);                                         // xchg ax, di
+        B(0xA2); W(SA(val));                             // mov [val], al
+        B(0x97);                                         // xchg ax, di
+        B(0xC1); B(0xE7); B(0x04);                       // shl di, 4
+        B(0x01); B(0x3E); W(SA(cycles));                 // add [cycles], di (the helper takes 16 each)
+        helper(DRC_H_OUTI_RUN);
+        fkind = K_AH;
+        B(0x5E);                                         // pop si (the turns)
+        B(0x6B); B(0xF6); B(21);                         // imul si, si, 21
+        B(0x29); B(0x36); W(SA(cycles));                 // sub [cycles], si
+        B(0x84); B(0xED);                                // test ch, ch
+        uint8_t *fin2 = jcc8(0x74);                      // jz fin
+        exit_const(I->pc, 0);
+        land8(fin2);
+        B(0x83); B(0x06); W(SA(cycles)); B(5);           // add word [cycles], 5
+        exit_const(I->pc + 2, 0);
+        return 1;
+    }
+    // INIR: all of it by the interpreter (it repeats the instruction itself)
+    B(0xC7); B(0x06); W(SA(arg)); W(I->pc);
+    B(0xC6); B(0x06); W(SA(val)); B(1);
+    helper(DRC_H_STEP);
+    fkind = K_AH;
+    exit_const(I->pc + 2, 0);
+    return 1;
+}
+#endif
+
 // Returns 0 if the instruction could not be emitted (block ends before it)
 static int emit1(int i);
 
@@ -2625,6 +2879,11 @@ static int emit1(int i) {
     }
 
     if (I->pre == 0xED) {
+#ifdef GGSWAN_SG1000
+        if (env->sg_out_off && (op & 0xE6) == 0xA2)   // INI, IND, OUTI, OUTD, INIR, INDR, OTIR, OTDR
+            if (op == 0xA2 || op == 0xAA || op == 0xA3 || op == 0xAB || op == 0xB2 || op == 0xB3)
+                return sg_block_io(i);
+#endif
         switch (op) {
         case 0x45: case 0x4D: case 0x55: case 0x5D:
         case 0x65: case 0x6D: case 0x75: case 0x7D:   // RETN, RETI: IFF1 = IFF2, return
@@ -2807,6 +3066,28 @@ static int emit1(int i) {
             clobber(live);
             uint8_t src = r8x[(op >> 3) & 7];
             uint8_t *s0 = 0, *s1 = 0, *s2 = 0, *done = 0, *done2 = 0;
+#ifdef GGSWAN_SG1000
+            if (env->sg_out_off) {
+                // the TMS9918A's ports (80h-BFh: even data, odd control)
+                B(0x89); B(0xCE);                        // mov si, cx
+                B(0x81); B(0xE6); W(0x00C1);             // and si, C1h
+                B(0x81); B(0xFE); W(0x0080);             // cmp si, 80h
+                s0 = jcc8(0x75);
+                if (src) { B(0x50); B(0x88); B(0xC0 | (src << 3)); }   // push ax; mov al, r
+                call_near(env->sg_out_off);
+                if (src) B(0x58);                        // pop ax
+                done = jcc8(0xEB);
+                land8(s0);
+                B(0x81); B(0xFE); W(0x0081);             // cmp si, 81h
+                s2 = jcc8(0x75);
+                if (src) { B(0x50); B(0x88); B(0xC0 | (src << 3)); }   // push ax; mov al, r
+                call_near(env->sg_ctl_off);
+                if (src) B(0x58);                        // pop ax
+                done2 = jcc8(0x73);                      // jnc done
+                land8(s2);
+                hl_es = 0;
+            }
+#endif
             if (env->vdp_addr) {
                 B(0x89); B(0xCE);                        // mov si, cx
                 B(0x81); B(0xE6); W(0x00C1);             // and si, C1h
@@ -2951,7 +3232,17 @@ static int emit1(int i) {
             B(0xC7); B(0x06); W(SA(arg)); W(I->pc);          // arg = pc
             helper(DRC_H_STEP);
             fkind = K_AH;
+#ifdef GGSWAN_SG1000
+            // (the step is not one turn: the interpreter goes on until
+            // the instruction is over, BC = 0. Back to the instruction it
+            // found BC = 0 and copied 64 KiB more, through all of the
+            // memory: The Castle fills its cartridge RAM this way, and on
+            // the device stopped for a third of a minute with its memory
+            // overwritten. To do in the Game Gear's builds too)
+            exit_const(I->pc + 2, 0);
+#else
             exit_const(I->pc, 0);
+#endif
             return 1;
         }
         case 0xB3: {   // OTIR (the OUTI routine, up to 64 per turn)
@@ -3602,6 +3893,19 @@ static int emit1(int i) {
                     return 1;
                 }
                 uint8_t *s1 = 0, *done = 0;
+#ifdef GGSWAN_SG1000
+                if (env->sg_out_off && (I->nn & 0xC1) == 0x80) {
+                    call_near(env->sg_out_off);           // TMS9918A data port
+                    hl_es = 0;
+                    cyc += 11;
+                    return 1;
+                }
+                if (env->sg_ctl_off && (I->nn & 0xC1) == 0x81) {
+                    call_near(env->sg_ctl_off);           // TMS9918A control port
+                    hl_es = 0;
+                    done = jcc8(0x73);                    // jnc done
+                }
+#endif
                 if (env->vdp_addr && (I->nn & 0xC1) == 0x80) {
                     vram_fast(X_AX, &s1, 3);
                     done = jcc8(0xEB);
@@ -3618,8 +3922,9 @@ static int emit1(int i) {
                 return 1;
             }
             case 3:   // IN A,(n)
-#ifdef GGSWAN_SMS
+#if defined(GGSWAN_SMS) || defined(GGSWAN_SG1000)
                 // smsswan: DC only (DD has the TH lines: z80_in); 00-3F FFh
+                // (sgswan: the same joypad port; the rest by the helper)
                 if (env->pad_in && I->nn >= 0xC0 && !(I->nn & 1)) {
                     B(0xA0); W(SA(keys_in) + 1);                           // mov al, [keys_in + 1]
                     cyc += 11;
@@ -3649,6 +3954,15 @@ static int emit1(int i) {
                     return 1;
                 }
                 clobber(live);
+#ifdef GGSWAN_SG1000
+                if (env->sg_in_off && (I->nn & 0xC0) == 0x80) {
+                    // the TMS9918A's data port, or its status
+                    call_near((I->nn & 1) ? env->sg_st_off : env->sg_in_off);
+                    hl_es = 0;
+                    cyc += 11;
+                    return 1;
+                }
+#endif
                 if (env->vcnt_off && (I->nn & 0xC0) == 0x40) {
                     // (after clobber: the routine's DIV and compares)
                     if (I->nn & 1) {

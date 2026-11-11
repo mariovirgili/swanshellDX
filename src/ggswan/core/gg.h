@@ -185,7 +185,12 @@ enum { SG_MODE_G1, SG_MODE_G2, SG_MODE_MC, SG_MODE_TEXT };
 static inline uint8_t sg_mode(void);
 /// Status bits for the sprites as they are in VRAM now: 40h and the number
 /// of the first fifth sprite of a line, if any; 20h: two of them overlap.
+/// (Worked out again only when gg_platform_sprites_written() says so, or
+/// registers 0, 1, 5, 6 changed.)
 uint8_t sg_sprite_status(void);
+/// Platform: was the sprite table, or a sprite's pattern, written since
+/// the frame was last presented (gg_platform_frame_end)? 1 when unknown.
+uint8_t gg_platform_sprites_written(void);
 /// One sprite of the table as the screen has it. sg_sprite() gives 0 at
 /// the end of the table (Y = D0h).
 typedef struct {

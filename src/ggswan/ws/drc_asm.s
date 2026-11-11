@@ -112,6 +112,7 @@ drc_helper_tramp:
 
     IRQ_ENTRY line_irq_slow, line_irq
 
+#ifndef GGSWAN_SG1000   // (sgswan: line_irq_slow alone, sg_video.inc)
     // The line interrupt. A scroll split inside the picture is served here
     // (main.c line_irq does the same, and everything else: this is its
     // loop for i > 0, with the same order of port writes):
@@ -190,7 +191,10 @@ line_irq_entry:
     pop bx
     pop ax
     jmp line_irq_slow
+#endif
     IRQ_ENTRY vblank_irq_entry, vblank_irq
+
+#ifndef GGSWAN_SG1000   // (the Game Gear's video: main.c)
 
     // void log_copy(void);
     //
@@ -342,6 +346,8 @@ spr_build:
     pop cx
     pop bx
     IA16_RET
+
+#endif
 
     // void psg_run(const uint8_t *q, uint8_t n): n (1-255) writes to the
     // SN76489, into psg_st (main.c: latch, noise, dirty, -, vol[4],
