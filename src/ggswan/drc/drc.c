@@ -3219,12 +3219,17 @@ static int emit1(int i) {
             land8(fin);
             B(0x83); B(0x06); W(SA(cycles)); B(5);           // add [cycles], 5 (the last: 16)
             exit_const(I->pc + 2, 0);
-            // destination outside work RAM: the ones done, then one turn
-            // with the interpreter, then this instruction again
+            // destination outside work RAM: the ones done, then the rest
+            // with the interpreter
             land8(slow);
-            B(0x2B); B(0x36); W(SA(val));                    // sub si, [val] (done)
-            B(0x6B); B(0xF6); B(21);                         // imul si, si, 21
+            // (val is a byte, the one after it the low byte of arg, where
+            // the routine has put an address: read as a word, the cycles
+            // were off by 21 * 256 times that byte, up or down: a game
+            // lost or gained most of a frame at every such LDIR)
             B(0x8B); B(0x3E); W(SA(val));                    // mov di, [val]
+            B(0x81); B(0xE7); W(0x00FF);                     // and di, FFh (the ones left)
+            B(0x29); B(0xFE);                                // sub si, di (done)
+            B(0x6B); B(0xF6); B(21);                         // imul si, si, 21
             B(0xC1); B(0xE7); B(0x04);                       // shl di, 4
             B(0x01); B(0xFE);                                // add si, di (undo the routine's)
             B(0x29); B(0x36); W(SA(cycles));                 // sub [cycles], si
@@ -3232,17 +3237,15 @@ static int emit1(int i) {
             B(0xC7); B(0x06); W(SA(arg)); W(I->pc);          // arg = pc
             helper(DRC_H_STEP);
             fkind = K_AH;
-#ifdef GGSWAN_SG1000
             // (the step is not one turn: the interpreter goes on until
-            // the instruction is over, BC = 0. Back to the instruction it
-            // found BC = 0 and copied 64 KiB more, through all of the
-            // memory: The Castle fills its cartridge RAM this way, and on
-            // the device stopped for a third of a minute with its memory
-            // overwritten. To do in the Game Gear's builds too)
+            // the instruction is over, BC = 0. The block went back to the
+            // instruction, which found BC = 0 and copied 64 KiB more,
+            // through all of the memory: any LDIR or LDDR to the
+            // cartridge RAM or to ROM, in all three builds up to patch
+            // 143 (sgswan's The Castle fills its cartridge RAM this way,
+            // and stopped for a third of a minute with its memory
+            // overwritten: how it was found). mkldirtest.py)
             exit_const(I->pc + 2, 0);
-#else
-            exit_const(I->pc, 0);
-#endif
             return 1;
         }
         case 0xB3: {   // OTIR (the OUTI routine, up to 64 per turn)
