@@ -469,10 +469,10 @@ static void vram_fast(uint8_t src, uint8_t **slow1, uint8_t inl) {
         // deferred, the byte after the last one logged (Sailor Moon S's
         // tiles, a byte an OUT, ~190 a frame): appended here, as the
         // routine's first case, without the call (in blocks: inl)
-        uint8_t *r1 = 0, *r2 = 0, *r3 = 0, *done1 = 0, *done2 = 0;
+        uint8_t *r1 = 0, *r2 = 0, *r3 = 0, *done1 = 0, *done2 = 0, *done3 = 0;
         if (inl) {
             B(0xF6); B(0x85); W(SA(vram_class)); B(0x08); // test byte [di + class], 8
-            r1 = jcc8(0x74);                             // jz routine
+            uint8_t *live = jcc8(0x74);                  // jz live
             B(0x3B); B(0x36); W(SA(log_next));           // cmp si, [log_next]
             r2 = jcc8(0x75);                             // jne routine
             B(0x8B); B(0x3E); W(SA(log_top));            // mov di, [log_top]
@@ -490,6 +490,19 @@ static void vram_fast(uint8_t src, uint8_t **slow1, uint8_t inl) {
             land8(full);
             B(0xC7); B(0x06); W(SA(log_next)); W(0xFFFF); // mov word [log_next], FFFFh
             done2 = jcc8(0xEB);
+            // live, the sprite table alone (Sonic sends its 64 Y and
+            // the X and tile of each sprite in use a byte an OUT, every
+            // frame): stored here, as the routine does (inl bit 1: OUT
+            // (n),A; with it OUT (C),r's short jump over all this would
+            // not reach)
+            land8(live);
+            if (inl & 2) {
+                B(0xF6); B(0x85); W(SA(vram_class)); B(0x01); // test byte [di + class], 1
+                r1 = jcc8(0x75);                         // jnz routine (name table)
+                B(0x88); B(0x84 | (src << 3)); W(env->vram_addr);    // mov [si + vram], src
+                B(0xC6); B(0x06); W(SA(sprites_dirty)); B(1);    // sprites_dirty = 1
+                done3 = jcc8(0xEB);
+            }
             land8(r1); land8(r2); land8(r3);
         }
         call_near(env->cls_off);
@@ -497,7 +510,7 @@ static void vram_fast(uint8_t src, uint8_t **slow1, uint8_t inl) {
         land8(plain);
         B(0x88); B(0x84 | (src << 3)); W(env->vram_addr);    // mov [si + vram], src
         land8(done);
-        if (done1) { land8(done1); land8(done2); }
+        if (done1) { land8(done1); land8(done2); land8(done3); }
         B(0x46);                                         // inc si
         B(0x81); B(0xE6); W(0x3FFF);                     // and si, 3FFFh
         B(0x89); B(0x36); W(VA(addr));                   // mov [addr], si
@@ -541,9 +554,14 @@ uint16_t drc_emit_cls_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) {
     o = o_start = out; o_base = out_off;
     B(0xF6); B(0x85); W(SA(vram_class)); B(8);       // test byte [di + class], 8
     uint8_t *deferred = jcc8(0x75);                  // jnz deferred
-    // live: stored, then the name table routine or sprites_dirty
+    // live: stored, then the name table routine or sprites_dirty; the
+    // byte already there: nothing to do (the screen map and the sprites
+    // are those of VRAM as it is; Sonic sends a row and a column of its
+    // map again on every frame it scrolls)
     B(0x50);                                         // push ax
     B(0xA0); W(VA(read_buffer));                     // mov al, [read_buffer]
+    B(0x38); B(0x84); W(e->vram_addr);               // cmp [si + vram], al
+    uint8_t *same = jcc8(0x74);                      // je same
     B(0x88); B(0x84); W(e->vram_addr);               // mov [si + vram], al
     B(0x58);                                         // pop ax
     B(0xF6); B(0x85); W(SA(vram_class)); B(1);       // test byte [di + class], 1
@@ -551,6 +569,9 @@ uint16_t drc_emit_cls_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) {
     B(0xE9); W((uint16_t) (e->nt_stub_off - (o_base + (uint16_t) (o - o_start) + 2)));   // jmp NT
     land8(sat);
     B(0xC6); B(0x06); W(SA(sprites_dirty)); B(1);    // sprites_dirty = 1
+    B(0xC3);                                         // ret
+    land8(same);
+    B(0x58);                                         // pop ax
     B(0xC3);                                         // ret
     land8(deferred);
     // the byte that follows the last entry this routine made (log_next):
@@ -631,6 +652,68 @@ uint16_t drc_emit_cls_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) {
     B(0xBF); W(0xFFFF);                              // mov di, FFFFh
     B(0x89); B(0x3E); W(SA(log_next));               // mov [log_next], di
     B(0x5F); B(0x59); B(0x5B); B(0x58);              // pop di, cx, bx, ax
+    B(0xC3);                                         // ret
+    return (uint16_t) (o - o_start);
+}
+
+/*
+ * Routine for OUTI / OUTI that write one whole entry of the name table
+ * (at env->ntw_off): Sonic sends a column and a row of its map this way
+ * on every frame it scrolls, 54 entries, and through the run routine and
+ * the name table routine each took about 200 cycles. Port BEh, not CRAM,
+ * an even VRAM address in a page of the live name table alone, the two
+ * bytes inside one 8 KiB page: the entry stored and converted (the name
+ * table routine), or nothing at all when it is the one already there (the
+ * screen map is the one of VRAM as it is), then address, read buffer,
+ * latch, HL, B as two OUTIs leave them; CF = 0, AH = the last byte (as
+ * the run routine). Anything else: CF = 1, nothing done (the caller uses
+ * the run routine). Uses SI, DI, ES.
+ */
+uint16_t drc_emit_ntw_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) {
+    env = e;
+    o = o_start = out; o_base = out_off;
+    uint8_t *f[5]; uint8_t nf = 0;
+    B(0x89); B(0xCE);                                // mov si, cx
+    B(0x81); B(0xE6); W(0x00C1);                     // and si, C1h
+    B(0x81); B(0xFE); W(0x0080);                     // cmp si, 80h (port BEh)
+    f[nf++] = jcc8(0x75);                            // jne fail
+    B(0x80); B(0x3E); W(VA(code)); B(3);             // cmp byte [code], 3
+    f[nf++] = jcc8(0x74);                            // je fail (CRAM)
+    B(0x8B); B(0x3E); W(VA(addr));                   // mov di, [addr]
+    B(0x81); B(0xE7); W(0x3FFF);                     // and di, 3FFFh
+    B(0xF7); B(0xC7); W(0x0001);                     // test di, 1
+    f[nf++] = jcc8(0x75);                            // jnz fail (not a whole entry)
+    B(0x89); B(0xFE);                                // mov si, di
+    B(0xC1); B(0xEE); B(0x08);                       // shr si, 8
+    B(0x80); B(0xBC); W(SA(vram_class)); B(1);       // cmp byte [si + class], 1
+    f[nf++] = jcc8(0x75);                            // jne fail
+    B(0x89); B(0xDE);                                // mov si, bx
+    B(0x81); B(0xE6); W(0x1FFF);                     // and si, 1FFFh
+    B(0x81); B(0xFE); W(0x1FFE);                     // cmp si, 1FFEh
+    f[nf++] = jcc8(0x77);                            // ja fail (the page ends)
+    B(0x89); B(0xDE);                                // mov si, bx
+    B(0xC1); B(0xC6); B(0x04);                       // rol si, 4
+    B(0x83); B(0xE6); B(0x0E);                       // and si, 14
+    B(0x8E); B(0x84); W(SA(segtab));                 // mov es, [si + segtab]
+    B(0x26); B(0x8B); B(0x37);                       // mov si, es:[bx] (the entry)
+    B(0x83); B(0xC3); B(0x02);                       // add bx, 2
+    B(0x80); B(0xED); B(0x02);                       // sub ch, 2
+    B(0x26); B(0x8A); B(0x67); B(0xFF);              // mov ah, es:[bx - 1] (the last byte)
+    B(0x88); B(0x26); W(VA(read_buffer));            // mov [read_buffer], ah
+    B(0xC6); B(0x06); W(VA(latch_full)); B(0);       // mov byte [latch_full], 0
+    B(0x3B); B(0xB5); W(env->vram_addr);             // cmp si, [di + vram]
+    uint8_t *same = jcc8(0x74);                      // je same
+    B(0x89); B(0xB5); W(env->vram_addr);             // mov [di + vram], si
+    B(0x89); B(0xFE);                                // mov si, di
+    call_near(env->nt_stub_off);                     // (keeps the registers)
+    land8(same);
+    B(0x83); B(0xC7); B(0x02);                       // add di, 2
+    B(0x81); B(0xE7); W(0x3FFF);                     // and di, 3FFFh
+    B(0x89); B(0x3E); W(VA(addr));                   // mov [addr], di
+    B(0xF8);                                         // clc
+    B(0xC3);                                         // ret
+    for (uint8_t i = 0; i < nf; i++) land8(f[i]);
+    B(0xF9);                                         // stc
     B(0xC3);                                         // ret
     return (uint16_t) (o - o_start);
 }
@@ -2406,6 +2489,51 @@ static int emit(int i) {
             return 1;
         }
         case 0xA0: case 0xA8: {   // a run of LDI / LDD (routine in the stubs)
+            if (I->count == 1 && !env->no_fast) {
+                /*
+                 * One alone, to work RAM: here. Through the routine it
+                 * was some 55 instructions for the byte (the registers
+                 * saved, the run's checks, REP MOVSB set up, the flags):
+                 * Sonic's map loop has four of them in each turn, about
+                 * 60 a frame while playing. S, Z, C kept, H = N = 0,
+                 * P/V = BC != 0, only if a flag is read afterwards (AH is
+                 * then the byte's way from ROM to RAM).
+                 */
+                uint8_t after = live_out[i] & FALL;
+                clobber(live);
+                seg_hl(0);
+                B(0x80); B(0xFE); B(0xC0); uint8_t *s0 = jcc8(0x72);   // cmp dh, C0h; jb slow
+                B(0x80); B(0xFE); B(0xE0); uint8_t *s1 = jcc8(0x73);   // cmp dh, E0h; jae slow
+                B(0x89); B(0xD6);                            // mov si, dx
+                if (after) {
+                    B(0x50);                                 // push ax
+                    B(0x26); B(0x8A); B(0x07);               // mov al, es:[bx]
+                    B(0x88); B(0x84); W(env->ram_delta);     // mov [si + ram], al
+                    B(0x58);                                 // pop ax
+                } else {
+                    B(0x26); B(0x8A); B(0x27);               // mov ah, es:[bx]
+                    B(0x88); B(0xA4); W(env->ram_delta);     // mov [si + ram], ah
+                }
+                B(op == 0xA0 ? 0x43 : 0x4B);                 // inc / dec bx
+                B(op == 0xA0 ? 0x42 : 0x4A);                 // inc / dec dx
+                if (after) { B(0x80); B(0xE4); B(0xC1); }    // and ah, C1h
+                B(0x49);                                     // dec cx
+                if (after) { B(0x74); B(0x03); B(0x80); B(0xCC); B(0x04); }   // jz +3; or ah, 4
+                uint8_t *fin = jcc8(0xEB);                   // jmp fin
+                // (the destination elsewhere: the routine, which leaves
+                // it to the interpreter)
+                land8(s0); land8(s1);
+                B(0xBF); W(1);                               // mov di, 1
+                B(0xBE); W(I->pc);                           // mov si, pc
+                call_near(op == 0xA0 ? env->ldi_off : env->ldi_off + DRC_LDD_DELTA);
+                uint8_t *done = jcc8(0x73);                  // jnc done
+                helper(DRC_H_STEP);
+                land8(done);
+                land8(fin);
+                fkind = K_AH; hl_es = 0;
+                cyc += 16;
+                return 1;
+            }
             materialize();
             B(0xBF); W(I->count);                            // mov di, k
             B(0xBE); W(I->pc);                               // mov si, pc
@@ -2499,9 +2627,16 @@ static int emit(int i) {
         }
         case 0xA3: case 0xAB: {   // a run of OUTI / OUTD (routine in the stubs)
             clobber(0);
+            uint8_t *ntw = 0;
+            if (op == 0xA3 && I->count == 2 && env->ntw_off) {
+                // two: a name table entry, most often (its own routine)
+                call_near(env->ntw_off);
+                ntw = jcc8(0x73);                            // jnc done
+            }
             B(0xBF); W(I->count);                            // mov di, k
             B(0xBE); W(I->pc);                               // mov si, pc
             call_near(op == 0xA3 ? env->outi_off : env->outi_off + DRC_OUTD_DELTA);
+            land8(ntw);   // (CF = 0, as from the run routine)
             run_flags(op == 0xA3 ? DRC_H_OUTI_RUN : DRC_H_OUTD_RUN, live_out[i] & FALL);
             fkind = K_AH; hl_es = 0;
             cyc += 16 * I->count;
@@ -3045,7 +3180,7 @@ static int emit(int i) {
                 }
                 uint8_t *s1 = 0, *done = 0;
                 if (env->vdp_addr && (I->nn & 0xC1) == 0x80) {
-                    vram_fast(X_AX, &s1, 1);
+                    vram_fast(X_AX, &s1, 3);
                     done = jcc8(0xEB);
                     land8(s1);
                 } else if (env->ctl_off && (I->nn & 0xC1) == 0x81) {

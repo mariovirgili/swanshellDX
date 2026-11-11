@@ -176,6 +176,9 @@ typedef struct {
     // routine for OUTI / OUTI / DEC L x 4 repeated (drc_emit_pairs_stub;
     // 0: each instruction as usual)
     uint16_t pairs_off;
+    // routine for two OUTIs that write one name table entry
+    // (drc_emit_ntw_stub; 0: none)
+    uint16_t ntw_off;
 } drc_env_t;
 
 #define DRC_OUTD_DELTA 0x300
@@ -205,6 +208,9 @@ uint16_t drc_emit_vcnt_stub(const drc_env_t *env, uint8_t *out, uint16_t out_off
 /// DRC_PAIRS_ENTRY); returns its length
 #define DRC_PAIRS_ENTRY 3
 uint16_t drc_emit_pairs_stub(const drc_env_t *env, uint8_t *out, uint16_t out_off);
+/// the routine for OUTI / OUTI writing a whole name table entry; returns
+/// its length
+uint16_t drc_emit_ntw_stub(const drc_env_t *env, uint8_t *out, uint16_t out_off);
 
 int drc_translate(const drc_env_t *env, uint16_t pc, uint8_t *out,
                   uint16_t out_off, uint16_t out_max, drc_result_t *res);
