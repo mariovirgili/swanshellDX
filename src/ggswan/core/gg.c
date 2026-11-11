@@ -11,7 +11,7 @@
 #include "z80.h"
 
 gg_t gg;
-#ifdef GGSWAN_SMS
+#if defined(GGSWAN_SMS) || defined(GGSWAN_SG1000)
 uint8_t gg_view_x = 16, gg_view_y = 24;
 #endif
 // the CPU core: the interpreter, or the recompiler's z80_run equivalent
@@ -81,6 +81,7 @@ const uint8_t GGFAR *z80_read_span(uint16_t a, uint16_t *len) {
 void z80_write(uint16_t a, uint8_t v) {
     if (a >= 0xC000) {
         gg_ram[a & 0x1FFF] = v;
+#ifndef GGSWAN_SG1000   // (no mapper: plain RAM, like the rest)
         if (a >= 0xFFFC && !gg.codemasters) {
             uint8_t r = a - 0xFFFC;
             gg.mapper[r] = v;
@@ -89,6 +90,7 @@ void z80_write(uint16_t a, uint8_t v) {
             else
                 map_slot(r - 1);
         }
+#endif
         return;
     }
 #ifdef GGSWAN_SMS
@@ -163,6 +165,8 @@ void gg_status_read_at(uint16_t pc) {
         }
     }
 }
+#elif defined(GGSWAN_SG1000)
+#define SPRITE_STATUS() sg_sprite_status()
 #else
 #define SPRITE_STATUS() 0
 #endif
@@ -171,9 +175,24 @@ void gg_status_read_at(uint16_t pc) {
 static void vdp_mode_update(void);
 #endif
 
+// the start of the vertical blank: the frame interrupt flag, and what the
+// sprites of the frame did
+#ifdef GGSWAN_SG1000
+// (the fifth sprite's number stays the first one found until the status
+// is read; the overlap flag adds up)
+#define VBL_STATUS() do { \
+        uint8_t s_ = SPRITE_STATUS(); \
+        if (gg.vdp.status & 0x40) \
+            s_ &= 0x20; \
+        gg.vdp.status |= 0x80 | s_; \
+    } while (0)
+#else
+#define VBL_STATUS() (gg.vdp.status |= 0x80 | SPRITE_STATUS())
+#endif
+
 static inline void update_irq(void) {
     z80.irq = ((gg.vdp.status & 0x80) && (gg.vdp.reg[1] & 0x20))
-        || (gg.vdp.line_pending && (gg.vdp.reg[0] & 0x10));
+        || (gg.vdp.line_pending && GG_LINE_IRQ);
 }
 
 static uint8_t vdp_read_data(void) {
@@ -187,6 +206,20 @@ static uint8_t vdp_read_data(void) {
 
 static void vdp_write_data(uint8_t v) {
     gg.vdp.latch_full = 0;
+#ifdef GGSWAN_SG1000
+    // TMS9918A: no color RAM, the byte goes to VRAM whatever the code. The
+    // platform hears of the bytes that change (it marks what to draw again)
+    {
+        uint16_t va = gg.vdp.addr & 0x3FFF;
+        if (gg_vram[va] != v) {
+            gg_vram[va] = v;
+            gg_platform_vram_write(va, v);
+        }
+        gg.vdp.read_buffer = v;
+        gg.vdp.addr = (va + 1) & 0x3FFF;
+        return;
+    }
+#endif
     if (gg.vdp.code == 3) {
 #ifdef GGSWAN_SMS
         // CRAM: 32 colors of one byte (--BBGGRR), no latch
@@ -218,7 +251,14 @@ static void vdp_write_data(uint8_t v) {
 }
 
 static uint8_t vdp_read_status(void) {
+#ifdef GGSWAN_SG1000
+    // (bits 0-4: the number of the fifth sprite, with bit 6; else 1Fh)
+    uint8_t v = gg.vdp.status;
+    if (!(v & 0x40))
+        v |= 0x1F;
+#else
     uint8_t v = gg.vdp.status | 0x1F;
+#endif
     gg.vdp.status = 0;
     gg.vdp.line_pending = 0;
     gg.vdp.latch_full = 0;
@@ -235,6 +275,10 @@ static void vdp_write_control(uint8_t v) {
     }
     gg.vdp.latch_full = 0;
     gg.vdp.code = v >> 6;
+#ifdef GGSWAN_SG1000
+    if (gg.vdp.code == 3)
+        gg.vdp.code = 2;   // (bit 7: a register, 8 of them)
+#endif
     gg.vdp.addr = ((v & 0x3F) << 8) | gg.vdp.latch;
     switch (gg.vdp.code) {
     case 0:
@@ -244,8 +288,13 @@ static void vdp_write_control(uint8_t v) {
         gg.vdp.addr = (gg.vdp.addr + 1) & 0x3FFF;
         break;
     case 2: {
+#ifdef GGSWAN_SG1000
+        uint8_t r = v & 0x07;
+        {
+#else
         uint8_t r = v & 0x0F;
         if (r < 11) {
+#endif
             uint8_t old = gg.vdp.reg[r];
             gg.vdp.reg[r] = gg.vdp.latch;
             gg_platform_vdp_reg(r, gg.vdp.latch);
@@ -340,6 +389,17 @@ static uint8_t vdp_vcounter(void) {
 /* === I/O ports === */
 
 uint8_t z80_in(uint8_t port) {
+#ifdef GGSWAN_SG1000
+    // SG-1000: 80-BF the TMS9918A (even: data, odd: status); C0-FF the
+    // joypads, 0 = pressed (even: joypad 1 in bits 0-5, joypad 2's up and
+    // down in 6-7; odd: the rest of joypad 2); nothing else to read (no
+    // line or column counters)
+    if (port < 0x80)
+        return 0xFF;
+    if (port < 0xC0)
+        return (port & 1) ? vdp_read_status() : vdp_read_data();
+    return (port & 1) ? 0xFF : ~(gg.keys & 0x3F);
+#endif
 #ifdef GGSWAN_SMS
     // Master System (export): nothing to read at 00-3F; DC (even, C0-FF):
     // joypad 1 in bits 0-5, joypad 2's up and down in bits 6-7 (not
@@ -394,6 +454,8 @@ void z80_out(uint8_t port, uint8_t v) {
         // is always on here), odd ports 3F (I/O control)
         if (port & 1)
             gg.io_ctrl = v;
+#elif defined(GGSWAN_SG1000)
+        // (nothing there)
 #else
         if (port == 0x06)
             gg_platform_stereo(v);
@@ -493,8 +555,8 @@ static void vdp_line(uint16_t line) {
     }
 
     // frame interrupt
-    if (line == GG_ACTIVE + 1) {
-        gg.vdp.status |= 0x80 | SPRITE_STATUS();
+    if (line == GG_VBL_LINE) {
+        VBL_STATUS();
         gg_diag_vbl();
     }
 
@@ -530,9 +592,9 @@ static void vdp_lines(uint16_t from, uint16_t to) {
         c = r;
     gg.vdp.line_counter = c;
     // frame interrupt
-    uint8_t end = from <= GG_ACTIVE + 1 && to > GG_ACTIVE + 1;
+    uint8_t end = from <= GG_VBL_LINE && to > GG_VBL_LINE;
     if (end) {
-        gg.vdp.status |= 0x80 | SPRITE_STATUS();
+        VBL_STATUS();
         gg_diag_vbl();
     }
     gg.vdp.vcounter = to - 1;
@@ -549,9 +611,9 @@ static uint16_t next_event(uint16_t l) {
     uint16_t e = GG_LINES;
     if (l <= GG_PRESENT_LINE)
         e = GG_PRESENT_LINE;       // the frame presented
-    else if (l <= GG_ACTIVE + 1)
-        e = GG_ACTIVE + 1;   // frame interrupt
-    if ((gg.vdp.reg[0] & 0x10) && l <= GG_ACTIVE) {
+    else if (l <= GG_VBL_LINE)
+        e = GG_VBL_LINE;   // frame interrupt
+    if (GG_LINE_IRQ && l <= GG_ACTIVE) {
         // the line counter reaches zero at the start of line l + counter
         uint16_t u = l + gg.vdp.line_counter;
         if (u < e)
@@ -596,7 +658,7 @@ static int32_t event_step(uint16_t pos) {
      * it (interrupts on, none waiting: a game that keeps them off loses
      * them on the Game Gear too).
      */
-    if ((gg.vdp.reg[0] & 0x10) && z80.iff1 && !gg.vdp.line_pending
+    if (GG_LINE_IRQ && z80.iff1 && !gg.vdp.line_pending
             && started <= GG_ACTIVE) {
         uint16_t l1 = started + gg.vdp.line_counter;   // the line that requests it
         uint16_t at = l1 * (uint16_t) GG_CYCLES_PER_LINE;
@@ -662,7 +724,7 @@ int16_t gg_fast_line(int16_t left) {
     uint8_t r = gg.vdp.reg[10];
     if (gg_every_line || left > 0 || left <= -GG_CYCLES_PER_LINE
         || started == 0 || r >= 128 || e + r + 1 >= GG_PRESENT_LINE - 1
-        || !(gg.vdp.reg[0] & 0x10)
+        || !GG_LINE_IRQ
         || frame_given != (int32_t) (uint16_t) (e * (unsigned) GG_CYCLES_PER_LINE))
         return 0;
     // vdp_lines(started, e + 1) for this case, then next_event(e + 1) = e + 1 + r
@@ -680,7 +742,7 @@ int16_t gg_fast_line(int16_t left) {
 }
 
 void gg_run_frame(void) {
-#ifdef GGSWAN_SMS
+#if defined(GGSWAN_SMS) || defined(GGSWAN_SG1000)
     // the Pause button (GG_KEY_START in gg.keys): a non-maskable interrupt
     // when it is pressed, here between two frames (the CPU state is all
     // in z80, also with the recompiler: nothing to stop inside a block)

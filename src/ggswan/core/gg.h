@@ -22,7 +22,40 @@
 /// cycles of a frame (unsigned: past the 16-bit int range)
 #define GG_FRAME_CYCLES ((uint16_t) (GG_LINES * 228u))
 #define GG_ACTIVE_LINES 192
-#ifdef GGSWAN_SMS
+#if defined(GGSWAN_SMS) && defined(GGSWAN_SG1000)
+#error "GGSWAN_SMS and GGSWAN_SG1000: one machine a build"
+#endif
+/*
+ * What differs with the machine, here and in gg.c:
+ *   GG_VBL_LINE   the line whose start sets the frame interrupt flag
+ *   GG_LINE_IRQ   line interrupts enabled (mode 4's register 0 bit 4)
+ */
+#ifdef GGSWAN_SG1000
+// sgswan (PLUG_SG.BIN: these sources built with -DGGSWAN_SG1000): the
+// SG-1000, a TMS9918A (see SG1000.md): no mapper, no line interrupts, 8
+// registers, a fixed palette. The work RAM is the Mark III's, 8 KiB (the
+// SG-1000's own is 1 KiB, there again every 400h: its games run on a Mark
+// III, and some later ones need the 8). The picture is 256x192, the WS
+// shows 224x144 of it: a view, as smsswan's.
+extern uint8_t gg_view_x, gg_view_y;
+#define GG_ACTIVE GG_ACTIVE_LINES
+#define GG_VIEW_X gg_view_x
+#define GG_VIEW_Y gg_view_y
+#define GG_VIEW_X_MAX 32
+#define GG_VIEW_Y_MAX (GG_ACTIVE - GG_VIEW_H)
+#define GG_VIEW_W 224
+#define GG_VIEW_H 144
+#define WS_VIEW_ORIGIN_X 0
+#define GG_REC_Y 0
+#define GG_REC_H GG_ACTIVE
+#define GG_VBL_LINE GG_ACTIVE
+#define GG_LINE_IRQ 0
+#else
+#define GG_VBL_LINE (GG_ACTIVE + 1)
+#define GG_LINE_IRQ (gg.vdp.reg[0] & 0x10)
+#endif
+#ifdef GGSWAN_SG1000
+#elif defined(GGSWAN_SMS)
 // smsswan (PLUG_SMS.BIN: these sources built with -DGGSWAN_SMS): the
 // Master System shows all of the 256x192 picture, the WS 224x144 of it,
 // on its whole screen
@@ -123,8 +156,14 @@ typedef struct {
 
 extern gg_t gg;
 // 8 KiB of work RAM, 16 KiB of VRAM, 64 bytes of CRAM (32 colors, 12 bits)
+// (sgswan: the VRAM is the TMS9918A's own 16 KiB, not WS tiles, and may
+// be outside the internal RAM)
 extern uint8_t *gg_ram;
+#ifdef GGSWAN_SG1000
+extern uint8_t GGFAR *gg_vram;
+#else
 extern uint8_t *gg_vram;
+#endif
 #define gg_cram gg.vdp.cram
 // color i (0-31) as ----BBBBGGGGRRRR: the Game Gear's two CRAM bytes;
 // smsswan: one byte --BBGGRR, each 2-bit value times 5 (0, 5, 10, 15)
@@ -137,6 +176,32 @@ extern uint8_t *gg_vram;
 #define GG_NT_WRAP 224
 #define GG_SPR_END(y) ((y) == 0xD0)
 #endif
+#ifdef GGSWAN_SG1000
+// the TMS9918A's 16 colors (0: transparent, shown as black here), 12 bits
+extern const uint16_t sg_palette[16];
+static inline uint16_t gg_color12(uint8_t i) { return sg_palette[i & 15]; }
+/// The screen mode from registers 0 and 1: SG_MODE_*.
+enum { SG_MODE_G1, SG_MODE_G2, SG_MODE_MC, SG_MODE_TEXT };
+static inline uint8_t sg_mode(void);
+/// Status bits for the sprites as they are in VRAM now: 40h and the number
+/// of the first fifth sprite of a line, if any; 20h: two of them overlap.
+uint8_t sg_sprite_status(void);
+/// One sprite of the table as the screen has it. sg_sprite() gives 0 at
+/// the end of the table (Y = D0h).
+typedef struct {
+    int16_t x, y;       // of its top left pixel, in the picture
+    uint16_t pattern;   // where its rows are in VRAM (16x16: 16 more bytes
+                        // for the right half, 16 further on)
+    uint8_t color;      // 0-15 (0: nothing to see, but it counts)
+} sg_sprite_t;
+uint8_t sg_sprite(uint8_t i, sg_sprite_t *s);
+/// The side of the sprites in pattern pixels (8, 16) and how many screen
+/// pixels each is (1, 2), from register 1.
+static inline uint8_t sg_sprite_size(void) { return (gg.vdp.reg[1] & 0x02) ? 16 : 8; }
+static inline uint8_t sg_sprite_mag(void) { return (gg.vdp.reg[1] & 0x01) ? 2 : 1; }
+/// The 16 pixels of a row of a sprite's pattern, bit 15 the leftmost.
+uint16_t sg_sprite_row(const sg_sprite_t *s, uint8_t row);
+#else
 static inline uint16_t gg_color12(uint8_t i) {
 #ifdef GGSWAN_SMS
     uint8_t v = gg_cram[i];
@@ -146,6 +211,7 @@ static inline uint16_t gg_color12(uint8_t i) {
     return gg_cram[i * 2] | (gg_cram[i * 2 + 1] << 8);
 #endif
 }
+#endif
 // the three 16 KiB ROM slots ($0000, $4000, $8000)
 extern const uint8_t GGFAR *gg_slot[3];
 const uint8_t GGFAR *z80_read_span(uint16_t a, uint16_t *len);
@@ -216,6 +282,9 @@ int16_t gg_fast_line(int16_t left);
 /* VDP helpers */
 
 static inline uint16_t gg_name_table_base(void) {
+#ifdef GGSWAN_SG1000
+    return (gg.vdp.reg[2] & 0x0F) << 10;
+#endif
 #ifdef GGSWAN_SMS
     if (gg.vdp.active == 224)
         return ((gg.vdp.reg[2] & 0x0C) << 10) | 0x700;
@@ -223,8 +292,20 @@ static inline uint16_t gg_name_table_base(void) {
     return (gg.vdp.reg[2] & 0x0E) << 10;
 }
 static inline uint16_t gg_sat_base(void) {
+#ifdef GGSWAN_SG1000
+    return (gg.vdp.reg[5] & 0x7F) << 7;
+#else
     return (gg.vdp.reg[5] & 0x7E) << 7;
+#endif
 }
+#ifdef GGSWAN_SG1000
+static inline uint8_t sg_mode(void) {
+    if (gg.vdp.reg[0] & 0x02) return SG_MODE_G2;     // M3
+    if (gg.vdp.reg[1] & 0x10) return SG_MODE_TEXT;   // M1
+    if (gg.vdp.reg[1] & 0x08) return SG_MODE_MC;     // M2
+    return SG_MODE_G1;
+}
+#endif
 static inline bool gg_display_enabled(void) {
     return gg.vdp.reg[1] & 0x40;
 }

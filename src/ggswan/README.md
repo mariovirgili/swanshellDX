@@ -6,7 +6,7 @@ emulated by a dynamic recompiler (Z80 to V30MZ code), with the original
 interpreter kept for the parts that need it. The Game Gear video memory is
 mapped onto the WonderSwan's own tile and screen hardware.
 
-Status: fairly stable (patch 141). It has been tested mostly in the
+Status: fairly stable (patch 142). It has been tested mostly in the
 nileswan-medem emulator and with the host test tools; tests on real
 hardware are still to come.
 
@@ -147,6 +147,8 @@ interrupts a second).
 - `ws/`: the WonderSwan side: runtime, video, sound, main loop.
 - `host/`: PC test tools (comparison against the interpreter and a
   reference renderer, cycle profiling in an x86 emulator).
+- `SG1000.md`: sgswan, the SG-1000 plugin being made from these sources
+  (`-DGGSWAN_SG1000`): the plan, the memory map, what is done.
 
 ## smsswan: the Master System plugin
 
@@ -285,7 +287,7 @@ it are listed in order without one.
 - lighter DYN lookup and class routine for deferred tile bytes
 - OUTI runs to CRAM handled in the run routine
 
-### Patches 90-141
+### Patches 90-142
 
 | Patch | Change |
 |---|---|
@@ -341,3 +343,4 @@ it are listed in order without one.
 | 139 | Shinobi: a block in RAM that finds its code changed empties its own L0 entry, not the whole cache (6000 cycles every other frame, and the line interrupt late in nileswan-medem: the fence broken in two); long copies in pieces; the backdrop from the tiles that show color 0 (the map screen's brown bar); wsrun lists the long REPs, wssim probes a pixel |
 | 140 | from a review of smsswan: the stack outside the work RAM (a table in ROM read with POPs, the RAM's mirror) goes to the interpreter instead of other bytes of IRAM; smsswan starts with the VDP registers as the BIOS leaves them; PSG: tone 0 as 1, noise that follows tone 2 below the WS's slowest rate; the collision flag also for a status kept and tested later; LD A,R moves with the cycles; Codemasters cartridges without the Sega mapper's routines; mksptest.py |
 | 141 | diagnostics: Z and the bank, under the FPS, when a game maps a ROM bank other than 0 in slot 0 (the one case left from the review of patch 140) |
+| 142 | sgswan (the SG-1000), step 1, nothing on the WonderSwan yet: the machine in `core/` under `-DGGSWAN_SG1000` (ports, the TMS9918A's registers and status, the sprites' flags worked out once a frame), `host/sgtest` with a reference renderer of the four screen modes and the sprites, the test ROMs of `mksgtest.py`; the plan and the memory map in `SG1000.md`. `PLUG_GG.BIN` and `PLUG_SMS.BIN` are the same bytes as patch 141 but for this number |

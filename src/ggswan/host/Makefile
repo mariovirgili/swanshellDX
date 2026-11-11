@@ -15,6 +15,9 @@
 #                             by frame with the interpreter
 #   make sms                  ggtest_sms, wssim_sms, libdrcsys_sms.so: the
 #                             same for smsswan (-DGGSWAN_SMS, .sms ROMs)
+#   make sg                   sgtest: the SG-1000 (-DGGSWAN_SG1000, .sg
+#                             ROMs) with its reference renderer
+#   make sgcheck              sgtest on the test ROMs of mksgtest.py
 CC ?= cc
 CFLAGS ?= -O2 -Wall
 
@@ -59,11 +62,21 @@ wssim_sms: wssim.c wssim_drcst.c ../ws/main.c ../core/gg.c ../core/z80.c
 libdrcsys_sms.so: drcsys.c ../ws/main.c ../ws/drc_rt.c ../drc/drc.c ../core/gg.c ../core/z80.c
 	$(CC) $(CFLAGS) -shared -fPIC -DGGSWAN_SMS -DGGSWAN_HOST -DGGSWAN_HOST_VISIBLE= -I. -I../core -I../ws -o $@ $^
 
+# sgswan (the SG-1000 plugin, -DGGSWAN_SG1000): the machine with a
+# reference renderer of the TMS9918A (see ../SG1000.md), and a test ROM
+sg: sgtest
+
+sgtest: sg_main.c ../core/gg.c ../core/sg_vdp.c ../core/z80.c
+	$(CC) $(CFLAGS) -DGGSWAN_SG1000 -o $@ $^
+
+sgcheck: sgtest
+	for m in g1 g2 mc text; do python3 mksgtest.py sgtest_$$m.sg $$m && ./sgtest sgtest_$$m.sg 120 sgtest_$$m "" 0 || exit 1; done
+
 clean:
 	rm -f ggtest wssim libztest.so libdrctest.so libdrcgame.so libdrcsys.so *.ppm
-	rm -f ggtest_sms wssim_sms libdrcsys_sms.so
+	rm -f ggtest_sms wssim_sms libdrcsys_sms.so sgtest sgtest_*.sg
 
-.PHONY: all sms ztest drctest drcgame drcsys clean
+.PHONY: all sms sg sgcheck ztest drctest drcgame drcsys clean
 
 libdrcsys.so: drcsys.c ../ws/main.c ../ws/drc_rt.c ../drc/drc.c ../core/gg.c ../core/z80.c
 	$(CC) $(CFLAGS) -shared -fPIC -DGGSWAN_HOST -DGGSWAN_HOST_VISIBLE= -I. -I../core -I../ws -o $@ $^
