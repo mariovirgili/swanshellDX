@@ -6,7 +6,7 @@ emulated by a dynamic recompiler (Z80 to V30MZ code), with the original
 interpreter kept for the parts that need it. The Game Gear video memory is
 mapped onto the WonderSwan's own tile and screen hardware.
 
-Status: fairly stable (patch 144). It has been tested mostly in the
+Status: fairly stable (patch 145). It has been tested mostly in the
 nileswan-medem emulator and with the host test tools; tests on real
 hardware are still to come.
 
@@ -207,6 +207,7 @@ playing, as smsswan's.
 | Y1 (Y up), Y3 (Y down), Y4 (Y left), Y2 (Y right) | **Move the view** over the picture, 2 pixels a frame (X 0-32, Y 0-48; it starts in the middle) |
 | Y2 (Y right) + Y4 (Y left) together | Pause and resume, frame by frame with Y3 (Y down), as on the Game Gear |
 | START + Y1 (Y up), held for a second | Back to the menu |
+| START + Y3 (Y down) | **Four sprites to a line**, on and off (off at the start). The SG-1000 draws four sprites on a line and leaves the others out, which is the flicker of its games; the WonderSwan can draw them all, and does. On: as the SG-1000 |
 | Y1 (Y up) held at the start | **Diagnostics** over the sides of the picture (FPS and the recompiler's numbers; on the right, with Y4 (Y left) held too: K the tiles drawn in the last second, M the background tiles in use) |
 
 There: Graphics I and II, multicolor, sprites of 8x8 and 16x16 pixels,
@@ -321,7 +322,7 @@ it are listed in order without one.
 - lighter DYN lookup and class routine for deferred tile bytes
 - OUTI runs to CRAM handled in the run routine
 
-### Patches 90-144
+### Patches 90-145
 
 | Patch | Change |
 |---|---|
@@ -380,3 +381,4 @@ it are listed in order without one.
 | 142 | sgswan (the SG-1000), step 1, nothing on the WonderSwan yet: the machine in `core/` under `-DGGSWAN_SG1000` (ports, the TMS9918A's registers and status, the sprites' flags worked out once a frame), `host/sgtest` with a reference renderer of the four screen modes and the sprites, the test ROMs of `mksgtest.py`; the plan and the memory map in `SG1000.md`. `PLUG_GG.BIN` and `PLUG_SMS.BIN` are the same bytes as patch 141 but for this number |
 | 143 | sgswan, the SG-1000 plugin: `PLUG_SG.BIN` (`SG=1`), `.sg` in the menu. The TMS9918A's screen on the WonderSwan (`ws/sg_video.inc`: patterns turned into tiles when a character in the view shows them, sprites 8x8, 16x16 and magnified, the 224x144 view), its ports and block I/O in the recompiler, RAM at 8000h after a short ROM (The Castle) and at 2000h where the ROM is empty (the 8 KiB RAM adapter's games); `wssim_sg`, `libdrcsys_sg.so`, `wsshot.py`. Not yet tried on a device or in nileswan-medem. `PLUG_GG.BIN` and `PLUG_SMS.BIN`: the same bytes as patch 142 but for this number |
 | 144 | LDIR and LDDR to somewhere outside the work RAM (the cartridge RAM, ROM), in all three plugins: after the interpreter had done the copy, the block went back to the instruction with BC = 0 and copied 64 KiB more, over all of the memory; and its cycles were counted with a byte too many, most of a frame lost or gained each time. Found with sgswan's The Castle; `mkldirtest.py` |
+| 145 | sgswan: the four sprites to a line of the TMS9918A, on and off with START + Y3 (Y down), off at the start (all the sprites shown, as before). The lines of a sprite the chip leaves out are empty in a set of tiles made for it; the picture is then the reference's to the pixel in Star Force, TwinBee and Zoom 909. The sprites' tiles were not made again when a game changed the sprites' size and wrote the table in the same frame. `PLUG_GG.BIN` and `PLUG_SMS.BIN`: the same bytes as patch 144 but for this number |

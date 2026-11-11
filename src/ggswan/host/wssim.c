@@ -35,11 +35,9 @@ uint16_t ws_keypad_scan(void) { return 0; }
 /* === Reference renderer: the TMS9918A's (sg_ref.h), the view of it === */
 #include "sg_ref.h"
 
-void host_line_hook(uint16_t line) {
+static void ref_line(uint16_t line) {
     static uint8_t color[256];
     int fifth;
-    if (line >= GG_ACTIVE_LINES)
-        return;
     sg_ref_line(line, color, &fifth);
     if (line < GG_VIEW_Y || line >= GG_VIEW_Y + GG_VIEW_H)
         return;
@@ -49,6 +47,22 @@ void host_line_hook(uint16_t line) {
         fb[line - GG_VIEW_Y][x][1] = ((c >> 4) & 0xF) * 17;
         fb[line - GG_VIEW_Y][x][2] = (c & 0xF) * 17;
     }
+}
+
+// each line as the chip draws it, with the VRAM as it is then; with
+// WSSIM_REFEND set, all of them after the last one, with the VRAM as it is
+// there: what the WonderSwan side shows, which makes its screen once a
+// frame (a difference that this takes away is a sprite or a character
+// changed while the frame was drawn, not an error)
+void host_line_hook(uint16_t line) {
+    static int at_end = -1;
+    if (at_end < 0)
+        at_end = getenv("WSSIM_REFEND") != NULL;
+    if (at_end && line == GG_ACTIVE_LINES)
+        for (uint16_t l = 0; l < GG_ACTIVE_LINES; l++)
+            ref_line(l);
+    if (line < GG_ACTIVE_LINES && !at_end)
+        ref_line(line);
 }
 #else
 /* === Reference renderer (one line of the 256-pixel picture) === */
@@ -357,6 +371,16 @@ int main(int argc, char **argv) {
             int got = gg_platform_sprite_status() != 0;
             n_set += hit; if (got != hit) n_bad++;
             if (fr == frames - 1) printf("collision flag: set in %u frames, %u frames differ from the pixel count\n", n_set, n_bad);
+        }
+#endif
+#ifdef GGSWAN_SG1000
+        if (getenv("WSSIM_SAT") && fr + 1 == atoi(getenv("WSSIM_SAT"))) {
+            uint32_t hid[32]; uint8_t sat[128];
+            memcpy(sat, gg_vram + gg_sat_base(), 128);
+            uint8_t any = sg_sprite_hidden(sat, hid);
+            printf("reg1 %02X view %d,%d hidden %d\n", gg.vdp.reg[1], gg_view_x, gg_view_y, any);
+            for (int i = 0; i < 32 && sat[i * 4] != 0xD0; i++)
+                printf("  %2d: y %3d x %3d pat %02X col %02X hid %08lX\n", i, sat[i * 4], sat[i * 4 + 1], sat[i * 4 + 2], sat[i * 4 + 3], any ? (unsigned long) hid[i] : 0ul);
         }
 #endif
         if (every && (fr + 1) % every == 0) {

@@ -49,13 +49,16 @@ static uint8_t sg_ref_sprite_line(uint16_t line, uint8_t *color, int *fifth) {
             int x = s[i].x + k;
             if (x < 0 || x > 255 || !((bits << (k / mag)) & 0x8000))
                 continue;
-            if (taken[x]) {
+            // (two sprites there, whatever their colors: the flag. The
+            // first of the table with a color is in front: one of color
+            // 0 is a plane with nothing on it, the next shows through)
+            if (taken[x])
                 hit = 1;
-                continue;   // (the first of the table is in front)
-            }
-            taken[x] = 1;
-            if (color && s[i].color)
+            if (!(taken[x] & 2) && color && s[i].color) {
                 color[x] = s[i].color;
+                taken[x] |= 2;
+            }
+            taken[x] |= 1;
         }
     }
     if (n + (*fifth >= 0) > sg_ref_max_line)

@@ -191,6 +191,7 @@ uint8_t sg_sprite_status(void);
 /// Platform: was the sprite table, or a sprite's pattern, written since
 /// the frame was last presented (gg_platform_frame_end)? 1 when unknown.
 uint8_t gg_platform_sprites_written(void);
+uint8_t sg_sprite_hidden(const uint8_t *sat, uint32_t *hid);
 /// One sprite of the table as the screen has it. sg_sprite() gives 0 at
 /// the end of the table (Y = D0h).
 typedef struct {

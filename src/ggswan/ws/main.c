@@ -2074,10 +2074,22 @@ GGSWAN_HOST_VISIBLE void read_keys(void) {
     // START is the Pause button, pressed for the game when it is let go,
     // unless Y1 (Y up) was held with it (the way back to the menu)
     {
-        static uint8_t start_held, start_y1;
+        static uint8_t start_held, start_y1, start_y3;
         if (k & WS_KEY_START) {
-            if (!start_held) { start_held = 1; start_y1 = 0; }
+            if (!start_held) { start_held = 1; start_y1 = 0; start_y3 = 0; }
             if (k & WS_KEY_Y1) start_y1 = 1;
+            // START + Y3 (Y down): four sprites to a line as the chip,
+            // or all of them (sg_video.inc)
+            if (k & WS_KEY_Y3) {
+                if (!start_y3) {
+                    sg_limit ^= 1;
+                    sg_spr_dirty = 2;
+                }
+                start_y3 = 1;
+                start_y1 = 1;   // (no Pause for the game)
+            } else {
+                start_y3 = 0;
+            }
         } else {
             if (start_held && !start_y1) g |= GG_KEY_START;
             start_held = 0;

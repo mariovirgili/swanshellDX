@@ -78,6 +78,61 @@ static uint32_t row_bits(uint16_t v, uint8_t mag) {
  *     32 sprites on top of each other for a while: 496 pairs of 16 rows,
  *     each row a count, was 85,000 cycles a frame).
  */
+// (sprites on each line: a count up where each starts, down where it
+// ends, then summed; both routines below use it, one at a time)
+static int8_t cnt[GG_ACTIVE_LINES + 1];
+
+/*
+ * What the chip does not draw: on a line with more than four sprites, the
+ * fifth of the table and the ones after it (whatever their colors and
+ * wherever they are from left to right). For the platform, which draws a
+ * sprite whole: hid[i], for sprite i of the table (sat: the 128 bytes of
+ * it), bit r set when its line r, from its top, is one of those (lines of
+ * the picture only). Returns 0, hid not written, when no line has more
+ * than four: most frames.
+ */
+uint8_t sg_sprite_hidden(const uint8_t *sat, uint32_t *hid) {
+    int16_t sy[32];
+    uint8_t n = 0, any = 0;
+    int16_t side = sg_sprite_size() * sg_sprite_mag();
+    for (; n < 32; n++) {
+        uint8_t y = sat[n * 4];
+        if (y == 0xD0)
+            break;
+        sy[n] = (y > 0xE0 ? (int16_t) y - 256 : y) + 1;
+    }
+    if (n <= 4)
+        return 0;
+    memset(cnt, 0, sizeof(cnt));
+    uint8_t top = GG_ACTIVE_LINES, bottom = 0;
+    for (uint8_t i = 0; i < n; i++) {
+        int16_t y0 = sy[i], y1 = y0 + side;
+        if (y0 < 0) y0 = 0;
+        if (y1 > GG_ACTIVE_LINES) y1 = GG_ACTIVE_LINES;
+        if (y0 < y1) {
+            cnt[y0]++;
+            cnt[y1]--;
+            if (y0 < top) top = (uint8_t) y0;
+            if (y1 > bottom) bottom = (uint8_t) y1;
+        }
+    }
+    int8_t c = 0;
+    for (uint8_t y = top; y < bottom; y++) {
+        c += cnt[y];
+        if (c <= 4)
+            continue;
+        if (!any) {
+            memset(hid, 0, 32 * sizeof(uint32_t));
+            any = 1;
+        }
+        uint8_t k = 0;
+        for (uint8_t i = 0; i < n; i++)
+            if (y >= sy[i] && y < sy[i] + side && ++k > 4)
+                hid[i] |= (uint32_t) 1 << (y - sy[i]);
+    }
+    return any;
+}
+
 static uint8_t sg_sprite_status_now(void);
 uint8_t sg_sprite_status(void) {
 
@@ -105,7 +160,6 @@ static uint8_t sg_sprite_status_now(void) {
     static uint8_t si[32];   // (their numbers in the table)
     static uint16_t rows[32][16];
     static uint8_t have[32];   // (rows: 0 not read yet, 1 read, 2 all empty)
-    static int8_t cnt[GG_ACTIVE_LINES + 1];
     // (with more than four on a line: the lines of each sprite, from its
     // first, where it is not one of the four; all of its lines)
     static uint32_t hid[32];

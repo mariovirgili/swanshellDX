@@ -471,7 +471,18 @@ static uint8_t spr_port04, spr_count, spr_ready;
 // color in bits 12-15)
 #define SG_KINDS 40
 static uint16_t sg_kind_key[SG_KINDS];
+// (with the four sprites to a line: the lines of it not drawn, bit r its
+// line r; 0: all of it, the kind every sprite has without the limit)
+static uint32_t sg_kind_mask[SG_KINDS];
+// START + Y3 (Y down): the chip's four sprites to a line, the fifth and
+// the ones after it not drawn there (the games' flicker), or all of them
+// (the WonderSwan draws 32 to a line). The status register says the same
+// either way (sg_vdp.c).
+static uint8_t sg_limit;
 static uint8_t sg_kind_live[SG_KINDS];   // on the screen in this frame
+// its tiles with nothing in them, bit n the nth (not given to the
+// WonderSwan: it has 128 sprites, and a magnified 16x16 one takes 16)
+static uint16_t sg_kind_empty[SG_KINDS];
 static uint8_t sg_kind_max;              // how many fit (the tiles each takes)
 
 static void sg_kinds_reset(void) {
@@ -484,11 +495,12 @@ static void sg_kinds_reset(void) {
 
 // the tiles of a kind: 8x8 pattern pieces top left, bottom left, top
 // right, bottom right; magnified, each piece four tiles the same way
-static void sg_kind_convert(uint8_t kind, uint16_t key) {
+static void sg_kind_convert(uint8_t kind, uint16_t key, uint32_t mask) {
     uint8_t src[32];
     uint8_t pieces = sg_big ? 4 : 1;
     uint16_t lo = sg_plane_lo[key >> 12], hi = sg_plane_hi[key >> 12];
     uint16_t *t = (uint16_t*) TILE_PTR((uint16_t) kind * pieces * (sg_mag ? 4 : 1));
+    uint16_t *t0 = t;
     _fmemcpy(src, sg_vr + (((key & 0x7FF) << 3) & 0x3FFF), pieces * 8);
     diag_commit += pieces;
     for (uint8_t q = 0; q < pieces; q++) {
@@ -513,6 +525,29 @@ static void sg_kind_convert(uint8_t kind, uint16_t key) {
             }
         }
     }
+    // the lines not drawn: nothing there (the tiles in the order above;
+    // each one's first line of the sprite); then the tiles left empty
+    uint8_t sub = sg_mag ? 4 : 1;
+    uint16_t empty = 0, bit = 1;
+    for (uint8_t q = 0; q < pieces; q++) {
+        for (uint8_t u = 0; u < sub; u++, t0 += 16, bit <<= 1) {
+            if (mask) {
+                uint8_t l0 = sg_mag ? (q & 1) * 16 + (u >> 1) * 8 : (q & 1) * 8;
+                uint8_t m = (uint8_t) (mask >> l0);
+                for (uint8_t r = 0; m; r++, m >>= 1)
+                    if (m & 1) {
+                        t0[r * 2] = 0;
+                        t0[r * 2 + 1] = 0;
+                    }
+            }
+            uint16_t any = 0;
+            for (uint8_t r = 0; r < 16; r++)
+                any |= t0[r];
+            if (!any)
+                empty |= bit;
+        }
+    }
+    sg_kind_empty[kind] = empty;
 }
 
 static void build_sprites(void) {
@@ -520,14 +555,17 @@ static void build_sprites(void) {
 #ifdef GGSWAN_HOST
     host_spr_builds++;
 #endif
-    if (sg_spr_dirty == 2)
+    // (bit 1: the kinds too; bit 0 may have been set after it)
+    if (sg_spr_dirty & 2)
         sg_kinds_reset();
     _fmemcpy(sat, sg_vr + sg_sat, 128);
     uint8_t *table = spr_back ? sprite_table_b : sprite_table;
-    uint8_t *s = table, *end = table + 124 * 4;
+    uint8_t *s = table, *end = table + 128 * 4;
     uint8_t pieces = sg_big ? 4 : 1, sub = sg_mag ? 4 : 1, step = sg_mag ? 16 : 8;
     int16_t side = (sg_big ? 16 : 8) * (sg_mag ? 2 : 1);
     memset(sg_kind_live, 0, sg_kind_max);
+    uint32_t hid[32];
+    uint8_t lim = sg_limit && sg_m != 4 && sg_sprite_hidden(sat, hid);
     // (no sprites with the display off or in text mode)
     for (uint8_t i = 0; i < 32 && sg_m != 4 && s < end; i++) {
         const uint8_t *e = sat + i * 4;
@@ -542,11 +580,25 @@ static void build_sprites(void) {
         if (y <= -side || y >= GG_VIEW_H || x <= -side || x >= GG_VIEW_W)
             continue;
         uint16_t key = ((sg_spg >> 3) + (sg_big ? e[2] & 0xFC : e[2])) | ((uint16_t) color << 12);
+        // the lines the chip leaves out (the fifth on them, or later):
+        // all the ones it has in the picture: no sprite
+        uint32_t mask = lim ? hid[i] : 0;
+        if (mask) {
+            int16_t py = y + sg_vy;
+            int16_t lo = py < 0 ? -py : 0;
+            int16_t hi = py + side > GG_ACTIVE_LINES ? GG_ACTIVE_LINES - py : side;
+            uint32_t all = (hi >= 32 ? 0xFFFFFFFFul : ((uint32_t) 1 << hi) - 1)
+                & ~(((uint32_t) 1 << lo) - 1);
+            if (mask == all)
+                continue;
+        }
         // its kind: there already, or an empty place, or the place of
         // one not on the screen (so far)
-        uint8_t k = 0, spare = 0xFF, dead = 0xFF;
+        uint8_t k, spare, dead;
+    find:
+        k = 0; spare = 0xFF; dead = 0xFF;
         for (; k < sg_kind_max; k++) {
-            if (sg_kind_key[k] == key)
+            if (sg_kind_key[k] == key && sg_kind_mask[k] == mask)
                 break;
             if (sg_kind_key[k] == SG_NONE) {
                 if (spare == 0xFF)
@@ -558,19 +610,31 @@ static void build_sprites(void) {
         if (k == sg_kind_max) {
             if (spare == 0xFF)
                 spare = dead;
-            if (spare == 0xFF)
-                continue;   // (more kinds than tiles for them)
+            if (spare == 0xFF) {
+                // more kinds than tiles for them: one with lines left
+                // out is drawn whole, if that kind is there
+                if (mask) {
+#ifdef GGSWAN_HOST
+                    if (getenv("GGSWAN_LIMIT_LOG")) fprintf(stderr, "frame %lu: sprite %d drawn whole (no kind left)\n", (unsigned long) gg.frame, i);
+#endif
+                    mask = 0;
+                    goto find;
+                }
+                continue;
+            }
             k = spare;
             sg_kind_key[k] = key;
-            sg_kind_convert(k, key);
+            sg_kind_mask[k] = mask;
+            sg_kind_convert(k, key, mask);
         }
         sg_kind_live[k] = 1;
         uint16_t tile = (uint16_t) k * pieces * sub;
+        uint16_t empty = sg_kind_empty[k];
         for (uint8_t q = 0; q < pieces; q++) {
             int16_t qx = x + (q >> 1) * step, qy = y + (q & 1) * step;
-            for (uint8_t u = 0; u < sub; u++, tile++) {
+            for (uint8_t u = 0; u < sub; u++, tile++, empty >>= 1) {
                 int16_t wx = qx + (u & 1) * 8, wy = qy + (u >> 1) * 8;
-                if (wy <= -8 || wy >= GG_VIEW_H || wx <= -8 || wx >= GG_VIEW_W || s >= end)
+                if ((empty & 1) || wy <= -8 || wy >= GG_VIEW_H || wx <= -8 || wx >= GG_VIEW_W || s >= end)
                     continue;
                 // (palette 8, behind screen 2: the diagnostics' text)
                 s[0] = (uint8_t) tile; s[1] = tile >> 8; s[2] = (uint8_t) wy; s[3] = (uint8_t) wx;
@@ -699,6 +763,10 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
 #ifdef GGSWAN_HOST
     // (the PC tests: GGSWAN_PAN=x,y for the view; GGSWAN_PANMOVE, below,
     // to move it all the time, as the Y buttons do)
+    if (getenv("GGSWAN_LIMIT") && !sg_limit) {
+        sg_limit = 1;
+        sg_spr_dirty = 2;
+    }
     if (getenv("GGSWAN_PAN")) {
         int px = 16, py = 24;
         sscanf(getenv("GGSWAN_PAN"), "%d,%d", &px, &py);

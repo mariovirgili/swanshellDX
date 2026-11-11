@@ -6,4 +6,4 @@
 
 /// the number of the last ggswan patch applied (shown at start, bottom
 /// right): raised by every patch
-#define GGSWAN_PATCH 144
+#define GGSWAN_PATCH 145

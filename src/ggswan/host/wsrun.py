@@ -302,6 +302,11 @@ def h_code(uc, addr, size, ud):
         st['frame'] += 1
         fr = st['frame']
         if fr in KEYS: pending_keys[0] = KEYS[fr]
+        # WSRUN_POKE=symbol:hex[,symbol:hex]: bytes written at the start
+        # of every frame (what a key of the WonderSwan would set)
+        for pk in os.environ.get('WSRUN_POKE', '').split(','):
+            if pk:
+                uc.mem_write(syms[pk.split(':')[0]], bytes([int(pk.split(':')[1], 16)]))
         uc.mem_write(syms['gg'] + 0x6C, bytes([pending_keys[0]]))   # gg.keys (read_keys: none here)
         if fr % EVERY == 0: report(fr)
         if fr >= FRAMES: uc.emu_stop()
