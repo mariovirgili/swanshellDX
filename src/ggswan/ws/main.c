@@ -1200,20 +1200,35 @@ static void splits_commit(void) {
 /*
  * WS screens show color 0 as transparent (the backdrop); on the Game Gear it
  * is color 0 of the tile's palette. Use as backdrop color 0 of the palette
- * most of the visible tiles use.
+ * most of the visible tiles that have that color use: a tile without it
+ * shows no backdrop, whatever its palette. (Shinobi's map screen is black
+ * tiles of the sprite palette, none of them with color 0, and a few blank
+ * ones of the other palette: with every tile counted the backdrop was the
+ * sprite palette's color 0, brown, a bar of it at the bottom of the screen.)
+ * Color 0 is looked for in two of the tile's eight rows (as it is in VRAM:
+ * deferred writes not yet there are not seen, until the next time).
  */
 static void update_backdrop(void) {
     uint8_t top = (GG_VIEW_Y + gg.vdp.vscroll_frame) % NT_P >> 3;
     uint8_t left = (GG_VIEW_X - gg.vdp.reg[8]) >> 3;
-    uint16_t sprite_pal = 0;
+    uint8_t n[2] = { 0, 0 };
     // (every other tile of the view: 18 rows, 20 columns; smsswan 28)
     for (uint8_t r = 0; r < GG_VIEW_H / 8; r += 2) {
         uint8_t row = (top + r) % NT_H;
-        for (uint8_t c = 0; c < GG_VIEW_W / 8; c += 2)
-            if (gg_entry(row, (left + c) & 31) & 0x800)
-                sprite_pal++;
+        for (uint8_t c = 0; c < GG_VIEW_W / 8; c += 2) {
+            uint16_t e = gg_entry(row, (left + c) & 31);
+            const uint8_t *t = gg_vram + (e & 0x1FF) * 32;
+            // (a pixel is color 0 where none of its row's four planes has it)
+            if ((uint8_t) ~(t[4] | t[5] | t[6] | t[7])
+                    || (uint8_t) ~(t[20] | t[21] | t[22] | t[23]))
+                n[(e >> 11) & 1]++;
+        }
     }
-    backdrop_palette = sprite_pal > (GG_VIEW_H / 16) * (GG_VIEW_W / 16) / 2 ? 1 : 0;
+    // (as many of each, or none: as it was)
+    if (n[1] > n[0])
+        backdrop_palette = 1;
+    else if (n[0] > n[1])
+        backdrop_palette = 0;
 }
 
 static uint8_t spr_back = 1;   // the table to build next: 1 sprite_table_b

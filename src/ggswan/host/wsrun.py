@@ -250,6 +250,18 @@ KEYSYM = syms['gg'] + 0   # (gg.keys: found below)
 
 trail = collections.deque(maxlen=40)
 jst = [0, 0, 0]   # taken-jump extra, the address after it, the last address
+WATCH = dict((syms[n], n) for n in os.environ.get('WSRUN_WATCH', '').split(',') if n in syms)
+long_n = collections.Counter(); long_max = collections.Counter(); rep_run = [0, 0]
+LONGX = os.environ.get('WSRUN_LONGX'); long_hist = collections.Counter()   # (WSRUN_LONGX=1: those REPs by length and frame)
+def blk_name(addr):
+    if 0x40000 <= addr < 0xA0000:
+        off = addr & 0xFFFF
+        for lo, hi, nm in STUBS:
+            if lo <= off < hi: return nm
+        i = bisect.bisect_right(blk_starts, addr) - 1
+        if i >= 0 and addr < blk_info[i][0]: return 'block %04X' % blk_info[i][1]
+        return 'code %05X' % addr
+    return fname(addr)
 def h_code(uc, addr, size, ud):
     n = fname(addr)
     if n[0] == '?': n = '?%03X' % (addr >> 8)
@@ -262,6 +274,15 @@ def h_code(uc, addr, size, ud):
         txt = bytes(uc.mem_read((dx << 4) + ax, 16)).split(b'\0')[0]
         raise SystemExit('fail(%r, %04X)' % (txt, cx))
     if addr in COUNT_AT: counts[COUNT_AT[addr]] += 1
+    if addr in WATCH:
+        # WSRUN_WATCH=function,...: every call, with the Game Gear frame and
+        # line, the bytes in the log of deferred VRAM writes and the caller
+        gf = int.from_bytes(uc.mem_read(syms['gg'] + 0x6C, 4), 'little')
+        sp = (uc.reg_read(UC_X86_REG_SS) << 4) + uc.reg_read(UC_X86_REG_SP)
+        ret = int.from_bytes(uc.mem_read(sp, 2), 'little') + (int.from_bytes(uc.mem_read(sp + 2, 2), 'little') << 4)
+        print('   WATCH %s: frame %d (Game Gear %d), log %d bytes, Z80 pc %04X, called from %s' % (
+            WATCH[addr], st['frame'], gf, int.from_bytes(uc.mem_read(syms['drc_st'] + 304, 2), 'little') - int.from_bytes(uc.mem_read(syms['log_start'], 2), 'little'),
+            int.from_bytes(uc.mem_read(PCSYM, 2), 'little'), fname(ret & 0xFFFFF)))
     if addr == TRANS:
         tr_pcs[uc.reg_read(UC_X86_REG_DX)] += 1
         last_tr[0] = uc.reg_read(UC_X86_REG_DX)
@@ -295,6 +316,19 @@ def h_code(uc, addr, size, ud):
         if jst[0] and addr != jst[1]: c += jst[0]     # the jump before this one was taken
         jst[0] = ex; jst[1] = addr + size; jst[2] = addr
     st['cyc'] += c
+    # an instruction no interrupt gets into (a REP: Mednafen's V30MZ runs
+    # all of it in one step, so a line interrupt waits that long in
+    # nileswan-medem; the real CPU takes interrupts between its turns).
+    # Unicorn comes here for every turn of a REP: the turns at one address
+    if addr == rep_run[0]:
+        rep_run[1] += c
+    else:
+        if rep_run[1] > 400:
+            k = blk_name(rep_run[0])
+            long_n[k] += 1
+            if rep_run[1] > long_max[k]: long_max[k] = rep_run[1]
+            if LONGX: long_hist[k, rep_run[1] // 500 * 500, st['frame'] // 100 * 100] += 1
+        rep_run[0] = addr; rep_run[1] = c
     if CLIX:
         # WSRUN_CLI=1: stretches with interrupts off (cycles), by the
         # function they start in: how late a line interrupt can be served
@@ -431,6 +465,12 @@ def report(fr):
                 for i in md.disasm(code, lo):
                     if stub_n[i.address]: print('      %04X %9.1f  %s %s' % (i.address, stub_n[i.address] / nfr, i.mnemonic, i.op_str))
         stub_n.clear()
+    if long_max:
+        print('   instructions over 400 cycles (longest, times): ' + ', '.join('%s %d/%d' % (n, m, long_n[n]) for n, m in long_max.most_common(8)))
+    if LONGX and long_hist:
+        print('   long REPs (routine, cycles, frames from: times): ' + ', '.join('%s %d+ @%d: %d' % (k[0], k[1], k[2], n) for k, n in sorted(long_hist.items())))
+        long_hist.clear()
+    long_n.clear(); long_max.clear()
     ph_c.clear(); fn_c.clear(); tr_pcs.clear()
     sys.stdout.flush()
 

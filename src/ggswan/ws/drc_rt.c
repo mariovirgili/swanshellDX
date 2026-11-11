@@ -105,6 +105,14 @@ static void psram_write(uint8_t which, uint16_t off, const uint8_t *src, uint16_
     outportw(WS_CART_EXTBANK_RAM_PORT, code_bank + which);
     uint8_t __far *dst = MK_FP(0x1000, off);
     if (src) {
+        // (in pieces: see l0_clear; a long block or the routines of a code
+        // bank are 4 KiB and more)
+        while (len > 256) {
+            _fmemcpy(dst, src, 256);
+            dst += 256;
+            src += 256;
+            len -= 256;
+        }
         _fmemcpy(dst, src, len);
     } else {
         for (uint16_t i = 0; i < len; i++)
@@ -733,10 +741,23 @@ static void drc_map_sync(void) {
 #define fast38_seg drc_st.fast38[1]
 #define fast38_bank drc_st.fast38_bank
 
+/*
+ * The L0 cache emptied, in pieces. One REP STOSW over its 4 KiB is 6000
+ * cycles, 24 WS lines, and Mednafen's V30MZ (nileswan-medem) runs a REP to
+ * its end before it takes an interrupt (the real CPU takes it between two
+ * turns): the line interrupt at the end of the WS screen came that late,
+ * the new scroll written well into the next screen, its top with the old
+ * one (Shinobi's fence, vertical bars, broken in two for a frame).
+ */
+static void l0_clear(void) {
+    for (uint16_t a = 0; a < L0_SIZE; a += 256)
+        memset(IRAM(L0_ADDR + a), 0xFF, 256);
+}
+
 static void flush(void) {
     pending_link = 0;
     fast38_seg = 0;
-    memset(IRAM(L0_ADDR), 0xFF, L0_SIZE);
+    l0_clear();
     psram_write(DRC_CODE_BANKS, T_OFF, NULL, HASH_SIZE * 2);
     cache_bank = 0;
     cache_top = CACHE_START;
@@ -1615,7 +1636,17 @@ int32_t drc_z80_run(int32_t cycles) {
             for (uint16_t f = f0; f < f0 + 4; f++)
                 if (tw[(T_PC / 2) + f] == z80.pc && tb[T_BANK + f] == RAM_KEY)
                     psram_write(DRC_CODE_BANKS, T_OFF + f * 2, (const uint8_t*) &marker, 2);
-            memset(IRAM(L0_ADDR), 0xFF, L0_SIZE);   // (DYN may know it)
+            // DYN may know it: its L0 entry (one for each address) goes.
+            // The whole L0 was emptied here: Shinobi jumps through RAM
+            // (D103h: JP nn, the frame interrupt's routine, another one
+            // every frame), the block of that JP is linked from the ROM
+            // and finds its bytes changed every other frame: 6000 cycles
+            // of REP STOSW each time, and the L0 to fill again
+            {
+                uint16_t *e = (uint16_t*) IRAM(L0_ENTRY(z80.pc));
+                if (e[0] == z80.pc && (uint8_t) e[1] == RAM_KEY)
+                    e[0] = 0xFFFF;
+            }
 #ifdef GGSWAN_HOST
             { extern uint32_t hs_ram_fail; hs_ram_fail++; }
 #endif

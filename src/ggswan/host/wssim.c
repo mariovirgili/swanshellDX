@@ -186,6 +186,52 @@ static int screen_px(int scr, int x, int y, uint16_t *col) {
     return 1;
 }
 
+// WSSIM_PROBE=x,y (WS screen coordinates; the view starts at x 32): what
+// each layer has at that pixel, printed with every picture written
+static void ws_probe(int x, int y) {
+    uint8_t ctrl = ports[0];
+    printf("  probe WS (%d,%d): control %02X, scroll 1 %d,%d, GG reg 0-9:", x, y, ctrl, scr1_x(y), scr1_y(y));
+    for (int i = 0; i < 10; i++) printf(" %02X", gg.vdp.reg[i]);
+    printf(" vscroll %d\n", gg.vdp.vscroll_frame);
+    printf("    backdrop: port 01h %02X = %03X; Game Gear colour 0 %03X, colour 16 %03X, register 7 colour %03X\n", ports[1],
+        ((uint16_t*) (iram + 0xFE00))[((ports[1] >> 4) & 15) * 16 + (ports[1] & 15)], gg_color12(0), gg_color12(16), gg_color12(16 + (gg.vdp.reg[7] & 15)));
+    for (int scr = 0; scr < 2; scr++) {
+        uint16_t base = scr ? (ports[7] >> 4) << 11 : (ports[7] & 15) << 11;
+        int with1 = scr && !(ports[0] & 0x10);
+        uint8_t sx = x + (scr && !with1 ? ports[0x12] : scr1_x(y)), sy = y + (scr && !with1 ? ports[0x13] : scr1_y(y));
+        uint16_t a = base + ((sy >> 3) * 32 + (sx >> 3)) * 2;
+        uint16_t e = iram[a] | (iram[a + 1] << 8);
+        uint16_t t = (e & 0x1FF) | (((e >> 13) & 1) << 9);
+        printf("    screen %d: map row %d column %d (IRAM %04X) entry %04X tile %d pixel %d\n", scr + 1, sy >> 3, sx >> 3, a, e, t,
+            ws_pixel(t, (e & 0x8000) ? 7 - (sy & 7) : (sy & 7), (e & 0x4000) ? 7 - (sx & 7) : (sx & 7)));
+    }
+    uint8_t *tab = iram + ((ports[4] & 0x3F) << 9);
+    for (int i = ports[5]; i < ports[5] + ports[6]; i++) {
+        uint8_t *sp = tab + i * 4;
+        uint8_t dy = y - sp[2], dx = x - sp[3];
+        if (dy >= 8 || dx >= 8) continue;
+        printf("    sprite %d: tile %d attr %02X at %d,%d\n", i, sp[0] | ((sp[1] & 1) << 8), sp[1], sp[3], sp[2]);
+    }
+    // the Game Gear side: the name table entry under that pixel
+    {
+        int gx = x - WS_VIEW_ORIGIN_X + GG_VIEW_X, gy = y + GG_VIEW_Y;
+        uint16_t nt = gg_name_table_base();
+        uint16_t yy = (gy + gg.vdp.vscroll_frame) % GG_NT_WRAP;
+        uint8_t sx = (uint8_t) (gx - gg.vdp.reg[8]);
+        uint16_t a = nt + ((yy >> 3) * 32 + (sx >> 3)) * 2;
+        uint16_t e = gg_vram[a & 0x3FFF] | (gg_vram[(a + 1) & 0x3FFF] << 8);
+        printf("    Game Gear: picture (%d,%d) name table row %d column %d (VRAM %04X) entry %04X; sprites on the line:", gx, gy, yy >> 3, sx >> 3, a & 0x3FFF, e);
+        uint16_t sat = gg_sat_base(); int h = (gg.vdp.reg[1] & 2) ? 16 : 8;
+        for (int i = 0; i < 64; i++) {
+            uint8_t sy = gg_vram[sat + i];
+            if (GG_SPR_END(sy)) { printf(" (end at %d)", i); break; }
+            int top = sy + 1; if (top > 0xF0) top -= 256;
+            if (gy >= top && gy < top + h) printf(" %d@x%d", i, gg_vram[sat + 0x80 + i * 2]);
+        }
+        printf("\n");
+    }
+}
+
 static void ws_render(void) {
     uint8_t ctrl = ports[0];
     for (int y = 0; y < 144; y++) for (int x = 0; x < 224; x++) {
@@ -287,6 +333,11 @@ int main(int argc, char **argv) {
             for (int y = 0; y < 144; y++) for (int x = 0; x < GG_VIEW_W; x++)
                 if (memcmp(fb[y][x], wsfb[y][x + WS_VIEW_ORIGIN_X], 3)) diff++;
             printf("frame %5d: %5.1f%% pixels differ, splits %d:", fr + 1, diff * 100.0 / (GG_VIEW_W * 144), act_n); for (int i = 0; i < act_n; i++) printf(" %d=%d", act_line[i], act_val[i]); printf("\n");
+            if (getenv("WSSIM_PROBE")) {
+                int px = 0, py = 0;
+                sscanf(getenv("WSSIM_PROBE"), "%d,%d", &px, &py);
+                ws_probe(px, py);
+            }
             char path[512];
             snprintf(path, sizeof(path), "%s_%05d.ppm", argv[3], fr + 1);
             FILE *o = fopen(path, "wb");
