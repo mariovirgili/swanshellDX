@@ -238,7 +238,7 @@ def h_code(uc, addr, size, ud):
                 mn_c[k] += c
         else:
             o = addr & 0xFFFF
-            if STUBX and 0x40 <= o < 0xE90: stub_n[o] += 1
+            if STUBX and 0x40 <= o < 0xF70: stub_n[o] += 1
             blk_c[next((n for lo, hi, n in STUBS if lo <= o < hi), 'unmapped')] += c
     fn_c[fname(addr)] += c
     if FOCUS and fname(addr) == FOCUS: focus_c[addr] += c
@@ -263,7 +263,7 @@ def mn_class(t):
 STUBS = [(0x0000, 0x0020, 'EXIT'), (0x0020, 0x0040, 'HELPER'), (0x0040, 0x01E0, 'DYN'),
          (0x01E0, 0x0240, 'CRAM'), (0x0240, 0x0600, 'OUTI/OUTD'), (0x0600, 0x0730, 'LDI/LDD'), (0x0730, 0x0780, 'HCALL'),
          (0x0780, 0x0920, 'LINE'), (0x0920, 0x0AA0, 'CTL'), (0x0AA0, 0x0B80, 'NTW'), (0x0B80, 0x0BF8, 'MAP'),
-         (0x0BF8, 0x0C48, 'VCNT'), (0x0C48, 0x0D20, 'PAIRS'), (0x0D20, 0x0DA0, 'NT'), (0x0DA0, 0x0E90, 'CLS')]
+         (0x0BF8, 0x0C48, 'VCNT'), (0x0C48, 0x0D20, 'PAIRS'), (0x0D20, 0x0DA0, 'NT'), (0x0DA0, 0x0E90, 'CLS'), (0x0E90, 0x0F70, 'TROW')]
 
 def report(fr):
     if CLIX:

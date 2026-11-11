@@ -177,8 +177,12 @@ typedef struct {
     // 0: each instruction as usual)
     uint16_t pairs_off;
     // routine for two OUTIs that write one name table entry
-    // (drc_emit_ntw_stub; 0: none)
+    // (drc_emit_ntw_stub; 0: none), and for OUTI / OUT (BEh),A
     uint16_t ntw_off;
+    uint16_t ntwa_off;
+    // routine for OUTI x 3 / OUT (BEh),A: a tile row of three planes and
+    // a fourth from A (drc_emit_trow_stub; 0: none)
+    uint16_t trow_off;
 } drc_env_t;
 
 #define DRC_OUTD_DELTA 0x300
@@ -210,7 +214,12 @@ uint16_t drc_emit_vcnt_stub(const drc_env_t *env, uint8_t *out, uint16_t out_off
 uint16_t drc_emit_pairs_stub(const drc_env_t *env, uint8_t *out, uint16_t out_off);
 /// the routine for OUTI / OUTI writing a whole name table entry; returns
 /// its length
-uint16_t drc_emit_ntw_stub(const drc_env_t *env, uint8_t *out, uint16_t out_off);
+/// (*entry_a: the offset of the entry for OUTI / OUT (BEh),A)
+uint16_t drc_emit_ntw_stub(const drc_env_t *env, uint8_t *out, uint16_t out_off, uint16_t *entry_a);
+/// the routine for OUTI x 3 / OUT (BEh),A (entered at out_off +
+/// DRC_TROW_ENTRY); returns its length
+#define DRC_TROW_ENTRY 2
+uint16_t drc_emit_trow_stub(const drc_env_t *env, uint8_t *out, uint16_t out_off);
 
 int drc_translate(const drc_env_t *env, uint16_t pc, uint8_t *out,
                   uint16_t out_off, uint16_t out_max, drc_result_t *res);
