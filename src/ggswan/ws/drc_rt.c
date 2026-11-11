@@ -32,8 +32,10 @@
 
 drc_state_t drc_st;
 #ifdef GGSWAN_HOST
-// (the PC tests mirror it at HOST_ST_ADDR, 100h bytes before the VDP)
-_Static_assert(sizeof(drc_state_t) <= HOST_VDP_ADDR - HOST_ST_ADDR, "drc_state_t too big");
+// (the PC tests mirror it at HOST_ST_ADDR, see drc_rt.h)
+_Static_assert(sizeof(drc_state_t) <= HOST_ST_END - HOST_ST_ADDR, "drc_state_t too big");
+_Static_assert(sizeof(z80_t) <= HOST_VDP_ADDR - HOST_Z80_ADDR, "z80_t too big");
+_Static_assert(sizeof(gg_vdp_t) <= HOST_ST_ADDR - HOST_VDP_ADDR, "gg_vdp_t too big");
 #endif
 uint16_t drc_entry[2];   // far pointer used by drc_enter: offset, segment
 

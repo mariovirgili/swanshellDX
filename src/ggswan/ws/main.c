@@ -566,23 +566,24 @@ uint8_t gg_platform_vram_defer(uint16_t a, uint8_t value) {
  * only their rows are scaled, so the pieces of a tall figure overlap by a
  * quarter. Sideways the view is still 224 of the 256 columns.
  */
-#define MAX_EVENTS 72   // (47 Y steps, the splits)
+#define MAX_EVENTS (48 + MAX_SPLITS)   // (47 Y steps, the splits)
 uint8_t gg_squeeze;                                 // wanted (read_keys)
 // the view's Y as set with the Y buttons (gg_view_y is this, kept inside
 // the picture: 192 or 224 lines, see video_present), and whether they
 // were used (if not, a picture of 224 lines starts with the view in its
 // middle too)
 static uint8_t view_y_want = 24, view_moved;
-GGSWAN_HOST_VISIBLE volatile uint8_t act_y[MAX_EVENTS], act_sq;
+volatile uint8_t act_y[MAX_EVENTS], act_sq;       // (and drc_asm.s)
 uint8_t spr_sq, spr_dy = 8, spr_224;                // (spr_build's, drc_asm.s)
 #else
 #define MAX_EVENTS MAX_SPLITS
 #endif
-GGSWAN_HOST_VISIBLE volatile uint8_t act_line[MAX_EVENTS], act_val[MAX_EVENTS], act_n = 1;
+// (also read by the line interrupt's short path, drc_asm.s)
+volatile uint8_t act_line[MAX_EVENTS], act_val[MAX_EVENTS], act_n = 1;
 // screen 1 Y scroll for the next WS frame (set by the line interrupt at the
 // end of the screen, like act_val[0]: no tear while the WS draws)
 static volatile uint8_t act_vy;
-static volatile uint8_t act_i;
+volatile uint8_t act_i;
 // the splits and the Y scroll of the frame just presented, waiting for the
 // end of the WS screen (pend_n: 0 none). They replaced the active list at
 // once, in the middle of the WS screen being drawn, whose line interrupts
@@ -769,7 +770,7 @@ void gg_platform_line(uint16_t line) {
  * More splits than fit: they are thinned out, the ones that change the
  * scroll least first (their lines take the value of the split before), so
  * that what comes after is still recorded. (Dropping the splits after the
- * 24th had Super Monaco GP II's status bar, below a road of about 70
+ * last that fits had Super Monaco GP II's status bar, below a road of about 70
  * lines each with its value, scrolling with the road's last value;
  * dropping every other one lost too much of Super Monaco GP's road.)
  *
@@ -901,7 +902,7 @@ static void hscroll_write(uint8_t value) {
 // worst lateness and VRAM-write time in lines, and how many per second
 #define WS_LINES 159
 static volatile uint8_t diag_late, diag_commit, diag_ends, diag_splits, diag_split_line;
-static volatile uint16_t diag_calls;
+volatile uint16_t diag_calls;   // (drc_asm.s too)
 static uint16_t diag_regs, diag_ram;   // (at the last frame with a split)
 static uint16_t diag_irq_line, diag_vbl_pc, diag_fg;
 static int16_t diag_left;
@@ -923,14 +924,26 @@ extern uint16_t drc_diag_irq_line, gg_diag_vbl_pc;
 extern uint8_t gg_diag_vbl_st;
 
 #ifndef GGSWAN_HOST
-// (the interrupt itself: line_irq_entry, drc_asm.s)
+/*
+ * The line interrupt (line_irq_entry, drc_asm.s). A split inside the
+ * picture is served there, in a few instructions: the scroll value, the
+ * line of the next one. Everything else comes here (line_irq_slow, with
+ * every register saved): the end of the screen, and a line that had
+ * already started when its interrupt was set. With one split a line (the
+ * road of Super Monaco GP) a WS line is about 256 cycles and this function
+ * most of them: 24 splits took an eighth of the CPU, and no more than 24
+ * could be afforded.
+ */
+_Static_assert(offsetof(drc_state_t, prio_on) == 506, "drc_asm.s: DRC_ST_PRIO_ON");
+_Static_assert(GG_VIEW_H == 144, "drc_asm.s: LI_VIEW_H");
 void line_irq_entry(void);
 void line_irq(void) {
     uint8_t i = act_i;
     uint8_t end = 0;   // (the end of the screen done in this interrupt)
     uint8_t l0 = inportb(WS_DISPLAY_LINE_PORT);
     diag_calls++;
-    if (inportb(WS_DISPLAY_LINE_IRQ_PORT) >= GG_VIEW_H) {
+    // (i = 0: the short path found the line below the picture already)
+    if (inportb(WS_DISPLAY_LINE_IRQ_PORT) >= GG_VIEW_H || !i) {
         i = 0;   // end of the screen
         // (diagnostics: how many lines after line 144 it is served)
         uint8_t d = l0 >= GG_VIEW_H ? l0 - GG_VIEW_H : l0 + (WS_LINES - GG_VIEW_H);

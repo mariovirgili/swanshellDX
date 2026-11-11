@@ -110,11 +110,86 @@ drc_helper_tramp:
     iret
     .endm
 
-    // (line_irq_entry: patch 71 served the splits inside the picture with
-    // a short path in assembly, without C; Super Monaco GP II got worse on
-    // the emulator, the whole picture flickering now and then: back to the
-    // full entry for every line interrupt)
-    IRQ_ENTRY line_irq_entry, line_irq
+    IRQ_ENTRY line_irq_slow, line_irq
+
+    // The line interrupt. A scroll split inside the picture is served here
+    // (main.c line_irq does the same, and everything else: this is its
+    // loop for i > 0, with the same order of port writes):
+    //   the value of split act_i to the scroll register(s), act_i + 1;
+    //   next = the line before the next split, or the end of the screen;
+    //   below the picture already: the end of the screen now (C, told
+    //   by act_i = 0);
+    //   that line being drawn already: its value now, again;
+    //   else the match on that line, the acknowledge, and the line read
+    //   once more: there already (the match was missed): C serves it.
+    // Variables through SS (the data segment): DS is whatever the
+    // interrupted code had, a ROM bank in the OUTI and LDI routines.
+    // (Patch 71 had a short path too, taken out because Super Monaco GP II
+    // flickered with it: it came before the interrupts loaded DS at all,
+    // and before the lost matches were found, patches 121-123.)
+#define DRC_ST_PRIO_ON 506
+#define LI_VIEW_H 144   // (GG_VIEW_H)
+    .global line_irq_entry
+line_irq_entry:
+    push ax
+    push bx
+    in al, 0x03                         // (the line it was set for)
+    cmp al, LI_VIEW_H
+    jae .Lli_slow                       // the end of the screen
+    xor bx, bx
+    mov bl, ss:[act_i]
+    test bl, bl
+    jz .Lli_slow
+    inc word ptr ss:[diag_calls]
+.Lli_again:
+    mov al, ss:[act_val + bx]
+    out 0x10, al                        // screen 1 X scroll
+    cmp byte ptr ss:[drc_st + DRC_ST_PRIO_ON], 0
+    jz 1f
+    out 0x12, al                        // screen 2 with it
+1:
+#ifdef GGSWAN_SMS
+    cmp byte ptr ss:[act_sq], 0
+    jz 1f
+    mov al, ss:[act_y + bx]             // the picture squeezed: Y too
+    out 0x11, al
+    cmp byte ptr ss:[drc_st + DRC_ST_PRIO_ON], 0
+    jz 1f
+    out 0x13, al
+1:
+#endif
+    inc bx
+    mov ah, LI_VIEW_H
+    cmp bl, ss:[act_n]
+    jae 2f
+    mov ah, ss:[act_line + bx]
+    dec ah
+    cmp ah, LI_VIEW_H
+    jbe 2f
+    mov ah, LI_VIEW_H
+2:
+    in al, 0x02                         // the line being drawn
+    cmp al, LI_VIEW_H
+    jae .Lli_end
+    cmp ah, al
+    jbe .Lli_again                      // late: its value now
+    mov ss:[act_i], bl
+    mov al, ah
+    out 0x03, al
+    mov al, 0x10                        // WS_INT_ACK_LINE_MATCH
+    out 0xB6, al
+    in al, 0x02
+    cmp al, ah
+    jae .Lli_slow                       // there already
+    pop bx
+    pop ax
+    iret
+.Lli_end:
+    mov byte ptr ss:[act_i], 0          // (C: the end of the screen)
+.Lli_slow:
+    pop bx
+    pop ax
+    jmp line_irq_slow
     IRQ_ENTRY vblank_irq_entry, vblank_irq
 
     // void log_copy(void);

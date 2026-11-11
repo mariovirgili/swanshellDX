@@ -47,7 +47,9 @@
 #include <stdint.h>
 
 /// Runtime state shared by translated code and the dispatcher (in IRAM).
-#define DRC_MAX_SPLITS 24
+// (64 since patch 138: a road with a scroll value on every line, Super
+// Monaco GP's, had its edges in steps of 4 pixels with 24)
+#define DRC_MAX_SPLITS 64
 
 typedef struct {
     uint16_t segtab[8];   // ES value for each 8 KiB of the Z80 address space
@@ -89,7 +91,9 @@ typedef struct {
     // main.c: the horizontal scroll splits recorded in this frame (here so
     // that the VDP control routine can record them)
     uint8_t rec_n;
-    uint8_t rec_line[DRC_MAX_SPLITS], rec_val[DRC_MAX_SPLITS];
+    uint8_t rec_pad[48];  // (the lists were here, 24 entries each: now at
+                          // the end; the offsets after them, which the PC
+                          // tools know, stay where they were)
     uint16_t nt_flags[8]; // name table routine: WS bits for the Game Gear
                           // entry bits 9-11 (h flip, v flip, palette)
     uint8_t vram_class[65]; // main.c: for each 256-byte VRAM page, bit 0:
@@ -118,6 +122,7 @@ typedef struct {
                           // priority (in front of the sprites): the NT
                           // routine writes them there too (0: the borders'
                           // mask and diagnostics)
+    uint8_t rec_line[DRC_MAX_SPLITS], rec_val[DRC_MAX_SPLITS];   // (rec_n)
 } drc_state_t;
 
 /// Helper operations: generated code sets drc_state.op (and arg/val),

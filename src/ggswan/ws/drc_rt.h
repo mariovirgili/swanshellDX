@@ -91,8 +91,12 @@ void drc_helper_direct(void);
 
 #ifdef GGSWAN_HOST
 #define HOST_Z80_ADDR 0xC000
+// (the PC tests' mirrors in IRAM: z80 at C000h, the VDP's registers after
+// it, the state from C100h up to the log of deferred VRAM writes, main.c
+// LOG_A, at C400h)
+#define HOST_VDP_ADDR 0xC040
 #define HOST_ST_ADDR  0xC100
-#define HOST_VDP_ADDR 0xC300
+#define HOST_ST_END   0xC400
 void host_code_changed(void);
 void host_miss(int evict);
 void host_step(uint16_t pc);
