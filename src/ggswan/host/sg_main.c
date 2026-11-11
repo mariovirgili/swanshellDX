@@ -24,6 +24,82 @@
 #error "build with -DGGSWAN_SG1000"
 #endif
 
+#ifdef GGSWAN_SF7000
+// sftest: the SF-7000 (-DGGSWAN_SF7000 too). The "ROM" is a disk image of
+// 163,840 bytes; the IPL is the built-in one (mksfipl.py), or the file
+// SF_IPL names (the SF-7000's own 8 KiB, to compare).
+#include "../core/sf7000.h"
+#include "../core/sf_ipl.h"
+static uint8_t disk[SF_DISK_SIZE];
+static uint8_t ram64[0x10000];
+static uint8_t ipl_file[0x2000];
+static uint32_t map_changes;
+void gg_platform_disk_read(uint16_t lba, uint8_t *buf) { memcpy(buf, disk + (uint32_t) lba * 256, 256); }
+void gg_platform_disk_write(uint16_t lba, const uint8_t *buf) { memcpy(disk + (uint32_t) lba * 256, buf, 256); }
+void gg_platform_map_changed(void) {
+    map_changes++;
+    if (getenv("SF_TRACE"))
+        fprintf(stderr, "frame %lu pc %04X: %s at 0000h\n", (unsigned long) gg.frame, z80.pc, sf.rom_on ? "IPL" : "RAM");
+}
+/*
+ * Typing: SF_TYPE="300:FILES\n|700:LOAD \"ASTRO.BAS\"\n|1500:RUN\n":
+ * from each frame number the text, a key every 8 frames (down for 4), with
+ * SHIFT where the character needs it. \n is CR; \b BREAK.
+ */
+static const char *type_text;
+static int type_pos, type_until = -1;
+static void type_frame(int fr, const char *script) {
+    for (const char *k = script; k && *k; ) {
+        int kf = atoi(k);
+        const char *col = strchr(k, ':');
+        if (!col) break;
+        if (kf == fr) { type_text = col + 1; type_pos = 0; type_until = fr; }
+        const char *bar = strchr(col, '|');
+        if (!bar) break;
+        k = bar + 1;
+    }
+    if (!type_text)
+        return;
+    int t = fr - type_until;
+    if (t % 8 == 0) {
+        memset(sf_keys, 0, sizeof(sf_keys));
+        char c = type_text[type_pos];
+        if (!c || c == '|') { type_text = NULL; return; }
+        if (c == '\\' && type_text[type_pos + 1]) {
+            c = type_text[++type_pos] == 'n' ? '\r' : type_text[type_pos] == 'b' ? 1 : type_text[type_pos];
+        }
+        type_pos++;
+        uint8_t key = c == 1 ? SF_K_BREAK : sf_char_key(c);
+        if (key == 0xFF) { fprintf(stderr, "no key for '%c'\n", c); return; }
+        sf_key_set(key & 0x7F, 1);
+        if (key & SF_KEY_SHIFT_BIT)
+            sf_key_set(SF_K_SHIFT, 1);
+    } else if (t % 8 == 4) {
+        memset(sf_keys, 0, sizeof(sf_keys));
+    }
+}
+// the text screen as text (the name table's 40x24 or 32x24 characters)
+static void print_screen(void) {
+    int cols = sg_mode() == SG_MODE_TEXT ? 40 : 32;
+    uint16_t nt = gg_name_table_base();
+    for (int r = 0; r < 24; r++) {
+        char line[41];
+        int last = -1;
+        for (int c = 0; c < cols; c++) {
+            uint8_t ch = gg_vram[(nt + r * cols + c) & 0x3FFF];
+            line[c] = ch >= 32 && ch < 127 ? ch : ch ? '?' : ' ';
+            if (line[c] != ' ') last = c;
+        }
+        line[last + 1] = 0;
+        if (last >= 0) printf("  %2d|%s\n", r, line);
+    }
+}
+#endif
+#ifdef GGSWAN_SF7000
+#define SF_BUILD 1
+#else
+#define SF_BUILD 0
+#endif
 static uint8_t rom[0x10000];
 static uint32_t rom_size;
 static uint8_t ram_buf[0x2000];
@@ -215,8 +291,28 @@ int main(int argc, char **argv) {
     }
     FILE *f = fopen(argv[1], "rb");
     if (!f) { perror(argv[1]); return 1; }
+#ifdef GGSWAN_SF7000
+    if (fread(disk, 1, SF_DISK_SIZE, f) != SF_DISK_SIZE || fgetc(f) != EOF) {
+        fprintf(stderr, "%s: an SF-7000 disk image has %lu bytes (40 tracks of 16 sectors of 256)\n", argv[1], (unsigned long) SF_DISK_SIZE);
+        return 1;
+    }
+    fclose(f);
+    sf_ram = ram64;
+    sf_ipl = sf_ipl_builtin;
+    sf_ipl_size = sizeof(sf_ipl_builtin);
+    if (getenv("SF_IPL")) {
+        FILE *i = fopen(getenv("SF_IPL"), "rb");
+        if (!i || fread(ipl_file, 1, 0x2000, i) != 0x2000) { fprintf(stderr, "SF_IPL: 8192 bytes wanted\n"); return 1; }
+        fclose(i);
+        sf_ipl = ipl_file;
+        sf_ipl_size = 0x2000;
+    }
+    sf.inserted = 1;
+    printf("disk: %s, %s\n", argv[1], memcmp(disk, "SYS:", 4) ? "no system on it (it does not start)" : "a system disk");
+    f = fopen(argv[1], "rb");
+#endif
     rom_size = fread(rom, 1, 0xC000, f);
-    if (!rom_size || fgetc(f) != EOF) {
+    if (!SF_BUILD && (!rom_size || fgetc(f) != EOF)) {
         fprintf(stderr, "%s: an SG-1000 ROM has 1 to 49152 bytes (no mapper)\n", argv[1]);
         return 1;
     }
@@ -244,16 +340,49 @@ int main(int argc, char **argv) {
             if (!comma) break;
             k = comma + 1;
         }
+#ifdef GGSWAN_SF7000
+        type_frame(fr, getenv("SF_TYPE"));
+        // SF_SWAP="frame:other.sf": another disk in the drive from there
+        // (frame 0: when the first disk's loader has given the memory
+        // to what it loaded, which is when the plugin changes the disk
+        // for one that does not start by itself)
+        static int swapped;
+        if (getenv("SF_SWAP") && !swapped && (atoi(getenv("SF_SWAP")) ? atoi(getenv("SF_SWAP")) == fr : !sf.rom_on)) {
+            swapped = 1;
+            FILE *d2 = fopen(strchr(getenv("SF_SWAP"), ':') + 1, "rb");
+            if (!d2 || fread(disk, 1, SF_DISK_SIZE, d2) != SF_DISK_SIZE) { fprintf(stderr, "SF_SWAP: no such disk\n"); return 1; }
+            fclose(d2);
+            printf("frame %d: the disk changed\n", fr);
+        }
+#endif
         gg_run_frame();
         if (every && (fr + 1) % every == 0) {
             snprintf(path, sizeof(path), "%s_%05d.ppm", argv[3], fr + 1);
             save_ppm(path);
+#ifdef GGSWAN_SF7000
+            printf("frame %d: pc %04X %s, mode %d, disk reads %u writes %u errors %u\n", fr + 1, z80.pc,
+                sf.rom_on ? "IPL" : "RAM", sg_mode(), sf.reads, sf.writes, sf.errors);
+            if (getenv("SF_SCREEN")) print_screen();
+#endif
         }
     }
     snprintf(path, sizeof(path), "%s_last.ppm", argv[3]);
     save_ppm(path);
-    printf("frames %d pc %04X psg writes %u vram bytes changed %u register writes %u\n",
-        frames, z80.pc, psg_writes, vram_changes, reg_writes);
+#ifdef GGSWAN_SF7000
+    printf("SF-7000: %s at 0000h (changed %u times), sectors read %u, written %u, errors %u, last command %02X\n",
+        sf.rom_on ? "IPL" : "RAM", map_changes, sf.reads, sf.writes, sf.errors, sf.last_cmd);
+    print_screen();
+    if (getenv("SF_VRAM")) {
+        // (what is in the VRAM, by 2 KiB: bytes not 0)
+        printf("VRAM bytes not 0, by 2 KiB:");
+        for (int b = 0; b < 8; b++) { int n = 0; for (int i = 0; i < 0x800; i++) n += gg_vram[b * 0x800 + i] != 0; printf(" %d", n); }
+        printf("\n");
+        FILE *v = fopen(getenv("SF_VRAM"), "wb"); fwrite(gg_vram, 1, 0x4000, v); fclose(v);
+        v = fopen("sf_ram.bin", "wb"); fwrite(ram64, 1, 0x10000, v); fclose(v);
+    }
+#endif
+    printf("frames %d pc %04X sp %04X psg writes %u vram bytes changed %u register writes %u\n",
+        frames, z80.pc, z80.sp, psg_writes, vram_changes, reg_writes);
     printf("screen: off %u, Graphics I %u, Graphics II %u, multicolor %u, text %u frames\n",
         st_off, st_mode[SG_MODE_G1], st_mode[SG_MODE_G2], st_mode[SG_MODE_MC], st_mode[SG_MODE_TEXT]);
     printf("sprites: up to %u in the table, %u on a line; frames with a fifth sprite %u, 16x16 %u, magnified %u\n",

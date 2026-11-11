@@ -6,7 +6,7 @@ emulated by a dynamic recompiler (Z80 to V30MZ code), with the original
 interpreter kept for the parts that need it. The Game Gear video memory is
 mapped onto the WonderSwan's own tile and screen hardware.
 
-Status: fairly stable (patch 145). It has been tested mostly in the
+Status: fairly stable (patch 146). It has been tested mostly in the
 nileswan-medem emulator and with the host test tools; tests on real
 hardware are still to come.
 
@@ -149,6 +149,9 @@ interrupts a second).
   reference renderer, cycle profiling in an x86 emulator).
 - `SG1000.md`: sgswan, the SG-1000 plugin being made from these sources
   (`-DGGSWAN_SG1000`): the plan, the memory map, what is done.
+- `SF7000.md`: the SC-3000 with the SF-7000 and its disks
+  (`-DGGSWAN_SF7000`): the machine, which runs on the PC only so far, the
+  built-in IPL, what the plugin still needs.
 
 ## smsswan: the Master System plugin
 
@@ -322,7 +325,7 @@ it are listed in order without one.
 - lighter DYN lookup and class routine for deferred tile bytes
 - OUTI runs to CRAM handled in the run routine
 
-### Patches 90-145
+### Patches 90-146
 
 | Patch | Change |
 |---|---|
@@ -382,3 +385,4 @@ it are listed in order without one.
 | 143 | sgswan, the SG-1000 plugin: `PLUG_SG.BIN` (`SG=1`), `.sg` in the menu. The TMS9918A's screen on the WonderSwan (`ws/sg_video.inc`: patterns turned into tiles when a character in the view shows them, sprites 8x8, 16x16 and magnified, the 224x144 view), its ports and block I/O in the recompiler, RAM at 8000h after a short ROM (The Castle) and at 2000h where the ROM is empty (the 8 KiB RAM adapter's games); `wssim_sg`, `libdrcsys_sg.so`, `wsshot.py`. Not yet tried on a device or in nileswan-medem. `PLUG_GG.BIN` and `PLUG_SMS.BIN`: the same bytes as patch 142 but for this number |
 | 144 | LDIR and LDDR to somewhere outside the work RAM (the cartridge RAM, ROM), in all three plugins: after the interpreter had done the copy, the block went back to the instruction with BC = 0 and copied 64 KiB more, over all of the memory; and its cycles were counted with a byte too many, most of a frame lost or gained each time. Found with sgswan's The Castle; `mkldirtest.py` |
 | 145 | sgswan: the four sprites to a line of the TMS9918A, on and off with START + Y3 (Y down), off at the start (all the sprites shown, as before). The lines of a sprite the chip leaves out are empty in a set of tiles made for it; the picture is then the reference's to the pixel in Star Force, TwinBee and Zoom 909. The sprites' tiles were not made again when a game changed the sprites' size and wrote the table in the same frame. `PLUG_GG.BIN` and `PLUG_SMS.BIN`: the same bytes as patch 144 but for this number |
+| 146 | The SF-7000 (the SC-3000's disk unit), step 1, nothing on the WonderSwan yet: the machine in `core/` under `-DGGSWAN_SF7000` (64 KiB of RAM with the IPL over the first 16, the two 8255s, the keyboard matrix, the uPD765 and its disk with the index hole Disk BASIC times), an IPL of its own in place of Sega's (`host/mksfipl.py`), `host/sftest` (keys typed, the disk changed) and `host/sf_unit` (56 checks through the ports). On the PC the three disks tried start: Disk BASIC 1.0p and Astro from The Complete Arcade Pack, Kamikaze with `BOOT`, Poseidon Wars. `SF7000.md`. `PLUG_GG.BIN`, `PLUG_SMS.BIN` and `PLUG_SG.BIN` are the same bytes as patch 145 but for this number |

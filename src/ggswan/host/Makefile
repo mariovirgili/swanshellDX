@@ -18,6 +18,8 @@
 #   make sg                   sgtest: the SG-1000 (-DGGSWAN_SG1000, .sg
 #                             ROMs) with its reference renderer
 #   make sgcheck              sgtest on the test ROMs of mksgtest.py
+#   make sftest sf_unit       the SF-7000 (-DGGSWAN_SF7000 too: SF7000.md),
+#   make sfcheck DISK=x.sf    its parts one by one, then a disk started
 CC ?= cc
 CFLAGS ?= -O2 -Wall
 
@@ -75,14 +77,28 @@ wssim_sg: wssim.c wssim_drcst.c sg_ref.h ../ws/main.c ../ws/sg_video.inc ../core
 libdrcsys_sg.so: drcsys.c sg_ref.h ../ws/main.c ../ws/sg_video.inc ../ws/drc_rt.c ../drc/drc.c ../core/gg.c ../core/sg_vdp.c ../core/z80.c
 	$(CC) $(CFLAGS) -shared -fPIC -DGGSWAN_SG1000 -DGGSWAN_HOST -DGGSWAN_HOST_VISIBLE= -I. -I../core -I../ws -o $@ $(filter %.c,$^)
 
+# sfswan (the SF-7000, -DGGSWAN_SF7000 on top of -DGGSWAN_SG1000): the
+# machine with its disk, the built-in IPL, keys typed from SF_TYPE
+sftest: sg_main.c sg_ref.h ../core/gg.c ../core/sg_vdp.c ../core/sf7000.c ../core/sf7000.h ../core/sf_ipl.h ../core/z80.c
+	$(CC) $(CFLAGS) -DGGSWAN_SG1000 -DGGSWAN_SF7000 -o $@ sg_main.c ../core/gg.c ../core/sg_vdp.c ../core/sf7000.c ../core/z80.c
+
+sf_unit: sf_unit.c ../core/gg.c ../core/sg_vdp.c ../core/sf7000.c ../core/sf7000.h ../core/sf_ipl.h ../core/z80.c
+	$(CC) $(CFLAGS) -DGGSWAN_SG1000 -DGGSWAN_SF7000 -o $@ sf_unit.c ../core/gg.c ../core/sg_vdp.c ../core/sf7000.c ../core/z80.c
+
+# make sfcheck DISK=a_system_disk.sf: the parts one by one, then the disk
+# started: the IPL, its loader, Disk BASIC, FILES typed
+sfcheck: sf_unit sftest
+	./sf_unit $(DISK)
+	SF_TYPE='500:FILES\n' ./sftest $(DISK) 900 sfcheck "" 0 | grep -A16 "Ready"
+
 sgcheck: sgtest
 	for m in g1 g2 mc text; do python3 mksgtest.py sgtest_$$m.sg $$m && ./sgtest sgtest_$$m.sg 120 sgtest_$$m "" 0 || exit 1; done
 
 clean:
 	rm -f ggtest wssim libztest.so libdrctest.so libdrcgame.so libdrcsys.so *.ppm
-	rm -f ggtest_sms wssim_sms libdrcsys_sms.so sgtest wssim_sg libdrcsys_sg.so sgtest_*.sg
+	rm -f ggtest_sms wssim_sms libdrcsys_sms.so sgtest wssim_sg libdrcsys_sg.so sgtest_*.sg sftest sf_unit sfcheck_last.ppm
 
-.PHONY: all sms sg sgcheck ztest drctest drcgame drcsys clean
+.PHONY: all sms sg sgcheck sfcheck ztest drctest drcgame drcsys clean
 
 libdrcsys.so: drcsys.c ../ws/main.c ../ws/drc_rt.c ../drc/drc.c ../core/gg.c ../core/z80.c
 	$(CC) $(CFLAGS) -shared -fPIC -DGGSWAN_HOST -DGGSWAN_HOST_VISIBLE= -I. -I../core -I../ws -o $@ $^

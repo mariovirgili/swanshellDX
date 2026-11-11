@@ -8,6 +8,9 @@
 #include <stdint.h>
 #include <string.h>
 #include "gg.h"
+#ifdef GGSWAN_SF7000
+#include "sf7000.h"
+#endif
 #include "z80.h"
 
 gg_t gg;
@@ -23,7 +26,7 @@ static uint8_t GGFAR *cart_ram;   // at $8000 when enabled, else NULL
 // (WonderSwan: in the free internal RAM, see ws/main.c "IRAM layout")
 #define rom_first_kb ((uint8_t*) 0xEC00)
 #else
-static uint8_t rom_first_kb[0x400];
+static uint8_t rom_first_kb[0x400] __attribute__((unused));
 #endif
 
 /* === Memory === */
@@ -31,7 +34,7 @@ static uint8_t rom_first_kb[0x400];
 #ifdef GGSWAN_SG1000
 // sgswan: 8 KiB of RAM at 2000h-3FFFh (the "8kB RAM adapter" some later
 // games were sold with, in place of that part of the ROM), or NULL
-static uint8_t GGFAR *sg_low_ram;
+static uint8_t GGFAR *sg_low_ram __attribute__((unused));
 #endif
 
 static void map_slot(uint8_t slot) {
@@ -69,6 +72,46 @@ static void map_cart_ram(void) {
     }
 }
 
+#ifdef GGSWAN_SF7000
+/*
+ * sfswan: the SF-7000's memory is 64 KiB of RAM, with the IPL read (not
+ * written: a write goes to the RAM behind it, which is how the disk's
+ * loader fills 0000h up) at 0000h-3FFFh while the 8255's PC6 is low. No
+ * cartridge, no slots.
+ */
+static uint32_t sf_frame_base;   // cycles of the frames run since the reset
+static uint16_t frame_pos(void);
+uint32_t sf_clock(void) {
+    return sf_frame_base + frame_pos();
+}
+void sf_map_changed(void) {
+    gg_platform_map_changed();
+}
+uint8_t z80_read(uint16_t a) {
+    if (sf.rom_on && a < 0x4000) {
+        a &= 0x1FFF;
+        return a < sf_ipl_size ? sf_ipl[a] : 0xFF;
+    }
+    return sf_ram[a];
+}
+const uint8_t GGFAR *z80_read_span(uint16_t a, uint16_t *len) {
+    if (sf.rom_on && a < 0x4000) {
+        a &= 0x1FFF;
+        if (a < sf_ipl_size) {
+            *len = sf_ipl_size - a;
+            return sf_ipl + a;
+        }
+        static const uint8_t ff = 0xFF;
+        *len = 1;
+        return &ff;
+    }
+    *len = a ? (uint16_t) (0u - a) : 0xFFFF;
+    return sf_ram + a;
+}
+void z80_write(uint16_t a, uint8_t v) {
+    sf_ram[a] = v;
+}
+#else
 uint8_t z80_read(uint16_t a) {
     if (a >= 0xC000)
         return gg_ram[a & 0x1FFF];
@@ -131,6 +174,7 @@ void z80_write(uint16_t a, uint8_t v) {
         cart_ram[a & 0x3FFF] = v;
     // writes to ROM are ignored
 }
+#endif   // (not GGSWAN_SF7000)
 
 /// Recompute the slot pointers from the mapper registers (after a
 /// restore, or when the platform needs the mapping again).
@@ -424,7 +468,11 @@ uint8_t z80_in(uint8_t port) {
         return 0xFF;
     if (port < 0xC0)
         return (port & 1) ? vdp_read_status() : vdp_read_data();
+#ifdef GGSWAN_SF7000
+    return sf_in(port);
+#else
     return (port & 1) ? 0xFF : ~(gg.keys & 0x3F);
+#endif
 #endif
 #ifdef GGSWAN_SMS
     // Master System (export): nothing to read at 00-3F; DC (even, C0-FF):
@@ -497,7 +545,11 @@ void z80_out(uint8_t port, uint8_t v) {
             vdp_write_control(v);
         else
             vdp_write_data(v);
+        return;
     }
+#ifdef GGSWAN_SF7000
+    sf_out(port, v);
+#endif
 }
 
 /* === Machine === */
@@ -529,6 +581,10 @@ void gg_reset(void) {
         }
     }
 #endif
+#ifdef GGSWAN_SF7000
+    sf_reset();
+    sf_frame_base = 0;
+#else
     {
         const uint8_t GGFAR *b0 = gg_platform_bank(0, 0);
         for (uint16_t i = 0; i < 0x400; i++)
@@ -537,7 +593,8 @@ void gg_reset(void) {
     for (uint8_t s = 0; s < 3; s++)
         map_slot(s);
     map_cart_ram();
-#ifdef GGSWAN_SG1000
+#endif
+#if defined(GGSWAN_SG1000) && !defined(GGSWAN_SF7000)
     {
         // 2000h-3FFFh of the ROM all FFh: RAM there (TwinBee, Bomberman
         // Special and the others made for the adapter have nothing else
@@ -792,6 +849,10 @@ void gg_run_frame(void) {
             z80_nmi();
         pause_was = p;
     }
+#endif
+#ifdef GGSWAN_SF7000
+    if (gg.frame)
+        sf_frame_base += GG_FRAME_CYCLES;
 #endif
     set_started(0);
     // (left = z80.cycles, so the frame starts frame_carry cycles in)
