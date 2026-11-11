@@ -544,6 +544,12 @@ while st['frame'] < FRAMES:
                 open('%s_%05d.wsd' % (SHOT, gf), 'wb').write(bytes(uc.mem_read(0, 0x10000)) + bytes(ports))
         uc.mem_write(FC, (7547 * 2).to_bytes(2, 'little'))
         uc.mem_write(FW, b'\0')
+        if 'pal_wait' in syms and uc.mem_read(syms['pal_wait'], 1)[0]:
+            # (as the line interrupt: the colors of the frame presented)
+            pp = bytes(uc.mem_read(syms['pal_pend'], 64))
+            uc.mem_write(0xFE00, pp)
+            uc.mem_write(0xFF00, pp[32:])
+            uc.mem_write(syms['pal_wait'], b'\0')
         if CLIX: uc.mem_write(syms['pend_start'], b'\0\0')   # (as if the line interrupt had written the log: not in VRAM here)
         uc.mem_write(VB, bytes([(uc.mem_read(VB, 1)[0] + 1) & 255]))
         st['cyc'] += 256 * 8

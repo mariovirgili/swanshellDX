@@ -68,6 +68,10 @@
 // settings.save_flags
 #define SETTING_SAVE_ASK_BACKUP_SHIFT 0
 #define SETTING_SAVE_ASK_BACKUP       (1 << SETTING_SAVE_ASK_BACKUP_SHIFT) // choose a backup at launch
+// save data is loaded into the cartridge at launch and written back to the
+// storage card when the menu starts again. Clear: neither is done
+#define SETTING_SAVE_MANAGE_SHIFT 1
+#define SETTING_SAVE_MANAGE       (1 << SETTING_SAVE_MANAGE_SHIFT)
 
 #define SETTING_FILE_SORT_FILESYSTEM 0
 #define SETTING_FILE_SORT_NAME_ASC   1

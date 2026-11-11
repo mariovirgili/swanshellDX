@@ -123,6 +123,15 @@ typedef struct {
                           // routine writes them there too (0: the borders'
                           // mask and diagnostics)
     uint8_t rec_line[DRC_MAX_SPLITS], rec_val[DRC_MAX_SPLITS];   // (rec_n)
+#ifndef GGSWAN_SG1000
+    // main.c: the 32 colors as the game last wrote them, as WS colors
+    // (----RRRRGGGGBBBB), and whether any was written since the last frame
+    // presented. CRAM writes go here (gg_platform_cram_write, drc_rt.c's
+    // put_cram, the OUTI routine of drc.c), not to the WS's palettes: those
+    // get them with the frame they belong to (main.c: pal_present)
+    uint16_t pal[32];
+    uint8_t pal_dirty;
+#endif
 } drc_state_t;
 
 /// Helper operations: generated code sets drc_state.op (and arg/val),

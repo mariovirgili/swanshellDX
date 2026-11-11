@@ -330,6 +330,12 @@ msgstr "3"
 msgid "SETTINGS_SAVE_BACKUPS_5"
 msgstr "5"
 
+msgid "SETTINGS_SAVE_MANAGE_KEY"
+msgstr "Save data management"
+
+msgid "SETTINGS_SAVE_MANAGE_HELP"
+msgstr "Load a game's save data into the cartridge at launch and write it back to the storage card when the menu starts again. Turn it off when not running on the physical cartridge, where the save data comes back damaged: nothing is loaded and no save file is written."
+
 msgid "SETTINGS_SAVE_ASK_BACKUP_KEY"
 msgstr "Choose save at launch"
 

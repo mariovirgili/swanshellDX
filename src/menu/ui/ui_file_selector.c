@@ -958,6 +958,9 @@ static void ui_file_selector_note_recent(const char *name, const char *ext) {
 static bool ui_file_selector_choose_save(const char *name, const char *ext) {
     if (!(settings.save_flags & SETTING_SAVE_ASK_BACKUP) || !ui_file_selector_is_game(ext))
         return true;
+    // no save is loaded with save data management off
+    if (!(settings.save_flags & SETTING_SAVE_MANAGE))
+        return true;
     if (!save_backup_find(status_path, sizeof(status_path), name))
         return true;
     return ui_save_backup_choose(status_path, true);

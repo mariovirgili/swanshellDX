@@ -6,7 +6,7 @@ emulated by a dynamic recompiler (Z80 to V30MZ code), with the original
 interpreter kept for the parts that need it. The Game Gear video memory is
 mapped onto the WonderSwan's own tile and screen hardware.
 
-Status: fairly stable (patch 146). It has been tested mostly in the
+Status: fairly stable (patch 147). It has been tested mostly in the
 nileswan-medem emulator and with the host test tools; tests on real
 hardware are still to come.
 
@@ -124,8 +124,9 @@ interrupts a second).
   instructions (OUTI/OTIR, LDI/LDIR, VDP control and data ports, the V
   counter).
 - Video: background, sprites (8x8 and 8x16), per-line horizontal scroll,
-  vertical scroll, Game Gear palette; tile writes are applied at the end
-  of the WonderSwan screen so a frame is never shown half updated.
+  vertical scroll, Game Gear palette; tile and palette writes are applied
+  at the end of the WonderSwan screen so a frame is never shown half
+  updated.
 - Sound: the three tone channels and the noise channel on the WonderSwan
   sound channels, stereo; samples played through the volume registers
   (Sailor Moon S's voices) through the WonderSwan Color sound DMA.
@@ -325,7 +326,7 @@ it are listed in order without one.
 - lighter DYN lookup and class routine for deferred tile bytes
 - OUTI runs to CRAM handled in the run routine
 
-### Patches 90-146
+### Patches 90-147
 
 | Patch | Change |
 |---|---|
@@ -386,3 +387,4 @@ it are listed in order without one.
 | 144 | LDIR and LDDR to somewhere outside the work RAM (the cartridge RAM, ROM), in all three plugins: after the interpreter had done the copy, the block went back to the instruction with BC = 0 and copied 64 KiB more, over all of the memory; and its cycles were counted with a byte too many, most of a frame lost or gained each time. Found with sgswan's The Castle; `mkldirtest.py` |
 | 145 | sgswan: the four sprites to a line of the TMS9918A, on and off with START + Y3 (Y down), off at the start (all the sprites shown, as before). The lines of a sprite the chip leaves out are empty in a set of tiles made for it; the picture is then the reference's to the pixel in Star Force, TwinBee and Zoom 909. The sprites' tiles were not made again when a game changed the sprites' size and wrote the table in the same frame. `PLUG_GG.BIN` and `PLUG_SMS.BIN`: the same bytes as patch 144 but for this number |
 | 146 | The SF-7000 (the SC-3000's disk unit), step 1, nothing on the WonderSwan yet: the machine in `core/` under `-DGGSWAN_SF7000` (64 KiB of RAM with the IPL over the first 16, the two 8255s, the keyboard matrix, the uPD765 and its disk with the index hole Disk BASIC times), an IPL of its own in place of Sega's (`host/mksfipl.py`), `host/sftest` (keys typed, the disk changed) and `host/sf_unit` (56 checks through the ports). On the PC the three disks tried start: Disk BASIC 1.0p and Astro from The Complete Arcade Pack, Kamikaze with `BOOT`, Poseidon Wars. `SF7000.md`. `PLUG_GG.BIN`, `PLUG_SMS.BIN` and `PLUG_SG.BIN` are the same bytes as patch 145 but for this number |
+| 147 | The palette with the frame, in ggswan and smsswan: a color the game writes goes to the WonderSwan's palettes at the end of the WS screen, with the scroll, the tiles and the sprites of the frame it belongs to, and no longer at once, in the middle of the screen being drawn and a WS screen or two before the rest. Shinobi moves the bars of its fence by turning four colors round: the fence was broken in two, one part two pixels ahead of the other. In `wssim` the WS picture of Sonic, Shinobi, Super Monaco GP, Aladdin, Columns, Batman Returns and Sailor Moon S differs from the Game Gear's by 0.0-1.4% of the pixels on average, from 1.0-9.0%. `drcsys.py --pal`. The menu: Settings > System > Save data management, first in the list and on by default; off, no save data is loaded into the cartridge at launch and none is written back to the card when the menu starts again (for where the save memory is not the physical cartridge's). `PLUG_SG.BIN`: the same bytes as patch 146 but for this number |

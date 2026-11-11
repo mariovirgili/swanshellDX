@@ -190,6 +190,13 @@ def main():
                 nmap = globals().setdefault('nmap', [0]); nmap[0] += 1
                 if nmap[0] <= 12:
                     print("frame %d: %d WS map entries differ from the GG name table (ref %d)" % (fr + 1, mb, ref.host_map_check()))
+        if "--pal" in sys.argv:
+            pb = drc.host_pal_check()
+            npal = globals().setdefault('npal', [0, 0]); npal[1] += 1
+            if pb:
+                npal[0] += 1
+                if npal[0] <= 12:
+                    print("frame %d: %d colors of the WS palette are not the Game Gear's (ref %d)" % (fr + 1, pb, ref.host_pal_check()))
         if "--splits" in sys.argv:
             sa = (ctypes.c_uint8 * 49)(); sb = (ctypes.c_uint8 * 49)()
             ref.sys_splits(sa); drc.sys_splits(sb)
@@ -214,6 +221,8 @@ def main():
                   % (fr + 1, diff * 100 / (VIEW_W * 144), drc.sys_stat(0), drc.sys_stat(1), drc.sys_stat(2),
                      x86.calls, time.time() - t0))
             write_ppm("%s_%05d.ppm" % (PREFIX, fr + 1), a, b)
+    if "--pal" in sys.argv:
+        print("palette: %d frames of %d with a color that is not the Game Gear's" % tuple(globals().get('npal', [0, 0])))
     print("sprite collision check used: interpreter %d, recompiler %d" % (ref.sys_stat(3), drc.sys_stat(3)))
     print("identical screens: %d of %d; identical screen and RAM/VRAM/CRAM: %d (first different: %s)"
           % (same_screen, FRAMES, same, first_diff[0]))

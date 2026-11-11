@@ -50,6 +50,7 @@ DEFINE_STRING_LOCAL(s_file_hide_icons_key, "FileHideIcons");
 DEFINE_STRING_LOCAL(s_file_hide_nileswan_key, "FileHideNileswan");
 DEFINE_STRING_LOCAL(s_save_backups_key, "SaveBackups");
 DEFINE_STRING_LOCAL(s_save_ask_backup_key, "SaveAskBackup");
+DEFINE_STRING_LOCAL(s_save_manage_key, "SaveManage");
 DEFINE_STRING_LOCAL(s_program_fast_sram_key, "ProgFastSRAM");
 DEFINE_STRING_LOCAL(s_program_verify_saves_key, "ProgVerifySave");
 DEFINE_STRING_LOCAL(s_program_fx_bios_key, "ProgFxCmptBios");
@@ -596,12 +597,29 @@ static const setting_t __far setting_save_ask_backup = {
     }
 };
 
+// Off: no save data is loaded at launch and none is written back when the
+// menu starts again (launch.c). For where the cartridge's save memory cannot
+// be trusted: not the physical cartridge
+static const setting_t __far setting_save_manage = {
+    s_save_manage_key,
+    LK_SETTINGS_SAVE_MANAGE_KEY,
+    LK_SETTINGS_SAVE_MANAGE_HELP,
+    SETTING_TYPE_FLAG,
+    0,
+    .flag = {
+        &settings.save_flags,
+        SETTING_SAVE_MANAGE_SHIFT,
+        LK_NO, LK_YES
+    }
+};
+
 static const setting_category_t __far settings_system = {
     LK_SETTINGS_SYSTEM_KEY,
     0,
     &settings_root,
-    6,
+    7,
     {
+        &setting_save_manage,
         &setting_program_verify_saves,
         &setting_save_backups,
         &setting_save_ask_backup,

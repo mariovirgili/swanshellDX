@@ -1082,7 +1082,7 @@ uint16_t drc_emit_run_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
              * CRAM (palette uploads, ~60 bytes a frame in Super Monaco GP):
              * the bytes here instead of one CRAM routine call each through
              * the loop. As put_cram (drc_rt.c): the even byte latched, the
-             * odd one writes the color and its WS copies; read buffer,
+             * odd one writes the color and its WS copy; read buffer,
              * address, latch, HL, B; AH = the last byte. The source inside
              * one 8 KiB page, else the loop.
              */
@@ -1121,10 +1121,17 @@ uint16_t drc_emit_run_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
             B(0x80); B(0xE4); B(0x0F);               // and ah, 0Fh (R)
             B(0x5B);                                 // pop bx
             B(0x83); B(0xE6); B(0x3E);               // and si, 3Eh (color * 2)
+#ifndef GGSWAN_SG1000
+            // (not to the WS's palettes: with the frame, main.c pal_present)
+            B(0x89); B(0x84); W(SA(pal));            // mov [si + pal], ax
+            B(0xC6); B(0x06); W(SA(pal_dirty)); B(1);   // mov byte [pal_dirty], 1
+#else
+            // (sgswan: no color RAM, never run)
             B(0x89); B(0x84); W(0xFE00);             // mov [si + FE00h], ax
             B(0x83); B(0xFE); B(0x20);               // cmp si, 20h
             B(0x72); B(0x04);                        // jb +4
-            B(0x89); B(0x84); W(0xFEE0);             // mov [si + FEE0h], ax (FF00h + color * 2 - 20h)
+            B(0x89); B(0x84); W(0xFEE0);             // mov [si + FEE0h], ax
+#endif
             land8(cr_next);
             B(0x42);                                 // inc dx
             B(0x81); B(0xE2); W(0x3FFF);             // and dx, 3FFFh

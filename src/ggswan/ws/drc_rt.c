@@ -597,8 +597,9 @@ static uint16_t put_nt(uint8_t *stub, uint16_t at) {
  * CRAM (at STUB_CRAM): a byte (in val) written to the VDP data port with
  * code 3, as vdp_write_data and gg_platform_cram_write: the even byte is
  * latched, the odd one writes the color (Game Gear ----BBBBGGGGRRRR) and
- * its WS copy (----RRRRGGGGBBBB): palette 0-15 at FE00h, 16-31 at FE20h
- * and at FF00h (sprites). Read buffer, address + 1, latch. Uses SI.
+ * its WS copy (----RRRRGGGGBBBB) in drc_st.pal, which goes to the WS's
+ * palettes with the frame (main.c: pal_present). Read buffer, address + 1,
+ * latch. Uses SI.
  */
 static uint16_t put_cram(uint8_t *stub, uint16_t at) {
     uint8_t *p = stub + at;
@@ -606,6 +607,22 @@ static uint16_t put_cram(uint8_t *stub, uint16_t at) {
 #define PB(x) (*p++ = (x))
 #define PW(x) (a = (x), *p++ = a, *p++ = a >> 8)
 #define V_(f) ((uint16_t) (env.vdp_addr + offsetof(gg_vdp_t, f)))
+#define S_(f) ((uint16_t) (env.state_addr + offsetof(drc_state_t, f)))
+#ifndef GGSWAN_SG1000
+// the WS color in AX to color BX / 2 of drc_st.pal
+#define PAL_STORE() do { \
+    PB(0x89); PB(0x87); PW(S_(pal));                     /* mov [bx + pal], ax */ \
+    PB(0xC6); PB(0x06); PW(S_(pal_dirty)); PB(1);        /* mov byte [pal_dirty], 1 */ \
+    } while (0)
+#else
+// (sgswan: the TMS9918A has no color RAM, the routine is never called)
+#define PAL_STORE() do { \
+    PB(0x89); PB(0x87); PW(0xFE00);                      /* mov [bx + FE00h], ax */ \
+    PB(0x80); PB(0xFB); PB(0x20);                        /* cmp bl, 20h */ \
+    PB(0x72); PB(0x04);                                  /* jb +4 */ \
+    PB(0x89); PB(0x87); PW(0xFEE0);                      /* mov [bx + FEE0h], ax */ \
+    } while (0)
+#endif
     uint16_t val = env.state_addr + offsetof(drc_state_t, val);
     PB(0x50); PB(0x53);                                  // push ax; push bx
     PB(0xA0); PW(val);                                   // mov al, [val]
@@ -626,10 +643,7 @@ static uint16_t put_cram(uint8_t *stub, uint16_t at) {
     PB(0x01); PB(0xF6);                                  // add si, si
     PB(0x8B); PB(0x84); PW(WS_CRAM_TABLE);               // mov ax, [si + table]
     PB(0x01); PB(0xDB);                                  // add bx, bx
-    PB(0x89); PB(0x87); PW(0xFE00);                      // mov [bx + FE00h], ax
-    PB(0x80); PB(0xFB); PB(0x20);                        // cmp bl, 20h
-    PB(0x72); PB(0x04);                                  // jb +4
-    PB(0x89); PB(0x87); PW(0xFEE0);                      // mov [bx + FEE0h], ax (FF00h + color * 2 - 20h)
+    PAL_STORE();
     PB(0x5B); PB(0x58); PB(0xC3);                        // pop bx; pop ax; ret
 #else
     PB(0x83); PB(0xE3); PB(0x3F);                        // and bx, 3Fh
@@ -648,15 +662,14 @@ static uint16_t put_cram(uint8_t *stub, uint16_t at) {
     PB(0xC1); PB(0xEE); PB(0x08);                        // shr si, 8
     PB(0x09); PB(0xF0);                                  // or ax, si
     PB(0x80); PB(0xE3); PB(0x3E);                        // and bl, 3Eh (color * 2)
-    PB(0x89); PB(0x87); PW(0xFE00);                      // mov [bx + FE00h], ax
-    PB(0x80); PB(0xFB); PB(0x20);                        // cmp bl, 20h
-    PB(0x72); PB(0x04);                                  // jb +4
-    PB(0x89); PB(0x87); PW(0xFEE0);                      // mov [bx + FEE0h], ax (FF00h + color * 2 - 20h)
+    PAL_STORE();
     PB(0x5B); PB(0x58); PB(0xC3);                        // pop bx; pop ax; ret
 #endif
 #undef PB
 #undef PW
 #undef V_
+#undef S_
+#undef PAL_STORE
     return (uint16_t) (p - stub);
 }
 

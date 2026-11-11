@@ -164,6 +164,9 @@ static bool launch_is_rom_static_freya(FIL *f) {
 }
 
 bool launch_is_battery_required(launch_rom_metadata_t *meta) {
+    // nothing is kept with save data management off
+    if (!(settings.save_flags & SETTING_SAVE_MANAGE))
+        return false;
     if (meta->eeprom_size)
         return true;
     if (meta->sram_size)
@@ -465,6 +468,10 @@ int16_t launch_backup_save_data(void) {
     uint16_t value_num;
     bool verify = (settings.file_flags & SETTING_FILE_VERIFY_SAVES) != 0;
     bool had_save_data = false;
+    // Settings > System > Save data management off: what SAVE.INI lists is
+    // not written to the storage card, and its entries are dropped
+    bool save_off = !(settings.save_flags & SETTING_SAVE_MANAGE);
+    bool dropped = false;
     bool dir_change_requested = (settings.file_flags & SETTING_FILE_OPEN_LAST_DIRECTORY) != 0;
 
     strcpy(buffer, s_path_save_ini);
@@ -498,6 +505,11 @@ int16_t launch_backup_save_data(void) {
                     f_chdir(value);
                     dir_change_requested = false;
                 }
+                continue;
+            }
+
+            if (save_off) {
+                dropped = true;
                 continue;
             }
 
@@ -590,7 +602,7 @@ launch_backup_save_data_return_result:
     f_close(&fp);
 
     // without meta provided, it either deletes SAVE.INI or generates a new one
-    if (had_save_data || !launch_should_save_path_info()) {
+    if (had_save_data || dropped || !launch_should_save_path_info()) {
         launch_restore_save_data(NULL, NULL);
     }
     // Clear save ID
@@ -609,6 +621,11 @@ int16_t launch_restore_save_data(char *path, const launch_rom_metadata_t *meta) 
     char *ext_loc;
 
     uint16_t save_target = 0;
+    // Settings > System > Save data management off: no save file is made or
+    // loaded and SAVE.INI lists none, so that nothing is written back when
+    // the menu starts again. The game runs with what the cartridge's save
+    // memory holds
+    bool save_off = !(settings.save_flags & SETTING_SAVE_MANAGE);
 
     if (path) {
         // extension-editable version of "path"
@@ -617,7 +634,7 @@ int16_t launch_restore_save_data(char *path, const launch_rom_metadata_t *meta) 
         if (ext_loc == NULL)
             ext_loc = dst_path + strlen(dst_path);
 
-        if (meta) {
+        if (meta && !save_off) {
             if (meta->sram_size)   save_target |= SAVE_ID_FOR_SRAM;
             if (meta->eeprom_size) save_target |= SAVE_ID_FOR_EEPROM;
             if (meta->flash_size)  save_target |= SAVE_ID_FOR_FLASH;
@@ -672,6 +689,8 @@ int16_t launch_restore_save_data(char *path, const launch_rom_metadata_t *meta) 
         if (result != FR_OK && result != FR_NO_FILE)
             return result;
         result = FR_OK;
+        if (save_off && meta && meta->eeprom_size != 0)
+            goto launch_restore_save_data_eeprom;
         goto launch_restore_save_data_return_result;
     }
 
@@ -700,7 +719,7 @@ int16_t launch_restore_save_data(char *path, const launch_rom_metadata_t *meta) 
         goto launch_restore_save_data_ini_end;
     }
 
-    if (meta) {
+    if (meta && !save_off) {
         // ID has to be parsed before other entries
         result = f_printf(&fp, s_save_ini_id_entry, meta->id) < 0 ? FR_INT_ERR : FR_OK;
         if (result != FR_OK)
@@ -750,11 +769,16 @@ launch_restore_save_data_ini_end:
         // to spill through to the MCU SPI bus, causing data corruption  on the EEPROM save
         // (in particular, rewriting word 2 with 0xFFFF). To avoid this issue, switch the
         // MCU into EEPROM mode after all TF write operations.
+launch_restore_save_data_eeprom:
         if (meta && meta->eeprom_size != 0) {
-            strcpy(ext_loc, s_file_ext_eeprom);
-            result = preallocate_file(dst_path, &fp, 0xFF, meta->eeprom_size, NULL, LK_DIALOG_PREPARE_SAVE, LK_DIALOG_SAVE_OVERDUMP_TITLE_EEPROM);
-            if (result != FR_OK)
-                goto launch_restore_save_data_return_result;
+            // (with save data management off the EEPROM is still set up,
+            // for the game to find one: only its contents are not loaded)
+            if (!save_off) {
+                strcpy(ext_loc, s_file_ext_eeprom);
+                result = preallocate_file(dst_path, &fp, 0xFF, meta->eeprom_size, NULL, LK_DIALOG_PREPARE_SAVE, LK_DIALOG_SAVE_OVERDUMP_TITLE_EEPROM);
+                if (result != FR_OK)
+                    goto launch_restore_save_data_return_result;
+            }
 
             // initialize MCU
             mcu_native_start();
@@ -767,6 +791,11 @@ launch_restore_save_data_ini_end:
             // switch MCU to EEPROM mode
             if (!mcu_native_set_mode(1)) {
                 result = ERR_MCU_COMM_FAILED;
+                mcu_native_finish();
+                goto launch_restore_save_data_return_result;
+            }
+
+            if (save_off) {
                 mcu_native_finish();
                 goto launch_restore_save_data_return_result;
             }

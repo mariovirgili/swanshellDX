@@ -723,16 +723,74 @@ void gg_platform_vram_write(uint16_t a, uint8_t value) {
     }
 }
 
+/*
+ * The palette with the frame. A color the game writes went to the WS's
+ * palettes at once: in the middle of the WS screen being drawn, which
+ * shows the frame presented before, with its scroll and its tiles. Shinobi
+ * moves the bars of its fence by turning four colors round (the tile is
+ * four stripes of them), every other frame, in its frame interrupt: the
+ * bars moved two pixels in the part of the screen the WS had not drawn
+ * yet, a WS screen or two before the rest of the picture followed, broken
+ * in two where the WS was then, with a line of no bars between the two
+ * writes.
+ *
+ * So the colors go to drc_st.pal (here, and from the recompiled code:
+ * put_cram in drc_rt.c, the OUTI routine of drc.c); when a frame is
+ * presented those written since the last one are copied aside
+ * (pal_present, with the scroll and the tile log), and the line interrupt
+ * at the end of the WS screen writes them to the WS's palettes
+ * (pal_commit), before the first line that shows that frame.
+ */
+static uint16_t pal_pend[32];
+static volatile uint8_t pal_wait;
+
 void gg_platform_cram_write(uint8_t i) {
     uint16_t c = gg_color12(i);
     // Game Gear: ----BBBBGGGGRRRR; WS: ----RRRRGGGGBBBB
-    uint16_t ws = ((c & 0x00F) << 8) | (c & 0x0F0) | ((c >> 8) & 0x00F);
-    if (i < 16) {
-        WS_DISPLAY_COLOR_MEM(0)[i] = ws;
-    } else {
-        WS_DISPLAY_COLOR_MEM(1)[i - 16] = ws;
-        WS_DISPLAY_COLOR_MEM(8)[i - 16] = ws;
+    drc_st.pal[i & 31] = ((c & 0x00F) << 8) | (c & 0x0F0) | ((c >> 8) & 0x00F);
+    drc_st.pal_dirty = 1;
+}
+
+// the colors waiting to the WS: background palettes 0 and 1, and the
+// second again as palette 8 for the sprites (also from the line interrupt)
+static void pal_commit(void) {
+    if (!pal_wait)
+        return;
+    memcpy(WS_DISPLAY_COLOR_MEM(0), pal_pend, 64);
+    memcpy(WS_DISPLAY_COLOR_MEM(8), pal_pend + 16, 32);
+    pal_wait = 0;
+}
+
+#ifdef GGSWAN_HOST
+// tests: colors of drc_st.pal that are not the Game Gear's, or that the WS
+// did not get with the last frame presented (drcsys.py --pal: the
+// recompiled code writes drc_st.pal too)
+uint16_t host_pal_check(void) {
+    uint16_t bad = 0;
+    for (uint8_t i = 0; i < 32; i++) {
+        uint16_t c = gg_color12(i);
+        if (drc_st.pal[i] != (uint16_t) (((c & 0x00F) << 8) | (c & 0x0F0) | ((c >> 8) & 0x00F)))
+            bad++;
+        if (!drc_st.pal_dirty && WS_DISPLAY_COLOR_MEM(i >> 4)[i & 15] != drc_st.pal[i])
+            bad++;
+        if (!drc_st.pal_dirty && i >= 16 && WS_DISPLAY_COLOR_MEM(8)[i - 16] != drc_st.pal[i])
+            bad++;
     }
+    return bad;
+}
+#endif
+
+// a frame presented (interrupts off on the device): its colors wait for
+// the end of the WS screen
+static void pal_present(void) {
+    if (!drc_st.pal_dirty)
+        return;
+    drc_st.pal_dirty = 0;
+    memcpy(pal_pend, drc_st.pal, sizeof(pal_pend));
+    pal_wait = 1;
+#ifdef GGSWAN_HOST
+    pal_commit();   // (no WS raster on the PC)
+#endif
 }
 
 void gg_platform_vdp_reg(uint8_t r, uint8_t v) {
@@ -997,6 +1055,7 @@ void line_irq(void) {
                 outportb(0x12, act_val[0]);
                 outportb(0x13, act_vy);
             }
+            pal_commit();   // (the frame's colors: 48 words at most)
             if (pend_start) {
                 uint8_t c0 = inportb(WS_DISPLAY_LINE_PORT);
                 log_commit_pending();
@@ -1686,6 +1745,7 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
             // show the new tiles and sprites with the old scroll, and clear
             // frame_waiting before it was set (ChatGPT's review of 89-98)
             log_present();
+            pal_present();
             sprites_publish();
             splits_commit();
             frame_waiting = 1;
@@ -1707,6 +1767,7 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
     }
 #else
     log_present();
+    pal_present();
     sprites_publish();
     splits_commit();
 #endif

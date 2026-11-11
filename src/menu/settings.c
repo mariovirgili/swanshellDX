@@ -41,7 +41,7 @@ void settings_reset(void) {
     settings.file_flags = SETTING_FILE_OPEN_LAST_DIRECTORY | SETTING_FILE_MENU_MUSIC | SETTING_FILE_HIDE_NILESWAN;
     settings.menu_music_volume = SETTING_MENU_MUSIC_VOLUME_DEFAULT;
     settings.save_backups = SETTING_SAVE_BACKUPS_3;
-    settings.save_flags = SETTING_SAVE_ASK_BACKUP;
+    settings.save_flags = SETTING_SAVE_ASK_BACKUP | SETTING_SAVE_MANAGE;
 }
 
 static int16_t settings_load_category(FIL *fp, const setting_category_t __far *cat, const char *key, const char *value) {
