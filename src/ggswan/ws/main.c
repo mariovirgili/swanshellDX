@@ -207,6 +207,12 @@ void ws_ram_window_restore(void) {
     outportw(WS_CART_EXTBANK_RAM_PORT, ram_window_bank);
 }
 
+// (diagnostics, "Z": the last bank other than 0 a game mapped in slot 0.
+// The ROM's first KiB stays there whatever the bank; the interpreter
+// knows, translated code reads those addresses from the bank mapped: wrong
+// data for a game that does both. None known: this is to hear of one)
+static uint8_t diag_slot0;
+
 const uint8_t __far *gg_platform_bank(uint8_t slot, uint16_t bank) {
     uint16_t ws_bank = GG_PSRAM_FIRST_BANK + (bank >> 2);
     uint16_t offset = (bank & 3) << 14;
@@ -219,6 +225,8 @@ const uint8_t __far *gg_platform_bank(uint8_t slot, uint16_t bank) {
             if (slot0_bank != 0xFFFF)
                 drc_flush_request = 1;
             slot0_bank = bank;
+            if (bank && !gg.codemasters)   // (Codemasters: no fixed KiB)
+                diag_slot0 = (uint8_t) bank;
         }
         }
         outportw(WS_CART_EXTBANK_ROM0_PORT, ws_bank);
@@ -2313,6 +2321,8 @@ static void show_fps(uint8_t fps) {
     put_text(1, 0, "FPS");
     put_value(2, 0, ' ', fps);
     put_value(0, 24, 'P', GGSWAN_PATCH);   // the patch number, top right
+    if (diag_slot0)
+        put_value(3, 0, 'Z', diag_slot0);  // (see diag_slot0)
     if (!show_stats)
         return;
     // per second: T translations; D returns to the dispatcher, helpers
