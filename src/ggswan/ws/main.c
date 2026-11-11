@@ -764,39 +764,94 @@ void gg_platform_line(uint16_t line) {
 
 // A write to the horizontal scroll register: it takes effect from the next
 // line. WS x shows Game Gear picture column x + 16.
-// no room for another split: the one whose value is closest to the split
-// before it is dropped (its lines take that value), so what comes after
-// is still recorded with the least change. Before, the splits after the
-// 24th were dropped: Super Monaco GP II (a road of about 70 lines, each
-// with its value, then its status bar) had the status bar scrolling with
-// the road's last value. (Dropping every other one instead lost too much
-// of Super Monaco GP's road.)
-static void splits_drop_one(void) {
-    uint8_t best = 1, best_d = 0xFF;
-    for (uint8_t i = 1; i < rec_n; i++) {
-        uint8_t d = rec_val[i] - rec_val[i - 1];
-        if ((int8_t) d < 0)
-            d = -d;
-        if (d < best_d) {
-            best_d = d;
-            best = i;
-            // (two values in a row differ, see below: 1 is the least
-            // there is, and the first such pair is the one the whole scan
-            // would choose. Super Monaco GP II's road in a bend changes
-            // the scroll on more lines than there are splits: a dozen
-            // calls a frame, 3% of its time with the whole scan)
-            if (d <= 1)
-                break;
+
+/*
+ * More splits than fit: they are thinned out, the ones that change the
+ * scroll least first (their lines take the value of the split before), so
+ * that what comes after is still recorded. (Dropping the splits after the
+ * 24th had Super Monaco GP II's status bar, below a road of about 70
+ * lines each with its value, scrolling with the road's last value;
+ * dropping every other one lost too much of Super Monaco GP's road.)
+ *
+ * The frame has a threshold t, the least difference between two splits in
+ * a row when the list first fills: a pass drops up to a quarter of the
+ * list, each split within t pixels of the one kept before it, so that its
+ * lines are at most t pixels off and the next few splits find room without
+ * coming here. The splits up to thin_f have been through it: the next
+ * pass looks at the ones added since, and only when none of them goes is
+ * the whole list scanned again for a new (larger) t. Dropping them one at
+ * a time, the closest pair of the whole list each time, cost a scan of
+ * the list for every split past the limit: Super Monaco GP's road in a
+ * bend has one on most lines, 30 calls a frame and 18% of its time (4% in
+ * Super Monaco GP II).
+ */
+static uint8_t thin_t, thin_f;   // (thin_f = 0: no threshold yet this frame)
+
+static void splits_thin(void) {
+    uint8_t n = rec_n;
+    uint8_t f = thin_f, t = thin_t;
+    if (f > n)
+        f = 0;
+    for (uint8_t round = 2; round; round--) {
+        if (!f) {
+            const uint8_t *p = rec_val;
+            uint8_t prev = *p++;
+            t = 0xFF;
+            for (uint8_t i = n - 1; i; i--) {
+                uint8_t cur = *p++;
+                uint8_t d = cur - prev;
+                if ((int8_t) d < 0)
+                    d = -d;
+                if (d < t) {
+                    t = d;
+                    // (two in a row differ: 1 is the least there is)
+                    if (d <= 1)
+                        break;
+                }
+                prev = cur;
+            }
+            f = 1;
         }
+        const uint8_t *vi = rec_val + f, *li = rec_line + f;
+        uint8_t *vo = rec_val + f, *lo = rec_line + f;
+        uint8_t last = vi[-1], left = MAX_SPLITS / 4;
+        uint8_t i = n - f;
+        for (; i; i--) {
+            uint8_t v = *vi++, l = *li++;
+            uint8_t d = v - last;
+            if ((int8_t) d < 0)
+                d = -d;
+            // (0: the value of the one kept before, no split there)
+            if (!d)
+                continue;
+            if (d <= t) {
+                if (--left)
+                    continue;
+                i--;
+                break;
+            }
+            *vo++ = v;
+            *lo++ = l;
+            last = v;
+        }
+        f = (uint8_t) (vo - rec_val);
+        // (a quarter gone: the rest as it is, for the next pass)
+        for (; i; i--) {
+            *vo++ = *vi++;
+            *lo++ = *li++;
+        }
+        uint8_t m = (uint8_t) (vo - rec_val);
+        if (m < n) {
+            rec_n = m;
+            thin_f = f;
+            thin_t = t;
+            return;
+        }
+        f = 0;   // none of the new ones within t: a new t
     }
-    // without it, the next one may have the value of the one before: no
-    // split there either (and a place more for the ones to come)
-    uint8_t k = (best + 1 < rec_n && rec_val[best + 1] == rec_val[best - 1]) ? 2 : 1;
-    for (uint8_t i = best; i + k < rec_n; i++) {
-        rec_line[i] = rec_line[i + k];
-        rec_val[i] = rec_val[i + k];
-    }
-    rec_n -= k;
+    // (not reached: a scan of the whole list always finds one to drop)
+    rec_n = MAX_SPLITS - 1;
+    thin_f = 0;
 }
 
 static void hscroll_write(uint8_t value) {
@@ -809,6 +864,7 @@ static void hscroll_write(uint8_t value) {
     if (line <= GG_REC_Y) {
         rec_val[0] = v;   // before the view: the value for its first line
         rec_n = 1;
+        thin_f = 0;
         drc_st.hs_last = value;
         return;
     }
@@ -817,6 +873,7 @@ static void hscroll_write(uint8_t value) {
         // for the next frame's first line
         rec_val[0] = v;
         rec_n = 1;
+        thin_f = 0;
         drc_st.hs_last = value;
         return;
     }
@@ -830,7 +887,7 @@ static void hscroll_write(uint8_t value) {
         rec_val[rec_n - 1] = v;
     } else {
         if (rec_n >= MAX_SPLITS)
-            splits_drop_one();
+            splits_thin();
         if (v != rec_val[rec_n - 1]) {   // (equal: the last one went)
             rec_line[rec_n] = y;
             rec_val[rec_n] = v;
@@ -1597,6 +1654,7 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
     // record the next frame: it starts with the current value
     rec_val[0] = 16 - gg.vdp.reg[8];
     rec_n = 1;
+    thin_f = 0;
     drc_st.hs_last = gg.vdp.reg[8];
     vp_lap(VP_LOG);
     if (!(gg.frame & 7))

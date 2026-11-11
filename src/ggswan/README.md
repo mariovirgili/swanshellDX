@@ -6,7 +6,7 @@ emulated by a dynamic recompiler (Z80 to V30MZ code), with the original
 interpreter kept for the parts that need it. The Game Gear video memory is
 mapped onto the WonderSwan's own tile and screen hardware.
 
-Status: fairly stable (patch 136). It has been tested mostly in the
+Status: fairly stable (patch 137). It has been tested mostly in the
 nileswan-medem emulator and with the host test tools; tests on real
 hardware are still to come.
 
@@ -284,7 +284,7 @@ it are listed in order without one.
 - lighter DYN lookup and class routine for deferred tile bytes
 - OUTI runs to CRAM handled in the run routine
 
-### Patches 90-136
+### Patches 90-137
 
 | Patch | Change |
 |---|---|
@@ -335,3 +335,4 @@ it are listed in order without one.
 | 134 | routines for a tile row sent as OUTI x 3 + OUT (Sonic's own tiles) and for a name table entry sent as OUTI + OUT (Columns: its wells, 59 k cycles a frame to 37 k) |
 | 135 | an OUTI alone through the single write's code, sprite table words in the entry routine, name table runs already in VRAM skipped (Super Monaco GP II); wsrun counts cycles as Mednafen does |
 | 136 | translated code: (IX+d) in work RAM in place, RAM writes through HL, DE, BC shorter and without losing the segment of HL, INC HL keeps it too, EXX with MOVs; the scroll splits' merge stops at the first pair one apart |
+| 137 | more scroll splits than fit: thinned out a quarter at a time with a threshold for the frame, looking only at the ones added since the last pass (Super Monaco GP's road in a bend spent 18% of its time dropping them one by one) |
