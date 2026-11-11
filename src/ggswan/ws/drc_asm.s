@@ -38,6 +38,11 @@ drc_enter:
     mov dx, [z80 + 4]
     mov bx, [z80 + 6]
     mov bp, [z80 + 20]
+#ifdef GGSWAN_SF7000
+    // sfswan: ES is the Z80's memory in translated code (drc.c: FLAT);
+    // drc_st starts with the segment table, all of it that segment
+    mov es, [drc_st]
+#endif
     .byte 0xFF, 0x1E        // call far [drc_entry]
     .word drc_entry
 

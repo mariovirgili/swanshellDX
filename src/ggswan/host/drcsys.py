@@ -24,6 +24,12 @@ def load(path):
     lib = ctypes.CDLL(path)   # (two different copies: see main)
     for fn in ("sys_fb", "sys_fb_end", "sys_iram", "sys_psram", "sys_sram", "sys_ports"):
         getattr(lib, fn).restype = ctypes.c_void_p
+    # (libraries built before sfswan have no sys_ram: the work RAM then)
+    if hasattr(lib, 'sys_ram'):
+        lib.sys_ram.restype = ctypes.c_void_p
+        lib.ram = lambda: ctypes.string_at(lib.sys_ram(), lib.sys_ram_size())
+    else:
+        lib.ram = lambda: ctypes.string_at(lib.sys_iram() + 0x8000, 0x2000)
     lib.sys_init.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.c_int]
     lib.sys_digest.restype = ctypes.c_uint32
     lib.sys_stat.restype = ctypes.c_uint32
@@ -84,13 +90,13 @@ class X86:
 
     def map_windows(self):
         p = self.ports
-        ram_bank = p[0xC1] | (p[0xC2] << 8)
+        ram_bank = p[0xD0] | (p[0xD1] << 8)
         if p[0xCE] & 1:
             self.map_window(0x10000, self.psram + (ram_bank & 31) * 0x10000)
         else:
             self.map_window(0x10000, self.sram + (ram_bank & 7) * 0x10000)
-        self.map_window(0x20000, self.psram + ((p[0xC2] | p[0xC3] << 8) & 31) * 0x10000)
-        self.map_window(0x30000, self.psram + ((p[0xC3] | p[0xC4] << 8) & 31) * 0x10000)
+        self.map_window(0x20000, self.psram + ((p[0xD2] | p[0xD3] << 8) & 31) * 0x10000)
+        self.map_window(0x30000, self.psram + ((p[0xD4] | p[0xD5] << 8) & 31) * 0x10000)
 
     def run(self, offset):
         self.map_windows()
@@ -106,7 +112,8 @@ class X86:
         uc.reg_write(UC_X86_REG_AX, r16(0)); uc.reg_write(UC_X86_REG_CX, r16(2))
         uc.reg_write(UC_X86_REG_DX, r16(4)); uc.reg_write(UC_X86_REG_BX, r16(6))
         uc.reg_write(UC_X86_REG_BP, r16(20))
-        for r, val in ((UC_X86_REG_DS, 0), (UC_X86_REG_SS, 0), (UC_X86_REG_ES, 0x5555)):
+        es = self.lib.sys_enter_es() if hasattr(self.lib, "sys_enter_es") else 0
+        for r, val in ((UC_X86_REG_DS, 0), (UC_X86_REG_SS, 0), (UC_X86_REG_ES, es or 0x5555)):
             uc.reg_write(r, val)
         # far return address -> sentinel (HLT)
         uc.mem_write(0xEFFC, bytes([0, 0, SENTINEL_SEG & 255, SENTINEL_SEG >> 8]))
@@ -151,7 +158,11 @@ def main():
     assert drc.sys_init(ROM.encode(), 0 if "--interp" in sys.argv else 1, every)
     if ref_drc:
         # reference: the recompiler too, without links (and dynamic lookups)
-        ref.sys_nolinks(1)
+        # (--same-code: with them, as the tested one: at the end the two
+        # code caches are compared byte by byte, what the translator wrote
+        # for one build against the other's)
+        if "--same-code" not in sys.argv:
+            ref.sys_nolinks(1)
         x86_ref = X86(ref)
     if "--follow" in sys.argv:
         # JP/JR followed inside blocks (off by default): the tested one only
@@ -178,11 +189,13 @@ def main():
             za = ctypes.string_at(ref.sys_iram() + 0, 0)
             print(fr, "ref pc %04X" % ref.sys_pc(), "drc pc %04X" % drc.sys_pc(), "fb same" if ctypes.string_at(ref.sys_fb(), 69120) == ctypes.string_at(drc.sys_fb(), 69120) else "fb DIFF")
         if CHECK:
-            ra = ctypes.string_at(ref.sys_iram() + 0x8000, 0x2000)
-            rb = ctypes.string_at(drc.sys_iram() + 0x8000, 0x2000)
+            ra = ref.ram()
+            rb = drc.ram()
             if ra != rb:
-                d = [i for i in range(0x2000) if ra[i] != rb[i]]
-                print("frame %d: RAM differs at %d bytes, first C%03X (%02X/%02X)" % (fr + 1, len(d), d[0], ra[d[0]], rb[d[0]]))
+                d = [i for i in range(len(ra)) if ra[i] != rb[i]]
+                base = 0xC000 if len(ra) == 0x2000 else 0
+                print("frame %d: RAM differs at %d bytes, first %04X (%02X/%02X): %s" % (fr + 1, len(d), base + d[0], ra[d[0]], rb[d[0]],
+                      ' '.join('%04X' % (base + x) for x in d[:12])))
                 break
         if "--map" in sys.argv:
             mb = drc.host_map_check()
@@ -221,6 +234,13 @@ def main():
                   % (fr + 1, diff * 100 / (VIEW_W * 144), drc.sys_stat(0), drc.sys_stat(1), drc.sys_stat(2),
                      x86.calls, time.time() - t0))
             write_ppm("%s_%05d.ppm" % (PREFIX, fr + 1), a, b)
+    if "--same-code" in sys.argv:
+        ca = ctypes.string_at(ref.sys_psram() + 20 * 0x10000, 7 * 0x10000)
+        cb = ctypes.string_at(drc.sys_psram() + 20 * 0x10000, 7 * 0x10000)
+        nd = sum(1 for i in range(len(ca)) if ca[i] != cb[i])
+        used = sum(1 for i in range(len(ca)) if cb[i])
+        print("code caches and block table: %d bytes differ (%d not 0, blocks %d / %d)"
+              % (nd, used, ref.sys_stat(0), drc.sys_stat(0)))
     if "--pal" in sys.argv:
         print("palette: %d frames of %d with a color that is not the Game Gear's" % tuple(globals().get('npal', [0, 0])))
     print("sprite collision check used: interpreter %d, recompiler %d" % (ref.sys_stat(3), drc.sys_stat(3)))

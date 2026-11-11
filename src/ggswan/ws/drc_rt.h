@@ -85,6 +85,27 @@ int32_t drc_cycles_left(void);
 uint8_t drc_fast_reentry(void);
 /// z80_run() equivalent using the recompiler
 int32_t drc_z80_run(int32_t cycles);
+#ifdef GGSWAN_SF7000
+/// sfswan: the PSRAM banks before the code's (main.c has the whole list):
+/// the SF-7000's RAM, the screen's tables with the VRAM in the last 16 KiB,
+/// the disk. And the two maps of the code translated (drc.c: FLAT): a byte
+/// for each 16 bytes of the Z80's memory in the internal RAM, where the
+/// other builds have the work RAM (what translated code looks at before a
+/// write), and a bit for each byte in the tables' bank (what the C side
+/// looks at when that says "maybe")
+#define SF_RAM_BANK 0
+#define SF_VRAM_BANK 1
+#define SF_DISK_BANK 2
+#define SF_SYS_BANK 5
+#define SF_BANKS 8
+#define SF_CMAP_ADDR 0x8000
+#define SF_CBITS_OFF 0x4000
+// (and the bytes of code a program was seen to write: a bit each in the
+// tables' bank, a byte for each 256 in the internal RAM)
+#define SF_SMCBITS_OFF 0x6000
+#define SF_SMC_PAGE_ADDR 0x9000
+#endif
+
 /// Run translated code at DRC_CODE_SEG:offset (drc_asm.s)
 void drc_enter(uint16_t offset);
 /// a helper called from translated code (stub HCALL)

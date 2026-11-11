@@ -21,6 +21,20 @@ emulator runs, and it talks to the emulated uPD765 as any program would:
   0030h  the start again, never as a first one
   0038h, 0066h: a return
 
+The long parts are not run as Z80 code in the plugin: the IPL is read
+with the interpreter (the recompiler has the SF-7000's RAM only), which
+on a WonderSwan is some 60 times slower than the Z80 was, and filling the
+memory, loading the font and reading the 121 sectors of Disk BASIC would
+take a minute and a half. So the built-in IPL asks the plugin, with a
+byte to port ECh (a port of the SF-7000 with nothing on it; listened to
+only while the IPL is at 0000h and only for this IPL): 1 fill the VRAM
+and the RAM, 2 the font and the clear screen, 3 and 4 read and write a
+sector (B, C, DE as RST 10h and 18h; the result read back from ECh). The
+plugin does to the memory, the VDP and the controller what the Z80 code
+would have done (core/sf7000.c: sf_service). The Z80 code is all still
+here: build(fast=False) is the IPL without those calls, and the PC tools
+check that the two leave the same memory behind (make sfcheck).
+
 What it does not do: the self test, messages on the screen (a disk that
 does not start leaves the screen empty: the plugin looks at the disk
 before starting and says so itself), the disk's speed test (the emulated
@@ -192,7 +206,7 @@ def font_rows():
     return b''.join(glyph_5x7(g) for g in range(96)) + extended()
 
 
-def build():
+def build(fast=True):
     a = Asm()
     JP, CALL, JR, JRNZ, JRZ, JRNC, JRC, DJNZ = 0xC3, 0xCD, 0x18, 0x20, 0x28, 0x30, 0x38, 0x10
 
@@ -243,18 +257,21 @@ def build():
     out(0xE6, 0x03)
     a.db(0x3A, 0x52, 0xFC, 0xFE, 0x55)              # LD A,(FC52h); CP 55h
     a.rel(JRZ, 'warm')
-    a.db(0xDB, 0xBF)                                # IN A,(BFh)
-    out(0xBF, 0x90); out(0xBF, 0x81)                # register 1: the display off
-    a.db(0xAF, 0xD3, 0xBF)                          # XOR A; OUT (BFh),A
-    out(0xBF, 0x40)                                 # (write from 0000h)
-    a.db(0x11, 0x00, 0x40)                          # LD DE,4000h
-    a.label('vf')
-    a.db(0x7B, 0x82, 0xD3, 0xBE, 0x1B, 0x7B, 0xB2)  # LD A,E; ADD A,D; OUT (BEh),A; DEC DE; LD A,E; OR D
-    a.rel(JRNZ, 'vf')
-    a.db(0x21, 0x00, 0x00)                          # LD HL,0000h
-    a.label('rf')
-    a.db(0x7D, 0x84, 0x77, 0x23, 0x7C, 0xB5)        # LD A,L; ADD A,H; LD (HL),A; INC HL; LD A,H; OR L
-    a.rel(JRNZ, 'rf')
+    if fast:
+        out(0xEC, 0x01)                             # (the plugin fills them: the same bytes)
+    else:
+        a.db(0xDB, 0xBF)                                # IN A,(BFh)
+        out(0xBF, 0x90); out(0xBF, 0x81)                # register 1: the display off
+        a.db(0xAF, 0xD3, 0xBF)                          # XOR A; OUT (BFh),A
+        out(0xBF, 0x40)                                 # (write from 0000h)
+        a.db(0x11, 0x00, 0x40)                          # LD DE,4000h
+        a.label('vf')
+        a.db(0x7B, 0x82, 0xD3, 0xBE, 0x1B, 0x7B, 0xB2)  # LD A,E; ADD A,D; OUT (BEh),A; DEC DE; LD A,E; OR D
+        a.rel(JRNZ, 'vf')
+        a.db(0x21, 0x00, 0x00)                          # LD HL,0000h
+        a.label('rf')
+        a.db(0x7D, 0x84, 0x77, 0x23, 0x7C, 0xB5)        # LD A,L; ADD A,H; LD (HL),A; INC HL; LD A,H; OR L
+        a.rel(JRNZ, 'rf')
     a.db(0x3E, 0x55, 0x32, 0x52, 0xFC)              # LD A,55h; LD (FC52h),A
     a.label('warm')
     # the screen as the IPL makes it for its messages: text mode, the
@@ -265,23 +282,26 @@ def build():
     a.label('vr')
     a.db(0x7E, 0xD3, 0xBF, 0x79, 0xD3, 0xBF, 0x23, 0x0C)   # LD A,(HL); OUT; LD A,C; OUT; INC HL; INC C
     a.rel(DJNZ, 'vr')
-    a.db(0xAF, 0xD3, 0xBF)                          # XOR A; OUT (BFh),A
-    out(0xBF, 0x58)                                 # (write from 1800h)
-    a.db(0x06, 0x00)                                # LD B,0
-    a.label('cl')
-    a.db(0xAF, 0xD3, 0xBE)                          # XOR A; OUT (BEh),A (characters 00h-1Fh: nothing)
-    a.rel(DJNZ, 'cl')
-    a.abs16(0x21, 'font')                           # LD HL,font
-    a.db(0x01, 0x00, 0x07)                          # LD BC,1792 (20h-FFh, from 1900h)
-    a.label('fo')
-    a.db(0x7E, 0xD3, 0xBE, 0x23, 0x0B, 0x78, 0xB1)  # LD A,(HL); OUT (BEh),A; INC HL; DEC BC; LD A,B; OR C
-    a.rel(JRNZ, 'fo')
-    a.db(0xAF, 0xD3, 0xBF)                          # XOR A; OUT (BFh),A
-    out(0xBF, 0x48)                                 # (write from 0800h)
-    a.db(0x01, 0xC0, 0x03)                          # LD BC,960
-    a.label('sp')
-    a.db(0x3E, 0x20, 0xD3, 0xBE, 0x0B, 0x78, 0xB1)  # LD A,20h; OUT (BEh),A; DEC BC; LD A,B; OR C
-    a.rel(JRNZ, 'sp')
+    if fast:
+        out(0xEC, 0x02)                             # (the plugin writes them: the same bytes)
+    else:
+        a.db(0xAF, 0xD3, 0xBF)                          # XOR A; OUT (BFh),A
+        out(0xBF, 0x58)                                 # (write from 1800h)
+        a.db(0x06, 0x00)                                # LD B,0
+        a.label('cl')
+        a.db(0xAF, 0xD3, 0xBE)                          # XOR A; OUT (BEh),A (characters 00h-1Fh: nothing)
+        a.rel(DJNZ, 'cl')
+        a.abs16(0x21, 'font')                           # LD HL,font
+        a.db(0x01, 0x00, 0x07)                          # LD BC,1792 (20h-FFh, from 1900h)
+        a.label('fo')
+        a.db(0x7E, 0xD3, 0xBE, 0x23, 0x0B, 0x78, 0xB1)  # LD A,(HL); OUT (BEh),A; INC HL; DEC BC; LD A,B; OR C
+        a.rel(JRNZ, 'fo')
+        a.db(0xAF, 0xD3, 0xBF)                          # XOR A; OUT (BFh),A
+        out(0xBF, 0x48)                                 # (write from 0800h)
+        a.db(0x01, 0xC0, 0x03)                          # LD BC,960
+        a.label('sp')
+        a.db(0x3E, 0x20, 0xD3, 0xBE, 0x0B, 0x78, 0xB1)  # LD A,20h; OUT (BEh),A; DEC BC; LD A,B; OR C
+        a.rel(JRNZ, 'sp')
     a.abs16(CALL, 'disk_init')
     a.rel(JRC, 'fail')
     a.db(0x11, 0x00, 0xFF)                          # LD DE,FF00h
@@ -348,6 +368,12 @@ def build():
         put(reg='B'); put(0x01); put(0x10); put(0x0E); put(0xFF)
 
     a.label('disk_read')
+    if fast:
+        # (the plugin moves the sector: what the routine below does to
+        # the memory, the controller and the carry, at once)
+        out(0xEC, 0x03)
+        a.db(0xDB, 0xEC, 0xC6, 0xFF, 0xC9)          # IN A,(ECh); ADD A,FFh (carry: not 0); RET
+    a.label('disk_read_plain')
     a.db(0xC5, 0xD5, 0xE5)                          # PUSH BC; PUSH DE; PUSH HL
     command(0x46)
     a.db(0x62, 0x6B, 0x06, 0x00)                    # LD H,D; LD L,E; LD B,0
@@ -361,6 +387,10 @@ def build():
     a.rel(JR, 'io_tc')
 
     a.label('disk_write')
+    if fast:
+        out(0xEC, 0x04)
+        a.db(0xDB, 0xEC, 0xC6, 0xFF, 0xC9)
+    a.label('disk_write_plain')
     a.db(0xC5, 0xD5, 0xE5)
     command(0x45)
     a.db(0x62, 0x6B, 0x06, 0x00)
@@ -389,19 +419,30 @@ def build():
     a.db(0xE1, 0xD1, 0xC1, 0xC9)                    # POP HL; POP DE; POP BC; RET
     a.label('font')
     a.db(font_rows())
-    return a.done()
+    code = a.done()
+    return code, a.labels['font']
 
 
 if __name__ == '__main__':
-    code = build()
+    code, font = build(True)
+    plain, _ = build(False)
     out = sys.argv[1]
     if out.endswith('.h'):
+        def array(f, name, data):
+            f.write('static const uint8_t GGFAR %s[%d] = {\n' % (name, len(data)))
+            for i in range(0, len(data), 16):
+                f.write('    ' + ', '.join('0x%02X' % b for b in data[i:i + 16]) + ',\n')
+            f.write('};\n')
         with open(out, 'w') as f:
             f.write('// sfswan: the built-in IPL (host/mksfipl.py made this: change it there)\n')
-            f.write('static const uint8_t GGFAR sf_ipl_builtin[%d] = {\n' % len(code))
-            for i in range(0, len(code), 16):
-                f.write('    ' + ', '.join('0x%02X' % b for b in code[i:i + 16]) + ',\n')
-            f.write('};\n')
+            f.write('// where its font is (characters 20h-FFh, 8 bytes each)\n')
+            f.write('#define SF_IPL_FONT 0x%04X\n' % font)
+            array(f, 'sf_ipl_builtin', code)
+            f.write('#ifdef SF_IPL_PLAIN\n')
+            f.write('// the same with nothing done by the plugin: all of it Z80 code (the PC\n')
+            f.write('// tools compare the two)\n')
+            array(f, 'sf_ipl_plain', plain)
+            f.write('#endif\n')
     else:
-        open(out, 'wb').write(code)
-    print('%d bytes' % len(code))
+        open(out, 'wb').write(plain if len(sys.argv) > 2 and sys.argv[2] == 'plain' else code)
+    print('%d bytes (all of it Z80 code: %d)' % (len(code), len(plain)))

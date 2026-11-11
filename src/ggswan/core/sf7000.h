@@ -57,6 +57,11 @@ extern sf_t sf;
 extern uint8_t GGFAR *sf_ram;
 extern const uint8_t GGFAR *sf_ipl;
 extern uint16_t sf_ipl_size;
+// the built-in IPL (host/mksfipl.py) asks for its long parts through port
+// ECh (sf7000.c: sf_service): set for that IPL only, with where its font
+// is in it
+extern uint8_t sf_ipl_fast;
+extern uint16_t sf_ipl_font;
 // the keyboard: for each row of the matrix (0-6) its 12 columns, 1 =
 // pressed (row 7 is the joypads: gg.keys)
 extern uint16_t sf_keys[7];
@@ -93,6 +98,12 @@ static inline void sf_key_set(uint8_t key, uint8_t down) {
 
 /* Provided by the machine (gg.c) */
 
+// with a recompiler: its map of where translated code came from, a byte
+// for each 16 of the memory (0: none; NULL: no map). z80_write looks there
+// and tells the platform of a write where it is not 0
+extern uint8_t *sf_cmap;
+void gg_platform_code_write(uint16_t a);
+uint8_t sf_port_a_steady(uint32_t cycles, uint8_t *value);
 // CPU cycles since the reset (the disk turns by them)
 uint32_t sf_clock(void);
 // the IPL came or went at 0000h-3FFFh

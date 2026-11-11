@@ -11,8 +11,12 @@
 #ifdef GGSWAN_SF7000
 #include <string.h>
 #include "sf7000.h"
+#include "z80.h"
 
 sf_t sf;
+uint8_t sf_ipl_fast;
+uint16_t sf_ipl_font;
+uint8_t *sf_cmap;
 uint8_t GGFAR *sf_ram;
 const uint8_t GGFAR *sf_ipl;
 uint16_t sf_ipl_size;
@@ -378,9 +382,12 @@ static void fdc_reset(void) {
  * and its port A (E4h): 0 the uPD765's INT, 1 the printer's BUSY, 2 the
  * drive's INDEX. Port B (E5h) is the printer's data: nothing here.
  */
+static uint32_t turn;   // the start of the turn the disk is in
 static void sf_c_write(uint8_t v) {
     uint8_t old = sf.sf_c;
     sf.sf_c = v;
+    if ((old & ~v) & 0x02)
+        turn = sf_clock();   // the motor starts: the hole is at the sensor
     if ((v & ~old) & 0x04)
         fdc_tc();
     if ((v & ~old) & 0x08)
@@ -394,15 +401,34 @@ static void sf_c_write(uint8_t v) {
 
 // the index hole: once a turn, while the motor is on
 static uint8_t sf_index(void) {
-    static uint32_t turn;   // the start of the turn the disk is in
     if ((sf.sf_c & 0x02) || !sf.inserted)
         return 0;
+    // (a turn starts when the motor does: sf_c_write. So the hole is where
+    // the time since then puts it, whenever this is asked)
     uint32_t now = sf_clock();
-    if (now < turn || now - turn > 16 * SF_TURN_CYCLES)
-        turn = now;         // (a reset, or the motor was off for long)
+    if (now < turn)
+        turn = now;         // (a reset)
+    if (now - turn > 16 * SF_TURN_CYCLES)
+        turn = now - (now - turn) % SF_TURN_CYCLES;
     while (now - turn >= SF_TURN_CYCLES)
         turn += SF_TURN_CYCLES;
     return now - turn < SF_INDEX_CYCLES;
+}
+
+// Port A of the SF-7000's 8255 for the next `cycles` CPU cycles, if time
+// alone does not change it meanwhile (the index hole coming or going): 1
+// and *value (for a recompiler: translated code reads it without asking,
+// until something is done to the 8255 or the controller); else 0
+uint8_t sf_port_a_steady(uint32_t cycles, uint8_t *value) {
+    uint8_t index = 0;
+    if (!(sf.sf_c & 0x02) && sf.inserted) {
+        index = sf_index();
+        uint32_t at = sf_clock() - turn;
+        if ((index ? SF_INDEX_CYCLES : SF_TURN_CYCLES) - at <= cycles)
+            return 0;
+    }
+    *value = (sf.irq ? 0x01 : 0) | (index ? 0x04 : 0);
+    return 1;
 }
 
 // a write to an 8255's control port: the mode (all its outputs then 0),
@@ -414,6 +440,83 @@ static uint8_t ppi_control(uint8_t v, uint8_t *mode, uint8_t c) {
     }
     uint8_t bit = 1 << ((v >> 1) & 7);
     return (v & 1) ? c | bit : c & ~bit;
+}
+
+/* === The built-in IPL's long parts === */
+
+/*
+ * The IPL is run by the interpreter (the recompiler knows the SF-7000's
+ * RAM only), and its loops are long: the memory filled, the font written,
+ * and above all the disk's loader calling RST 10h for the 121 sectors of
+ * Disk BASIC, each read with a status poll for every byte. The built-in
+ * IPL (host/mksfipl.py) asks for them here instead, a byte to port ECh
+ * while it is at 0000h: what is done is what its Z80 code does (the same
+ * IPL built with fast=False: the PC tools compare the memory the two
+ * leave), through the same ports and memory functions.
+ *   1  a first start: the VRAM and the RAM as the SF-7000's self test
+ *      leaves them
+ *   2  the screen: nothing in characters 00h-1Fh, the font from 20h, 960
+ *      spaces at 0800h
+ *   3  read, 4 write: the sector B of track C, at DE (RST 10h, 18h). The
+ *      result is read from ECh: 0, or not 0 for an error
+ */
+static uint8_t svc_result;
+
+static void sf_service(uint8_t fn) {
+    switch (fn) {
+    case 1: {
+        uint16_t n = 0x4000, a = 0;
+        z80_in(0xBF);
+        z80_out(0xBF, 0x90); z80_out(0xBF, 0x81);     // register 1: the display off
+        z80_out(0xBF, 0x00); z80_out(0xBF, 0x40);     // write from 0000h
+        do z80_out(0xBE, (uint8_t) (n + (n >> 8))); while (--n);
+        do z80_write(a, (uint8_t) (a + (a >> 8))); while (++a);
+        break;
+    }
+    case 2:
+        z80_out(0xBF, 0x00); z80_out(0xBF, 0x58);     // write from 1800h
+        for (uint16_t i = 0; i < 256; i++)
+            z80_out(0xBE, 0);
+        for (uint16_t i = 0; i < 224 * 8; i++)
+            z80_out(0xBE, sf_ipl[sf_ipl_font + i]);
+        z80_out(0xBF, 0x00); z80_out(0xBF, 0x48);     // write from 0800h
+        for (uint16_t i = 0; i < 960; i++)
+            z80_out(0xBE, 0x20);
+        break;
+    case 3:
+    case 4: {
+        uint8_t track = z80.c, sector = z80.b;
+        uint16_t at = ((uint16_t) z80.d << 8) | z80.e;
+        svc_result = 1;
+        // (the seek: the head there, its interrupt taken)
+        sf.pcn = track;
+        sf.seek_end = 0;
+        sf.irq = 0;
+        sf.phase = SF_FDC_COMMAND;
+        sf.cmd_n = 0;
+        if (!sf.inserted || track >= SF_TRACKS || sector < 1 || sector > SF_SECTORS
+                || (fn == 4 && sf.protect)) {
+            sf.errors++;
+            break;
+        }
+        uint16_t lba = (uint16_t) track * SF_SECTORS + sector - 1;
+        if (fn == 3) {
+            gg_platform_disk_read(lba, sf.buf);
+            for (uint16_t i = 0; i < SF_SECTOR_SIZE; i++)
+                z80_write(at + i, sf.buf[i]);
+            sf.reads++;
+        } else {
+            for (uint16_t i = 0; i < SF_SECTOR_SIZE; i++)
+                sf.buf[i] = z80_read(at + i);
+            gg_platform_disk_write(lba, sf.buf);
+            sf.writes++;
+        }
+        svc_result = 0;
+        break;
+    }
+    default:
+        break;
+    }
 }
 
 uint8_t sf_in(uint8_t port) {
@@ -446,6 +549,10 @@ uint8_t sf_in(uint8_t port) {
         }
     case 2:   // E8h-EBh: the 8251 (RS-232C): nothing on its line, ready to send
         return (port & 1) ? 0x05 : 0xFF;
+    case 3:   // ECh: the built-in IPL's result (sf_service)
+        if (port == 0xEC && sf_ipl_fast && sf.rom_on)
+            return svc_result;
+        return 0xFF;
     default:
         return 0xFF;
     }
@@ -477,6 +584,10 @@ void sf_out(uint8_t port, uint8_t v) {
         case 3: sf_c_write(ppi_control(v, &sf.sf_mode, sf.sf_c)); break;
         default: break;
         }
+        break;
+    case 3:
+        if (port == 0xEC && sf_ipl_fast && sf.rom_on)
+            sf_service(v);
         break;
     default:
         break;

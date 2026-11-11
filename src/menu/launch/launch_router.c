@@ -89,6 +89,14 @@ exit_no_launch:
             // to save)
             if (flags & LAUNCH_ROUTER_USE_SERIAL_OUT) return ERR_FILE_NOT_EXECUTABLE;
             return launch_plugin_via_ipc(s_path_plugin_sg, path);
+        } else if (!strcasecmp(ext, s_file_ext_sf)) {
+            // SF-7000 disk image (163,840 bytes): sfswan, from ggswan's
+            // sources. A disk with no system on it is started from the
+            // system disk /NILESWAN/SF7000.SF (a copy of a disk that has
+            // Disk BASIC), which the plugin looks for. What the program
+            // writes to the disk is not kept
+            if (flags & LAUNCH_ROUTER_USE_SERIAL_OUT) return ERR_FILE_NOT_EXECUTABLE;
+            return launch_plugin_via_ipc(s_path_plugin_sf, path);
         } else if (!strcasecmp(ext, s_file_ext_gg) || !strcasecmp(ext, s_file_ext_sms)) {
             // Game Gear ROM: ggswan emulator plugin; Master System ROM:
             // smsswan, built from the same sources

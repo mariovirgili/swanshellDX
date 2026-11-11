@@ -67,7 +67,8 @@ typedef struct {
                           // ROM bank of each slot (block table keys)
     uint16_t table_seg;   // segment of the block table
     uint8_t nolink;       // diagnostics: never jump between blocks
-    uint8_t pad2;
+    uint8_t pad2;         // sfswan: the helper's routine leaves the block (code
+                          // was written: drc.c flat_pc, drc_rt.c)
     uint16_t nt_base;     // VRAM name table and sprite table: writes there
     uint16_t sat_base;    // need more than the byte stored (see drc_rt.c)
     uint8_t map_top;      // platform's screen map state (main.c)
@@ -209,6 +210,22 @@ typedef struct {
     uint16_t sg_st_off;    // the status (AL)
     uint16_t sg_ctl_off;   // a byte to the control port (AL; CF = 1: a
                            // register, the caller uses the helper)
+#endif
+#ifdef GGSWAN_SF7000
+    // sfswan (the SF-7000: see FLAT in drc.c): all of the Z80's memory
+    // RAM in one segment, which ES holds; cmap: the internal RAM address
+    // of the code map (a byte for each 16 of the memory, not 0: a block
+    // was translated from there); mark: called for every instruction of
+    // a block translated (its address and length)
+    uint8_t flat;
+    uint16_t cmap;
+    void (*mark)(uint16_t pc, uint16_t len);
+    // (is a byte of this instruction one the program writes? see drc.c)
+    uint8_t (*smc)(uint16_t pc, uint16_t len);
+    // (its VRAM: the segment it is read through; the PSRAM banks of the
+    // VRAM and of the memory, for the RAM window: a write to the VRAM
+    // moves it; sf_vbank FFFFh: no banks, the read segment is written)
+    uint16_t sf_vseg, sf_vbank, sf_rbank;
 #endif
 } drc_env_t;
 

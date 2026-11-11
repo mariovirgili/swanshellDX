@@ -219,6 +219,15 @@ static inline uint16_t gg_color12(uint8_t i) {
 }
 #endif
 // the three 16 KiB ROM slots ($0000, $4000, $8000)
+// a byte into the VRAM. sfswan on the WonderSwan: gg_vram is for reading
+// (a ROM window on the VRAM's PSRAM bank); a write moves the RAM window
+// there and back (main.c)
+#if defined(GGSWAN_SF7000) && defined(__ia16__)
+void gg_platform_vram_store(uint16_t a, uint8_t v);
+#define GG_VRAM_STORE(a, v) gg_platform_vram_store(a, v)
+#else
+#define GG_VRAM_STORE(a, v) (gg_vram[a] = (v))
+#endif
 extern const uint8_t GGFAR *gg_slot[3];
 const uint8_t GGFAR *z80_read_span(uint16_t a, uint16_t *len);
 

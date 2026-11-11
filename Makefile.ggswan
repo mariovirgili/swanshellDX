@@ -6,6 +6,8 @@
 # with -DGGSWAN_SMS; output: dist/NILESWAN/PLUG_SMS.BIN
 # SG=1: sgswan, the SG-1000 plugin, with -DGGSWAN_SG1000; output:
 # dist/NILESWAN/PLUG_SG.BIN
+# SF=1: sfswan, the SC-3000 with the SF-7000's disks, with -DGGSWAN_SG1000
+# -DGGSWAN_SF7000; output: dist/NILESWAN/PLUG_SF.BIN
 
 WONDERFUL_TOOLCHAIN ?= /opt/wonderful
 TARGET = wswan/medium
@@ -22,6 +24,14 @@ else ifeq ($(SG),1)
 NAME		:= sgswan
 DEFINES		+= -DGGSWAN_SG1000
 ROM		:= dist/NILESWAN/PLUG_SG.BIN
+else ifeq ($(SF),1)
+NAME		:= sfswan
+DEFINES		+= -DGGSWAN_SG1000 -DGGSWAN_SF7000
+ROM		:= dist/NILESWAN/PLUG_SF.BIN
+# (INTERP=1: a test build of it with no recompiler)
+ifeq ($(INTERP),1)
+DEFINES		+= -DGGSWAN_SF_INTERP
+endif
 else
 NAME		:= ggswan
 ROM		:= dist/NILESWAN/PLUG_GG.BIN

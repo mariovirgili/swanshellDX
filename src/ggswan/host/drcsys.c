@@ -9,6 +9,10 @@
 #include "../core/gg.h"
 #include "../core/z80.h"
 #include "../ws/drc_rt.h"
+#ifdef GGSWAN_SF7000
+#include "../core/sf_ipl.h"
+#include "sf_host.h"
+#endif
 
 uint8_t iram[65536];
 uint8_t ports[256];
@@ -25,11 +29,11 @@ void *MK_FP(uint16_t seg, uint16_t off) {
     uint16_t b;
     switch (seg) {
     case 0x1000:
-        b = inportw(0xC1);
+        b = inportw(0xD0);
         if (ports[0xCE] & 1) return psram + (uint32_t) (b & 31) * 65536 + off;
         return sram + (uint32_t) (b & 7) * 65536 + off;
-    case 0x2000: return psram + (uint32_t) (inportw(0xC2) & 31) * 65536 + off;
-    case 0x3000: return psram + (uint32_t) (inportw(0xC3) & 31) * 65536 + off;
+    case 0x2000: return psram + (uint32_t) (inportw(0xD2) & 31) * 65536 + off;
+    case 0x3000: return psram + (uint32_t) (inportw(0xD4) & 31) * 65536 + off;
     case 0x4000: case 0x5000: case 0x6000: case 0x7000: case 0x8000: case 0x9000:
     case 0xA000: case 0xB000:
         return psram + (20 + ((seg - 0x4000) >> 12)) * 65536 + off;
@@ -262,12 +266,20 @@ int sys_init(const char *path, int use_drc, int every_line) {
     gg_every_line = every_line;
     FILE *f = fopen(path, "rb");
     if (!f) return 0;
+#ifdef GGSWAN_SF7000
+    // sfswan: a disk, in the PSRAM banks main.c keeps for it
+    size_t n = fread(psram + SF_DISK_BANK * 65536, 1, SF_DISK_SIZE + 1, f);
+    fclose(f);
+    if (n != SF_DISK_SIZE) return 0;
+    uint16_t banks = 1;
+#else
 #ifdef GGSWAN_SG1000
     memset(psram, 0xFF, 65536);   // (as the plugin loads it)
 #endif
     size_t n = fread(psram, 1, 512 * 1024, f);
     fclose(f);
     uint16_t banks = (n + 0x3FFF) >> 14;
+#endif
     video_init();
     sound_init();
     if (use_drc) {
@@ -279,12 +291,25 @@ int sys_init(const char *path, int use_drc, int every_line) {
         gg_cpu_run = drc_z80_run;
         gg_cpu_left = drc_cycles_left;
     }
+#ifdef GGSWAN_SF7000
+    sf_ram = MK_FP(0x1000, 0x0000);
+    sf_ipl = sf_ipl_builtin;
+    sf_ipl_size = sizeof(sf_ipl_builtin);
+    sf_ipl_fast = 1;
+    sf_ipl_font = SF_IPL_FONT;
+    sf.inserted = 1;
+    gg_init(1);
+#else
     gg_init(banks);
     drc_rt_rom_banks(banks);
+#endif
     return banks;
 }
 static uint8_t fb_end[GG_VIEW_H][GG_VIEW_W][3];
 void sys_frame(int keys) {
+#ifdef GGSWAN_SF7000
+    type_frame((int) gg.frame, getenv("SF_TYPE"));
+#endif
     gg.keys = keys;
     gg_run_frame();   // (video_present at line 168)
     gg_platform_vram_sync();   // (to compare the VRAM: what the frame wrote after it)
@@ -304,9 +329,24 @@ void sys_splits(uint8_t *out) {
     out[0] = act_n;
     for (int i = 0; i < act_n && i < 24; i++) { out[1 + i * 2] = act_line[i]; out[2 + i * 2] = act_val[i]; }
 }
+// ES when translated code is entered: sfswan's is the memory's segment
+// (drc_asm.s: drc_enter); 0: whatever (the others load it as they go)
+#ifdef GGSWAN_SF7000
+int sys_enter_es(void) { return drc_st.segtab[0]; }
+#else
+int sys_enter_es(void) { return 0; }
+#endif
+// the Z80's RAM, to compare two runs (sfswan: all 64 KiB)
+#ifdef GGSWAN_SF7000
+uint8_t *sys_ram(void) { return sf_ram; }
+int sys_ram_size(void) { return 0x10000; }
+#else
+uint8_t *sys_ram(void) { return gg_ram; }
+int sys_ram_size(void) { return 0x2000; }
+#endif
 uint32_t sys_digest(void) {
     uint32_t h = 2166136261u;
-    for (int i = 0; i < 0x2000; i++) h = (h ^ gg_ram[i]) * 16777619u;
+    for (int i = 0; i < sys_ram_size(); i++) h = (h ^ sys_ram()[i]) * 16777619u;
     for (int i = 0; i < 0x4000; i++) h = (h ^ gg_vram[i]) * 16777619u;
     for (int i = 0; i < 64; i++) h = (h ^ gg_cram[i]) * 16777619u;
     return h;

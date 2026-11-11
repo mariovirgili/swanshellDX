@@ -105,6 +105,32 @@ static char rom_path[ROM_PATH_SIZE];
 
 #include "font.inc"
 
+#ifdef GGSWAN_SF7000
+#include "sf7000.h"
+#ifndef GGSWAN_HOST
+#include "sf_ipl.h"
+#endif
+/*
+ * sfswan: the PSRAM banks (64 KiB each) from GG_PSRAM_FIRST_BANK:
+ *   + 0      the SF-7000's 64 KiB of RAM. The RAM window stays on it: Z80
+ *            address X is 1000h:X, for the interpreter (sf_ram) and for
+ *            translated code
+ *   + 1      the screen's tables (sg_video.inc: SG_TABLE_BANK) and, in its
+ *            last 16 KiB, the TMS9918A's VRAM: read through the ROM's
+ *            first window, which stays there (gg_vram), written with the
+ *            RAM window moved there for the byte (gg_platform_vram_store)
+ *   + 2 - 4  the disk, 163,840 bytes: a sector read through the ROM's
+ *            second window, written through the RAM window
+ *   + 5 - 7  the system disk, when the disk asked for needs one
+ * The code cache's banks come after them (checked at the start).
+ */
+// (the numbers: drc_rt.h)
+_Static_assert(GG_PSRAM_FIRST_BANK == 0, "sfswan: PSRAM banks from 0");
+#define LOAD_BANK SF_DISK_BANK
+#else
+#define LOAD_BANK GG_PSRAM_FIRST_BANK
+#endif
+
 #ifndef GGSWAN_HOST_VISIBLE
 #define GGSWAN_HOST_VISIBLE static
 #endif
@@ -115,8 +141,8 @@ static char rom_path[ROM_PATH_SIZE];
 static uint8_t text_y;
 static uint8_t text_step = 2;   // rows per line (1 on the crowded screens)
 
-static void text_init(void) {
-    // font: color 1 of palette FONT_PALETTE
+// font: color 1 of palette FONT_PALETTE
+static void font_load(void) {
     for (uint8_t g = 0; g < sizeof(font_chars) - 1; g++) {
         uint8_t *t = TILE_PTR(FONT_TILE + g);
         for (uint8_t r = 0; r < 8; r++) {
@@ -126,6 +152,10 @@ static void text_init(void) {
             t[r * 4 + 3] = 0;
         }
     }
+}
+
+static void text_init(void) {
+    font_load();
     memset(map2, 0, MAP_SIZE); // tile 0 of a cleared VRAM: blank
     uint16_t m1 = IRAM_OFF(map1), m2 = IRAM_OFF(map2);
     outportb(WS_SCR_BASE_PORT, ((m1 >> 11) & 0x0F) | (((m2 >> 11) & 0x0F) << 4));
@@ -209,6 +239,48 @@ static void ram_window_set(uint8_t flash, uint16_t bank) {
     outportb(WS_CART_BANK_FLASH_PORT, flash);
     outportw(WS_CART_EXTBANK_RAM_PORT, bank);
 }
+
+#ifdef GGSWAN_SF7000
+#ifndef GGSWAN_HOST
+void gg_platform_vram_store(uint16_t a, uint8_t v) {
+    outportw(WS_CART_EXTBANK_RAM_PORT, SF_VRAM_BANK);
+    *(uint8_t __far*) MK_FP(0x1000, 0xC000 + a) = v;
+    outportw(WS_CART_EXTBANK_RAM_PORT, ram_window_bank);
+}
+#endif
+
+// (a sector is 256 bytes: lba << 8 is where it is in the image)
+// the disk in the drive: the one asked for, or first the system disk
+// (main: when the one asked for does not start by itself), until its
+// loader gives the memory to what it loaded
+static uint16_t sf_disk_bank = SF_DISK_BANK;
+static uint8_t sf_swap_pending;
+void gg_platform_disk_read(uint16_t lba, uint8_t *buf) {
+    outportw(WS_CART_EXTBANK_ROM1_PORT, sf_disk_bank + (lba >> 8));
+    _fmemcpy(buf, MK_FP(0x3000, lba << 8), SF_SECTOR_SIZE);
+}
+
+// written to the copy in PSRAM only: gone when the plugin is left
+static uint8_t sf_disk_written;
+void gg_platform_disk_write(uint16_t lba, const uint8_t *buf) {
+    outportw(WS_CART_EXTBANK_RAM_PORT, sf_disk_bank + (lba >> 8));
+    _fmemcpy(MK_FP(0x1000, lba << 8), buf, SF_SECTOR_SIZE);
+    outportw(WS_CART_EXTBANK_RAM_PORT, ram_window_bank);
+    sf_disk_written = 1;
+}
+
+// the IPL came or went at 0000h-3FFFh: what was translated from there is
+// no longer what the CPU reads
+void gg_platform_map_changed(void) {
+    if (sf_swap_pending && !sf.rom_on) {
+        sf_swap_pending = 0;
+        sf_disk_bank = SF_DISK_BANK;
+    }
+#ifndef GGSWAN_HOST
+    drc_flush_request = 1;
+#endif
+}
+#endif
 
 void ws_ram_window_restore(void) {
     outportb(WS_CART_BANK_FLASH_PORT, ram_window_flash);
@@ -2060,6 +2132,182 @@ GGSWAN_HOST_VISIBLE void sound_init(void) {
 
 /* === Input === */
 
+#if defined(GGSWAN_SF7000) && !defined(GGSWAN_HOST)
+/* === sfswan: the keyboard on the screen === */
+
+/*
+ * START shows and hides it, at the top of the screen (screen 2, over the
+ * picture; the view is at the bottom of the TMS9918A's, where a text
+ * screen is being written). Four rows of 12 keys, as on an SC-3000 but
+ * for the keys with no character, and a row of nine things:
+ *   SH  SHIFT for the next key          BK  BREAK
+ *   DL  INS/DEL                         SP  the space bar
+ *   CR  the CR key                      FI LO RU BO  typed for you:
+ *       FILES + CR, LOAD ", RUN + CR, BOOT + CR
+ * X1-X4 move over them, A is the finger (down while A is down), B is CR.
+ * While it is shown the joypad is not the game's. The 48 characters of
+ * the keys take the place of the diagnostics' font in its tiles (they are
+ * the built-in IPL's font, the one Disk BASIC writes with), and the
+ * diagnostics are not written.
+ */
+#define KB_PAL_SEL 15
+#define KB_PAL_GAP 13
+static const char __far kb_keys[] = "1234567890-^" "QWERTYUIOP@[" "ASDFGHJKL;:]" "ZXCVBNM,./\\_";
+static const char __far kb_items[] = "SHBKDLSPCRFILORUBO";
+static const char __far kb_typed[] = "FILES\r\0LOAD \"\0RUN\r\0BOOT\r\0";
+static uint8_t kb_open, kb_row, kb_col, kb_shift, kb_was_a;
+static uint16_t kb_prev;
+static const char __far *kb_typing;
+static uint8_t kb_typing_t;
+
+static uint16_t kb_glyph(char ch, uint8_t pal) {
+    for (uint8_t i = 0; i < 48; i++)
+        if (kb_keys[i] == ch)
+            return TILE_ENTRY(FONT_TILE + i) | PAL_ENTRY(pal);
+    return TILE_ENTRY(FONT_TILE) | PAL_ENTRY(KB_PAL_GAP);
+}
+
+static void kb_draw(void) {
+    for (uint8_t row = 0; row < 5; row++) {
+        uint16_t *m = map2 + row * 32;
+        for (uint8_t x = 0; x < 28; x++)
+            m[x] = TILE_ENTRY(FONT_TILE) | PAL_ENTRY(KB_PAL_GAP);
+        if (row < 4) {
+            for (uint8_t c = 0; c < 12; c++)
+                m[2 + c * 2] = kb_glyph(kb_keys[row * 12 + c],
+                    row == kb_row && c == kb_col ? KB_PAL_SEL : FONT_PALETTE);
+        } else {
+            for (uint8_t c = 0; c < 9; c++) {
+                uint8_t pal = (kb_row == 4 && c == kb_col) || (c == 0 && kb_shift) ? KB_PAL_SEL : FONT_PALETTE;
+                m[c * 3] = kb_glyph(kb_items[c * 2], pal);
+                m[c * 3 + 1] = kb_glyph(kb_items[c * 2 + 1], pal);
+            }
+        }
+    }
+}
+
+static void kb_show(uint8_t on) {
+    kb_open = on;
+    if (!on) {
+        for (uint8_t row = 0; row < 5; row++)
+            for (uint8_t x = 0; x < 28; x++)
+                map2[row * 32 + x] = WS_PRIO_BLANK;
+        font_load();
+        return;
+    }
+    // the keys' characters: the IPL's font, a pixel to the right
+    for (uint8_t i = 0; i < 48; i++) {
+        uint8_t ch = kb_keys[i] == '_' ? 0x5F : kb_keys[i];
+        const uint8_t __far *g = sf_ipl_builtin + SF_IPL_FONT + (uint16_t) (ch - 0x20) * 8;
+        uint8_t *t = TILE_PTR(FONT_TILE + i);
+        for (uint8_t r = 0; r < 8; r++) {
+            uint8_t v = g[r] >> 1;
+            t[r * 4] = v;
+            t[r * 4 + 1] = ~v;
+            t[r * 4 + 2] = 0;
+            t[r * 4 + 3] = 0;
+        }
+    }
+    WS_DISPLAY_COLOR_MEM(FONT_PALETTE)[1] = 0xFFF;
+    WS_DISPLAY_COLOR_MEM(FONT_PALETTE)[2] = 0x000;
+    WS_DISPLAY_COLOR_MEM(KB_PAL_SEL)[1] = 0x000;
+    WS_DISPLAY_COLOR_MEM(KB_PAL_SEL)[2] = 0xFE0;
+    WS_DISPLAY_COLOR_MEM(KB_PAL_GAP)[1] = 0x000;
+    WS_DISPLAY_COLOR_MEM(KB_PAL_GAP)[2] = 0x000;
+    kb_draw();
+}
+
+// a key of the matrix down, with SHIFT if its character needs it
+static void kb_key(uint8_t key) {
+    if (key == 0xFF)
+        return;
+    sf_key_set(key & 0x7F, 1);
+    if (key & SF_KEY_SHIFT_BIT)
+        sf_key_set(SF_K_SHIFT, 1);
+}
+
+// once a frame: k the WonderSwan's keys. Returns the joypad for the game
+static uint8_t kb_frame(uint16_t k) {
+    uint16_t pressed = k & ~kb_prev;
+    kb_prev = k;
+    memset(sf_keys, 0, sizeof(sf_keys));
+    if (kb_typing) {
+        // a key every 8 frames, down for 4
+        char c = *kb_typing;
+        if (!c) {
+            kb_typing = 0;
+        } else {
+            if ((kb_typing_t & 7) < 4)
+                kb_key(sf_char_key(c));
+            if ((++kb_typing_t & 7) == 0)
+                kb_typing++;
+        }
+        return 0;
+    }
+    if (!kb_open) {
+        uint8_t g = 0;
+        if (k & WS_KEY_X1) g |= GG_KEY_UP;
+        if (k & WS_KEY_X3) g |= GG_KEY_DOWN;
+        if (k & WS_KEY_X4) g |= GG_KEY_LEFT;
+        if (k & WS_KEY_X2) g |= GG_KEY_RIGHT;
+        if (k & WS_KEY_B) g |= GG_KEY_1;
+        if (k & WS_KEY_A) g |= GG_KEY_2;
+        return g;
+    }
+    uint8_t cols = kb_row == 4 ? 9 : 12, moved = 0;
+    if (pressed & WS_KEY_X2) { kb_col = kb_col + 1 < cols ? kb_col + 1 : 0; moved = 1; }
+    if (pressed & WS_KEY_X4) { kb_col = kb_col ? kb_col - 1 : cols - 1; moved = 1; }
+    if (pressed & (WS_KEY_X1 | WS_KEY_X3)) {
+        uint8_t row = (pressed & WS_KEY_X1) ? (kb_row ? kb_row - 1 : 4) : (kb_row < 4 ? kb_row + 1 : 0);
+        // (the last row has 9 places for the others' 12)
+        if (row == 4 && kb_row != 4) kb_col = (uint8_t) (kb_col * 3 / 4);
+        else if (row != 4 && kb_row == 4) kb_col = (uint8_t) ((kb_col * 4 + 2) / 3);
+        if (kb_col > 11) kb_col = 11;
+        kb_row = row;
+        moved = 1;
+    }
+    if (k & WS_KEY_B) {
+        kb_key(SF_K_ENTER);
+    } else if (k & WS_KEY_A) {
+        uint8_t edge = !kb_was_a;
+        if (kb_row < 4) {
+            char ch = kb_keys[kb_row * 12 + kb_col];
+            // (the last key of the last row is pi: no character for it)
+            uint8_t key = ch == '_' ? SF_KEY(3, 5) : sf_char_key(ch);
+            kb_key(key);
+            if (kb_shift)
+                sf_key_set(SF_K_SHIFT, 1);
+        } else if (kb_col == 0) {
+            if (edge) { kb_shift ^= 1; moved = 1; }
+        } else if (kb_col == 1) {
+            kb_key(SF_K_BREAK);
+        } else if (kb_col == 2) {
+            kb_key(SF_K_INSDEL);
+        } else if (kb_col == 3) {
+            kb_key(SF_K_SPACE);
+        } else if (kb_col == 4) {
+            kb_key(SF_K_ENTER);
+        } else if (edge) {
+            // typed for you: the nth of kb_typed
+            const char __far *t = kb_typed;
+            for (uint8_t n = kb_col - 5; n; n--) {
+                while (*t) t++;
+                t++;
+            }
+            kb_typing = t;
+            kb_typing_t = 0;
+        }
+    } else if (kb_was_a && kb_row < 4 && kb_shift) {
+        kb_shift = 0;   // (SHIFT was for that key)
+        moved = 1;
+    }
+    kb_was_a = (k & WS_KEY_A) != 0;
+    if (moved)
+        kb_draw();
+    return 0;
+}
+#endif
+
 #if (defined(GGSWAN_SMS) || defined(GGSWAN_SG1000)) && !defined(GGSWAN_HOST)
 static uint8_t step_paused;   // (frame by frame: below)
 #endif
@@ -2109,7 +2357,37 @@ GGSWAN_HOST_VISIBLE void read_keys(void) {
     if (k & WS_KEY_X2) g |= GG_KEY_RIGHT;
     if (k & WS_KEY_B) g |= GG_KEY_1;
     if (k & WS_KEY_A) g |= GG_KEY_2;
-#ifdef GGSWAN_SMS
+#if defined(GGSWAN_SF7000) && !defined(GGSWAN_HOST)
+    // sfswan: START shows and hides the keyboard, when it is let go
+    // (unless a Y button was held with it: START + Y1 (Y up) is the way
+    // back to the menu, START + Y2 (Y right) the sprites' limit, START +
+    // Y3 (Y down) kept for the whole picture squeezed); the
+    // SC-3000's RESET key (GG_KEY_START in the machine) is not there
+    {
+        static uint8_t start_held, start_y, start_y3;
+        if (k & WS_KEY_START) {
+            if (!start_held) { start_held = 1; start_y = 0; start_y3 = 0; }
+            if (k & (WS_KEY_Y1 | WS_KEY_Y3)) start_y = 1;
+            if (k & WS_KEY_Y2) {
+                if (!start_y3) {
+                    sg_limit ^= 1;
+                    sg_spr_dirty = 2;
+                }
+                start_y3 = 1;
+                start_y = 1;
+            } else {
+                start_y3 = 0;
+            }
+        } else {
+            if (start_held && !start_y)
+                kb_show(!kb_open);
+            start_held = 0;
+        }
+        g = kb_frame(k);
+    }
+#elif defined(GGSWAN_SF7000)
+    // (the PC tools type on the SF-7000's keyboard themselves)
+#elif defined(GGSWAN_SMS)
     // START is the Pause button, pressed for the game when it is let go
     // (one frame: gg_run_frame takes the edge) unless Y1 (Y up) was held
     // with it: START + Y1 goes back to the menu
@@ -2139,9 +2417,11 @@ GGSWAN_HOST_VISIBLE void read_keys(void) {
         if (k & WS_KEY_START) {
             if (!start_held) { start_held = 1; start_y1 = 0; start_y3 = 0; }
             if (k & WS_KEY_Y1) start_y1 = 1;
-            // START + Y3 (Y down): four sprites to a line as the chip,
-            // or all of them (sg_video.inc)
-            if (k & WS_KEY_Y3) {
+            // START + Y2 (Y right): four sprites to a line as the chip,
+            // or all of them (sg_video.inc). (It was START + Y3 (Y down)
+            // until patch 147: that one is kept, in every plugin, for the
+            // whole picture squeezed, which is smsswan's only so far)
+            if (k & WS_KEY_Y2) {
                 if (!start_y3) {
                     sg_limit ^= 1;
                     sg_spr_dirty = 2;
@@ -2151,6 +2431,7 @@ GGSWAN_HOST_VISIBLE void read_keys(void) {
             } else {
                 start_y3 = 0;
             }
+            if (k & WS_KEY_Y3) start_y1 = 1;   // (kept: no Pause either)
         } else {
             if (start_held && !start_y1) g |= GG_KEY_START;
             start_held = 0;
@@ -2167,15 +2448,25 @@ GGSWAN_HOST_VISIBLE void read_keys(void) {
 
 static FIL fp;
 
-static uint16_t load_rom(void) {
-    int16_t result = f_open(&fp, rom_path, FA_READ | FA_OPEN_EXISTING);
+// (sfswan: a disk image, into the PSRAM banks from load_bank)
+#ifdef GGSWAN_SF7000
+static uint16_t load_bank = SF_DISK_BANK;
+#undef LOAD_BANK
+#define LOAD_BANK load_bank
+#endif
+static uint16_t load_rom(const char *path) {
+    int16_t result = f_open(&fp, path, FA_READ | FA_OPEN_EXISTING);
     if (result != FR_OK)
         fail("OPEN", result);
     uint32_t size = f_size(&fp);
     text_hex("SIZE", size);
     if (size > GG_ROM_MAX || size < 0x400)
         fail("ROM SIZE", size);
-#ifdef GGSWAN_SG1000
+#ifdef GGSWAN_SF7000
+    // (a disk: 40 tracks of 16 sectors of 256 bytes)
+    if (size != SF_DISK_SIZE)
+        fail("DISK SIZE", size);
+#elif defined(GGSWAN_SG1000)
     // (no mapper: 48 KiB at most; the rest of the bank is the VRAM)
     if (size > 0xC000)
         fail("ROM SIZE", size);
@@ -2197,7 +2488,7 @@ static uint16_t load_rom(void) {
         if (br < 0x2000)
             memset(buf + br, 0xFF, 0x2000 - br);
         outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_ENABLE);
-        outportw(WS_CART_EXTBANK_RAM_PORT, GG_PSRAM_FIRST_BANK + (done >> 16));
+        outportw(WS_CART_EXTBANK_RAM_PORT, LOAD_BANK + (done >> 16));
         _fmemcpy(MK_FP(0x1000, (uint16_t) done), buf, 0x2000);
         outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_DISABLE);
         done += 0x2000;
@@ -2205,7 +2496,7 @@ static uint16_t load_rom(void) {
     f_close(&fp);
 
     // check: the last 8 KiB read must be visible through ROM window 0
-    outportw(WS_CART_EXTBANK_ROM0_PORT, GG_PSRAM_FIRST_BANK + ((done - 0x2000) >> 16));
+    outportw(WS_CART_EXTBANK_ROM0_PORT, LOAD_BANK + ((done - 0x2000) >> 16));
     {
         const uint8_t __far *chk = MK_FP(0x2000, (uint16_t) (done - 0x2000));
         for (uint16_t i = 0; i < 0x2000; i++)
@@ -2519,7 +2810,9 @@ int main(void) {
     memset(gg_vram, 0, 0x4000);
 #endif
     text_init();
-#ifdef GGSWAN_SG1000
+#ifdef GGSWAN_SF7000
+    text_print("SFSWAN 0.1 - SC-3000 + SF-7000");
+#elif defined(GGSWAN_SG1000)
     text_print("SGSWAN 0.1 - SG-1000");
 #elif defined(GGSWAN_SMS)
     text_print("SMSSWAN 0.1 - MASTER SYSTEM");
@@ -2559,7 +2852,30 @@ int main(void) {
         fail("MOUNT", result);
     text_print("SD OK");
 
-    uint16_t banks = load_rom();
+    uint16_t banks = load_rom(rom_path);
+#ifdef GGSWAN_SF7000
+    {
+        // A disk with no system on it ("SYS:" at its start) does not start:
+        // Disk BASIC comes from another one, /NILESWAN/SF7000.SF (any disk
+        // that starts by itself), and this one goes in the drive when that
+        // one's loader has finished. The same with B held now, for a disk
+        // that is to be started from Disk BASIC with BOOT.
+        uint8_t first[4];
+        outportw(WS_CART_EXTBANK_ROM1_PORT, SF_DISK_BANK);
+        _fmemcpy(first, MK_FP(0x3000, 0), 4);
+        uint8_t sys = first[0] == 'S' && first[1] == 'Y' && first[2] == 'S' && first[3] == ':';
+        if (!sys || (ws_keypad_scan() & WS_KEY_B)) {
+            static const char sys_path[] = "/NILESWAN/SF7000.SF";
+            text_print(sys ? "B HELD: DISK BASIC FIRST" : "NO SYSTEM ON THIS DISK");
+            text_print("STARTING FROM /NILESWAN/SF7000.SF");
+            text_print("(A COPY OF A DISK WITH DISK BASIC)");
+            load_bank = SF_SYS_BANK;
+            load_rom(sys_path);
+            sf_disk_bank = SF_SYS_BANK;
+            sf_swap_pending = 1;
+        }
+    }
+#endif
     text_hex("BANKS", banks);
 
 #ifdef GGSWAN_SG1000
@@ -2591,8 +2907,13 @@ int main(void) {
         text_hex("CODE BANK", code_bank);
         // the ROM takes 64 KiB banks from GG_PSRAM_FIRST_BANK up: the code
         // cache (segments 4000h-A000h) must start above them
+#ifdef GGSWAN_SF7000
+        if (code_bank < GG_PSRAM_FIRST_BANK + SF_BANKS)
+            fail("CODE BANK", code_bank);
+#else
         if (code_bank < GG_PSRAM_FIRST_BANK + ((banks + 3) >> 2))
             fail("CODE BANK", code_bank);
+#endif
 #ifdef GGSWAN_SG1000
         // (and above the bank of the screen's tables: sg_video.inc)
         if (code_bank <= SG_TABLE_BANK)
@@ -2621,8 +2942,10 @@ int main(void) {
             text_print("PRESS A");
             while (!(ws_keypad_scan() & WS_KEY_A)) {}
         }
+#ifndef GGSWAN_SF_INTERP   // (sfswan, a test build: the interpreter only)
         gg_cpu_run = drc_z80_run;
         gg_cpu_left = drc_cycles_left;
+#endif
         show_stats = true;
         // Y4 (Y left) held: the diagnostics column instead of the profile
         if (ws_keypad_scan() & WS_KEY_Y4)
@@ -2661,9 +2984,21 @@ int main(void) {
 #endif
     video_init();
     sound_init();
+#ifdef GGSWAN_SF7000
+    // the SF-7000: its RAM (the RAM window is on it since video_init), the
+    // built-in IPL, the disk loaded in the drive
+    sf_ram = MK_FP(0x1000, 0x0000);
+    sf_ipl = sf_ipl_builtin;
+    sf_ipl_size = sizeof(sf_ipl_builtin);
+    sf_ipl_fast = 1;
+    sf_ipl_font = SF_IPL_FONT;
+    sf.inserted = 1;
+    gg_init(1);
+#else
     gg_init(banks);
     if (gg_cpu_run == drc_z80_run)
         drc_rt_rom_banks(banks);
+#endif
 
     ia16_disable_irq();
     ws_int_set_handler(WS_INT_VBLANK, (ia16_int_handler_t) vblank_irq_entry);
@@ -2694,9 +3029,14 @@ int main(void) {
         // frames per second, in the left border (the WS shows 75.47 Hz)
         if (vblanks >= 75) {
             vblanks -= 75;
+#ifdef GGSWAN_SF7000
+            if (!kb_open)   // (the keyboard has the font's tiles)
+#endif
+            {
             show_fps(frames);
             if (!diag_mode)
                 show_profile();
+            }
             frames = 0;
         }
     }

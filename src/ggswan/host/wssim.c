@@ -6,7 +6,14 @@
 #include "wsshim.h"
 #include "../core/gg.h"
 #include "../core/z80.h"
+#ifdef GGSWAN_SF7000
+#include "../core/sf_ipl.h"
+#include "sf_host.h"
+#endif
 
+#ifdef GGSWAN_SF7000
+void gg_platform_code_write(uint16_t a) { (void) a; }   // (no recompiler here)
+#endif
 uint8_t iram[65536];
 uint8_t ports[256];
 static uint8_t psram[16 * 65536];
@@ -22,10 +29,10 @@ static uint16_t bank(uint8_t p) { return inportw(p); }
 void *MK_FP(uint16_t seg, uint16_t off) {
     switch (seg) {
     case 0x1000:
-        if (ports[0xCE] & 1) return psram + (uint32_t) (bank(0xC1) & 15) * 65536 + off;
-        return sram + (uint32_t) (bank(0xC1) & 7) * 65536 + off;
-    case 0x2000: return psram + (uint32_t) (bank(0xC2) & 15) * 65536 + off;
-    case 0x3000: return psram + (uint32_t) (bank(0xC3) & 15) * 65536 + off;
+        if (ports[0xCE] & 1) return psram + (uint32_t) (bank(0xD0) & 15) * 65536 + off;
+        return sram + (uint32_t) (bank(0xD0) & 7) * 65536 + off;
+    case 0x2000: return psram + (uint32_t) (bank(0xD2) & 15) * 65536 + off;
+    case 0x3000: return psram + (uint32_t) (bank(0xD4) & 15) * 65536 + off;
     default: return iram + seg * 16 + off;
     }
 }
@@ -323,6 +330,22 @@ int main(int argc, char **argv) {
 #ifdef GGSWAN_SG1000
     memset(psram, 0xFF, 65536);   // (as the plugin loads it)
 #endif
+#ifdef GGSWAN_SF7000
+    // sfswan: a disk, in PSRAM banks 2-4 (main.c); the built-in IPL
+    size_t n = fread(psram + 2 * 65536, 1, SF_DISK_SIZE + 1, f);
+    fclose(f);
+    if (n != SF_DISK_SIZE) { fprintf(stderr, "%s: not an SF-7000 disk image\n", argv[1]); return 1; }
+    video_init();
+    sound_init();
+    gg_every_line = 1;
+    sf_ram = MK_FP(0x1000, 0x0000);
+    sf_ipl = sf_ipl_builtin;
+    sf_ipl_size = sizeof(sf_ipl_builtin);
+    sf_ipl_fast = 1;
+    sf_ipl_font = SF_IPL_FONT;
+    sf.inserted = 1;
+    gg_init(1);
+#else
     size_t n = fread(psram, 1, sizeof(psram), f);
     fclose(f);
     uint16_t banks = (n + 0x3FFF) >> 14;
@@ -330,6 +353,7 @@ int main(int argc, char **argv) {
     sound_init();
     gg_every_line = 1;   // the reference renderer draws line by line
     gg_init(banks);
+#endif
     int frames = atoi(argv[2]);
     const char *keys = argc > 4 ? argv[4] : "";
     int every = argc > 5 ? atoi(argv[5]) : 60;
@@ -345,6 +369,9 @@ int main(int argc, char **argv) {
             k = comma + 1;
         }
         if (getenv("GGSWAN_R0")) gg.vdp.reg[0] |= strtol(getenv("GGSWAN_R0"), NULL, 16);   // (tests: register 0 bits forced)
+#ifdef GGSWAN_SF7000
+        type_frame(fr, getenv("SF_TYPE"));
+#endif
         gg_run_frame();   // (video_present at line 168)
 #ifdef GGSWAN_SMS
         if (getenv("GGSWAN_COLL")) {

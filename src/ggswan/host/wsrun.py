@@ -186,9 +186,18 @@ PH = 'AL CD DI PO ST IN TR VI ID'.split()
 ph_c = collections.Counter(); fn_c = collections.Counter(); tr_pcs = collections.Counter()
 PROF = syms['prof_phase']
 PCSYM = syms['z80'] + 22   # z80.pc
+# WSRUN_WSKEYS="frame:hex,frame:hex": the WonderSwan's own keys from that
+# frame on, as ws_keypad_scan gives them (002 START, 004 A, 008 B, 010-080
+# X1-X4, 100-800 Y1-Y4): what main.c's read_keys does with them (sfswan's
+# keyboard on the screen)
+WS_KEYS = dict((int(x.split(':')[0]), int(x.split(':')[1], 16)) for x in os.environ.get('WSRUN_WSKEYS', '').split(',') if x)
+ws_keys = [0]
 def h_in(uc, port, size, ud):
     if port == 0x02: return (st['cyc'] // 256) % 159
-    if port == 0xB5: return 0
+    if port == 0xB5:
+        # the keypad, a group at a time (ws_keypad_scan): WSRUN_WSKEYS
+        k, g = ws_keys[0], ports[0xB5]
+        return (g & 0xF0) | ((k >> 8) & 15 if g & 0x10 else 0) | ((k >> 4) & 15 if g & 0x20 else 0) | (k & 15 if g & 0x40 else 0)
     if port == 0xE4: return 0xFFFF
     if port == 0xA0: return 0x86   # (Color)   # (nileswan: segment mask)
     return ports[port] if size == 1 else ports[port] | ports[port + 1] << 8
@@ -232,17 +241,25 @@ def retf(pop=0):
     uc.reg_write(UC_X86_REG_SP, sp + 4 + pop)
     uc.reg_write(UC_X86_REG_CS, cs); uc.reg_write(UC_X86_REG_IP, ip)
 rom_pos = [0]
+sys_disk = open(os.environ['WSRUN_SYS'], 'rb').read() if os.environ.get('WSRUN_SYS') else None
+cur = [rom]
 def sd(name):
     ax = uc.reg_read(UC_X86_REG_AX)
     if name == 'f_open':
-        uc.mem_write(ax + 0xA, len(rom).to_bytes(4, 'little')); rom_pos[0] = 0
+        # (WSRUN_SYS=file: what sfswan finds at /NILESWAN/SF7000.SF, its
+        # system disk; anything else opened is the ROM or disk given)
+        path = bytes(uc.mem_read(uc.reg_read(UC_X86_REG_DX), 64)).split(b'\0')[0]
+        cur[0] = sys_disk if (sys_disk and b'SF7000.SF' in path.upper()) else rom
+        if b'SF7000.SF' in path.upper() and not sys_disk:
+            uc.reg_write(UC_X86_REG_AX, 4); retf(); return   # FR_NO_FILE
+        uc.mem_write(ax + 0xA, len(cur[0]).to_bytes(4, 'little')); rom_pos[0] = 0
     elif name == 'f_read':
         # (fp AX, buff DX, btr and br on the stack: the callee pops them)
         buf = uc.reg_read(UC_X86_REG_DX)
         sp = uc.reg_read(UC_X86_REG_SP)
         n = int.from_bytes(uc.mem_read(sp + 4, 2), 'little')
         brp = int.from_bytes(uc.mem_read(sp + 6, 2), 'little')
-        d = rom[rom_pos[0]:rom_pos[0] + n]; rom_pos[0] += len(d)
+        d = cur[0][rom_pos[0]:rom_pos[0] + n]; rom_pos[0] += len(d)
         uc.mem_write(buf, d); uc.mem_write(brp, len(d).to_bytes(2, 'little'))
         uc.reg_write(UC_X86_REG_AX, 0); retf(4); return
     uc.reg_write(UC_X86_REG_AX, 0); retf()
@@ -308,6 +325,8 @@ def h_code(uc, addr, size, ud):
             if pk:
                 uc.mem_write(syms[pk.split(':')[0]], bytes([int(pk.split(':')[1], 16)]))
         uc.mem_write(syms['gg'] + 0x6C, bytes([pending_keys[0]]))   # gg.keys (read_keys: none here)
+        if fr in WS_KEYS: ws_keys[0] = WS_KEYS[fr]
+        if SF_TYPE: sf_type(fr)
         if fr % EVERY == 0: report(fr)
         if fr >= FRAMES: uc.emu_stop()
     if DYNX:
@@ -414,7 +433,44 @@ STUBS = [(0x0000, 0x0020, 'EXIT'), (0x0020, 0x0040, 'HELPER'), (0x0040, 0x01E0, 
          (0x0780, 0x0920, 'LINE'), (0x0920, 0x0AA0, 'CTL'), (0x0B80, 0x0BF8, 'MAP'),
          (0x0BF8, 0x0C48, 'VCNT'), (0x0C48, 0x0D20, 'PAIRS'), (0x0D20, 0x0DA0, 'NT'), (0x0DA0, 0x0E90, 'CLS'), (0x0E90, 0x0F70, 'TROW'), (0x0F70, 0x1010, 'OUTI/OUTD'), (0x1010, 0x1110, 'NTW')]
 
+# sfswan: WSRUN_TYPE="frame:text|frame:text" types on the SF-7000's keyboard
+# (sf_keys, the matrix: as sftest's SF_TYPE; \n is CR), WSRUN_TEXT=1 prints
+# the text screen with each report (the VRAM's name table: PSRAM bank 1)
+SF_TYPE = os.environ.get('WSRUN_TYPE')
+SF_MATRIX = ['1QAZ\0,KI8', '2WSX .LO9', '3EDC\0/;P0', '4RFV\0\0:@-', '5TGB\0\0][^', '6YHN\0\0\r\0\\', '7UJM']
+SF_SHIFTED = dict(zip('!"#$%&\'()=<>?+*`{}~|', '123456789-,./;:@[]^\\'))
+sf_typing = [None, 0, 0]
+def sf_type(fr):
+    for item in SF_TYPE.split('|'):
+        f, _, text = item.partition(':')
+        if int(f) == fr: sf_typing[:] = [text.replace('\\n', '\r'), 0, fr]
+    if sf_typing[0] is None: return
+    t = fr - sf_typing[2]
+    rows = [0] * 7
+    if t % 8 < 4:
+        if sf_typing[1] >= len(sf_typing[0]): sf_typing[0] = None
+        else:
+            c = sf_typing[0][sf_typing[1]]; shift = False
+            if c.islower(): c = c.upper(); shift = True
+            if c in SF_SHIFTED: c = SF_SHIFTED[c]; shift = True
+            for r, row in enumerate(SF_MATRIX):
+                if c in row and c != '\0': rows[r] |= 1 << row.index(c)
+            if shift: rows[6] |= 1 << 11
+    elif t % 8 == 7 and sf_typing[0] is not None: sf_typing[1] += 1
+    uc.mem_write(syms['sf_keys'], b''.join(v.to_bytes(2, 'little') for v in rows))
+def sf_text():
+    reg = uc.mem_read(syms['gg'], 8)
+    text = (reg[1] & 0x10) and not (reg[0] & 2)
+    cols = 40 if text else 32
+    nt = (reg[2] & 15) << 10
+    v = bytes(psram[1])[0xC000:]
+    print('   screen (%s, registers %s):' % ('text' if text else 'not text', reg.hex()))
+    for r in range(24):
+        line = ''.join(chr(b) if 32 <= b < 127 else ('?' if b else ' ') for b in v[(nt + r * cols) & 0x3FFF:][:cols]).rstrip()
+        if line: print('   %2d|%s' % (r, line))
+
 def report(fr):
+    if os.environ.get('WSRUN_TEXT'): sf_text()
     if CLIX:
         print('   interrupts off (cycles: longest, mean, times): ' + ', '.join('%s %d/%d/%d' % (n, cli_max[n], cli_sum[n] // cli_n[n], cli_n[n]) for n, _ in cli_max.most_common(8)))
         cli_n.clear(); cli_sum.clear(); cli_max.clear()

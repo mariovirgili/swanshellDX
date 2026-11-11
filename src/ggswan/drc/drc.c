@@ -75,6 +75,51 @@ static inline uint16_t here(void) { return o_base + (uint16_t) (o - o_start); }
 #define ZA(field) ((uint16_t) (env->z80_addr + offsetof(z80_t, field)))
 #define SA(field) ((uint16_t) (env->state_addr + offsetof(drc_state_t, field)))
 #define VA(field) ((uint16_t) (env->vdp_addr + offsetof(gg_vdp_t, field)))
+/*
+ * sfswan (env->flat): the SF-7000's memory is 64 KiB of RAM and nothing
+ * else, one segment of the WonderSwan's (the RAM window on a PSRAM bank),
+ * Z80 address X at offset X. ES is that segment wherever translated code
+ * runs: the runtime enters the blocks with it and every routine they call
+ * leaves it so. So no segment table and no "is it work RAM": a read is
+ * ES:[X] and so is a write, after a look at the code map: a byte for each
+ * 16 of the memory (env->cmap, in the internal RAM), not 0 where a block
+ * was translated from. Those writes go to the helper, which knows byte by
+ * byte and throws the blocks away if code was really written. The stack is
+ * not looked at: it is where the program puts it (a program that pushes
+ * its code into place is not served). ram_delta is 0 here, and FLAT_ES
+ * goes before what the other builds reach through DS.
+ */
+#ifdef GGSWAN_SF7000
+#define FLAT (env->flat)
+#define FENV(f) (env->f)
+#else
+// (the other plugins: none of it is compiled, their code is as it was)
+#define FLAT 0
+#define FENV(f) 0
+#endif
+#define FLAT_ES() do { if (FLAT) B(0x26); } while (0)
+/*
+ * Code that writes over code. Disk BASIC wipes its own start-up, and
+ * machine code routines keep their variables in their instructions (LD
+ * (lab + 1),A ... lab: LD A,0). When the helper finds that a byte of a
+ * translated instruction was written, the runtime throws the blocks away
+ * and remembers the byte (drc_rt.c). Two things make that exact:
+ *   - the block stops at the write, not at its end: the instruction
+ *     written may be its next one. So before the helper's call the Z80's
+ *     pc is set to the address after the instruction being translated
+ *     (flat_pc), and the helper's routine leaves the block there when the
+ *     runtime says so;
+ *   - an instruction with a remembered byte in it is not translated any
+ *     more: the interpreter runs it where it is (a step, env->smc says
+ *     which), so that it is not "translated code" either and writing it
+ *     again costs a helper's call, no more. After it the block goes on
+ *     only if the Z80 is where the next instruction is (it may have
+ *     become a jump).
+ */
+static uint16_t flat_next;   // the address after the instruction being translated
+static void flat_pc(void) {
+    B(0xC7); B(0x06); W(ZA(pc)); W(flat_next);          // mov word [pc], next
+}
 
 // short forward jumps: returns the position of the rel8 byte
 static uint8_t *jcc8(uint8_t opcode) { B(opcode); B(0); return o - 1; }
@@ -177,12 +222,13 @@ static uint16_t block_start_off;
 static uint16_t block_pc;
 
 // (the stack where the translated code can reach it: see sp_loaded_exit)
-#define SP_IN_RAM(v) ((uint16_t) ((v) - 0xC002u) <= 0x1FFEu)
+#define SP_IN_RAM(v) (FLAT || (uint16_t) ((v) - 0xC002u) <= 0x1FFEu)
 static uint8_t force_nolink;   // the next exit must return to the runtime
 // (a helper that changes the mapping makes the runtime end the block
 // without following links: see drc_rt.c)
 
 static int linkable(uint16_t target) {
+    if (FLAT) return !force_nolink;   // (one memory: an address is one block)
     // (blocks in work RAM check their bytes at entry: they can be linked)
     if (!force_nolink && env->ram_blocks && target >= 0xC000 && target < 0xDFC0) return 1;
     if (force_nolink || target >= 0xC000) return 0;
@@ -191,6 +237,7 @@ static int linkable(uint16_t target) {
 
 // to another ROM slot: linked behind a check of the slot's bank
 static int guarded(uint16_t target) {
+    if (FLAT) return 0;
     return !force_nolink && target < 0xC000 && (target >> 14) != 0
         && (target >> 14) != (block_pc >> 14) && env->ldi_off;
 }
@@ -295,6 +342,7 @@ static void exit_reg(uint8_t reg16, uint16_t extra) {
 
 // ES for the slot of BX (HL)
 static void seg_hl(uint8_t live) {
+    if (FLAT) { hl_es = 1; return; }
     if (hl_es == 1) return;
     clobber(live);
     if (hl_es == 2) {
@@ -312,6 +360,7 @@ static void seg_hl(uint8_t live) {
 
 // ES for the slot of SI
 static void seg_si(uint8_t live) {
+    if (FLAT) return;
     clobber(live);
     hl_es = 0;
     B(0x89); B(0xF7);                    // mov di, si
@@ -359,8 +408,90 @@ static void ix_far(int8_t d) {
     B(0x8E); B(0x85); W(SA(segtab));     // mov es, [di + segtab]
 }
 
+// sfswan: a byte to the address in BX or SI (src: an 8-bit register, or
+// 0xFF with imm): there, unless its 16 bytes have code in them (the
+// helper then). x86 flags destroyed; uses DI.
+static void flat_write(uint8_t addr_reg, uint8_t src, uint8_t imm) {
+    B(0x89); B(addr_reg == X_BX ? 0xDF : 0xF7);         // mov di, bx / si
+    B(0xC1); B(0xEF); B(0x04);                          // shr di, 4
+    B(0x80); B(0xBD); W(FENV(cmap)); B(0);               // cmp byte [di + cmap], 0
+    uint8_t *fast = jcc8(0x74);                         // je fast
+    if (src == 0xFF) { B(0xC6); B(0x06); W(SA(val)); B(imm); }
+    else { B(0x88); B(0x06 | (src << 3)); W(SA(val)); }
+    B(0x89); B(0x06 | (addr_reg << 3)); W(SA(arg));     // mov [arg], reg
+    flat_pc();
+    helper(DRC_H_WRITE);
+    uint8_t *done = jcc8(0xEB);
+    land8(fast);
+    uint8_t rm = addr_reg == X_BX ? 7 : 4;              // [bx] / [si]
+    B(0x26);
+    if (src == 0xFF) { B(0xC6); B(rm); B(imm); }
+    else { B(0x88); B((src << 3) | rm); }
+    land8(done);
+}
+
+// Before the byte at the address in BX, SI or DX is changed where it is:
+// the jumps taken when that can not be done (work RAM only; sfswan:
+// anywhere but in code). *j2 may be none. x86 flags destroyed; sfswan: DI.
+static uint8_t *mem_check(uint8_t reg, uint8_t **j2) {
+    uint8_t *j1;
+    if (FLAT) {
+        B(0x89); B(0xC7 | (reg << 3));                  // mov di, reg
+        B(0xC1); B(0xEF); B(0x04);                      // shr di, 4
+        B(0x80); B(0xBD); W(FENV(cmap)); B(0);           // cmp byte [di + cmap], 0
+        *j2 = 0;
+        return jcc8(0x75);                              // jne slow
+    }
+    if (reg == X_SI) {
+        B(0x81); B(0xFE); W(0xC000); j1 = jcc8(0x72);   // cmp si, C000h; jb slow
+        B(0x81); B(0xFE); W(0xE000); *j2 = jcc8(0x73);  // cmp si, E000h; jae slow
+    } else {
+        uint8_t m = reg == X_BX ? 0xFF : 0xFE;          // bh / dh
+        B(0x80); B(m); B(0xC0); j1 = jcc8(0x72);
+        B(0x80); B(m); B(0xE0); *j2 = jcc8(0x73);
+    }
+    return j1;
+}
+
+// sfswan: a register's 16 bits to a constant address (LD (nn),HL): there,
+// unless one of its two bytes is in 16 that have code (the helper then,
+// byte by byte). x86 flags destroyed.
+static void flat_write16(uint16_t addr, uint8_t xr, uint8_t live) {
+    clobber(live);
+    uint8_t *slow = 0;
+    if (((uint16_t) (addr + 1) >> 4) != (addr >> 4)) {
+        B(0x80); B(0x3E); W(FENV(cmap) + ((uint16_t) (addr + 1) >> 4)); B(0);
+        slow = jcc8(0x75);                              // jne slow
+    }
+    B(0x80); B(0x3E); W(FENV(cmap) + (addr >> 4)); B(0); // cmp byte [cmap + its 16 bytes], 0
+    uint8_t *fast = jcc8(0x74);                         // je fast
+    land8(slow);
+    // (val is a byte, the helper's operation before it and its address
+    // after it: the word at val for the low byte, at val - 1 for the high
+    // one, the rest set afterwards)
+    // (the first byte with the helper that never stops the block: the
+    // second one is to be written too; it stops it for both)
+    B(0x89); B(0x06 | (xr << 3)); W(SA(val));
+    B(0xC7); B(0x06); W(SA(arg)); W(addr);
+    helper(DRC_H_WRITE_MAP);
+    B(0x89); B(0x06 | (xr << 3)); W(SA(val) - 1);
+    B(0xC7); B(0x06); W(SA(arg)); W((uint16_t) (addr + 1));
+    flat_pc();
+    helper(DRC_H_WRITE);
+    uint8_t *done = jcc8(0xEB);
+    land8(fast);
+    B(0x26); B(0x89); B(0x06 | (xr << 3)); W(addr);     // mov es:[addr], reg
+    land8(done);
+}
+
 // LD (IX + d),r / n (src: x86 8-bit register, or 0xFF with imm)
 static void ix_write(uint8_t pre, int8_t d, uint8_t src, uint8_t imm, uint8_t live) {
+    if (FLAT) {
+        clobber(live);
+        ix_addr(pre, d);
+        flat_write(X_SI, src, imm);
+        return;
+    }
     uint8_t keep = hl_es == 1;
     uint16_t disp = (uint16_t) (d + (int16_t) env->ram_delta);
     uint8_t *f = ix_ram(pre, live);
@@ -384,6 +515,10 @@ static void ix_write(uint8_t pre, int8_t d, uint8_t src, uint8_t imm, uint8_t li
  */
 static void write_byte(uint8_t addr_reg, uint8_t src, uint8_t imm, uint8_t live) {
     clobber(live);
+    if (FLAT) {
+        flat_write(addr_reg, src, imm);
+        return;
+    }
     if (!env->no_fast) {
         /*
          * Work RAM first, reached by the jump taken (3 cycles; falling
@@ -455,6 +590,23 @@ static int map_write_safe(uint16_t addr) {
 }
 
 static void write_const(uint16_t addr, uint8_t src, uint8_t live) {
+    if (FLAT) {
+        clobber(live);
+        B(0x80); B(0x3E); W(FENV(cmap) + (addr >> 4)); B(0);   // cmp byte [cmap + its 16 bytes], 0
+        uint8_t *fast = jcc8(0x74);
+        B(0x88); B(0x06 | (src << 3)); W(SA(val));
+        B(0xC7); B(0x06); W(SA(arg)); W(addr);
+        flat_pc();
+        helper(DRC_H_WRITE);
+        uint8_t *done = jcc8(0xEB);
+        land8(fast);
+        B(0x26);
+        if (src == X_AX) { B(0xA2); }
+        else { B(0x88); B(0x06 | (src << 3)); }
+        W(addr);
+        land8(done);
+        return;
+    }
     if (addr >= 0xC000 && addr < 0xE000) {
         if (src == X_AX) { B(0xA2); }
         else { B(0x88); B(0x06 | (src << 3)); }
@@ -498,6 +650,12 @@ static void write_const(uint16_t addr, uint8_t src, uint8_t live) {
 
 // Read a byte from a constant address into an 8-bit register
 static void read_const(uint16_t addr, uint8_t dst) {
+    if (FLAT) {
+        B(0x26);
+        if (dst == X_AX) { B(0xA0); } else { B(0x8A); B(0x06 | (dst << 3)); }
+        W(addr);
+        return;
+    }
     if (addr >= 0xC000) {
         uint16_t a = (addr & 0x1FFF) + 0xC000 + env->ram_delta;
         if (dst == X_AX) { B(0xA0); } else { B(0x8A); B(0x06 | (dst << 3)); }
@@ -512,6 +670,10 @@ static void read_const(uint16_t addr, uint8_t dst) {
 }
 
 static void read_const16(uint16_t addr, uint8_t dst) {
+    if (FLAT) {
+        B(0x26); B(0x8B); B(0x06 | (dst << 3)); W(addr);
+        return;
+    }
     if (addr >= 0xC000 && addr != 0xDFFF && addr != 0xFFFF) {
         B(0x8B); B(0x06 | (dst << 3)); W((addr & 0x1FFF) + 0xC000 + env->ram_delta);
         return;
@@ -1604,9 +1766,97 @@ uint16_t drc_emit_pairs_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off)
  * the last LDI in AH; a destination outside work RAM: CF = 1 as for
  * OUTI (the LDIs left for the STEP helper). Uses SI, DI, ES.
  */
+/*
+ * sfswan's: everything is RAM, so the whole run at once wherever it goes,
+ * unless a 16 bytes it would write have code in them (the map of
+ * flat_write) or it runs past the end of the memory: then none of it,
+ * CF = 1, and the STEP helper does it all, looking at every byte. LDI:
+ * REP MOVSB with DS = ES for the copy; LDD: byte by byte (the direction
+ * flag is never set here: an interrupt's C code would find it).
+ */
+static uint16_t flat_ldi_stub(uint8_t dec) {
+    B(0x56); B(0x57); B(0x50);                       // push si (address); push di (k); push ax
+    B(0x89); B(0xD6);                                // mov si, dx
+    B(0x89); B(0xD8);                                // mov ax, bx
+    uint8_t *w0, *w1, *bad, *loop, *flags_j = 0;
+    if (!dec) {
+        B(0x01); B(0xFE); w0 = jcc8(0x72);           // add si, di; jc slow (past FFFFh)
+        B(0x01); B(0xF8); w1 = jcc8(0x72);           // add ax, di; jc slow
+        B(0x4E);                                     // dec si (the last byte written)
+        B(0xC1); B(0xEE); B(0x04);                   // shr si, 4
+        B(0x89); B(0xD0);                            // mov ax, dx
+        B(0xC1); B(0xE8); B(0x04);                   // shr ax, 4
+        B(0x29); B(0xC6);                            // sub si, ax
+        B(0x96);                                     // xchg ax, si (SI: the first 16, AX: how many more)
+    } else {
+        B(0x29); B(0xFE); w0 = jcc8(0x72);           // sub si, di; jc slow (below 0000h)
+        B(0x29); B(0xF8); w1 = jcc8(0x72);           // sub ax, di; jc slow
+        B(0x46);                                     // inc si (the lowest byte written)
+        B(0xC1); B(0xEE); B(0x04);                   // shr si, 4
+        B(0x89); B(0xD0);                            // mov ax, dx
+        B(0xC1); B(0xE8); B(0x04);                   // shr ax, 4
+        B(0x29); B(0xF0);                            // sub ax, si
+    }
+    loop = o;
+    B(0x80); B(0xBC); W(FENV(cmap)); B(0);            // cmp byte [si + cmap], 0
+    bad = jcc8(0x75);                                // jne slow (code there)
+    B(0x46);                                         // inc si
+    B(0x48);                                         // dec ax
+    B(0x79); B((uint8_t) (loop - (o + 1)));          // jns loop
+    if (!dec) {
+        B(0x51);                                     // push cx
+        B(0x89); B(0xF9);                            // mov cx, di (k)
+        B(0x89); B(0xF8);                            // mov ax, di
+        B(0x89); B(0xDE);                            // mov si, bx
+        B(0x89); B(0xD7);                            // mov di, dx
+        B(0x1E); B(0x06); B(0x1F);                   // push ds; push es; pop ds
+        B(0xFC);                                     // cld
+        B(0xF3); B(0xA4);                            // rep movsb
+        B(0x1F);                                     // pop ds
+        B(0x89); B(0xF3);                            // mov bx, si (HL + k)
+        B(0x89); B(0xFA);                            // mov dx, di (DE + k)
+        B(0x59);                                     // pop cx
+        B(0x29); B(0xC1);                            // sub cx, ax (BC - k)
+    } else {
+        uint8_t *bl = o;
+        B(0x26); B(0x8A); B(0x07);                   // mov al, es:[bx]
+        B(0x89); B(0xD6);                            // mov si, dx
+        B(0x26); B(0x88); B(0x04);                   // mov es:[si], al
+        B(0x4B); B(0x4A); B(0x49);                   // dec bx; dec dx; dec cx
+        B(0x4F);                                     // dec di
+        B(0x75); B((uint8_t) (bl - (o + 1)));        // jnz
+    }
+    (void) flags_j;
+    // flags: S Z C kept, H = N = 0, P/V = BC != 0
+    B(0x58);                                         // pop ax
+    B(0x80); B(0xE4); B(0xC1);                       // and ah, C1h
+    B(0x85); B(0xC9);                                // test cx, cx
+    B(0x74); B(0x03); B(0x80); B(0xCC); B(0x04);     // jz +3; or ah, 4
+    B(0x83); B(0xC4); B(0x04);                       // add sp, 4
+    B(0xF8);                                         // clc
+    B(0xC3);                                         // ret
+    land8(w0); land8(w1); land8(bad);
+    B(0x58);                                         // pop ax
+    B(0x89); B(0x3E); W(SA(val));                    // mov [val], di (all of them left)
+    B(0x5E);                                         // pop si (k)
+    B(0x29); B(0xFE);                                // sub si, di
+    B(0xD1); B(0xE6);                                // shl si, 1
+    B(0x89); B(0x36); W(SA(arg));                    // mov [arg], si
+    B(0x5E);                                         // pop si (address)
+    B(0x01); B(0x36); W(SA(arg));                    // add [arg], si
+    B(0x89); B(0xFE);                                // mov si, di
+    B(0xC1); B(0xE6); B(0x04);                       // shl si, 4
+    B(0x01); B(0x36); W(SA(cycles));                 // add [cycles], si
+    B(0xF9);                                         // stc
+    B(0xC3);                                         // ret
+    return (uint16_t) (o - o_start);
+}
+
 uint16_t drc_emit_ldi_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, uint8_t dec) {
     env = e;
     o = o_start = out; o_base = out_off;
+    if (FLAT)
+        return flat_ldi_stub(dec);
     B(0x56);                                         // push si (address)
     B(0x57);                                         // push di (k)
     B(0x50);                                         // push ax
@@ -1777,9 +2027,24 @@ uint16_t drc_emit_vcnt_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) 
  * or out; SI, DI, ES and the flags used, the rest kept.
  */
 #define VS(field) ((uint16_t) (env->sg_vdp + offsetof(gg_vdp_t, field)))
+// (sfswan: the VRAM is read through another segment, env->sf_vseg, a ROM
+// window on its bank; ES is the memory's again afterwards)
 static void sg_vram_es(void) {
-    B(0xBF); W(SG_VRAM_SEG);                         // mov di, the VRAM's segment
+    B(0xBF); W(FLAT ? FENV(sf_vseg) : SG_VRAM_SEG);   // mov di, the VRAM's segment
     B(0x8E); B(0xC7);                                // mov es, di
+}
+static void sg_vram_done(void) {
+    if (!FLAT)
+        return;
+    B(0xBF); W(SG_VRAM_SEG);                         // mov di, the memory's segment
+    B(0x8E); B(0xC7);                                // mov es, di (the flags kept)
+}
+// sfswan: the RAM window on a PSRAM bank (AX kept)
+static void sf_ram_bank(uint16_t bank) {
+    B(0x50);                                         // push ax
+    B(0xB8); W(bank);                                // mov ax, bank
+    B(0xE7); B(0xD0);                                // out D0h, ax
+    B(0x58);                                         // pop ax
 }
 static void sg_addr_next(void) {
     B(0x46);                                         // inc si
@@ -1794,8 +2059,22 @@ uint16_t drc_emit_sg_stubs(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
     B(0x8B); B(0x36); W(VS(addr));                   // mov si, [addr]
     sg_vram_es();
     B(0x26); B(0x38); B(0x84); W(SG_VRAM_OFF);       // cmp es:[si + vram], al
+    sg_vram_done();
     uint8_t *same = jcc8(0x74);                      // je same
+    if (FLAT && FENV(sf_vbank) != 0xFFFF) {
+        // (sfswan: written through the RAM window, moved to the VRAM's
+        // bank for the byte: the same segment as the memory's)
+        sf_ram_bank(FENV(sf_vbank));
+        B(0x26); B(0x88); B(0x84); W(SG_VRAM_OFF);   // mov es:[si + vram], al
+        sf_ram_bank(FENV(sf_rbank));
+    } else if (FLAT) {
+        // (the PC tools: no banks, the read segment can be written)
+        sg_vram_es();
+        B(0x26); B(0x88); B(0x84); W(SG_VRAM_OFF);
+        sg_vram_done();
+    } else {
     B(0x26); B(0x88); B(0x84); W(SG_VRAM_OFF);       // mov es:[si + vram], al
+    }
     B(0x89); B(0xF7);                                // mov di, si
     B(0xC1); B(0xEF); B(0x04);                       // shr di, 4
     B(0xC6); B(0x85); W(SG_DIRTY_ADDR); B(1);        // mov byte [di + dirty], 1
@@ -1812,6 +2091,7 @@ uint16_t drc_emit_sg_stubs(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
     B(0x8B); B(0x36); W(VS(addr));                   // mov si, [addr]
     sg_vram_es();
     B(0x26); B(0x8A); B(0x84); W(SG_VRAM_OFF);       // mov al, es:[si + vram]
+    sg_vram_done();
     B(0x86); B(0x06); W(VS(read_buffer));            // xchg al, [read_buffer]
     sg_addr_next();
     B(0xC6); B(0x06); W(VS(latch_full)); B(0);       // latch_full = 0
@@ -1856,6 +2136,7 @@ uint16_t drc_emit_sg_stubs(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
     B(0x8B); B(0x36); W(VS(addr));                   // mov si, [addr]
     sg_vram_es();
     B(0x26); B(0x8A); B(0x84); W(SG_VRAM_OFF);       // mov al, es:[si + vram]
+    sg_vram_done();
     B(0xA2); W(VS(read_buffer));                     // mov [read_buffer], al
     sg_addr_next();
     land8(done);
@@ -2121,7 +2402,7 @@ static void decode(uint16_t pc, ins_t *I) {
             I->fwrite = FALL & ~FC; I->fread = FC; return;
         case 0x43: case 0x53: case 0x73:                            // LD (nn),rr
             I->nn = rd(pc + 2) | (rd(pc + 3) << 8); I->len = 4;
-            if (I->nn < 0xC000 || I->nn >= 0xDFFF) I->step = 1;
+            if (!FLAT && (I->nn < 0xC000 || I->nn >= 0xDFFF)) I->step = 1;
             return;
         case 0x4B: case 0x5B: case 0x7B:                            // LD rr,(nn)
             I->nn = rd(pc + 2) | (rd(pc + 3) << 8); I->len = 4;
@@ -2135,7 +2416,7 @@ static void decode(uint16_t pc, ins_t *I) {
             I->fwrite = FALL; I->fread = FC; return;
         }
 #ifdef GGSWAN_SG1000
-        if ((op == 0xA2 || op == 0xAA || op == 0xA3 || op == 0xAB) && env->sg_out_off) {
+        if ((op == 0xA2 || op == 0xAA || op == 0xA3 || op == 0xAB) && env->sg_out_off && !FLAT) {
             // sgswan: a run of INI, IND, OUTI or OUTD, with the
             // TMS9918A's data port (sg_block_io)
             uint8_t k = 1;
@@ -2143,7 +2424,7 @@ static void decode(uint16_t pc, ins_t *I) {
             I->len = k * 2; I->count = k; I->fwrite = FALL;
             return;
         }
-        if ((op == 0xB2 || op == 0xB3) && env->sg_out_off) {
+        if ((op == 0xB2 || op == 0xB3) && env->sg_out_off && !FLAT) {
             // INIR, OTIR: up to 64 bytes a turn
             I->term = T_END; I->fwrite = FALL;
             return;
@@ -2222,7 +2503,7 @@ static void decode(uint16_t pc, ins_t *I) {
         switch (op2) {
         case 0x21: case 0x22: case 0x2A:                              // LD IX,nn / (nn)
             I->nn = rd(pc + 2) | (rd(pc + 3) << 8); I->len = 4;
-            if (op2 == 0x22 && (I->nn < 0xC000 || I->nn >= 0xDFFF)) I->step = 1;
+            if (!FLAT && op2 == 0x22 && (I->nn < 0xC000 || I->nn >= 0xDFFF)) I->step = 1;
             return;
         case 0x23: case 0x2B: case 0xE1: case 0xE5: case 0xF9: case 0xE3:
             if (op2 == 0xF9) I->term = T_END_AFTER;                   // LD SP,IX (sp_loaded_exit)
@@ -2561,6 +2842,10 @@ static void branch_to(uint16_t target, uint16_t extra) {
  * translating (LD SP,nn).
  */
 static void sp_loaded_exit(uint16_t next, uint8_t bad) {
+    if (FLAT) {   // (the stack is reached wherever it is)
+        exit_const(next, 0);
+        return;
+    }
     if (!bad) {
         materialize();
         B(0x8D); B(0xB6); W((uint16_t) (0u - 0xC002u));   // lea si, [bp - C002h]
@@ -2575,7 +2860,7 @@ static void sp_loaded_exit(uint16_t next, uint8_t bad) {
 
 static void push_imm(uint16_t value) {
     B(0x8D); B(0x6E); B(0xFE);                                  // lea bp, [bp-2]
-    B(0xC7); B(0x86); W(env->ram_delta); W(value);              // mov word [bp+d], imm
+    FLAT_ES(); B(0xC7); B(0x86); W(env->ram_delta); W(value);              // mov word [bp+d], imm
 }
 
 // After a call to the OUTI/OUTD run routine (CF = 1: the rest to the
@@ -2657,7 +2942,7 @@ static int sg_block_io(int i) {
     uint8_t *loop = o;
     if (in) {
         call_near(env->sg_in_off);
-        B(0x88); B(0x87); W(env->ram_delta);             // mov [bx + ram], al
+        FLAT_ES(); B(0x88); B(0x87); W(env->ram_delta);             // mov [bx + ram], al
     } else {
         B(0x89); B(0xDE);                                // mov si, bx
         B(0xC1); B(0xC6); B(0x04);                       // rol si, 4
@@ -2765,6 +3050,7 @@ static int emit1(int i) {
     uint8_t live = (live_out[i] & ~I->fwrite) | I->fread;
     uint8_t op = I->op;
     uint16_t next = I->pc + I->len;
+    flat_next = next;
 
     if (I->trace == 1) {   // the block goes on at the target
         cyc += op == 0x18 ? 12 : 10;
@@ -2777,7 +3063,7 @@ static int emit1(int i) {
     }
     if (I->trace == 3) {   // its RET: go on inline if it returns to the CALL
         materialize();
-        B(0x8B); B(0xB6); W(env->ram_delta);       // mov si, [bp+d]
+        FLAT_ES(); B(0x8B); B(0xB6); W(env->ram_delta);       // mov si, [bp+d]
         B(0x8D); B(0x6E); B(0x02);                 // lea bp, [bp+2]
         B(0x81); B(0xFE); W(I->nn);                // cmp si, return address
         uint8_t *same = jcc8(0x74);                // je: inline
@@ -2794,6 +3080,16 @@ static int emit1(int i) {
         B(0xC6); B(0x06); W(SA(val)); B(I->count);   // instructions
         helper(DRC_H_STEP);
         fkind = K_AH;
+        if (I->dyn == 2) {
+            // (sfswan, an instruction that gets written: on with the
+            // block only if it left the Z80 at the next one)
+            B(0x81); B(0x3E); W(ZA(pc)); W(next);        // cmp word [pc], next
+            uint8_t *on = jcc8(0x74);                    // je on
+            sub_cycles(cyc);
+            set_link(0);
+            jmp_near(env->exit_off);
+            land8(on);
+        }
         if (I->term == T_END_AFTER) { force_nolink = 1; exit_const(next, 0); }
         return 1;
     }
@@ -2871,9 +3167,8 @@ static int emit1(int i) {
         }
         // (HL): RAM directly, anything else with the interpreter
         materialize();
-        B(0x80); B(0xFF); B(0xC0); uint8_t *j1 = jcc8(0x72);
-        B(0x80); B(0xFF); B(0xE0); uint8_t *j2 = jcc8(0x73);
-        B(0x80); B(0x87 | (set ? 0x08 : 0x20)); W(env->ram_delta); B(imm);
+        uint8_t *j2, *j1 = mem_check(X_BX, &j2);
+        FLAT_ES(); B(0x80); B(0x87 | (set ? 0x08 : 0x20)); W(env->ram_delta); B(imm);
         B(0x83); B(0x2E); W(SA(cycles)); B(15);
         uint8_t *j3 = jcc8(0xEB);
         land8(j1); land8(j2);
@@ -2887,7 +3182,7 @@ static int emit1(int i) {
 
     if (I->pre == 0xED) {
 #ifdef GGSWAN_SG1000
-        if (env->sg_out_off && (op & 0xE6) == 0xA2)   // INI, IND, OUTI, OUTD, INIR, INDR, OTIR, OTDR
+        if (env->sg_out_off && !FLAT && (op & 0xE6) == 0xA2)   // INI, IND, OUTI, OUTD, INIR, INDR, OTIR, OTDR
             if (op == 0xA2 || op == 0xAA || op == 0xA3 || op == 0xAB || op == 0xB2 || op == 0xB3)
                 return sg_block_io(i);
 #endif
@@ -2898,7 +3193,7 @@ static int emit1(int i) {
             B(0xA0); W(ZA(iff2));                     // mov al, [iff2]
             B(0xA2); W(ZA(iff1));                     // mov [iff1], al
             B(0x58);                                  // pop ax
-            B(0x8B); B(0xB6); W(env->ram_delta);      // mov si, [bp + d]
+            FLAT_ES(); B(0x8B); B(0xB6); W(env->ram_delta);      // mov si, [bp + d]
             B(0x8D); B(0x6E); B(0x02);                // lea bp, [bp + 2]
             cyc += 14;
             // back to the runtime: an interrupt may be pending now
@@ -2915,26 +3210,25 @@ static int emit1(int i) {
             // else with the interpreter, as SET/RES (HL). Flags: S Z P of
             // the new A, H = N = 0, C kept; in AH.
             materialize();
-            B(0x80); B(0xFF); B(0xC0); uint8_t *j1 = jcc8(0x72);   // cmp bh, C0h; jb slow
-            B(0x80); B(0xFF); B(0xE0); uint8_t *j2 = jcc8(0x73);   // cmp bh, E0h; jae slow
+            uint8_t *j2, *j1 = mem_check(X_BX, &j2);
             B(0x89); B(0xC7);                         // mov di, ax (F, A)
             if (op == 0x67) {
                 // AX = 0 : A low : (HL), rotated right: AL = A low : (HL) high
                 // (the new (HL)), AH high nibble = (HL) low (the new A low)
                 B(0x88); B(0xC4);                     // mov ah, al
                 B(0x80); B(0xE4); B(0x0F);            // and ah, 0Fh
-                B(0x8A); B(0x87); W(env->ram_delta);  // mov al, [bx + ram]
+                FLAT_ES(); B(0x8A); B(0x87); W(env->ram_delta);  // mov al, [bx + ram]
                 B(0xC1); B(0xC8); B(0x04);            // ror ax, 4
-                B(0x88); B(0x87); W(env->ram_delta);  // mov [bx + ram], al
+                FLAT_ES(); B(0x88); B(0x87); W(env->ram_delta);  // mov [bx + ram], al
                 B(0x88); B(0xE0);                     // mov al, ah
                 B(0xC0); B(0xE8); B(0x04);            // shr al, 4
             } else {
                 // AX = (HL) : A low : 0, rotated left: AH = (HL) low : A low
                 // (the new (HL)), AL low nibble = (HL) high (the new A low)
-                B(0x8A); B(0xA7); W(env->ram_delta);  // mov ah, [bx + ram]
+                FLAT_ES(); B(0x8A); B(0xA7); W(env->ram_delta);  // mov ah, [bx + ram]
                 B(0xC0); B(0xE0); B(0x04);            // shl al, 4
                 B(0xC1); B(0xC0); B(0x04);            // rol ax, 4
-                B(0x88); B(0xA7); W(env->ram_delta);  // mov [bx + ram], ah
+                FLAT_ES(); B(0x88); B(0xA7); W(env->ram_delta);  // mov [bx + ram], ah
                 B(0x24); B(0x0F);                     // and al, 0Fh
             }
             if (!(live_out[i] & FALL)) {
@@ -3162,17 +3456,16 @@ static int emit1(int i) {
                 uint8_t after = live_out[i] & FALL;
                 clobber(live);
                 seg_hl(0);
-                B(0x80); B(0xFE); B(0xC0); uint8_t *s0 = jcc8(0x72);   // cmp dh, C0h; jb slow
-                B(0x80); B(0xFE); B(0xE0); uint8_t *s1 = jcc8(0x73);   // cmp dh, E0h; jae slow
+                uint8_t *s1, *s0 = mem_check(X_DX, &s1);
                 B(0x89); B(0xD6);                            // mov si, dx
                 if (after) {
                     B(0x50);                                 // push ax
                     B(0x26); B(0x8A); B(0x07);               // mov al, es:[bx]
-                    B(0x88); B(0x84); W(env->ram_delta);     // mov [si + ram], al
+                    FLAT_ES(); B(0x88); B(0x84); W(env->ram_delta);     // mov [si + ram], al
                     B(0x58);                                 // pop ax
                 } else {
                     B(0x26); B(0x8A); B(0x27);               // mov ah, es:[bx]
-                    B(0x88); B(0xA4); W(env->ram_delta);     // mov [si + ram], ah
+                    FLAT_ES(); B(0x88); B(0xA4); W(env->ram_delta);     // mov [si + ram], ah
                 }
                 B(op == 0xA0 ? 0x43 : 0x4B);                 // inc / dec bx
                 B(op == 0xA0 ? 0x42 : 0x4A);                 // inc / dec dx
@@ -3318,6 +3611,11 @@ static int emit1(int i) {
         }
         case 0x43: case 0x53: case 0x73: {   // LD (nn),rr
             uint8_t xr = r16x[(op >> 4) & 3];
+            if (FLAT) {
+                flat_write16(I->nn, xr, live);
+                cyc += 20;
+                return 1;
+            }
             if (I->nn >= 0xC000 && I->nn < 0xDFFF) {
                 B(0x89); B(0x06 | (xr << 3)); W(I->nn + env->ram_delta);
                 cyc += 20;
@@ -3342,7 +3640,7 @@ static int emit1(int i) {
             uint8_t b = (op >> 3) & 7;
             if (op < 0x80) {   // BIT b,(IX+d)
                 need_ah(live);
-                if (env->no_fast) {
+                if (env->no_fast || FLAT) {
                     ix_addr(I->pre, I->d);
                     seg_si(live);
                     B(0x80); B(0xE4); B(0x01);
@@ -3357,7 +3655,7 @@ static int emit1(int i) {
                     B(0x07);                                 // pop es
                     uint8_t *done = jcc8(0xEB);
                     land8(f);
-                    B(0xF6); B(0x84); W((uint16_t) (I->d + (int16_t) env->ram_delta)); B(1 << b);
+                    FLAT_ES(); B(0xF6); B(0x84); W((uint16_t) (I->d + (int16_t) env->ram_delta)); B(1 << b);
                     land8(done);
                 }
                 if (b == 7) {
@@ -3375,9 +3673,8 @@ static int emit1(int i) {
             uint8_t imm = set ? (1 << b) : (uint8_t) ~(1 << b);
             materialize();
             ix_addr(I->pre, I->d);
-            B(0x81); B(0xFE); W(0xC000); uint8_t *j1 = jcc8(0x72);
-            B(0x81); B(0xFE); W(0xE000); uint8_t *j2 = jcc8(0x73);
-            B(0x80); B(0x84 | (set ? 0x08 : 0x20)); W(env->ram_delta); B(imm);
+            uint8_t *j2, *j1 = mem_check(X_SI, &j2);
+            FLAT_ES(); B(0x80); B(0x84 | (set ? 0x08 : 0x20)); W(env->ram_delta); B(imm);
             B(0x83); B(0x2E); W(SA(cycles)); B(23);
             uint8_t *j3 = jcc8(0xEB);
             land8(j1); land8(j2);
@@ -3391,6 +3688,13 @@ static int emit1(int i) {
         case 0x21: B(0xC7); B(0x06); W(ixa); W(I->nn); cyc += 14; return 1;
         case 0x2A: read_const16(I->nn, X_SI); B(0x89); B(0x36); W(ixa); cyc += 20; return 1;
         case 0x22:
+            if (FLAT) {
+                clobber(live);
+                B(0x8B); B(0x36); W(ixa);
+                flat_write16(I->nn, X_SI, 0);
+                cyc += 20;
+                return 1;
+            }
             if (I->nn >= 0xC000 && I->nn < 0xDFFF) {
                 B(0x8B); B(0x36); W(ixa);
                 B(0x89); B(0x36); W(I->nn + env->ram_delta);
@@ -3406,18 +3710,18 @@ static int emit1(int i) {
         case 0xE5:   // PUSH IX
             B(0x8B); B(0x36); W(ixa);
             B(0x8D); B(0x6E); B(0xFE);
-            B(0x89); B(0xB6); W(env->ram_delta);
+            FLAT_ES(); B(0x89); B(0xB6); W(env->ram_delta);
             cyc += 15;
             return 1;
         case 0xE1:   // POP IX
-            B(0x8B); B(0xB6); W(env->ram_delta);
+            FLAT_ES(); B(0x8B); B(0xB6); W(env->ram_delta);
             B(0x8D); B(0x6E); B(0x02);
             B(0x89); B(0x36); W(ixa);
             cyc += 14;
             return 1;
         case 0xE3:   // EX (SP),IX
             B(0x8B); B(0x36); W(ixa);
-            B(0x87); B(0xB6); W(env->ram_delta);
+            FLAT_ES(); B(0x87); B(0xB6); W(env->ram_delta);
             B(0x89); B(0x36); W(ixa);
             cyc += 23;
             return 1;
@@ -3453,10 +3757,9 @@ static int emit1(int i) {
             uint8_t dec = op == 0x35;
             materialize();
             ix_addr(I->pre, I->d);
-            B(0x81); B(0xFE); W(0xC000); uint8_t *j1 = jcc8(0x72);
-            B(0x81); B(0xFE); W(0xE000); uint8_t *j2 = jcc8(0x73);
+            uint8_t *j2, *j1 = mem_check(X_SI, &j2);
             B(0x9E);                                              // sahf
-            B(0xFE); B(0x84 | (dec ? 0x08 : 0)); W(env->ram_delta);   // inc/dec byte [si+d]
+            FLAT_ES(); B(0xFE); B(0x84 | (dec ? 0x08 : 0)); W(env->ram_delta);   // inc/dec byte [si+d]
             fkind = dec ? K_DEC : K_INC; cf_valid = 1;
             materialize();
             B(0x83); B(0x2E); W(SA(cycles)); B(23);
@@ -3489,7 +3792,7 @@ static int emit1(int i) {
         }
         if ((op & 7) == 6 && op >= 0x46 && op <= 0x7E) {   // LD r,(IX+d)
             uint8_t dst = r8x[(op >> 3) & 7];
-            if (env->no_fast) {
+            if (env->no_fast || FLAT) {
                 ix_addr(I->pre, I->d);
                 seg_si(live);
                 B(0x26); B(0x8A); B(0x04 | (dst << 3));
@@ -3500,7 +3803,7 @@ static int emit1(int i) {
                 B(0x07);                                     // pop es
                 uint8_t *done = jcc8(0xEB);
                 land8(f);
-                B(0x8A); B(0x84 | (dst << 3)); W((uint16_t) (I->d + (int16_t) env->ram_delta));
+                FLAT_ES(); B(0x8A); B(0x84 | (dst << 3)); W((uint16_t) (I->d + (int16_t) env->ram_delta));
                 land8(done);
             }
             if (dst == X_BX || dst == 7) hl_es = 0;
@@ -3530,7 +3833,7 @@ static int emit1(int i) {
         }
         if (op >= 0x86 && op <= 0xBE) {   // ALU A,(IX+d)
             uint8_t y = (op >> 3) & 7;
-            if (env->no_fast) {
+            if (env->no_fast || FLAT) {
                 ix_addr(I->pre, I->d);
                 seg_si(live);
                 if (y == 1 || y == 3) need_cf();
@@ -3545,7 +3848,7 @@ static int emit1(int i) {
                 uint8_t *done = jcc8(0xEB);
                 land8(f);
                 if (y == 1 || y == 3) need_cf();
-                B(alu_x86[y] + 2); B(0x84); W((uint16_t) (I->d + (int16_t) env->ram_delta));
+                FLAT_ES(); B(alu_x86[y] + 2); B(0x84); W((uint16_t) (I->d + (int16_t) env->ram_delta));
                 land8(done);
             }
             alu_done(y);
@@ -3688,7 +3991,9 @@ static int emit1(int i) {
                 return 1;
             }
             case 4:   // LD (nn),HL
-                if (I->nn >= 0xC000 && I->nn < 0xDFFF) {
+                if (FLAT) {
+                    flat_write16(I->nn, X_BX, live);
+                } else if (I->nn >= 0xC000 && I->nn < 0xDFFF) {
                     B(0x89); B(0x1E); W(I->nn + env->ram_delta);
                 } else {
                     write_const(I->nn, X_BX, live);
@@ -3713,7 +4018,7 @@ static int emit1(int i) {
             case 7:   // LD A,(nn)
                 if (I->dyn) {
                     // (self-modifying code in RAM: the address as it is now)
-                    B(0x8B); B(0x36); W((uint16_t) (I->pc + 1 + env->ram_delta));   // mov si, [operand]
+                    FLAT_ES(); B(0x8B); B(0x36); W((uint16_t) (I->pc + 1 + env->ram_delta));   // mov si, [operand]
                     seg_si(live);
                     B(0x26); B(0x8A); B(0x04);                    // mov al, es:[si]
                 } else
@@ -3745,10 +4050,9 @@ static int emit1(int i) {
             if (y == 6) {
                 // (HL): RAM directly, anything else with the interpreter
                 materialize();
-                B(0x80); B(0xFF); B(0xC0); uint8_t *j1 = jcc8(0x72);
-                B(0x80); B(0xFF); B(0xE0); uint8_t *j2 = jcc8(0x73);
+                uint8_t *j2, *j1 = mem_check(X_BX, &j2);
                 B(0x9E);                                              // sahf
-                B(0xFE); B(0x87 | (dec ? 0x08 : 0)); W(env->ram_delta);
+                FLAT_ES(); B(0xFE); B(0x87 | (dec ? 0x08 : 0)); W(env->ram_delta);
                 fkind = dec ? K_DEC : K_INC; cf_valid = 1;
                 materialize();
                 B(0x83); B(0x2E); W(SA(cycles)); B(11);
@@ -3828,14 +4132,14 @@ static int emit1(int i) {
             exit_const(next, 5);
             land8(j);
             fkind = save_kind;
-            B(0x8B); B(0xB6); W(env->ram_delta);   // mov si, [bp+d]
+            FLAT_ES(); B(0x8B); B(0xB6); W(env->ram_delta);   // mov si, [bp+d]
             B(0x8D); B(0x6E); B(0x02);
             exit_reg(X_SI, 11);
             return 1;
         }
         case 1:
             if (y == 1) {   // RET
-                B(0x8B); B(0xB6); W(env->ram_delta);
+                FLAT_ES(); B(0x8B); B(0xB6); W(env->ram_delta);
                 B(0x8D); B(0x6E); B(0x02);
                 exit_reg(X_SI, 10);
                 return 1;
@@ -3853,12 +4157,12 @@ static int emit1(int i) {
             if (y == 7) { B(0x89); B(0xDD); cyc += 6; sp_loaded_exit(next, 0); return 1; }   // LD SP,HL
             // POP
             if (y == 6) {
-                B(0x8B); B(0x86); W(env->ram_delta);   // mov ax, [bp+d]
+                FLAT_ES(); B(0x8B); B(0x86); W(env->ram_delta);   // mov ax, [bp+d]
                 B(0x86); B(0xC4);                      // xchg al, ah
                 fkind = K_AH;
             } else {
                 uint8_t xr = r16x[y >> 1];
-                B(0x8B); B(0x86 | (xr << 3)); W(env->ram_delta);
+                FLAT_ES(); B(0x8B); B(0x86 | (xr << 3)); W(env->ram_delta);
                 if (xr == X_BX) hl_es = 0;
             }
             B(0x8D); B(0x6E); B(0x02);
@@ -3932,6 +4236,28 @@ static int emit1(int i) {
                 return 1;
             }
             case 3:   // IN A,(n)
+                if (FLAT && I->nn == 0xE4) {
+                    // sfswan: port A of the SF-7000's 8255 (the disk's
+                    // index hole, the controller's interrupt). Disk
+                    // BASIC polls it in loops of thousands of turns
+                    // (the disk's speed, each time the motor starts):
+                    // the value from drc_state_t while the runtime says
+                    // that time alone can not change it (keys_in[0]: for
+                    // the cycles the block was given; drc_rt.c), else
+                    // the helper
+                    clobber(live);
+                    B(0x80); B(0x3E); W(SA(keys_in)); B(0);                // cmp byte [keys_in], 0
+                    uint8_t *slow = jcc8(0x74);                            // je slow
+                    B(0xA0); W(SA(keys_in) + 1);                           // mov al, [keys_in + 1]
+                    uint8_t *done = jcc8(0xEB);
+                    land8(slow);
+                    B(0xC7); B(0x06); W(SA(arg)); W(I->nn);
+                    helper(DRC_H_IN);
+                    B(0xA0); W(SA(val));                                   // mov al, [val]
+                    land8(done);
+                    cyc += 11;
+                    return 1;
+                }
 #if defined(GGSWAN_SMS) || defined(GGSWAN_SG1000)
                 // smsswan: DC only (DD has the TH lines: z80_in); 00-3F FFh
                 // (sgswan: the same joypad port; the rest by the helper)
@@ -4048,7 +4374,7 @@ static int emit1(int i) {
                 return 1;
             }
             case 4:   // EX (SP),HL
-                B(0x87); B(0x9E); W(env->ram_delta);
+                FLAT_ES(); B(0x87); B(0x9E); W(env->ram_delta);
                 hl_es = 0;
                 cyc += 19;
                 return 1;
@@ -4080,10 +4406,10 @@ static int emit1(int i) {
             if (y == 6) {
                 materialize();
                 B(0x86); B(0xC4);                          // xchg al, ah
-                B(0x89); B(0x86); W(env->ram_delta);
+                FLAT_ES(); B(0x89); B(0x86); W(env->ram_delta);
                 B(0x86); B(0xC4);
             } else {
-                B(0x89); B(0x86 | (r16x[y >> 1] << 3)); W(env->ram_delta);
+                FLAT_ES(); B(0x89); B(0x86 | (r16x[y >> 1] << 3)); W(env->ram_delta);
             }
             cyc += 11;
             return 1;
@@ -4279,7 +4605,9 @@ int drc_translate(const drc_env_t *e, uint16_t pc, uint8_t *out,
     rd_len = 0;   // (the mapping may have changed since the last block)
     // code in work RAM (C000-DFFF): short blocks that check their own bytes
     // when entered (see ram_check)
-    uint8_t ram = pc >= 0xC000;
+    // (sfswan: all of it is RAM, and none of it is "a block in RAM": no
+    // check of its bytes at the start, the writes are looked at instead)
+    uint8_t ram = pc >= 0xC000 && !FLAT;
     uint8_t long_run = 0;   // a block in RAM of OUTIs only, longer than RAM_BLOCK_MAX
     if (ram && (!env->ram_blocks || pc >= 0xDFC0)) return 0;
     // decode
@@ -4302,6 +4630,17 @@ int drc_translate(const drc_env_t *e, uint16_t pc, uint8_t *out,
         decode(p, &ins[n]);
         ins[n].dyn = 0;
         ins[n].trace = 0;
+#ifdef GGSWAN_SF7000
+        if (env->smc && env->smc(p, ins[n].len)) {
+            // sfswan: a byte of it gets written by the program: the
+            // interpreter's, in the block if it is a plain one (each LDI
+            // or OUTI of a run one step), else between blocks
+            if (ins[n].term != T_NONE)
+                break;
+            ins[n].step = 1;
+            ins[n].dyn = 2;
+        }
+#endif
         if (ram && n == 0 && ins[0].pre == 0xED && ins[0].op == 0xA3 && ins[0].count > RAM_BLOCK_MAX / 2
             && !env->no_fast) {
             // a block in RAM made only of a run of OUTIs (Aladdin's
@@ -4480,6 +4819,13 @@ int drc_translate(const drc_env_t *e, uint16_t pc, uint8_t *out,
         exit_const(t, 0);
     }
 done:
+#ifdef GGSWAN_SF7000
+    // (what the interpreter runs where it is, is not translated code)
+    if (env->mark)
+        for (int k = 0; k < i; k++)
+            if (!ins[k].step)
+                env->mark(ins[k].pc, ins[k].len);
+#endif
     res->length = (uint16_t) (o - o_start);
     res->z80_instr = i;
     res->z80_end = ins[i - 1].pc + ins[i - 1].len;

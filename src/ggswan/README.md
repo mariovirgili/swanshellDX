@@ -6,7 +6,7 @@ emulated by a dynamic recompiler (Z80 to V30MZ code), with the original
 interpreter kept for the parts that need it. The Game Gear video memory is
 mapped onto the WonderSwan's own tile and screen hardware.
 
-Status: fairly stable (patch 147). It has been tested mostly in the
+Status: fairly stable (patch 148). It has been tested mostly in the
 nileswan-medem emulator and with the host test tools; tests on real
 hardware are still to come.
 
@@ -194,7 +194,7 @@ frame in Sonic, which does not use it).
 ## sgswan: the SG-1000 plugin
 
 `PLUG_SG.BIN` is built from the same sources with `-DGGSWAN_SG1000`
-(`make -f Makefile.ggswan SG=1`; the main build makes all three
+(`make -f Makefile.ggswan SG=1`; the main build makes all four
 plugins). Copy it to `/NILESWAN/PLUG_SG.BIN`: the menu starts it for
 `.sg` files (up to 48 KiB, no mapper). New in patch 143 and tried only
 in the PC tools so far: see `SG1000.md` for how it is made and what was
@@ -211,7 +211,7 @@ playing, as smsswan's.
 | Y1 (Y up), Y3 (Y down), Y4 (Y left), Y2 (Y right) | **Move the view** over the picture, 2 pixels a frame (X 0-32, Y 0-48; it starts in the middle) |
 | Y2 (Y right) + Y4 (Y left) together | Pause and resume, frame by frame with Y3 (Y down), as on the Game Gear |
 | START + Y1 (Y up), held for a second | Back to the menu |
-| START + Y3 (Y down) | **Four sprites to a line**, on and off (off at the start). The SG-1000 draws four sprites on a line and leaves the others out, which is the flicker of its games; the WonderSwan can draw them all, and does. On: as the SG-1000 |
+| START + Y2 (Y right) | **Four sprites to a line**, on and off (off at the start; START + Y3 (Y down) until patch 147: that one is kept for the whole picture squeezed, as smsswan's, not there yet). The SG-1000 draws four sprites on a line and leaves the others out, which is the flicker of its games; the WonderSwan can draw them all, and does. On: as the SG-1000 |
 | Y1 (Y up) held at the start | **Diagnostics** over the sides of the picture (FPS and the recompiler's numbers; on the right, with Y4 (Y left) held too: K the tiles drawn in the last second, M the background tiles in use) |
 
 There: Graphics I and II, multicolor, sprites of 8x8 and 16x16 pixels,
@@ -221,10 +221,37 @@ Cartridges with their own RAM at 8000h (The Castle) and the games made
 for the 8 KiB RAM adapter (TwinBee, Bomberman Special) run. No saves:
 the SG-1000 has none.
 
-Not done: text mode (the backdrop is shown instead), the limit of four
-sprites a line (all of them are shown: no flicker), a second joypad, the
-SC-3000's keyboard and the SF-7000's disks (`.sc` and `.sf` files are not
-for this).
+Not done: a second joypad, the whole picture squeezed (START + Y3 (Y
+down) is kept for it), the SC-3000's keyboard (`.sc` files are not for
+this; the SF-7000's disks are sfswan's, below).
+
+## sfswan: the SC-3000 with the SF-7000's disks
+
+`PLUG_SF.BIN` is built from the same sources with `-DGGSWAN_SG1000
+-DGGSWAN_SF7000` (`make -f Makefile.ggswan SF=1`; the main build makes
+all four plugins). Copy it to `/NILESWAN/PLUG_SF.BIN`: the menu starts it
+for `.sf` files, disk images of 163,840 bytes. New in patch 148 and run
+only in the PC tools so far: `SF7000.md` says how it is made, what was
+measured and what is missing.
+
+It needs a system disk: **a copy of a disk that has Disk BASIC on it, as
+`/NILESWAN/SF7000.SF`** (The Complete Arcade Pack Collection's image is
+one). A disk with no system of its own is started from that one and is
+in the drive when Disk BASIC's prompt comes; so is any disk with B held
+at the start (Kamikaze: then `BOOT`).
+
+| Keys | Function |
+|---|---|
+| X1-X4, B, A | The joypad: D-pad, button 1, button 2 |
+| START | **The keyboard** on the screen, on and off (when START is let go). With it: X1-X4 choose a key, A presses it, B is CR; the last row is SHIFT, BREAK, INS/DEL, space, CR and four lines typed for you (`FILES`, `LOAD "`, `RUN`, `BOOT`) |
+| Y1 (Y up), Y3 (Y down), Y4 (Y left), Y2 (Y right) | Move the view over the picture, as sgswan's |
+| START + Y1 (Y up), held for a second | Back to the menu |
+| START + Y2 (Y right) | Four sprites to a line, on and off, as sgswan's |
+| B held at the start | Start from the system disk |
+
+Slow: about half the SF-7000's speed at Disk BASIC's prompt, less while
+it reads the disk. What a program writes to the disk is lost when the
+plugin is left.
 
 ## Changelog
 
@@ -326,7 +353,7 @@ it are listed in order without one.
 - lighter DYN lookup and class routine for deferred tile bytes
 - OUTI runs to CRAM handled in the run routine
 
-### Patches 90-147
+### Patches 90-148
 
 | Patch | Change |
 |---|---|
@@ -388,3 +415,4 @@ it are listed in order without one.
 | 145 | sgswan: the four sprites to a line of the TMS9918A, on and off with START + Y3 (Y down), off at the start (all the sprites shown, as before). The lines of a sprite the chip leaves out are empty in a set of tiles made for it; the picture is then the reference's to the pixel in Star Force, TwinBee and Zoom 909. The sprites' tiles were not made again when a game changed the sprites' size and wrote the table in the same frame. `PLUG_GG.BIN` and `PLUG_SMS.BIN`: the same bytes as patch 144 but for this number |
 | 146 | The SF-7000 (the SC-3000's disk unit), step 1, nothing on the WonderSwan yet: the machine in `core/` under `-DGGSWAN_SF7000` (64 KiB of RAM with the IPL over the first 16, the two 8255s, the keyboard matrix, the uPD765 and its disk with the index hole Disk BASIC times), an IPL of its own in place of Sega's (`host/mksfipl.py`), `host/sftest` (keys typed, the disk changed) and `host/sf_unit` (56 checks through the ports). On the PC the three disks tried start: Disk BASIC 1.0p and Astro from The Complete Arcade Pack, Kamikaze with `BOOT`, Poseidon Wars. `SF7000.md`. `PLUG_GG.BIN`, `PLUG_SMS.BIN` and `PLUG_SG.BIN` are the same bytes as patch 145 but for this number |
 | 147 | The palette with the frame, in ggswan and smsswan: a color the game writes goes to the WonderSwan's palettes at the end of the WS screen, with the scroll, the tiles and the sprites of the frame it belongs to, and no longer at once, in the middle of the screen being drawn and a WS screen or two before the rest. Shinobi moves the bars of its fence by turning four colors round: the fence was broken in two, one part two pixels ahead of the other. In `wssim` the WS picture of Sonic, Shinobi, Super Monaco GP, Aladdin, Columns, Batman Returns and Sailor Moon S differs from the Game Gear's by 0.0-1.4% of the pixels on average, from 1.0-9.0%. `drcsys.py --pal`. The menu: Settings > System > Save data management, first in the list and on by default; off, no save data is loaded into the cartridge at launch and none is written back to the card when the menu starts again (for where the save memory is not the physical cartridge's). `PLUG_SG.BIN`: the same bytes as patch 146 but for this number |
+| 148 | sfswan, the SC-3000 with the SF-7000's disks: `PLUG_SF.BIN` (`SF=1`), `.sf` in the menu. The recompiler with all of the memory RAM (one WonderSwan segment, a map of where code was translated from, code that writes over code run by the interpreter where it is), the disk and a system disk (`/NILESWAN/SF7000.SF`) in PSRAM, the TMS9918A's text mode (in sgswan too), a keyboard on the screen (START), the built-in IPL's long parts done by the machine. Run in the PC tools only, the device build in `wsrun.py` too (to Disk BASIC's prompt and `FILES` through the keyboard on the screen); about half the SF-7000's speed at the prompt. `SF7000.md`. sgswan and sfswan: the four sprites to a line are START + Y2 (Y right) now, START + Y3 (Y down) is kept in every plugin for the whole picture squeezed. ggswan, smsswan, sgswan: the translator writes the same bytes as patch 147 (`drcsys.py --same-code`); `wsrun.py` with the WonderSwan's keys (`WSRUN_WSKEYS`) and a second file (`WSRUN_SYS`) |

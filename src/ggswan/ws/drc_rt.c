@@ -455,6 +455,11 @@ static uint16_t put_dyn(uint8_t *stub, uint8_t bank_index) {
     (void) nolink;
     PB(0x50); PB(0x53);                              // push ax; push bx
     PB(0xA1); PW(pc);                                // mov ax, [pc]
+#ifdef GGSWAN_SF7000
+    // (sfswan: any address, one key)
+    (void) keys; (void) miss;
+    PB(0x30); PB(0xDB);                              // xor bl, bl
+#else
     PB(0x3D); PW(0xC000);                            // cmp ax, C000h
     PB(0x72); uint8_t *rom = p++;                    // jb rom
     // work RAM: its blocks check their own bytes (key RAM_KEY)
@@ -472,6 +477,7 @@ static uint16_t put_dyn(uint8_t *stub, uint8_t bank_index) {
     PB(0x83); PB(0xE6); PB(0x03);                    // and si, 3
     PB(0x8A); PB(0x9C); PW(keys + 1);                // mov bl, [si + keys + 1]
     *have = (uint8_t) (p - have - 1);
+#endif
     // L0 first: entry (pc << 3) & FF8h (L0_ENTRY)
     PB(0x89); PB(0xC6);                              // mov si, ax
     PB(0xC1); PB(0xE6); PB(0x03);                    // shl si, 3
@@ -525,6 +531,10 @@ static uint16_t put_dyn(uint8_t *stub, uint8_t bank_index) {
     PB(0x30); PB(0xDB);                              // xor bl, bl
     PB(0x89); PB(0x1E); PW(far_off + 2);             // mov [far_seg], bx
     PB(0x89); PB(0x9D); PW(L0_ADDR + 6);             // mov [di + L0 + 6], bx (segment)
+#ifdef GGSWAN_SF7000
+    // (ES was the table's: the memory's again for the block)
+    PB(0x8E); PB(0x06); PW(env.state_addr + offsetof(drc_state_t, segtab));   // mov es, [segtab]
+#endif
     PB(0x5B); PB(0x58);                              // pop bx; pop ax
     PB(0xFF); PB(0x2E); PW(far_off);                 // jmp far [far_off]
 #undef PB
@@ -784,9 +794,82 @@ static void l0_clear(void) {
         memset(IRAM(L0_ADDR + a), 0xFF, 256);
 }
 
+#ifdef GGSWAN_SF7000
+#include "sf7000.h"
+/*
+ * sfswan: where translated code came from (drc.c: FLAT). sf_mark is the
+ * translator's, for every instruction of a block: a byte of the code map
+ * for its 16 bytes (the internal RAM: translated code looks there before
+ * it writes), a bit for each of its bytes (the tables' bank: the RAM
+ * window moved there to set them, the ROM's first window to read them).
+ * z80_write (gg.c) calls gg_platform_code_write for a write where the map
+ * says code: if a byte of an instruction was written, all the blocks are
+ * thrown away (when the block running ends: drc_helper), and both maps
+ * with them.
+ */
+#define sf_cmap_ptr ((uint8_t*) IRAM(SF_CMAP_ADDR))
+static void sf_mark(uint16_t pc, uint16_t len) {
+    outportw(WS_CART_EXTBANK_RAM_PORT, SF_VRAM_BANK);
+    {
+        uint8_t __far *bits = MK_FP(0x1000, SF_CBITS_OFF);
+        for (uint16_t a = pc; len--; a++) {
+            sf_cmap_ptr[a >> 4] = 1;
+            bits[a >> 3] |= (uint8_t) (1 << (a & 7));
+        }
+    }
+    ws_ram_window_restore();
+}
+
+/*
+ * A byte of a translated instruction written: the blocks go (the one
+ * running stops there: drc_helper), and the byte is remembered for good,
+ * a bit for each byte after the others' in the tables' bank and a byte
+ * for each 256 in the internal RAM: an instruction with such a byte is
+ * the interpreter's from now on (sf_smc, the translator's question; drc.c
+ * says why).
+ */
+#define sf_smc_page ((uint8_t*) IRAM(SF_SMC_PAGE_ADDR))
+uint16_t sf_smc_count;   // (diagnostics: how many bytes)
+void gg_platform_code_write(uint16_t a) {
+    const uint8_t __far *bits = MK_FP(0x2000, SF_CBITS_OFF);
+    if (bits[a >> 3] & (1 << (a & 7))) {
+        drc_flush_request = 1;
+        outportw(WS_CART_EXTBANK_RAM_PORT, SF_VRAM_BANK);
+        ((uint8_t __far*) MK_FP(0x1000, SF_SMCBITS_OFF))[a >> 3] |= (uint8_t) (1 << (a & 7));
+        ws_ram_window_restore();
+        sf_smc_page[a >> 8] = 1;
+        sf_smc_count++;
+#ifdef GGSWAN_HOST
+        if (getenv("SF_SMC")) fprintf(stderr, "code written at %04X (pc %04X, block %04X)\n", a, z80.pc, drc_last_tr_pc);
+#endif
+    }
+}
+
+static uint8_t sf_smc(uint16_t pc, uint16_t len) {
+    uint16_t end = pc + len - 1;
+    if (!sf_smc_page[pc >> 8] && !sf_smc_page[end >> 8])
+        return 0;
+    const uint8_t __far *bits = MK_FP(0x2000, SF_SMCBITS_OFF);
+    for (uint16_t a = pc; len--; a++)
+        if (bits[a >> 3] & (1 << (a & 7)))
+            return 1;
+    return 0;
+}
+
+static void sf_maps_clear(void) {
+    memset(sf_cmap_ptr, 0, 0x1000);
+    outportw(WS_CART_EXTBANK_RAM_PORT, SF_VRAM_BANK);
+    _fmemset(MK_FP(0x1000, SF_CBITS_OFF), 0, 0x2000);
+    ws_ram_window_restore();
+}
+#endif
+
 static void flush(void) {
     pending_link = 0;
     fast38_seg = 0;
+#ifdef GGSWAN_SF7000
+    sf_maps_clear();
+#endif
     l0_clear();
     psram_write(DRC_CODE_BANKS, T_OFF, NULL, HASH_SIZE * 2);
     cache_bank = 0;
@@ -840,6 +923,29 @@ void drc_rt_init(uint16_t bank) {
     env.known_start = known_start;
     drc_st.table_seg = DRC_TABLE_SEG;
     env.ram_delta = 0x8000 - 0xC000;   // Game Gear RAM at IRAM 8000h
+#ifdef GGSWAN_SF7000
+    // sfswan: the memory is one segment, the RAM window (drc.c: FLAT)
+    env.flat = 1;
+    env.ram_delta = 0;
+    env.cmap = SF_CMAP_ADDR;
+    env.mark = sf_mark;
+    env.smc = sf_smc;
+    env.pad_in = 0;   // (ports C0h-FFh: the keyboard, the disk: all by the helper)
+    env.sf_vseg = 0x2000;
+    env.sf_rbank = SF_RAM_BANK;
+#ifdef GGSWAN_HOST
+    env.sf_vbank = 0xFFFF;   // (the PC tools: no bank to move)
+#else
+    env.sf_vbank = SF_VRAM_BANK;
+#endif
+    sf_cmap = sf_cmap_ptr;
+    // (nothing seen written yet)
+    memset(sf_smc_page, 0, 256);
+    outportw(WS_CART_EXTBANK_RAM_PORT, SF_VRAM_BANK);
+    _fmemset(MK_FP(0x1000, SF_SMCBITS_OFF), 0, 0x2000);
+    ws_ram_window_restore();
+    sf_smc_count = 0;
+#endif
 
     for (cache_bank = 0; cache_bank < DRC_CODE_BANKS; cache_bank++) {
         uint8_t *stub = (uint8_t*) IRAM(BUF_ADDR);   // (translation buffer)
@@ -873,6 +979,23 @@ void drc_rt_init(uint16_t bank) {
             *p++ = 0x8B; *p++ = 0x16; *p++ = z + 4; *p++ = (z + 4) >> 8;         // mov dx, [e]
             *p++ = 0x8B; *p++ = 0x1E; *p++ = z + 6; *p++ = (z + 6) >> 8;         // mov bx, [l]
             *p++ = 0x8B; *p++ = 0x2E; *p++ = sp; *p++ = sp >> 8;                 // mov bp, [sp]
+#ifdef GGSWAN_SF7000
+            {
+                // sfswan: the helper found code written (drc_st.pad2): not
+                // back into the block, which may be what was written, but
+                // out by the exit, with the Z80's pc as the block left it
+                // before the call (drc.c: flat_pc) or the step moved it
+                uint16_t ab = env.state_addr + offsetof(drc_state_t, pad2);
+                uint16_t lk = env.state_addr + offsetof(drc_state_t, link);
+                *p++ = 0x80; *p++ = 0x3E; *p++ = ab; *p++ = ab >> 8; *p++ = 0;   // cmp byte [pad2], 0
+                *p++ = 0x74; *p++ = 17;                                          // je ret
+                *p++ = 0xC6; *p++ = 0x06; *p++ = ab; *p++ = ab >> 8; *p++ = 0;   // mov byte [pad2], 0
+                *p++ = 0x83; *p++ = 0xC4; *p++ = 0x02;                           // add sp, 2
+                *p++ = 0xC7; *p++ = 0x06; *p++ = lk; *p++ = lk >> 8; *p++ = 0; *p++ = 0;   // link = 0
+                uint16_t rel = STUB_EXIT - (uint16_t) (p + 3 - stub);
+                *p++ = 0xE9; *p++ = (uint8_t) rel; *p++ = (uint8_t) (rel >> 8);  // jmp EXIT
+            }
+#endif
             *p++ = 0xC3;                                                         // ret
         }
 #ifdef GGSWAN_HOST
@@ -1015,6 +1138,11 @@ void drc_rt_init(uint16_t bank) {
 #endif
     drc_st.segtab[6] = (uint16_t) (0x0800 - 0x0C00);
     drc_st.segtab[7] = (uint16_t) (0x0800 - 0x0E00);
+#ifdef GGSWAN_SF7000
+    for (uint8_t i = 0; i < 8; i++)
+        drc_st.segtab[i] = 0x1000;
+    memset(drc_st.keys, 0, sizeof(drc_st.keys));
+#endif
     flush();
 }
 
@@ -1024,7 +1152,12 @@ void drc_rt_set_no_links(uint8_t on) {
 }
 
 static inline uint8_t bank_key(uint16_t pc) {
+#ifdef GGSWAN_SF7000
+    (void) pc;
+    return 0;   // (one memory)
+#else
     return drc_st.keys[1 + (pc >> 14)];
+#endif
 }
 
 static inline uint16_t hash(uint16_t pc, uint8_t bank) {
@@ -1108,8 +1241,29 @@ int32_t drc_cycles_left(void) {
     return z80.cycles - ((int32_t) block_start - c);
 }
 
+#ifdef GGSWAN_SF7000
+// sfswan: port A of the SF-7000's 8255 for translated code (drc.c, IN
+// A,(E4h)): its value in drc_st.keys_in[1] while keys_in[0] says that
+// the cycles the block has left can not change it. Worked out when a
+// block is entered, and again after a helper that touched the 8255 or
+// the controller (ports E0h-E7h) or ran instructions.
+static void sf_port_a_plan(int16_t cycles) {
+    uint8_t v = 0;
+    // (a block ends at an exit: some more than what it was given)
+    drc_st.keys_in[0] = sf_port_a_steady((uint32_t) (cycles > 0 ? cycles : 0) + 2000, &v);
+    drc_st.keys_in[1] = v;
+}
+#endif
+
 // The helper routine's C side: the registers are in z80
 static void drc_helper_op(void);
+#ifdef GGSWAN_SF7000
+// (sfswan: code was written over, or the IPL came or went: the block
+// running goes back to the runtime at its end, as after a mapper write)
+#define SF_FLUSH drc_flush_request
+#else
+#define SF_FLUSH 0
+#endif
 uint8_t drc_flush_request;
 volatile uint8_t prof_phase;
 uint8_t drc_no_links;
@@ -1206,9 +1360,13 @@ static void drc_helper_body(void) {
         drc_stat_helper[drc_st.op]++;
         prof_phase = PROF_HELPER;
         drc_helper_op();
+#ifdef GGSWAN_SF7000
+        if ((uint8_t) drc_st.arg >= 0xE0)
+            sf_port_a_plan(remapped ? 0 : drc_st.cycles);
+#endif
         if (z80_break || drc_flush_request)
             drc_st.fl_off = 1;
-        if (!remapped && z80_break) {
+        if (!remapped && (z80_break || SF_FLUSH)) {
             remapped = 1;
             remap_saved = drc_st.cycles;
             drc_st.cycles = -30000;
@@ -1224,7 +1382,14 @@ static void drc_helper_body(void) {
     drc_helper_op();
     if (z80_break || drc_flush_request)
         drc_st.fl_off = 1;   // (the line routine: back to C now)
-    if (!remapped && (z80_break || m1 != gg.mapper[1]
+#ifdef GGSWAN_SF7000
+    // (code written over by this write or step: the block stops here)
+    if (drc_flush_request && (drc_st.op == DRC_H_WRITE || drc_st.op == DRC_H_STEP))
+        drc_st.pad2 = 1;
+    if (drc_st.op == DRC_H_STEP || drc_st.op == DRC_H_OUTI_RUN || drc_st.op == DRC_H_OUTD_RUN)
+        sf_port_a_plan(remapped ? 0 : drc_st.cycles);
+#endif
+    if (!remapped && (z80_break || SF_FLUSH || m1 != gg.mapper[1]
                       || (!safe && (m0 != gg.mapper[0] || m2 != gg.mapper[2] || m3 != gg.mapper[3])))) {
         // the mapping changed: the rest of the block must not follow links
         // to blocks translated for the old mapping (cycles <= 0 stops them);
@@ -1463,9 +1628,23 @@ static void check_end(uint16_t pc, int16_t used) {
  */
 /// The stack where the translated code reaches it in place (drc.c,
 /// sp_loaded_exit): anywhere else, the interpreter
+#ifdef GGSWAN_SF7000
+// (sfswan: the stack is reached wherever it is, and no look at the code
+// map for what goes on it)
+#define SP_OK(sp) 1
+#define STACK_OK(sp) 1
+#define PUSH_PC(sp) do { sf_ram[sp] = (uint8_t) z80.pc; sf_ram[(uint16_t) ((sp) + 1)] = z80.pc >> 8; } while (0)
+#else
 #define SP_OK(sp) ((uint16_t) ((sp) - 0xC002u) <= 0x1FFEu)
+#define STACK_OK(sp) ((sp) >= 0xC000 && (sp) < 0xDFFF)
+#define PUSH_PC(sp) do { gg_ram[(sp) & 0x1FFF] = (uint8_t) z80.pc; gg_ram[((sp) + 1) & 0x1FFF] = z80.pc >> 8; } while (0)
+#endif
 
 uint8_t drc_fast_reentry(void) {
+#ifdef GGSWAN_SF7000
+    if (sf.rom_on)
+        return 0;   // (the IPL: the interpreter's)
+#endif
     drc_map_sync();
     // A block that ended at an exit that can not be linked (RET, JP (HL),
     // another slot...) with cycles left and nothing waiting: the next
@@ -1490,7 +1669,11 @@ uint8_t drc_fast_reentry(void) {
         && !z80_break && !drc_flush_request && !drc_st.ram_fail && !remapped
         && !z80.ei_pending && !z80.halted && !(z80.irq && z80.iff1) && SP_OK(z80.sp)) {
         uint16_t pc = z80.pc;
+#ifdef GGSWAN_SF7000
+        {
+#else
         if (pc < 0x8000 || (pc < 0xC000 && !(drc_st.keys[0] & 0x08))) {
+#endif
             uint8_t bank = bank_key(pc);
             const uint16_t *l0 = (const uint16_t*) IRAM(L0_ENTRY(pc));
             if (l0[0] == pc && (uint8_t) l0[1] == bank) {
@@ -1510,7 +1693,7 @@ uint8_t drc_fast_reentry(void) {
     // an interrupt accepted at once: IM 1 with the stack in work RAM only
     uint16_t sp = z80.sp - 2;
     uint8_t take = z80.iff1;
-    if (take && (z80.im == 2 || sp < 0xC000 || sp >= 0xDFFF))
+    if (take && (z80.im == 2 || !STACK_OK(sp)))
         return 0;
     int32_t left = drc_cycles_left();
     if (left > 0 || left <= -GG_CYCLES_PER_LINE)
@@ -1523,6 +1706,9 @@ uint8_t drc_fast_reentry(void) {
     }
     // (the line interrupt is now requested: z80.irq)
     drc_st.cycles += want;
+#ifdef GGSWAN_SF7000
+    sf_port_a_plan(drc_st.cycles);
+#endif
     drc_st.link = 0;
     // on through DYN (it looks the block of pc up, or exits to the
     // dispatcher): the same in every code bank
@@ -1533,8 +1719,7 @@ uint8_t drc_fast_reentry(void) {
         z80.iff1 = z80.iff2 = 0;
         z80.r = (z80.r & 0x80) | ((z80.r + 1) & 0x7F);
         z80.sp = sp;
-        gg_ram[sp & 0x1FFF] = (uint8_t) z80.pc;
-        gg_ram[(sp + 1) & 0x1FFF] = z80.pc >> 8;
+        PUSH_PC(sp);
         z80.pc = 0x38;
         drc_st.cycles -= 13;
         drc_stat_irq++;
@@ -1586,14 +1771,13 @@ int32_t drc_z80_run(int32_t cycles) {
         if (z80.irq && z80.iff1) {
             pending_link = 0;
             uint16_t sp = z80.sp - 2;
-            if (!z80.ei_pending && z80.im != 2 && sp >= 0xC000 && sp < 0xDFFF) {
+            if (!z80.ei_pending && z80.im != 2 && STACK_OK(sp)) {
                 // IM 1 with the stack in work RAM (the usual case): taken
                 // here, the same as the interpreter's take_irq()
                 z80.iff1 = z80.iff2 = 0;
                 z80.r = (z80.r & 0x80) | ((z80.r + 1) & 0x7F);
                 z80.sp = sp;
-                gg_ram[sp & 0x1FFF] = (uint8_t) z80.pc;
-                gg_ram[(sp + 1) & 0x1FFF] = z80.pc >> 8;
+                PUSH_PC(sp);
                 z80.pc = 0x38;
                 z80.cycles -= 13;
                 drc_stat_irq++;
@@ -1611,9 +1795,16 @@ int32_t drc_z80_run(int32_t cycles) {
         z80.ei_pending = 0;
         // work RAM C000-DFFF: translated blocks that check their bytes
         // (key RAM_KEY); the mirror and cartridge RAM: interpreter
+#ifdef GGSWAN_SF7000
+        // sfswan: all of it is RAM and translated; with the IPL at 0000h,
+        // the interpreter (short: its long parts are the plugin's)
+        uint8_t ram_code = 0;
+        if (sf.rom_on) {
+#else
         uint8_t ram_code = pc >= 0xC000 && pc < 0xDFC0;
         if ((pc >= 0xC000 && !ram_code) || (pc >= 0x8000 && pc < 0xC000 && (drc_st.keys[0] & 0x08))
                 || !SP_OK(z80.sp)) {
+#endif
             // code in RAM (it may change): interpreter. And any code
             // while the stack is not in the work RAM (SP_OK)
             pending_link = 0;
@@ -1700,6 +1891,9 @@ int32_t drc_z80_run(int32_t cycles) {
         host_trace(pc, z80.b, z80.h << 8 | z80.l);
 #endif
         in_block = 1;
+#ifdef GGSWAN_SF7000
+        sf_port_a_plan(start);
+#endif
         prof_phase = PROF_CODE;
         drc_enter(off);
         while (drc_st.reason) {

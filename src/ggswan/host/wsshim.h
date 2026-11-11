@@ -20,9 +20,11 @@ void host_line_hook(uint16_t line);
 #define WS_DISPLAY_CTRL_PORT 0x00
 #define WS_SCR_BASE_PORT 0x07
 #define WS_DISPLAY_LINE_PORT 0x02
-#define WS_CART_EXTBANK_RAM_PORT 0xC1
-#define WS_CART_EXTBANK_ROM0_PORT 0xC2
-#define WS_CART_EXTBANK_ROM1_PORT 0xC3
+// (the nileswan's 16-bit bank ports, as on the device: they were C1h,
+// C2h, C3h here, and a 16-bit write to one set the low byte of the next)
+#define WS_CART_EXTBANK_RAM_PORT 0xD0
+#define WS_CART_EXTBANK_ROM0_PORT 0xD2
+#define WS_CART_EXTBANK_ROM1_PORT 0xD4
 #define WS_CART_BANK_FLASH_PORT 0xCE
 #define WS_CART_BANK_FLASH_ENABLE 1
 #define WS_CART_BANK_FLASH_DISABLE 0

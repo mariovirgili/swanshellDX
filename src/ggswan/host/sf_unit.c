@@ -47,6 +47,7 @@ uint8_t gg_platform_vram_defer(uint16_t a, uint8_t v) { (void) a; (void) v; retu
 void gg_platform_disk_read(uint16_t lba, uint8_t *buf) { memcpy(buf, disk + (uint32_t) lba * 256, 256); }
 void gg_platform_disk_write(uint16_t lba, const uint8_t *buf) { memcpy(disk + (uint32_t) lba * 256, buf, 256); }
 void gg_platform_map_changed(void) { map_changes++; }
+void gg_platform_code_write(uint16_t a) { (void) a; }
 
 #define CHECK(what, cond) do { checks++; if (!(cond)) { failed++; printf("FAILED: %s (line %d)\n", what, __LINE__); } } while (0)
 

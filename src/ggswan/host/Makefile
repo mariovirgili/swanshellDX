@@ -79,8 +79,16 @@ libdrcsys_sg.so: drcsys.c sg_ref.h ../ws/main.c ../ws/sg_video.inc ../ws/drc_rt.
 
 # sfswan (the SF-7000, -DGGSWAN_SF7000 on top of -DGGSWAN_SG1000): the
 # machine with its disk, the built-in IPL, keys typed from SF_TYPE
-sftest: sg_main.c sg_ref.h ../core/gg.c ../core/sg_vdp.c ../core/sf7000.c ../core/sf7000.h ../core/sf_ipl.h ../core/z80.c
+sftest: sg_main.c sf_host.h sg_ref.h ../core/gg.c ../core/sg_vdp.c ../core/sf7000.c ../core/sf7000.h ../core/sf_ipl.h ../core/z80.c
 	$(CC) $(CFLAGS) -DGGSWAN_SG1000 -DGGSWAN_SF7000 -o $@ sg_main.c ../core/gg.c ../core/sg_vdp.c ../core/sf7000.c ../core/z80.c
+
+# wssim_sf: sfswan's WonderSwan side (main.c, sg_video.inc) against the
+# reference renderer, the disk started with the built-in IPL
+wssim_sf: wssim.c wssim_drcst.c sf_host.h sg_ref.h ../ws/main.c ../ws/sg_video.inc ../core/gg.c ../core/sg_vdp.c ../core/sf7000.c ../core/z80.c
+	$(CC) $(CFLAGS) -DGGSWAN_SG1000 -DGGSWAN_SF7000 -DGGSWAN_HOST -DGGSWAN_HOST_VISIBLE= -I. -I../core -I../ws -o $@ $(filter %.c,$^)
+
+libdrcsys_sf.so: drcsys.c sf_host.h sg_ref.h ../ws/main.c ../ws/sg_video.inc ../ws/drc_rt.c ../drc/drc.c ../core/gg.c ../core/sg_vdp.c ../core/sf7000.c ../core/z80.c
+	$(CC) $(CFLAGS) -shared -fPIC -DGGSWAN_SG1000 -DGGSWAN_SF7000 -DGGSWAN_HOST -DGGSWAN_HOST_VISIBLE= -I. -I../core -I../ws -o $@ $(filter %.c,$^)
 
 sf_unit: sf_unit.c ../core/gg.c ../core/sg_vdp.c ../core/sf7000.c ../core/sf7000.h ../core/sf_ipl.h ../core/z80.c
 	$(CC) $(CFLAGS) -DGGSWAN_SG1000 -DGGSWAN_SF7000 -o $@ sf_unit.c ../core/gg.c ../core/sg_vdp.c ../core/sf7000.c ../core/z80.c

@@ -155,7 +155,7 @@ static uint16_t sg_ring_head, sg_ring_n;
 static uint16_t sg_done_n;         // slots drawn in this pass
 static uint8_t sg_starved;             // a character found no slot
 // the tables as the screen was made with (sg_tables)
-static uint8_t sg_m = 0xFF;            // SG_MODE_*, or 4: nothing (off, text)
+static uint8_t sg_m = 0xFF;            // SG_MODE_*, or 4: text mode
 static uint16_t sg_nt, sg_pg, sg_ct, sg_pmask, sg_cmask, sg_kmask;
 static uint16_t sg_spg, sg_sat;
 static uint8_t sg_big, sg_mag;         // sprites of 16x16, magnified
@@ -463,6 +463,101 @@ static uint8_t sg_tables(void) {
     return 1 + all;
 }
 
+/* === Text mode === */
+
+/*
+ * 40 characters of 6 pixels to a line, 24 lines: 240 pixels in the middle
+ * of the 256 (8 of the backdrop's color on each side), one color for all
+ * the text (register 7's high half) on the backdrop's. A character does
+ * not fall on a WonderSwan tile: a tile of the screen shows the end of
+ * one and the start of the next, in one of three ways (the 8 pixels start
+ * 0, 2 or 4 pixels into a character). So no pool of tiles shared by
+ * what looks the same: every tile of the screen in the view has its own
+ * (the view is 29 by 19 at most: 551 of the 558), found by its place (row
+ * and column, modulo 19 and 29: a tile that leaves the view on one side
+ * gives its place to the one that enters on the other, so that moving the
+ * view draws only what comes in). The tables of the other modes keep,
+ * for each of these tiles, which place of the screen it is drawing
+ * (sg_slot_ref: + 1; 0: none) and the two characters it was made from
+ * (sg_slot_key). No sprites in this mode.
+ */
+#define SG_TXT_COLS 29
+#define SG_TXT_ROWS 19
+_Static_assert(SG_TXT_COLS * SG_TXT_ROWS <= SG_NSLOT, "sgswan: a tile for each place of the view");
+static uint8_t sg_txt_fg = 0xFF;       // the text's color as drawn
+
+static void sg_text_cell(uint8_t row, uint8_t col, const uint8_t *names) {
+    uint16_t at = (uint16_t) row * 32 + col;
+    if (col == 0 || col == 31) {
+        map1[at] = SG_BLANK;       // (the sides)
+        return;
+    }
+    uint8_t px = (uint8_t) ((col - 1) * 8);   // its first pixel of the line's 240
+    uint8_t k = px / 6, phase = px % 6;
+    uint16_t want = names[k] | ((uint16_t) names[k + 1] << 8);
+    uint16_t slot = (uint16_t) (row % SG_TXT_ROWS) * SG_TXT_COLS + col % SG_TXT_COLS;
+    if (sg_slot_ref[slot] == at + 1 && sg_slot_key[slot] == want)
+        return;
+    sg_slot_ref[slot] = at + 1;
+    sg_slot_key[slot] = want;
+    // the 6 pixels of the first character and of the second in a row of
+    // 12, the tile's 8 from where it starts
+    uint8_t pa[8], pb[8];
+    uint16_t *t = (uint16_t*) TILE_PTR(sg_slot_tile(slot));
+    uint16_t fl = sg_plane_lo[sg_txt_fg], fh = sg_plane_hi[sg_txt_fg];
+    _fmemcpy(pa, sg_vr + ((sg_pg + ((uint16_t) (want & 0xFF) << 3)) & 0x3FFF), 8);
+    _fmemcpy(pb, sg_vr + ((sg_pg + ((want >> 8) << 3)) & 0x3FFF), 8);
+    uint8_t sh = 4 - phase;
+    for (uint8_t r = 0; r < 8; r++) {
+        uint16_t w = ((uint16_t) (pa[r] & 0xFC) << 4) | (pb[r] >> 2);
+        uint16_t pp = (uint8_t) (w >> sh) * 0x0101u;
+        *t++ = pp & fl;
+        *t++ = pp & fh;
+    }
+    diag_commit++;
+    map1[at] = sg_slot_entry(slot);
+}
+
+// all: the mode was entered, the view shows other tiles, or (2) nothing
+// drawn before is good
+static void sg_text_present(uint8_t all) {
+    uint8_t names[41];
+    uint32_t rows = 0;   // the lines with characters written
+    uint8_t fg = gg.vdp.reg[7] >> 4;
+    if (fg != sg_txt_fg) {
+        sg_txt_fg = fg;
+        all = 2;
+    }
+    if (sg_any) {
+        // the patterns written: everything again (a font being loaded)
+        const uint8_t *d = sg_page + (sg_pg >> 9);
+        if (d[0] | d[1] | d[2] | d[3])
+            all = 2;
+        d = sg_dirty + (sg_nt >> 4);
+        for (uint8_t u = 0; u < 60; u++)
+            if (d[u]) {
+                // (16 characters from 16 * u: one line or two)
+                rows |= (uint32_t) 1 << ((uint16_t) u * 16 / 40);
+                rows |= (uint32_t) 1 << (((uint16_t) u * 16 + 15) / 40);
+            }
+    }
+    if (all == 2)
+        for (uint16_t i = 0; i < SG_TXT_COLS * SG_TXT_ROWS; i++)
+            sg_slot_ref[i] = 0;
+    if (all)
+        rows = 0xFFFFFF;
+    if (!rows)
+        return;
+    names[40] = 0;
+    for (uint8_t row = sg_r0; row <= sg_r1; row++) {
+        if (!((rows >> row) & 1))
+            continue;
+        _fmemcpy(names, sg_vr + sg_nt + (uint16_t) row * 40, 40);
+        for (uint8_t col = sg_c0; col <= sg_c1; col++)
+            sg_text_cell(row, col, names);
+    }
+}
+
 /* === Sprites === */
 
 static uint8_t spr_back = 1;   // the table to build next: 1 sprite_table_b
@@ -675,11 +770,25 @@ void line_irq(void) {
 GGSWAN_HOST_VISIBLE void video_init(void) {
     // the TMS9918A's VRAM: the last 16 KiB of the ROM's PSRAM bank, where
     // slot 2 of the ROM keeps the RAM window anyway (gg_platform_bank)
+#ifdef GGSWAN_SF7000
+    // sfswan: the RAM window is on the SF-7000's RAM. The VRAM is the
+    // last 16 KiB of the tables' bank: read through the ROM's first
+    // window, which stays on it; written by gg_platform_vram_store
+    _Static_assert(SF_VRAM_BANK == SG_TABLE_BANK, "sfswan: the VRAM in the tables' bank");
+    ram_window_set(WS_CART_BANK_FLASH_ENABLE, SF_RAM_BANK);
+    outportw(WS_CART_EXTBANK_ROM0_PORT, SG_TABLE_BANK);
+    sg_tab_open();
+    _fmemset(MK_FP(0x1000, 0xC000), 0, 0x4000);
+    sg_tab_close();
+    gg_vram = MK_FP(0x2000, 0xC000);
+    sg_vr = gg_vram;
+#else
     ram_window_set(WS_CART_BANK_FLASH_ENABLE, GG_PSRAM_FIRST_BANK);
     gg_vram = MK_FP(0x1000, 0xC000);
     _fmemset(gg_vram, 0, 0x4000);
     outportw(WS_CART_EXTBANK_ROM0_PORT, GG_PSRAM_FIRST_BANK);
     sg_vr = MK_FP(0x2000, 0xC000);
+#endif
     memset(TILE_PTR(0), 0, 0x4000);
     memset(TILE_PTR(SG_BG_HIGH), 0, (1024 - SG_BG_HIGH) * 32);
     // the slots' tables (sg_tab_open)
@@ -796,6 +905,9 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
         outportb(0x11, sg_vy);
 #endif
     }
+    if (sg_m == 4) {
+        sg_text_present(redo);
+    } else {
     if (sg_starved && sg_ring_n)
         redo |= 1;
     if (sg_any && redo != 2) {
@@ -840,6 +952,7 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
                         sg_cell(row, col + k, names[k]);
             }
         }
+    }
     }
     vp_lap(VP_MAP);
 
@@ -904,7 +1017,8 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
 
     // the backdrop: register 7's color, behind color 0 of the tiles
     outportb(0x01, reg[7] & 0x0F);
-    outportb(0x00, on && sg_m != 4 ? 0x01 | 0x02 | 0x04 | 0x20 : 0x02 | 0x20);
+    // (text mode: no sprites)
+    outportb(0x00, !on ? 0x02 | 0x20 : sg_m != 4 ? 0x01 | 0x02 | 0x04 | 0x20 : 0x01 | 0x02 | 0x20);
 #ifdef GGSWAN_HOST
     // (for the next frame: the reference draws it line by line)
     if (getenv("GGSWAN_PANMOVE")) {

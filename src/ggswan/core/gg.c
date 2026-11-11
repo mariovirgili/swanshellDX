@@ -15,7 +15,13 @@
 
 gg_t gg;
 #if defined(GGSWAN_SMS) || defined(GGSWAN_SG1000)
+#ifdef GGSWAN_SF7000
+// (sfswan: Disk BASIC's text is 38 columns of 6 pixels from the 20th, and
+// what happens is at the bottom of its 24 lines: the view starts there)
+uint8_t gg_view_x = 20, gg_view_y = 48;
+#else
 uint8_t gg_view_x = 16, gg_view_y = 24;
+#endif
 #endif
 // the CPU core: the interpreter, or the recompiler's z80_run equivalent
 int32_t (*gg_cpu_run)(int32_t cycles) = z80_run;
@@ -110,6 +116,8 @@ const uint8_t GGFAR *z80_read_span(uint16_t a, uint16_t *len) {
 }
 void z80_write(uint16_t a, uint8_t v) {
     sf_ram[a] = v;
+    if (sf_cmap && sf_cmap[a >> 4])
+        gg_platform_code_write(a);
 }
 #else
 uint8_t z80_read(uint16_t a) {
@@ -282,7 +290,7 @@ static void vdp_write_data(uint8_t v) {
     {
         uint16_t va = gg.vdp.addr & 0x3FFF;
         if (gg_vram[va] != v) {
-            gg_vram[va] = v;
+            GG_VRAM_STORE(va, v);
             gg_platform_vram_write(va, v);
         }
         gg.vdp.read_buffer = v;
@@ -312,7 +320,7 @@ static void vdp_write_data(uint8_t v) {
         uint16_t va = gg.vdp.addr & 0x3FFF;
         // (the platform may keep the byte for later: deferred tile writes)
         if (!gg_platform_vram_defer(va, v)) {
-            gg_vram[va] = v;
+            GG_VRAM_STORE(va, v);
             gg_platform_vram_write(va, v);
         }
     }
