@@ -780,13 +780,23 @@ static void splits_drop_one(void) {
         if (d < best_d) {
             best_d = d;
             best = i;
+            // (two values in a row differ, see below: 1 is the least
+            // there is, and the first such pair is the one the whole scan
+            // would choose. Super Monaco GP II's road in a bend changes
+            // the scroll on more lines than there are splits: a dozen
+            // calls a frame, 3% of its time with the whole scan)
+            if (d <= 1)
+                break;
         }
     }
-    for (uint8_t i = best; i + 1 < rec_n; i++) {
-        rec_line[i] = rec_line[i + 1];
-        rec_val[i] = rec_val[i + 1];
+    // without it, the next one may have the value of the one before: no
+    // split there either (and a place more for the ones to come)
+    uint8_t k = (best + 1 < rec_n && rec_val[best + 1] == rec_val[best - 1]) ? 2 : 1;
+    for (uint8_t i = best; i + k < rec_n; i++) {
+        rec_line[i] = rec_line[i + k];
+        rec_val[i] = rec_val[i + k];
     }
-    rec_n--;
+    rec_n -= k;
 }
 
 static void hscroll_write(uint8_t value) {
@@ -821,9 +831,11 @@ static void hscroll_write(uint8_t value) {
     } else {
         if (rec_n >= MAX_SPLITS)
             splits_drop_one();
-        rec_line[rec_n] = y;
-        rec_val[rec_n] = v;
-        rec_n++;
+        if (v != rec_val[rec_n - 1]) {   // (equal: the last one went)
+            rec_line[rec_n] = y;
+            rec_val[rec_n] = v;
+            rec_n++;
+        }
     }
     drc_st.hs_last = value;
 }

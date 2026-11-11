@@ -112,7 +112,8 @@ enum { K_AH = 0, K_ADD, K_SUB, K_AND, K_OR, K_INC, K_DEC, K_CARRY };
 // others are dead: the liveness analysis says nobody reads them)
 static uint8_t fkind;      // where the flags are (K_AH: in AH)
 static uint8_t cf_valid;   // K_INC / K_DEC: x86 CF holds Z80 C
-static uint8_t hl_es;      // ES is set up for the slot of HL
+static uint8_t hl_es;      // 1: ES is set up for the slot of HL; 2: for that
+                           // of HL - 1 (INC HL just before: emit, seg_hl)
 
 // The flags in AH; need: the ones read later (the others may be left
 // wrong: nobody reads them before they are written again)
@@ -292,8 +293,14 @@ static void exit_reg(uint8_t reg16, uint16_t extra) {
 
 // ES for the slot of BX (HL)
 static void seg_hl(uint8_t live) {
-    if (hl_es) return;
+    if (hl_es == 1) return;
     clobber(live);
+    if (hl_es == 2) {
+        // after INC HL (LD E,(HL) / INC HL / LD D,(HL), everywhere): the
+        // same slot unless HL has just entered the next 8 KiB
+        B(0xF7); B(0xC3); W(0x1FFF);     // test bx, 1FFFh
+        B(0x75); B(12);                  // jnz +12 (the same)
+    }
     B(0x89); B(0xDE);                    // mov si, bx
     B(0xC1); B(0xC6); B(0x04);           // rol si, 4
     B(0x83); B(0xE6); B(0x0E);           // and si, 14
@@ -324,11 +331,89 @@ static void helper(uint8_t op) {
 }
 
 /*
+ * (IX + d) and (IY + d) in work RAM, where the games keep what they reach
+ * this way (Sonic's objects: a fifth of its blocks start with DD or FD):
+ * SI = IX, one comparison that holds for any d (IX - 128 and IX + 127
+ * both in C000-DFFF), then the byte in place at [SI + d + ram], 7 cycles
+ * with the jump against 12 through the segment table, and ES left to HL.
+ * Returns the jump to the direct access; the code after the call is the
+ * other case (SI = IX: the caller adds d).
+ */
+static uint8_t *ix_ram(uint8_t pre, uint8_t live) {
+    clobber(live);
+    B(0x8B); B(0x36); W(pre == 0xDD ? ZA(ixl) : ZA(iyl));   // mov si, [ix]
+    B(0x8D); B(0xBC); W((uint16_t) (0u - 0xC080u));        // lea di, [si - C080h]
+    B(0x81); B(0xFF); W(0x1F00);                           // cmp di, 1F00h
+    return jcc8(0x72);                                     // jb direct
+}
+
+// the other case of a read: ES for SI + d, kept for HL (PUSH and POP)
+static void ix_far(int8_t d) {
+    B(0x06);                             // push es
+    if (d) { B(0x8D); B(0x74); B((uint8_t) d); }   // lea si, [si + d]
+    B(0x89); B(0xF7);                    // mov di, si
+    B(0xC1); B(0xC7); B(0x04);           // rol di, 4
+    B(0x83); B(0xE7); B(0x0E);           // and di, 14
+    B(0x8E); B(0x85); W(SA(segtab));     // mov es, [di + segtab]
+}
+
+// LD (IX + d),r / n (src: x86 8-bit register, or 0xFF with imm)
+static void ix_write(uint8_t pre, int8_t d, uint8_t src, uint8_t imm, uint8_t live) {
+    uint8_t keep = hl_es == 1;
+    uint16_t disp = (uint16_t) (d + (int16_t) env->ram_delta);
+    uint8_t *f = ix_ram(pre, live);
+    if (d) { B(0x8D); B(0x74); B((uint8_t) d); }           // lea si, [si + d]
+    if (src == 0xFF) { B(0xC6); B(0x06); W(SA(val)); B(imm); }
+    else { B(0x88); B(0x06 | (src << 3)); W(SA(val)); }
+    B(0x89); B(0x36); W(SA(arg));                           // mov [arg], si
+    helper(DRC_H_WRITE);
+    if (keep) seg_hl(0);   // (ES for HL again: both ways leave it so)
+    uint8_t *done = jcc8(0xEB);
+    land8(f);
+    if (src == 0xFF) { B(0xC6); B(0x84); W(disp); B(imm); }
+    else { B(0x88); B(0x84 | (src << 3)); W(disp); }
+    land8(done);
+    hl_es = keep;
+}
+
+/*
  * Write a byte to the address in BX (HL) or SI. src: x86 8-bit register,
  * or 0xFF with imm. Work RAM directly, anything else through the helper.
  */
 static void write_byte(uint8_t addr_reg, uint8_t src, uint8_t imm, uint8_t live) {
     clobber(live);
+    if (!env->no_fast) {
+        /*
+         * Work RAM first, reached by the jump taken (3 cycles; falling
+         * into it and jumping over the helper's call afterwards was 5),
+         * one comparison for SI too (C000-DFFF + 4000h wraps to
+         * 0000-1FFF). And ES stays HL's: the other way sets it again
+         * after the helper (a mapper register may have been written), so
+         * that a copy loop (LD A,(HL) / LD (DE),A / INC HL / INC DE) does
+         * not load it on every turn. (2, ES for HL - 1: still true, or
+         * better.)
+         */
+        uint8_t keep = hl_es;
+        uint16_t d = (uint16_t) (env->ram_delta + 0xC000);   // (IRAM of C000)
+        if (addr_reg == X_BX) { B(0x8D); B(0xB7); W(0x4000); }          // lea si, [bx + 4000h]
+        else { B(0x8D); B(0xBC); W(0x4000); }                           // lea di, [si + 4000h]
+        B(0x81); B(addr_reg == X_BX ? 0xFE : 0xFF); W(0x2000);          // cmp si / di, 2000h
+        uint8_t *fast = jcc8(0x72);                                     // jb fast
+        if (src == 0xFF) { B(0xC6); B(0x06); W(SA(val)); B(imm); }
+        else { B(0x88); B(0x06 | (src << 3)); W(SA(val)); }
+        B(0x89); B(0x06 | (addr_reg << 3)); W(SA(arg));                 // mov [arg], reg
+        helper(DRC_H_WRITE);
+        if (keep) seg_hl(0);
+        uint8_t *done = jcc8(0xEB);
+        land8(fast);
+        // [si + d] with SI = BX + 4000h, or [di + d] with DI = SI + 4000h
+        uint8_t m = addr_reg == X_BX ? 0x84 : 0x85;
+        if (src == 0xFF) { B(0xC6); B(m); W(d); B(imm); }
+        else { B(0x88); B(m | (src << 3)); W(d); }
+        land8(done);
+        hl_es = keep;
+        return;
+    }
     uint8_t rm = addr_reg == X_BX ? 7 : 4;   // [bx+d16] / [si+d16]
     uint8_t *j1, *j2, *j3;
     if (addr_reg == X_BX) {
@@ -2368,7 +2453,21 @@ static void run_flags(uint8_t h, int live) {
 }
 
 // Returns 0 if the instruction could not be emitted (block ends before it)
+static int emit1(int i);
+
 static int emit(int i) {
+    // (ES for HL - 1, after INC HL: for the next instruction only, if it
+    // reads (HL); one that changes L would hide the step into the next
+    // 8 KiB from seg_hl's test)
+    uint8_t pend = hl_es == 2;
+    int r = emit1(i);
+    // (LD (HL),r and LD (HL),n use no ES and leave HL alone)
+    if (pend && hl_es == 2 && !(ins[i].pre == 0 && (ins[i].op == 0x36 || (ins[i].op >= 0x70 && ins[i].op <= 0x77))))
+        hl_es = 0;
+    return r;
+}
+
+static int emit1(int i) {
     ins_t *I = &ins[i];
     // flags whose current value is still needed: read by this instruction,
     // or needed later and not rewritten by it
@@ -2906,11 +3005,24 @@ static int emit(int i) {
             uint8_t b = (op >> 3) & 7;
             if (op < 0x80) {   // BIT b,(IX+d)
                 need_ah(live);
-                ix_addr(I->pre, I->d);
-                seg_si(live);
-                B(0x80); B(0xE4); B(0x01);
-                B(0x80); B(0xCC); B(0x10);
-                B(0x26); B(0xF6); B(0x04); B(1 << b);
+                if (env->no_fast) {
+                    ix_addr(I->pre, I->d);
+                    seg_si(live);
+                    B(0x80); B(0xE4); B(0x01);
+                    B(0x80); B(0xCC); B(0x10);
+                    B(0x26); B(0xF6); B(0x04); B(1 << b);
+                } else {
+                    B(0x80); B(0xE4); B(0x01);               // and ah, 1
+                    B(0x80); B(0xCC); B(0x10);               // or ah, 10h
+                    uint8_t *f = ix_ram(I->pre, live);
+                    ix_far(I->d);
+                    B(0x26); B(0xF6); B(0x04); B(1 << b);    // test byte es:[si], mask
+                    B(0x07);                                 // pop es
+                    uint8_t *done = jcc8(0xEB);
+                    land8(f);
+                    B(0xF6); B(0x84); W((uint16_t) (I->d + (int16_t) env->ram_delta)); B(1 << b);
+                    land8(done);
+                }
                 if (b == 7) {
                     B(0x75); B(0x05); B(0x80); B(0xCC); B(0x44); B(0xEB); B(0x03);
                     B(0x80); B(0xCC); B(0x80);
@@ -3021,22 +3133,39 @@ static int emit(int i) {
             return 1;
         }
         case 0x36:   // LD (IX+d),n
-            ix_addr(I->pre, I->d);
-            write_byte(X_SI, 0xFF, I->nn, live);
+            if (env->no_fast) {
+                ix_addr(I->pre, I->d);
+                write_byte(X_SI, 0xFF, I->nn, live);
+            } else
+                ix_write(I->pre, I->d, 0xFF, I->nn, live);
             cyc += 19;
             return 1;
         }
         if (op >= 0x70 && op <= 0x77) {   // LD (IX+d),r
-            ix_addr(I->pre, I->d);
-            write_byte(X_SI, r8x[op & 7], 0, live);
+            if (env->no_fast) {
+                ix_addr(I->pre, I->d);
+                write_byte(X_SI, r8x[op & 7], 0, live);
+            } else
+                ix_write(I->pre, I->d, r8x[op & 7], 0, live);
             cyc += 19;
             return 1;
         }
         if ((op & 7) == 6 && op >= 0x46 && op <= 0x7E) {   // LD r,(IX+d)
             uint8_t dst = r8x[(op >> 3) & 7];
-            ix_addr(I->pre, I->d);
-            seg_si(live);
-            B(0x26); B(0x8A); B(0x04 | (dst << 3));
+            if (env->no_fast) {
+                ix_addr(I->pre, I->d);
+                seg_si(live);
+                B(0x26); B(0x8A); B(0x04 | (dst << 3));
+            } else {
+                uint8_t *f = ix_ram(I->pre, live);
+                ix_far(I->d);
+                B(0x26); B(0x8A); B(0x04 | (dst << 3));      // mov r, es:[si]
+                B(0x07);                                     // pop es
+                uint8_t *done = jcc8(0xEB);
+                land8(f);
+                B(0x8A); B(0x84 | (dst << 3)); W((uint16_t) (I->d + (int16_t) env->ram_delta));
+                land8(done);
+            }
             if (dst == X_BX || dst == 7) hl_es = 0;
             cyc += 19;
             return 1;
@@ -3064,10 +3193,24 @@ static int emit(int i) {
         }
         if (op >= 0x86 && op <= 0xBE) {   // ALU A,(IX+d)
             uint8_t y = (op >> 3) & 7;
-            ix_addr(I->pre, I->d);
-            seg_si(live);
-            if (y == 1 || y == 3) need_cf();
-            B(0x26); B(alu_x86[y] + 2); B(0x04);
+            if (env->no_fast) {
+                ix_addr(I->pre, I->d);
+                seg_si(live);
+                if (y == 1 || y == 3) need_cf();
+                B(0x26); B(alu_x86[y] + 2); B(0x04);
+            } else {
+                // (POP ES and the jump leave the operation's flags alone)
+                uint8_t *f = ix_ram(I->pre, live);
+                ix_far(I->d);
+                if (y == 1 || y == 3) need_cf();
+                B(0x26); B(alu_x86[y] + 2); B(0x04);         // op al, es:[si]
+                B(0x07);                                     // pop es
+                uint8_t *done = jcc8(0xEB);
+                land8(f);
+                if (y == 1 || y == 3) need_cf();
+                B(alu_x86[y] + 2); B(0x84); W((uint16_t) (I->d + (int16_t) env->ram_delta));
+                land8(done);
+            }
             alu_done(y);
             cyc += 19;
             return 1;
@@ -3112,7 +3255,10 @@ static int emit(int i) {
             if (y == 0) { cyc += 4; return 1; }
             if (y == 1) {   // EX AF,AF'
                 materialize();
-                B(0x87); B(0x06); W(ZA(a_));
+                // (three MOVs: 3 cycles, XCHG with memory takes 5)
+                B(0x8B); B(0x36); W(ZA(a_));         // mov si, [af']
+                B(0xA3); W(ZA(a_));                  // mov [af'], ax
+                B(0x89); B(0xF0);                    // mov ax, si
                 cyc += 4;
                 return 1;
             }
@@ -3243,7 +3389,7 @@ static int emit(int i) {
             uint8_t xr = r16x[rr];
             if (xr == X_BX || xr == X_BP) {
                 B(0x8D); B(xr == X_BX ? 0x5F : 0x6E); B(dec ? 0xFF : 0x01);
-                if (xr == X_BX) hl_es = 0;
+                if (xr == X_BX) hl_es = (!dec && hl_es == 1 && !env->no_fast) ? 2 : 0;
             } else if (fkind != K_AH && live) {
                 // keep the x86 flags: xchg, lea, xchg
                 B(0x87); B(0xC3 | (xr << 3));
@@ -3358,9 +3504,10 @@ static int emit(int i) {
             }
             if (y == 5) { exit_reg(X_BX, 4); return 1; }   // JP (HL)
             if (y == 3) {   // EXX
-                B(0x87); B(0x0E); W(ZA(c_));
-                B(0x87); B(0x16); W(ZA(e_));
-                B(0x87); B(0x1E); W(ZA(l_));
+                // (MOVs: 9 cycles in all, three XCHGs with memory 15)
+                B(0x8B); B(0x36); W(ZA(c_)); B(0x89); B(0x0E); W(ZA(c_)); B(0x89); B(0xF1);   // bc'
+                B(0x8B); B(0x36); W(ZA(e_)); B(0x89); B(0x16); W(ZA(e_)); B(0x89); B(0xF2);   // de'
+                B(0x8B); B(0x36); W(ZA(l_)); B(0x89); B(0x1E); W(ZA(l_)); B(0x89); B(0xF3);   // hl'
                 hl_es = 0;
                 cyc += 4;
                 return 1;
