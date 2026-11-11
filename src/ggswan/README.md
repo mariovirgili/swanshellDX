@@ -6,7 +6,7 @@ emulated by a dynamic recompiler (Z80 to V30MZ code), with the original
 interpreter kept for the parts that need it. The Game Gear video memory is
 mapped onto the WonderSwan's own tile and screen hardware.
 
-Status: fairly stable (patch 149). It has been tested mostly in the
+Status: fairly stable (patch 150). It has been tested mostly in the
 nileswan-medem emulator and with the host test tools; tests on real
 hardware are still to come.
 
@@ -211,7 +211,8 @@ playing, as smsswan's.
 | Y1 (Y up), Y3 (Y down), Y4 (Y left), Y2 (Y right) | **Move the view** over the picture, 2 pixels a frame (X 0-32, Y 0-48; it starts in the middle) |
 | Y2 (Y right) + Y4 (Y left) together | Pause and resume, frame by frame with Y3 (Y down), as on the Game Gear |
 | START + Y1 (Y up), held for a second | Back to the menu |
-| START + Y2 (Y right) | **Four sprites to a line**, on and off (off at the start; START + Y3 (Y down) until patch 147: that one is kept for the whole picture squeezed, as smsswan's, not there yet). The SG-1000 draws four sprites on a line and leaves the others out, which is the flicker of its games; the WonderSwan can draw them all, and does. On: as the SG-1000 |
+| START + Y3 (Y down) | **Whole picture**, on and off (patch 150), as smsswan's: the 192 lines squeezed into the 144 of the screen, one line in four left out; sprites keep their height (the pieces of a tall figure overlap by a quarter). The view still moves sideways. A screen of more different characters than there are tiles for (558) shows some of them empty |
+| START + Y2 (Y right) | **Four sprites to a line**, on and off (off at the start; it was START + Y3 (Y down) until patch 147). The SG-1000 draws four sprites on a line and leaves the others out, which is the flicker of its games; the WonderSwan can draw them all, and does. On: as the SG-1000 |
 | Y1 (Y up) held at the start | **Diagnostics** over the sides of the picture (FPS and the recompiler's numbers; on the right, with Y4 (Y left) held too: K the tiles drawn in the last second, M the background tiles in use) |
 
 There: Graphics I and II, multicolor, sprites of 8x8 and 16x16 pixels,
@@ -221,8 +222,7 @@ Cartridges with their own RAM at 8000h (The Castle) and the games made
 for the 8 KiB RAM adapter (TwinBee, Bomberman Special) run. No saves:
 the SG-1000 has none.
 
-Not done: a second joypad, the whole picture squeezed (START + Y3 (Y
-down) is kept for it), the SC-3000's keyboard (`.sc` files are not for
+Not done: a second joypad, the SC-3000's keyboard (`.sc` files are not for
 this; the SF-7000's disks are sfswan's, below).
 
 ## sfswan: the SC-3000 with the SF-7000's disks
@@ -238,7 +238,8 @@ It needs a system disk: **a copy of a disk that has Disk BASIC on it, as
 `/NILESWAN/SF7000.SF`** (The Complete Arcade Pack Collection's image is
 one). A disk with no system of its own is started from that one and is
 in the drive when Disk BASIC's prompt comes; so is any disk with B held
-at the start (Kamikaze: then `BOOT`).
+at the start. A disk whose system is not Disk BASIC (Kamikaze) is started
+from it too, and `BOOT` is typed for it.
 
 | Keys | Function |
 |---|---|
@@ -246,6 +247,7 @@ at the start (Kamikaze: then `BOOT`).
 | START | **The keyboard** on the screen, on and off (when START is let go). With it: X1-X4 choose a key, A presses it, B is CR; the last row is SHIFT, BREAK, INS/DEL, space, CR and four lines typed for you (`FILES`, `LOAD "`, `RUN`, `BOOT`) |
 | Y1 (Y up), Y3 (Y down), Y4 (Y left), Y2 (Y right) | Move the view over the picture, as sgswan's |
 | START + Y1 (Y up), held for a second | Back to the menu |
+| START + Y3 (Y down) | The whole picture squeezed, on and off, as sgswan's (not in text mode: Disk BASIC's screen stays a view) |
 | START + Y2 (Y right) | Four sprites to a line, on and off, as sgswan's |
 | B held at the start | Start from the system disk |
 
@@ -353,7 +355,7 @@ it are listed in order without one.
 - lighter DYN lookup and class routine for deferred tile bytes
 - OUTI runs to CRAM handled in the run routine
 
-### Patches 90-149
+### Patches 90-150
 
 | Patch | Change |
 |---|---|
@@ -417,3 +419,4 @@ it are listed in order without one.
 | 147 | The palette with the frame, in ggswan and smsswan: a color the game writes goes to the WonderSwan's palettes at the end of the WS screen, with the scroll, the tiles and the sprites of the frame it belongs to, and no longer at once, in the middle of the screen being drawn and a WS screen or two before the rest. Shinobi moves the bars of its fence by turning four colors round: the fence was broken in two, one part two pixels ahead of the other. In `wssim` the WS picture of Sonic, Shinobi, Super Monaco GP, Aladdin, Columns, Batman Returns and Sailor Moon S differs from the Game Gear's by 0.0-1.4% of the pixels on average, from 1.0-9.0%. `drcsys.py --pal`. The menu: Settings > System > Save data management, first in the list and on by default; off, no save data is loaded into the cartridge at launch and none is written back to the card when the menu starts again (for where the save memory is not the physical cartridge's). `PLUG_SG.BIN`: the same bytes as patch 146 but for this number |
 | 148 | sfswan, the SC-3000 with the SF-7000's disks: `PLUG_SF.BIN` (`SF=1`), `.sf` in the menu. The recompiler with all of the memory RAM (one WonderSwan segment, a map of where code was translated from, code that writes over code run by the interpreter where it is), the disk and a system disk (`/NILESWAN/SF7000.SF`) in PSRAM, the TMS9918A's text mode (in sgswan too), a keyboard on the screen (START), the built-in IPL's long parts done by the machine. Run in the PC tools only, the device build in `wsrun.py` too (to Disk BASIC's prompt and `FILES` through the keyboard on the screen); about half the SF-7000's speed at the prompt. `SF7000.md`. sgswan and sfswan: the four sprites to a line are START + Y2 (Y right) now, START + Y3 (Y down) is kept in every plugin for the whole picture squeezed. ggswan, smsswan, sgswan: the translator writes the same bytes as patch 147 (`drcsys.py --same-code`); `wsrun.py` with the WonderSwan's keys (`WSRUN_WSKEYS`) and a second file (`WSRUN_SYS`) |
 | 149 | ggswan: the sprite collision flag (VDP status bit 5), which only smsswan had: Batman Returns reads it for its hits (`IN A,(BFh)` / `AND 20h`) and walked through everything. As smsswan's: worked out once a frame, only for a game found to test the flag (of seven games tried only Batman Returns), and it costs: Batman Returns in its first level goes from about 70 k to 84-98 k cycles a frame in `wsrun.py`. In both plugins a sprite with no pixel is left out early (a sprite table never written, 64 empty sprites in one place, took 1.4 million cycles a frame); the flag is the same as a count of the sprites on each pixel in every frame tried (`GGSWAN_COLL=1` in `wssim`, now for ggswan too). The menu: the game icon for `.gg`, `.sms`, `.sg` and `.sf` files. `drcsys.py` moved the windows only for ports C0h-CEh: with the bank ports at D0h-D5h since patch 148, games with a mapper ran wrong in it (patch 148's `--same-code` check was repeated with this corrected: the same result). The sgswan and sfswan binaries are not the same from one build to the next (their size changes by a few bytes with the same sources: to be looked at) |
+| 150 | sgswan, sfswan: the whole picture squeezed, START + Y3 (Y down), as smsswan's: the view is all 24 rows and the line interrupt adds 1 to the Y scroll every three lines (`sg_line_entry` in assembly, 47 a WS screen); sprites placed on the squeezed picture, their height kept; not in text mode. `sgirqtest.py` (the interrupt in Unicorn, served late too), `GGSWAN_SQUEEZE=1` in `wssim_sg` with the reference squeezed. Not on a device: `wsrun.py` has no interrupts. sfswan: a disk whose system is not Disk BASIC (Kamikaze, to be started with `BOOT`: by itself its screen is mirrored) is started from the system disk and `BOOT` typed for it |

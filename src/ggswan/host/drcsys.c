@@ -309,6 +309,18 @@ static uint8_t fb_end[GG_VIEW_H][GG_VIEW_W][3];
 void sys_frame(int keys) {
 #ifdef GGSWAN_SF7000
     type_frame((int) gg.frame, getenv("SF_TYPE"));
+    // SF_SWAP="frame:file": another disk in the drive from that frame on
+    {
+        const char *sw = getenv("SF_SWAP");
+        if (sw && (int) gg.frame == atoi(sw) && strchr(sw, ':')) {
+            FILE *f = fopen(strchr(sw, ':') + 1, "rb");
+            if (f) {
+                if (fread(psram + SF_DISK_BANK * 65536, 1, SF_DISK_SIZE, f) != SF_DISK_SIZE)
+                    fprintf(stderr, "SF_SWAP: short file\n");
+                fclose(f);
+            }
+        }
+    }
 #endif
     gg.keys = keys;
     gg_run_frame();   // (video_present at line 168)

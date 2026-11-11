@@ -46,13 +46,23 @@ static void ref_line(uint16_t line) {
     static uint8_t color[256];
     int fifth;
     sg_ref_line(line, color, &fifth);
-    if (line < GG_VIEW_Y || line >= GG_VIEW_Y + GG_VIEW_H)
+    // (GGSWAN_SQUEEZE: the whole picture, the lines 3, 7, 11... left out;
+    // not in text mode. Sprites are not what the WS shows then: it keeps
+    // their height)
+    extern volatile uint8_t sg_sq_act;
+    uint16_t to = line - GG_VIEW_Y;
+    if (sg_sq_act) {
+        if ((line & 3) == 3)
+            return;
+        to = line - ((line + 1) >> 2);
+    } else if (line < GG_VIEW_Y || line >= GG_VIEW_Y + GG_VIEW_H) {
         return;
+    }
     for (uint16_t x = 0; x < GG_VIEW_W; x++) {
         uint16_t c = gg_color12(color[x + GG_VIEW_X]);
-        fb[line - GG_VIEW_Y][x][0] = ((c >> 8) & 0xF) * 17;
-        fb[line - GG_VIEW_Y][x][1] = ((c >> 4) & 0xF) * 17;
-        fb[line - GG_VIEW_Y][x][2] = (c & 0xF) * 17;
+        fb[to][x][0] = ((c >> 8) & 0xF) * 17;
+        fb[to][x][1] = ((c >> 4) & 0xF) * 17;
+        fb[to][x][2] = (c & 0xF) * 17;
     }
 }
 
@@ -207,6 +217,12 @@ extern volatile uint8_t act_y[], act_sq;
 // (the Y scroll of WS line y: the line interrupt's, with the squeezed picture)
 static uint8_t scr1_y(int y) {
     uint8_t v = ports[0x11];
+#ifdef GGSWAN_SG1000
+    // (sgswan's whole picture: 1 more every three lines)
+    extern volatile uint8_t sg_sq_act;
+    if (sg_sq_act)
+        v += y / 3;
+#endif
 #ifdef GGSWAN_SMS
     if (act_sq)
         for (int i = 1; i < act_n; i++)

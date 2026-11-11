@@ -191,7 +191,7 @@ PCSYM = syms['z80'] + 22   # z80.pc
 # X1-X4, 100-800 Y1-Y4): what main.c's read_keys does with them (sfswan's
 # keyboard on the screen)
 WS_KEYS = dict((int(x.split(':')[0]), int(x.split(':')[1], 16)) for x in os.environ.get('WSRUN_WSKEYS', '').split(',') if x)
-ws_keys = [0]
+ws_keys = [WS_KEYS.get(0, 0)]   # (frame 0: held while the plugin starts)
 def h_in(uc, port, size, ud):
     if port == 0x02: return (st['cyc'] // 256) % 159
     if port == 0xB5:

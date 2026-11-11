@@ -161,6 +161,26 @@ static uint16_t sg_spg, sg_sat;
 static uint8_t sg_big, sg_mag;         // sprites of 16x16, magnified
 // the view as the screen was made with, and its characters
 static uint8_t sg_vx = 0xFF, sg_vy = 0xFF;
+/*
+ * The whole picture (START + Y3 (Y down), as smsswan's): its 192 lines in
+ * the WonderSwan's 144, one line in four left out. The WS line L shows
+ * the picture's line L + L / 3: the line interrupt adds 1 to the Y scroll
+ * every three lines (sg_line_entry, drc_asm.s; 47 interrupts a WS screen),
+ * and the view is all of the 24 rows. A sprite keeps its height: only
+ * where it is is scaled, so the pieces of a tall figure overlap by a
+ * quarter. A screen may then show more different characters than there
+ * are tiles (29 x 24 = 696 places, 558 tiles): the ones that find none
+ * are left empty (sg_starved). Not in text mode, which has a tile for
+ * each place of its 29 x 19.
+ */
+uint8_t sg_squeeze;                    // wanted (read_keys)
+static uint8_t sg_sq;                  // as the view and the sprites are made
+volatile uint8_t sg_sq_pend, sg_sq_act;   // presented; on the WS's screen (drc_asm.s)
+// the WS line of a line of the picture, squeezed (lines 3, 7, 11... are
+// the ones left out: they give the line before)
+static inline int16_t sg_sq_line(int16_t p) {
+    return p - ((p + 1) >> 2);
+}
 static uint8_t sg_c0, sg_c1, sg_r0, sg_r1;
 static uint8_t sg_spr_dirty = 1;
 
@@ -672,7 +692,8 @@ static void build_sprites(void) {
         // (the top left pixel in the picture: sg_sprite, gg.h) in the view
         int16_t y = (e[0] > 0xE0 ? (int16_t) e[0] - 256 : e[0]) + 1 - sg_vy;
         int16_t x = (int16_t) e[1] - ((e[3] & 0x80) ? 32 : 0) - sg_vx;
-        if (y <= -side || y >= GG_VIEW_H || x <= -side || x >= GG_VIEW_W)
+        // (the whole picture: sg_vy is 0, y a line of its 192)
+        if (y <= -side || y >= (sg_sq ? GG_ACTIVE_LINES : GG_VIEW_H) || x <= -side || x >= GG_VIEW_W)
             continue;
         uint16_t key = ((sg_spg >> 3) + (sg_big ? e[2] & 0xFC : e[2])) | ((uint16_t) color << 12);
         // the lines the chip leaves out (the fifth on them, or later):
@@ -729,6 +750,8 @@ static void build_sprites(void) {
             int16_t qx = x + (q >> 1) * step, qy = y + (q & 1) * step;
             for (uint8_t u = 0; u < sub; u++, tile++, empty >>= 1) {
                 int16_t wx = qx + (u & 1) * 8, wy = qy + (u >> 1) * 8;
+                if (sg_sq)
+                    wy = sg_sq_line(wy);
                 if ((empty & 1) || wy <= -8 || wy >= GG_VIEW_H || wx <= -8 || wx >= GG_VIEW_W || s >= end)
                     continue;
                 // (palette 8, behind screen 2: the diagnostics' text)
@@ -759,9 +782,24 @@ static void sprites_publish(void) {
 #ifndef GGSWAN_HOST
 // The line interrupt (line_irq_slow, drc_asm.s): the end of the WS screen
 void line_irq_slow(void);
+void sg_line_entry(void);
 void line_irq(void) {
+    uint8_t l = inportb(WS_DISPLAY_LINE_PORT);
+    if (sg_sq_act && l < GG_VIEW_H - 1) {
+        // (a step of the whole picture: sg_line_entry does these; here
+        // only if it could not)
+        uint8_t k = (uint8_t) (l + 1) / 3;
+        outportb(0x11, k);
+        k = k * 3 + 2;
+        outportb(WS_DISPLAY_LINE_IRQ_PORT, k >= GG_VIEW_H - 1 ? GG_VIEW_H : k);
+        ws_int_ack(WS_INT_ACK_LINE_MATCH);
+        return;
+    }
+    // the end of the screen: the frame presented, from its first line
+    sg_sq_act = sg_sq_pend;
     outportb(WS_SCR1_SCRL_X_PORT, sg_vx);
     outportb(0x11, sg_vy);
+    outportb(WS_DISPLAY_LINE_IRQ_PORT, sg_sq_act ? 2 : GG_VIEW_H);
     frame_waiting = 0;
     ws_int_ack(WS_INT_ACK_LINE_MATCH);
 }
@@ -835,7 +873,7 @@ GGSWAN_HOST_VISIBLE void video_init(void) {
     outportb(0x06, 0);
 #ifndef GGSWAN_HOST
     ia16_disable_irq();
-    ws_int_set_handler(WS_INT_LINE_MATCH, (ia16_int_handler_t) line_irq_slow);
+    ws_int_set_handler(WS_INT_LINE_MATCH, (ia16_int_handler_t) sg_line_entry);
     outportb(WS_DISPLAY_LINE_IRQ_PORT, GG_VIEW_H);
     ws_int_enable(WS_INT_ENABLE_LINE_MATCH);
     ia16_enable_irq();
@@ -872,6 +910,7 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
 #ifdef GGSWAN_HOST
     // (the PC tests: GGSWAN_PAN=x,y for the view; GGSWAN_PANMOVE, below,
     // to move it all the time, as the Y buttons do)
+    sg_squeeze = getenv("GGSWAN_SQUEEZE") != NULL;
     if (getenv("GGSWAN_LIMIT") && !sg_limit) {
         sg_limit = 1;
         sg_spr_dirty = 2;
@@ -888,21 +927,26 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
     sg_tab_open();
     if (redo == 2)
         sg_pool_reset();
-    if (gg_view_x != sg_vx || gg_view_y != sg_vy) {
+    // (the whole picture: every row, from line 0; not in text mode)
+    uint8_t sq = sg_squeeze && sg_m != 4;
+    uint8_t view_y = sq ? 0 : gg_view_y;
+    if (gg_view_x != sg_vx || view_y != sg_vy || sq != sg_sq) {
         uint8_t c0 = gg_view_x >> 3, c1 = (uint8_t) ((gg_view_x + GG_VIEW_W - 1) >> 3);
-        uint8_t r0 = gg_view_y >> 3, r1 = (uint8_t) ((gg_view_y + GG_VIEW_H - 1) >> 3);
+        uint8_t r0 = view_y >> 3, r1 = sq ? 23 : (uint8_t) ((view_y + GG_VIEW_H - 1) >> 3);
         if (c1 > 31) c1 = 31;
         if (r1 > 23) r1 = 23;
         if (c0 != sg_c0 || c1 != sg_c1 || r0 != sg_r0 || r1 != sg_r1 || sg_vx == 0xFF)
             redo |= 1;
         sg_c0 = c0; sg_c1 = c1; sg_r0 = r0; sg_r1 = r1;
         sg_vx = gg_view_x;
-        sg_vy = gg_view_y;
+        sg_vy = view_y;
+        sg_sq = sq;
         if (!sg_spr_dirty)
             sg_spr_dirty = 1;
 #ifdef GGSWAN_HOST
         outportb(0x10, sg_vx);   // (the PC tests have no WS raster)
         outportb(0x11, sg_vy);
+        sg_sq_act = sq;
 #endif
     }
     if (sg_m == 4) {
@@ -1003,6 +1047,7 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
         uint8_t l = inportb(WS_DISPLAY_LINE_PORT);
         if (l < GG_VIEW_H - 3 || l > GG_VIEW_H) {
             sprites_publish();
+            sg_sq_pend = sg_sq;
             frame_waiting = 1;
             irq_restore(f);
             break;

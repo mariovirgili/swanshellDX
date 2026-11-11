@@ -255,6 +255,8 @@ void gg_platform_vram_store(uint16_t a, uint8_t v) {
 // loader gives the memory to what it loaded
 static uint16_t sf_disk_bank = SF_DISK_BANK;
 static uint8_t sf_swap_pending;
+static uint8_t sf_auto_boot;
+static uint32_t sf_boot_at;
 void gg_platform_disk_read(uint16_t lba, uint8_t *buf) {
     outportw(WS_CART_EXTBANK_ROM1_PORT, sf_disk_bank + (lba >> 8));
     _fmemcpy(buf, MK_FP(0x3000, lba << 8), SF_SECTOR_SIZE);
@@ -275,6 +277,10 @@ void gg_platform_map_changed(void) {
     if (sf_swap_pending && !sf.rom_on) {
         sf_swap_pending = 0;
         sf_disk_bank = SF_DISK_BANK;
+        // (a disk to be started with BOOT: typed when Disk BASIC is up,
+        // six seconds from here; kb_frame)
+        if (sf_auto_boot)
+            sf_boot_at = gg.frame + 360;
     }
 #ifndef GGSWAN_HOST
     drc_flush_request = 1;
@@ -2256,6 +2262,17 @@ static uint8_t kb_frame(uint16_t k) {
     uint16_t pressed = k & ~kb_prev;
     kb_prev = k;
     memset(sf_keys, 0, sizeof(sf_keys));
+    if (sf_boot_at && gg.frame >= sf_boot_at) {
+        // (BOOT and CR: the fourth of the lines typed for you)
+        const char __far *t = kb_typed;
+        for (uint8_t n = 3; n; n--) {
+            while (*t) t++;
+            t++;
+        }
+        kb_typing = t;
+        kb_typing_t = 0;
+        sf_boot_at = 0;
+    }
     if (kb_typing) {
         // a key every 8 frames, down for 4
         char c = *kb_typing;
@@ -2389,10 +2406,17 @@ GGSWAN_HOST_VISIBLE void read_keys(void) {
     // Y3 (Y down) kept for the whole picture squeezed); the
     // SC-3000's RESET key (GG_KEY_START in the machine) is not there
     {
-        static uint8_t start_held, start_y, start_y3;
+        static uint8_t start_held, start_y, start_y3, start_sq;
         if (k & WS_KEY_START) {
-            if (!start_held) { start_held = 1; start_y = 0; start_y3 = 0; }
-            if (k & (WS_KEY_Y1 | WS_KEY_Y3)) start_y = 1;
+            if (!start_held) { start_held = 1; start_y = 0; start_y3 = 0; start_sq = 0; }
+            if (k & WS_KEY_Y1) start_y = 1;
+            if (k & WS_KEY_Y3) {
+                if (!start_sq) sg_squeeze ^= 1;
+                start_sq = 1;
+                start_y = 1;
+            } else {
+                start_sq = 0;
+            }
             if (k & WS_KEY_Y2) {
                 if (!start_y3) {
                     sg_limit ^= 1;
@@ -2438,9 +2462,9 @@ GGSWAN_HOST_VISIBLE void read_keys(void) {
     // START is the Pause button, pressed for the game when it is let go,
     // unless Y1 (Y up) was held with it (the way back to the menu)
     {
-        static uint8_t start_held, start_y1, start_y3;
+        static uint8_t start_held, start_y1, start_y3, start_sq;
         if (k & WS_KEY_START) {
-            if (!start_held) { start_held = 1; start_y1 = 0; start_y3 = 0; }
+            if (!start_held) { start_held = 1; start_y1 = 0; start_y3 = 0; start_sq = 0; }
             if (k & WS_KEY_Y1) start_y1 = 1;
             // START + Y2 (Y right): four sprites to a line as the chip,
             // or all of them (sg_video.inc). (It was START + Y3 (Y down)
@@ -2456,7 +2480,15 @@ GGSWAN_HOST_VISIBLE void read_keys(void) {
             } else {
                 start_y3 = 0;
             }
-            if (k & WS_KEY_Y3) start_y1 = 1;   // (kept: no Pause either)
+            // START + Y3 (Y down): the whole picture squeezed, or the view
+            // (sg_video.inc), as smsswan's
+            if (k & WS_KEY_Y3) {
+                if (!start_sq) sg_squeeze ^= 1;
+                start_sq = 1;
+                start_y1 = 1;   // (no Pause for the game)
+            } else {
+                start_sq = 0;
+            }
         } else {
             if (start_held && !start_y1) g |= GG_KEY_START;
             start_held = 0;
@@ -2885,13 +2917,25 @@ int main(void) {
         // that starts by itself), and this one goes in the drive when that
         // one's loader has finished. The same with B held now, for a disk
         // that is to be started from Disk BASIC with BOOT.
-        uint8_t first[4];
+        // And a disk whose system is not Disk BASIC itself (the name after
+        // "SYS:": Kamikaze's is "BASIC LEVEL IIIB+KAMIKAZE") is one made to
+        // be started from Disk BASIC with BOOT, as its directory says:
+        // started by itself its screen comes out mirrored. From the system
+        // disk too, and BOOT typed for it when Disk BASIC is up.
+        static const char __far basic_name[] = "SYS: disk BASIC";
+        uint8_t first[15];
         outportw(WS_CART_EXTBANK_ROM1_PORT, SF_DISK_BANK);
-        _fmemcpy(first, MK_FP(0x3000, 0), 4);
+        _fmemcpy(first, MK_FP(0x3000, 0), 15);
         uint8_t sys = first[0] == 'S' && first[1] == 'Y' && first[2] == 'S' && first[3] == ':';
-        if (!sys || (ws_keypad_scan() & WS_KEY_B)) {
+        uint8_t is_basic = sys;
+        for (uint8_t i = 4; i < 15 && is_basic; i++)
+            if (first[i] != (uint8_t) basic_name[i])
+                is_basic = 0;
+        sf_auto_boot = sys && !is_basic;
+        if (!is_basic || (ws_keypad_scan() & WS_KEY_B)) {
             static const char sys_path[] = "/NILESWAN/SF7000.SF";
-            text_print(sys ? "B HELD: DISK BASIC FIRST" : "NO SYSTEM ON THIS DISK");
+            text_print(sf_auto_boot ? "A DISK TO START WITH BOOT"
+                       : sys ? "B HELD: DISK BASIC FIRST" : "NO SYSTEM ON THIS DISK");
             text_print("STARTING FROM /NILESWAN/SF7000.SF");
             text_print("(A COPY OF A DISK WITH DISK BASIC)");
             load_bank = SF_SYS_BANK;

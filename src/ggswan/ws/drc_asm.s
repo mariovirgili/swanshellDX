@@ -117,7 +117,57 @@ drc_helper_tramp:
 
     IRQ_ENTRY line_irq_slow, line_irq
 
-#ifndef GGSWAN_SG1000   // (sgswan: line_irq_slow alone, sg_video.inc)
+#ifdef GGSWAN_SG1000
+    // sgswan, sfswan: the line interrupt. With the whole picture on the
+    // screen (sg_sq_act, sg_video.inc) a step of the Y scroll inside the
+    // picture is served here: at line l (the match was set on it), k =
+    // (l + 1) / 3 is the scroll from line l + 1 on, and the next match is
+    // line 3 k + 2, or the end of the screen (144) from line 143. That
+    // line there already (this was served late): again. Anything else
+    // (no whole picture, the end of the screen): C, line_irq.
+    .global sg_line_entry
+sg_line_entry:
+    cmp byte ptr ss:[sg_sq_act], 0
+    je line_irq_slow
+    push ax
+    push cx
+1:
+    in al, 0x02                         // (the line being drawn)
+    cmp al, 143
+    jae 9f
+    inc al
+    xor ah, ah
+    mov cl, 3
+    div cl                              // al = k
+    out 0x11, al
+    mov ah, al
+    add al, al
+    add al, ah
+    add al, 2                           // 3 k + 2
+    cmp al, 143
+    jb 2f
+    mov al, 144
+2:
+    out 0x03, al
+    mov ah, al
+    mov al, 0x10                        // WS_INT_ACK_LINE_MATCH
+    out 0xB6, al
+    cmp ah, 144
+    je 3f
+    in al, 0x02
+    cmp al, ah
+    jae 1b
+3:
+    pop cx
+    pop ax
+    iret
+9:
+    pop cx
+    pop ax
+    jmp line_irq_slow
+#endif
+
+#ifndef GGSWAN_SG1000   // (sgswan: sg_line_entry and line_irq_slow, sg_video.inc)
     // The line interrupt. A scroll split inside the picture is served here
     // (main.c line_irq does the same, and everything else: this is its
     // loop for i > 0, with the same order of port writes):
