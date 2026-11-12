@@ -70,7 +70,9 @@ window.
 - **A pointer the block itself loads** (`LD HL, nn`, `LD DE, nn`,
   `LD BC, nn`, then only INC, DEC, `(HL+)`, `(HL-)`: `i_dir`) into the
   work RAM or the high RAM is that address: the access is one
-  instruction on it, nothing checked, and cannot leave the block.
+  instruction on it, nothing checked, and cannot leave the block. Into
+  the cartridge's RAM: through its segment after the test of
+  `drc_ram_ok` (reads, writes, the operations on A).
 - **A constant address** is sorted out when the block is translated; in
   the cartridge's RAM it is an access through the RAM's segment after
   one test that it is plain RAM and enabled (`drc_ram_ok`).
@@ -113,7 +115,7 @@ with no routine.
 
 - A block ends at a jump, call or return, after the instruction that
   follows EI, or after 40 instructions or about 90 cycles.
-- The table (PSRAM, segment 4000h, 4096 places of 8 bytes) is keyed by
+- The table (PSRAM, segment 4000h, 8192 places of 8 bytes) is keyed by
   address and ROM bank + 1 (FFFFh for code in RAM). The code is in
   segments 5000h-C000h; when the last is full everything is forgotten.
 - An exit to a constant address in the same ROM area, or in the first

@@ -44,7 +44,7 @@ background and the window, switched at the right lines by the line
 interrupt, with the scroll the program gave each line; the sprites are
 the WonderSwan's.
 
-## Where it is (patch 164)
+## Where it is (patch 165)
 
 The CPU is a recompiler (`gb/ws/gb_drc.c`, `gb_drc_asm.s`; `GB-ABI.md`),
 there is sound (`gb/ws/gb_sound.c`: what it does and does not, at its
@@ -102,16 +102,23 @@ Land and Bubble Ghost at full speed. The table's scenes are titles,
 menus and the first seconds of a level. Two of his scenes measured
 here since (cycles a Game Boy frame, 162 then 163):
 
-| scene | patch 162 | patch 163 |
-|---|---|---|
-| Yoshi, in play | 349,589 | 53,446 |
-| Super Mario Land 2, walking in the first level | 82,174 | 59,132 |
+| scene | patch 162 | patch 163 | patch 165 |
+|---|---|---|---|
+| Yoshi, in play | 349,589 | 53,446 | 52,490 |
+| Super Mario Land 2, walking in the first level | 82,174 | 59,132 | 55,454 |
+| Balloon Kid, flying right in stage 1 | | 65,503 (164) | 62,267 |
 
 (349,589 is 8.8 frames a second: what he saw.) Yoshi did its sums
 with DAA and shifts through HL, which went to the interpreter one
 instruction at a time, and all through pointers into the high RAM;
 Super Mario Land 2 keeps its variables and its stack in the
-cartridge's RAM. Both are still over a frame's time, and Balloon Kid,
+cartridge's RAM. All three are still over a frame's time. About 17,000 of Balloon Kid's
+are translation: that scene meets two new blocks a frame, at some 9,000
+cycles a block (the translator is slow: about 950 cycles for each
+Game Boy instruction), so a game slows down whenever something new
+comes on the screen, and stops for a moment if the table fills and
+everything is translated again (Castlevania II did by its second
+screen with the 4,096 places it had until patch 164; 8,192 now).
 Castlevania II, R-Type and Batman in play have not been measured here.
 
 He also saw Super Mario Land's scroll move in jerks. That was a fault

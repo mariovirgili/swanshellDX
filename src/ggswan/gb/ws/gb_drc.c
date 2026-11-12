@@ -48,7 +48,7 @@ typedef struct {
     uint16_t off, seg;
 } blk_t;
 #define TABLE ((blk_t __far*) MK_FP(DRC_TABLE_SEG, 0))
-#define TABLE_N 4096
+#define TABLE_N 8192        /* (64 KiB: all of segment 4000h. 4096 until patch 164: about 3,000 blocks, which Castlevania II has by its second screen, and a place was not found in 8 tries: everything forgotten and translated again) */
 #define KEY_RAM 0xFFFF
 #define CODE_LIMIT 0xF000
 
@@ -63,7 +63,8 @@ static void code_bank(uint16_t seg) {
 }
 
 static void flush(void) {
-    _fmemset(TABLE, 0, TABLE_N * sizeof(blk_t));
+    _fmemset(TABLE, 0, 0x8000);
+    _fmemset(TABLE + TABLE_N / 2, 0, 0x8000);
     code_bank(DRC_CODE_SEG);
     drc_link = 0;
     drc_flushes++;
@@ -139,6 +140,27 @@ static const uint8_t __far op_cyc[256] = {
 #define RD(x) ((x) << 3)
 #define F_END 0x40
 #define F_OUT 0x80
+
+// The bytes being translated: read once, where they are (the ROM's
+// segments, the work RAM, the high RAM), not a call of gbf_read for each
+// look at each byte (a block's translation took about 9,000 cycles)
+static uint8_t tbuf[128];
+static uint16_t tbase;
+static uint8_t tlen;
+static inline uint8_t rb(uint16_t a) {
+    uint16_t o = a - tbase;
+    return o < tlen ? tbuf[o] : gbf_read(a);
+}
+static void tfill(uint16_t pc) {
+    tbase = pc;
+    uint16_t top = pc < 0x4000 ? 0x4000 : pc < 0x8000 ? 0x8000 : pc >= 0xC000 && pc < 0xE000 ? 0xE000 : pc >= 0xFF80 ? 0xFFFF : pc;
+    uint16_t n = top - pc;
+    if (n > sizeof(tbuf)) n = sizeof(tbuf);
+    tlen = n;
+    if (!n) return;
+    if (pc < 0x8000) _fmemcpy(tbuf, MK_FP(drc_segtab[pc >= 0x4000], pc), n);
+    else memcpy(tbuf, (const uint8_t*) (pc - 0x6000), n);
+}
 
 static uint8_t interp_op(uint8_t op, uint8_t cb) {
     switch (op) {
@@ -221,6 +243,7 @@ static uint8_t idle;        // the block is a loop that waits: 1 on memory, 2 on
 static uint8_t idle_i;      // ... and this instruction is its jump back
 static uint8_t cur_i;       // the instruction being translated
 static uint16_t cur_dir;    // the place its access through BC, DE or HL is known to be at (i_dir), or 0
+static uint16_t cur_cart;   // ... or the address, when that is in the cartridge's RAM
 static uint8_t cur_wait;    // translating a waiting loop's read of STAT: the modes it goes round in
 static uint8_t idle_first;  // translating that loop's first instruction (its read of STAT)
 static uint8_t stat_at[3], stat_mask[3], n_stat;   // such loops inside the block: their STAT reads, the modes
@@ -363,6 +386,25 @@ static uint16_t slow_starts(uint16_t j, uint8_t hl, uint8_t wr) {
 }
 #define SLOW_ENDS(done) (code[(done) - 1] = code_top - (done))
 
+// An access to a known address in the cartridge's RAM: "is it plain RAM
+// and enabled; ES = its segment", then the caller's instruction on
+// es:[address]; cart_else: "jmp done", and the usual code follows for when
+// it is not
+static uint16_t cart_open(void) {
+    E(0x80); E(0x3E); EW(ADDR(drc_ram_ok)); E(1);   // cmp byte [drc_ram_ok], 1
+    E(0x75); E(0);                                  // jne slow
+    uint16_t j = code_top;
+    E(0x8E); E(0x06); EW(ADDR(drc_ram_seg));        // mov es, [drc_ram_seg]
+    E(0x26);                                        // es:
+    return j;
+}
+static uint16_t cart_else(uint16_t j) {
+    E(0xEB); E(0);
+    uint16_t done = code_top;
+    code[j - 1] = code_top - j;
+    return done;
+}
+
 // r (an x86 8 bit register) = the byte at HL (hl) or at SI
 static void read_to(uint8_t r, uint8_t hl) {
     if (cur_dir) {
@@ -370,6 +412,12 @@ static void read_to(uint8_t r, uint8_t hl) {
         return;
     }
     clob();
+    uint16_t cdone = 0;
+    if (cur_cart) {
+        uint16_t cj = cart_open();
+        E(0x8A); E(0x06 | r << 3); EW(cur_cart);    // mov r, es:[..]
+        cdone = cart_else(cj);
+    }
     uint16_t j = range_check(hl);
     E(0x8A); E(0x80 | r << 3 | (hl ? 7 : 4)); EW(0xA000);   // mov r, [bx or si - 6000h]
     uint16_t done = slow_starts(j, hl, 0);
@@ -381,6 +429,7 @@ static void read_to(uint8_t r, uint8_t hl) {
         E(0x8A); E(0x06 | r << 3); EW(ADDR(drc_tmp));
     }
     SLOW_ENDS(done);
+    if (cdone) SLOW_ENDS(cdone);
 }
 
 // the byte at HL (hl) or at SI = r, or = imm when r is FFh; next: the
@@ -393,6 +442,13 @@ static void write_from(uint8_t r, uint8_t imm, uint8_t hl, uint16_t next) {
     }
     mat();
     nflush();
+    uint16_t cdone = 0;
+    if (cur_cart) {
+        uint16_t cj = cart_open();
+        if (r != 0xFF) { E(0x88); E(0x06 | r << 3); EW(cur_cart); }
+        else { E(0xC6); E(0x06); EW(cur_cart); E(imm); }
+        cdone = cart_else(cj);
+    }
     uint16_t j = range_check(hl);
     if (r != 0xFF) {
         E(0x88); E(0x80 | r << 3 | (hl ? 7 : 4)); EW(0xA000);
@@ -409,6 +465,7 @@ static void write_from(uint8_t r, uint8_t imm, uint8_t hl, uint16_t next) {
     call_stub(ST_WRT);
     EW(next);
     SLOW_ENDS(done);
+    if (cdone) SLOW_ENDS(cdone);
 }
 
 // A = A op x, the Game Boy's operation number (ADD ADC SUB SBC AND XOR OR
@@ -447,8 +504,8 @@ static void io_read(uint8_t n) {
 // known)
 static int16_t known_a(void) {
     for (uint8_t j = cur_i; j-- > 0;) {
-        uint8_t op = gbf_read(i_pc[j]);
-        if (op == 0x3E) return gbf_read(i_pc[j] + 1);
+        uint8_t op = rb(i_pc[j]);
+        if (op == 0x3E) return rb(i_pc[j] + 1);
         if (op == 0xAF) return 0;
         // LD r, n; LD r, A; LDH (n), A; LD (nn), A; NOP
         if (op == 0x06 || op == 0x0E || op == 0x16 || op == 0x1E || op == 0x26 || op == 0x2E
@@ -597,7 +654,7 @@ static void translate_block(void) {
     after_ei = 0;
     for (uint8_t i = 0; i < n_ins && !ended; i++) {
         uint16_t pc = i_pc[i], next = i_pc[i + 1];
-        uint8_t op = gbf_read(pc), b1 = gbf_read(pc + 1), b2 = gbf_read(pc + 2);
+        uint8_t op = rb(pc), b1 = rb(pc + 1), b2 = rb(pc + 2);
         uint16_t nn = b1 | (uint16_t) b2 << 8;
         uint8_t x = op >> 6, y = (op >> 3) & 7, z = op & 7, p = (op >> 4) & 3;
         live = i_live[i];
@@ -606,7 +663,7 @@ static void translate_block(void) {
         cur_wait = i == 0 && idle == 3 ? idle_modes : 0;
         for (uint8_t k = 0; k < n_stat; k++)
             if (stat_at[k] == i) cur_wait = stat_mask[k];
-        after_ei = i > 0 && gbf_read(i_pc[i - 1]) == 0xFB;
+        after_ei = i > 0 && rb(i_pc[i - 1]) == 0xFB;
         if (interp_op(op, b1)) {
             exit_interp(pc);
             ended = 1;
@@ -616,6 +673,8 @@ static void translate_block(void) {
         // it has them)
         cyc += op_cyc[op];
         cur_dir = (x == 0 && z == 2 && y < 4) ? i_dir[y >> 1][i] : i_dir[2][i];
+        cur_cart = 0;
+        if (cur_dir >= 0xA000) { cur_cart = cur_dir; cur_dir = 0; }
         if (x == 1) {
             if (z == 6) read_to(R8[y], 1);
             else if (y == 6) write_from(R8[z], 0, 1, next);
@@ -628,6 +687,16 @@ static void translate_block(void) {
                 E(alu_x86[y] | 2); E(0x06); EW(cur_dir);        // op al, [..]
             } else if (z == 6) {
                 clob();
+                uint16_t cdone = 0;
+                if (cur_cart) {
+                    // (ADC and SBC take C from AH, which the test would
+                    // lose: the usual way for those)
+                    if (y != 1 && y != 3) {
+                        uint16_t cj = cart_open();
+                        E(alu_x86[y] | 2); E(0x06); EW(cur_cart);
+                        cdone = cart_else(cj);
+                    }
+                }
                 uint16_t j = range_check(1);
                 if (y == 1 || y == 3) carry_in();
                 E(alu_x86[y] | 2); E(0x87); EW(0xA000);         // op al, [bx - 6000h]
@@ -637,6 +706,7 @@ static void translate_block(void) {
                 if (y == 1 || y == 3) carry_in();
                 E(alu_x86[y] | 2); E(0x06); EW(ADDR(drc_tmp));
                 SLOW_ENDS(done);
+                if (cdone) SLOW_ENDS(cdone);
             } else {
                 if (y == 1 || y == 3) carry_in();
                 E(alu_x86[y] | 2); E(0xC0 | R8[z]);              // op al, r
@@ -1039,7 +1109,7 @@ static void translate_block(void) {
         }
         // (EI: the instruction after it, then the dispatcher, which
         // enables the interrupts)
-        if (!ended && i > 0 && gbf_read(i_pc[i - 1]) == 0xFB) {
+        if (!ended && i > 0 && rb(i_pc[i - 1]) == 0xFB) {
             exit_to(next, 0);
             ended = 1;
         }
@@ -1058,7 +1128,7 @@ static uint8_t wait_modes(uint8_t s, uint8_t n) {
         for (uint8_t v = 0; v < 2; v++) {
             uint8_t a = (v ? 0xFC : 0x80) | m, z = 0, c = 0, cknown = 0, seen = 0;
             for (uint8_t i = s; i < n; i++) {
-                uint8_t op = gbf_read(i_pc[i]), b1 = gbf_read(i_pc[i] + 1);
+                uint8_t op = rb(i_pc[i]), b1 = rb(i_pc[i] + 1);
                 if (op == 0xF0 || op == 0xFA) {
                     if (b1 != 0x41 || seen || i != s) return 0;     // (STAT, once, first)
                     seen = 1;
@@ -1093,25 +1163,26 @@ static void scan_block(uint16_t pc) {
     uint16_t kv[3] = { 0, 0, 0 };
     uint8_t kn[3] = { 0, 0, 0 };
     while (n_ins < MAXI && total < 90) {
-        uint8_t op = gbf_read(pc);
+        uint8_t op = rb(pc);
         total += op_cyc[op] + 2;
-        uint8_t cb = gbf_read(pc + 1);
+        uint8_t cb = rb(pc + 1);
         uint8_t f = op_flags(op, cb);
         for (uint8_t k = 0; k < 3; k++)
-            i_dir[k][n_ins] = !kn[k] ? 0 : (kv[k] >= 0xC000 && kv[k] < 0xE000) || (kv[k] >= 0xFF80 && kv[k] < 0xFFFF) ? kv[k] - 0x6000 : 0;
+            i_dir[k][n_ins] = !kn[k] ? 0 : (kv[k] >= 0xC000 && kv[k] < 0xE000) || (kv[k] >= 0xFF80 && kv[k] < 0xFFFF) ? kv[k] - 0x6000
+                : kv[k] >= 0xA000 && kv[k] < 0xC000 ? kv[k] : 0;    // (A000h up: the cartridge's RAM, the address itself)
         {
             // the flags again, for an access that cannot leave the block
             uint8_t ox = op >> 6, oy = (op >> 3) & 7, oz = op & 7;
-            if (i_dir[2][n_ins]) {
+            if (i_dir[2][n_ins] && i_dir[2][n_ins] < 0xA000) {
                 if ((ox == 1 && oy == 6 && oz != 6) || op == 0x36 || op == 0x22 || op == 0x32) f = 0;
                 else if (op == 0x34 || op == 0x35) f = FZ | FH;
                 else if (op == 0xCB && (cb & 7) == 6 && (cb >> 6) != 1)
                     f = (cb >> 6) ? 0 : FALL | (((cb >> 3) & 7) == 2 || ((cb >> 3) & 7) == 3 ? RD(FC) : 0);
             }
-            if ((op == 0x02 && i_dir[0][n_ins]) || (op == 0x12 && i_dir[1][n_ins])) f = 0;
+            if ((op == 0x02 && i_dir[0][n_ins] && i_dir[0][n_ins] < 0xA000) || (op == 0x12 && i_dir[1][n_ins] && i_dir[1][n_ins] < 0xA000)) f = 0;
             // what the instruction does to BC, DE, HL
             uint8_t rr = (op >> 4) & 3;
-            if (ox == 0 && oz == 1 && !(op & 8) && rr < 3) { kn[rr] = 1; kv[rr] = cb | (uint16_t) gbf_read(pc + 2) << 8; }
+            if (ox == 0 && oz == 1 && !(op & 8) && rr < 3) { kn[rr] = 1; kv[rr] = cb | (uint16_t) rb(pc + 2) << 8; }
             else if (ox == 0 && oz == 3 && rr < 3) kv[rr] += (op & 8) ? -1 : 1;
             else if (op == 0x22 || op == 0x2A) kv[2]++;
             else if (op == 0x32 || op == 0x3A) kv[2]--;
@@ -1136,10 +1207,10 @@ static void scan_block(uint16_t pc) {
     if (!in_ram) {
         uint8_t kind = 1, loaded = 0;
         for (uint8_t i = 0; i < n_ins && i < 6; i++) {
-            uint8_t op = gbf_read(i_pc[i]), b1 = gbf_read(i_pc[i] + 1);
+            uint8_t op = rb(i_pc[i]), b1 = rb(i_pc[i] + 1);
             if ((op & 0xE7) == 0x20 || (op & 0xE7) == 0xC2 || op == 0x18 || op == 0xC3) {
                 // the first jump: back to the block's start?
-                uint16_t t = (op & 0xC0) ? b1 | (uint16_t) gbf_read(i_pc[i] + 2) << 8 : i_pc[i] + 2 + (int8_t) b1;
+                uint16_t t = (op & 0xC0) ? b1 | (uint16_t) rb(i_pc[i] + 2) << 8 : i_pc[i] + 2 + (int8_t) b1;
                 // (a jump to itself is a wait too: for an interrupt)
                 if (t == blk_pc && (loaded || (i == 0 && (op == 0x18 || op == 0xC3)))) {
                     idle = kind;
@@ -1148,7 +1219,7 @@ static void scan_block(uint16_t pc) {
                 }
                 break;
             } else if (op == 0xF0 || op == 0xFA) {
-                uint16_t a = op == 0xF0 ? 0xFF00 | b1 : b1 | (uint16_t) gbf_read(i_pc[i] + 2) << 8;
+                uint16_t a = op == 0xF0 ? 0xFF00 | b1 : b1 | (uint16_t) rb(i_pc[i] + 2) << 8;
                 if (a == 0xFF04 || a == 0xFF05) break;
                 if (a == 0xFF44) { if (kind < 2) kind = 2; }
                 else if (a == 0xFF41) kind = 3;
@@ -1168,11 +1239,11 @@ static void scan_block(uint16_t pc) {
     n_stat = 0;
     if (!in_ram) {
         for (uint8_t s = 1; s + 1 < n_ins && n_stat < 3; s++) {
-            if (gbf_read(i_pc[s]) != 0xF0 || gbf_read(i_pc[s] + 1) != 0x41) continue;
+            if (rb(i_pc[s]) != 0xF0 || rb(i_pc[s] + 1) != 0x41) continue;
             for (uint8_t i = s + 1; i < n_ins && i < s + 6; i++) {
-                uint8_t op = gbf_read(i_pc[i]), b1 = gbf_read(i_pc[i] + 1);
+                uint8_t op = rb(i_pc[i]), b1 = rb(i_pc[i] + 1);
                 if ((op & 0xE7) == 0x20 || (op & 0xE7) == 0xC2) {
-                    uint16_t t = (op & 0xC0) ? b1 | (uint16_t) gbf_read(i_pc[i] + 2) << 8 : i_pc[i] + 2 + (int8_t) b1;
+                    uint16_t t = (op & 0xC0) ? b1 | (uint16_t) rb(i_pc[i] + 2) << 8 : i_pc[i] + 2 + (int8_t) b1;
                     uint8_t m = t == i_pc[s] ? wait_modes(s, i + 1) : 0;
                     if (m) {
                         stat_at[n_stat] = s;
@@ -1224,11 +1295,12 @@ static blk_t __far *translate(uint16_t pc, uint16_t key) {
         blk_pc = pc;
         in_ram = key == KEY_RAM;
         sp_cart = gb.sp >= 0xA000 && gb.sp < 0xC000;
+        tfill(pc);
         scan_block(pc);
         if (in_ram) {
             // the bytes translated, then their number, before the code
             uint8_t len = i_pc[n_ins] - pc;
-            for (uint8_t i = 0; i < len; i++) E(gbf_read(pc + i));
+            for (uint8_t i = 0; i < len; i++) E(rb(pc + i));
             E(len);
         }
         b->pc = pc;

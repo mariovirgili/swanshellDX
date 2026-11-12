@@ -105,7 +105,7 @@ s_exit_dyn:
     cmp si, 0x4000
     jb 1f
     xor di, [drc_hashx]
-    and di, 4095
+    and di, 8191
     shl di, 3
     cmp es:[di], si
     jne 9f
@@ -117,7 +117,7 @@ s_exit_dyn:
     jmp far ptr es:[di + 4]
 1:
     xor di, [drc_hash0]
-    and di, 4095
+    and di, 8191
     shl di, 3
     cmp es:[di], si
     jne 9f

@@ -388,8 +388,13 @@ void gbf_io_write(uint8_t r, uint8_t v) {
         if (src >= 0xC000) {
             memcpy(gb_oam, gb_wram + (src & 0x1FFF), 0xA0);     // (the usual: from the work RAM)
         } else if (src >= 0xA000 && gb.ram_banks && (gb.ram_on || !gb.mbc) && gb.mbc != 2 && !(gb.mbc == 3 && gb.rtc_sel)) {
-            for (uint8_t i = 0; i < 0xA0; i++)                  // (from the cartridge's RAM)
-                gb_oam[i] = GBF_RAM((src & 0x1FFF) + i);
+            // (from the cartridge's RAM, in one copy: Super Mario Land 2
+            // does this every frame)
+#ifdef GB_WS
+            _fmemcpy(gb_oam, &GBF_RAM(src & 0x1FFF), 0xA0);
+#else
+            memcpy(gb_oam, &GBF_RAM(src & 0x1FFF), 0xA0);
+#endif
         } else {
             for (uint8_t i = 0; i < 0xA0; i++)
                 gb_oam[i] = gbf_read(src + i);

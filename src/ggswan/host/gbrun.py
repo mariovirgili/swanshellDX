@@ -489,7 +489,7 @@ if CYCLES and FUNC and fhot:
 if CYCLES and HOT and hot:
     tab = bytes(psram[0x14].raw)
     blocks = sorted((int.from_bytes(tab[i + 6:i + 8], 'little') >> 12, int.from_bytes(tab[i + 4:i + 6], 'little'),
-        int.from_bytes(tab[i:i + 2], 'little'), int.from_bytes(tab[i + 2:i + 4], 'little')) for i in range(0, 4096 * 8, 8) if tab[i + 2] | tab[i + 3])
+        int.from_bytes(tab[i:i + 2], 'little'), int.from_bytes(tab[i + 2:i + 4], 'little')) for i in range(0, 8192 * 8, 8) if tab[i + 2] | tab[i + 3])
     keys = [(b[0], b[1]) for b in blocks]
     by = collections.Counter(); size = {}
     for a, n in hot.items():
@@ -503,7 +503,7 @@ if CYCLES and HOT and hot:
 if stubcalls:
     tab = bytes(psram[0x14].raw)
     blocks = sorted((int.from_bytes(tab[i + 6:i + 8], 'little') >> 12, int.from_bytes(tab[i + 4:i + 6], 'little'),
-        int.from_bytes(tab[i:i + 2], 'little'), int.from_bytes(tab[i + 2:i + 4], 'little')) for i in range(0, 4096 * 8, 8) if tab[i + 2] | tab[i + 3])
+        int.from_bytes(tab[i:i + 2], 'little'), int.from_bytes(tab[i + 2:i + 4], 'little')) for i in range(0, 8192 * 8, 8) if tab[i + 2] | tab[i + 3])
     by = collections.Counter()
     for (seg, r), n in stubcalls.items():
         best = None

@@ -6,7 +6,7 @@ emulated by a dynamic recompiler (Z80 to V30MZ code), with the original
 interpreter kept for the parts that need it. The Game Gear video memory is
 mapped onto the WonderSwan's own tile and screen hardware.
 
-Status: fairly stable (patch 164). It has been tested mostly in the
+Status: fairly stable (patch 165). It has been tested mostly in the
 nileswan-medem emulator and with the host test tools; tests on real
 hardware are still to come.
 
@@ -365,7 +365,7 @@ it are listed in order without one.
 - lighter DYN lookup and class routine for deferred tile bytes
 - OUTI runs to CRAM handled in the run routine
 
-### Patches 90-164
+### Patches 90-165
 
 | Patch | Change |
 |---|---|
@@ -444,3 +444,4 @@ it are listed in order without one.
 | 162 | gbswan, the picture: the patterns' place (LCDC bit 4) and the sprites' size (bit 2) changed in the middle of the frame. Each of the Game Boy's two maps is now kept as two WS maps, one for each place the patterns can come from, and the line's list names the one to show (before, the whole frame had the bit's last value: a status bar with its own patterns was wrong); a sprite is 8 x 16 if the bit was set at its top line. For the two more maps (they must be below 8000h) the stack went to D000h-D7FFh and the sound's waves to 0FC0h. dmg-acid2 in the plugin: right but for the "!" (an eleventh sprite, shown) and the lines of a window starting in the middle of the screen. `gbrun.py` drew its pictures a line early at every split and with the last palettes: with that corrected the eight games' pictures at frame 860, with keys, are the PC's pixel for pixel (the few to a thousand pixels of difference in the notes of 159-161 were the tool's). Cycles a frame within 1% of 161. Not run on a WonderSwan |
 | 163 | gbswan after its first run in nileswan-medem (Gio, patch 161): the pictures right, the games in play far slower than the scenes measured here said (Yoshi 8 frames a second, Super Mario Land 2 27-35). In the recompiler now: DAA; RLC, RL, SLA, SWAP, SRL, RES, SET and the like on (HL) (they went to the interpreter, an instruction at a time); the high RAM through HL, BC, DE with no routine; a pointer loaded with a constant in the block (LD HL, nn, then INC and DEC) is that address, with nothing checked; a constant address in the cartridge's RAM and a stack there, in line. Yoshi in play 349,589 cycles a frame to 53,446, Super Mario Land 2 in its first level 82,174 to 59,132 (51,430 is full speed: both still over). START + Y4 (Y left) shows the patch number too (PAT). Not run on a WonderSwan |
 | 164 | gbswan: a scrolling picture went a step back every few frames (Gio: Super Mario Land's scroll in jerks). Two faults in how a frame's list of scroll and map changes reaches the screen. The list was marked ready after the wait for the frame's time, by when the vertical blank interrupt, served during the wait, could have shown it already: the mark then stood for the other list, an older frame's, shown next. And the frames' time was counted in whole WonderSwan frames, so every Game Boy frame started at a vertical blank and ended near the next: a little more work and its picture missed it. Now the list is ready when made, one not shown yet is not made over, and the frames start 200.91 WonderSwan lines apart by the line counter. In `gbrun.py`, walking right in Super Mario Land, screen 2's scroll at each WonderSwan frame: before 252 252 254 255 0 0 255 1 (back and forth), now every value once and in order, one frame in four or five shown twice (59.7 pictures a second on a 75.5 Hz screen). Not run on a WonderSwan |
+| 165 | gbswan: the blocks' table has 8,192 places (4,096: with about 3,000 blocks a new one found no place in 8 tries and everything was forgotten and translated again, which is the pause Gio saw in Castlevania II with FLS at 1); the translator reads a block's bytes once, from where they are; a pointer the block loads into the cartridge's RAM is accessed in line; the OAM copied from the cartridge's RAM in one move (Super Mario Land 2, every frame). Super Mario Land 2 in its first level 59,132 cycles a frame to 55,454, Yoshi in play 53,446 to 52,490 (51,430 is full speed). Balloon Kid in play measured for the first time: 62,267, of which about 17,000 are the translation of the two new blocks a frame that scene meets (some 9,000 cycles a block: the translator is slow, and that is what a game does when something new comes on the screen). Not run on a WonderSwan |
