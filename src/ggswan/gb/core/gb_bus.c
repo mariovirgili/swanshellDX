@@ -322,9 +322,9 @@ uint8_t gb_peek(uint16_t a) {
 
 uint8_t gb_read(uint16_t a) {
     if (a >= 0x8000 && a < 0xA000) {
-        if (gb_ppu_vram_blocked()) return 0xFF;
+        if (gb_ppu_vram_blocked(false)) return 0xFF;
     } else if (a >= 0xFE00 && a < 0xFF00) {
-        if (gb.dma_active || gb_ppu_oam_blocked()) return 0xFF;
+        if (gb.dma_active || gb_ppu_oam_blocked(false)) return 0xFF;
     }
     return gb_peek(a);
 }
@@ -335,7 +335,7 @@ void gb_write(uint16_t a, uint8_t v) {
         cart_write(a, v);
         break;
     case 4:
-        if (!gb_ppu_vram_blocked()) gb_vram[a & 0x1FFF] = v;
+        if (!gb_ppu_vram_blocked(true)) gb_vram[a & 0x1FFF] = v;
         break;
     case 5:
         ram_write(a, v);
@@ -347,7 +347,7 @@ void gb_write(uint16_t a, uint8_t v) {
         if (a < 0xFE00) {
             gb_wram[a & 0x1FFF] = v;
         } else if (a < 0xFEA0) {
-            if (!gb.dma_active && !gb_ppu_oam_blocked()) gb.oam[a - 0xFE00] = v;
+            if (!gb.dma_active && !gb_ppu_oam_blocked(true)) gb.oam[a - 0xFE00] = v;
         } else if (a < 0xFF00) {
         } else if (a < 0xFF80) {
             io_write(a & 0xFF, v);

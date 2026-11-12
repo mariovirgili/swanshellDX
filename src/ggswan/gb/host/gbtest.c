@@ -13,6 +13,7 @@
  *   -k  keys (hex: right 01 left 02 up 04 down 08 A 10 B 20 SELECT 40 START 80) from a frame on
  *   -q  only the result's line
  *   -n  run all the frames (no stop at a test's end)
+ *   -s  the background's map as text at the end (tests that write their result with a font at its ASCII places)
  *   -m  a Mooneye test: LD B,B ends it (Blargg's CPU tests run LD B,B too)
  * The last line: PASS, FAIL or END (no verdict), frames, clock, the
  * picture's hash. Exit code 0 PASS, 1 FAIL, 2 END, 3 could not load.
@@ -43,7 +44,7 @@ static uint32_t screen_hash(void) {
 int main(int argc, char **argv) {
     const char *rom_name = NULL, *out = NULL, *keys = NULL;
     long frames = 3600;
-    int trace = 0, all = 0, mooneye = 0;
+    int trace = 0, all = 0, mooneye = 0, text = 0;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-f") && i + 1 < argc) frames = atol(argv[++i]);
         else if (!strcmp(argv[i], "-o") && i + 1 < argc) out = argv[++i];
@@ -52,6 +53,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-q")) quiet = 1;
         else if (!strcmp(argv[i], "-n")) all = 1;
         else if (!strcmp(argv[i], "-m")) mooneye = 1;
+        else if (!strcmp(argv[i], "-s")) text = 1;
         else rom_name = argv[i];
     }
     if (!rom_name) { fprintf(stderr, "usage: gbtest rom.gb [-f frames] [-o out.pgm] [-t] [-k frame:keys,...] [-q] [-n] [-m]\n"); return 3; }
@@ -106,6 +108,16 @@ int main(int argc, char **argv) {
             for (int x = 0; x < 160; x++)
                 fputc(255 - gb_screen[y][x] * 85, o);
         fclose(o);
+    }
+    if (text) {
+        const uint8_t *map = gb_vram + ((gb.io[GB_LCDC] & 8) ? 0x1C00 : 0x1800);
+        for (int r = 0; r < 18; r++) {
+            for (int c = 0; c < 20; c++) {
+                uint8_t ch = map[r * 32 + c];
+                fputc(ch >= 0x20 && ch < 0x7F ? ch : ' ', stdout);
+            }
+            fputc('\n', stdout);
+        }
     }
     if (!quiet) printf("\n");
     printf("%s frames %ld clock %lu hash %08X\n", verdict == 0 ? "PASS" : verdict == 1 ? "FAIL" : "END",

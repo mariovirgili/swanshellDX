@@ -12,7 +12,7 @@ The machine: a DMG (the boot ROM's revisions A, B, C), from the state its
 boot ROM leaves at 0100h (the boot ROM itself is not run and not needed;
 the logo it leaves in the video memory is not there).
 
-## Results (patch 155)
+## Results (patch 156)
 
 | tests | passed |
 |---|---|
@@ -22,10 +22,34 @@ the logo it leaves in the video memory is not there).
 | Blargg `halt_bug` | yes (its picture read, then by hash) |
 | Blargg `interrupt_time` | not run: the ROM is for the Game Boy Color only |
 | Mooneye acceptance, the tests for the DMG: bits 3, instr 1, interrupts 1, oam_dma 3, serial 1, timer 13, and the 32 in the directory itself (the boot state, the instructions' and interrupts' timing, HALT, EI, DI) | 54 of 54 |
-| Mooneye acceptance/ppu | 5 of 12 (the LCD's timing is the next step) |
+| Mooneye acceptance/ppu (the LCD's timing as the CPU sees it: the modes, the interrupts, LY, LYC, the LCD turned on, the sprites' cost) | 12 of 12 |
+| The older Mooneye LCD tests in wilbertpol's fork (`acceptance/gpu`, those for the DMG; most were checked by their author on the Game Boy Pocket or Color, not on a DMG) | 33 of 47 |
 | Mooneye emulator-only: mbc1 | 12 of 13 (not `multicart_rom_8Mb`: the cartridges with several games are not told apart) |
 | Mooneye emulator-only: mbc2, mbc5 | 7 of 7, 8 of 8 |
 | dmg-acid2 | yes (the same picture as its reference) |
+
+What the LCD tests settled, as this model counts (dots from the line's
+start, the CPU seeing them every 4):
+
+- STAT shows mode 2 from dot 4, mode 3 from dot 84, mode 0 from
+  256 + SCX's low 3 bits + what the sprites add (6 each, and once for
+  each background tile a sprite starts in what is left of that tile less
+  2; the sum in whole cycles);
+- the interrupts of modes 2 and 0 are asked 4 dots before STAT shows the
+  mode; the vertical blank's at dot 4 of line 144, where mode 2's is
+  asked once more;
+- LY reads 0 from dot 4 of line 153; LYC is compared with nothing in a
+  line's first 4 dots, in line 153 with 153 for 4 dots, then with 0;
+- the line after the LCD is turned on is 4 dots shorter and has no
+  mode 2;
+- the video memory cannot be read from dot 80 and written from dot 84;
+  the OAM cannot be read from the line's start, nor written from dot 4,
+  but can be written at dot 80;
+- with the LCD off LYC's comparison stays as it was.
+
+The 14 older tests not passed measure single dots with the scroll's fine
+part and the sprites, or expect the vertical blank's interrupt a cycle
+away from where the tests checked on a DMG put it.
 
 ## Known differences
 

@@ -27,7 +27,7 @@ static void scan_sprites(void) {
 // fine part, for the window, and for each sprite (6, and what is left of
 // the background tile it starts in, once a tile)
 static uint16_t mode3_length(void) {
-    uint16_t len = 172 + (gb.io[GB_SCX] & 7);
+    uint16_t len = 0;
     uint8_t seen[32];
     memset(seen, 0, sizeof(seen));
     // (leftmost first; the same X: OAM order)
@@ -40,10 +40,6 @@ static uint16_t mode3_length(void) {
     for (uint8_t i = 0; i < line_spr_n; i++) {
         uint8_t x = gb.oam[order[i] * 4 + 1];
         if (x >= 168) continue;
-        if (x == 0) {
-            len += 11;
-            continue;
-        }
         uint8_t bx = x + gb.io[GB_SCX];
         if (!seen[bx >> 3]) {
             seen[bx >> 3] = 1;
@@ -52,7 +48,9 @@ static uint16_t mode3_length(void) {
         }
         len += 6;
     }
-    return len;
+    // (what the sprites add is seen by the CPU in whole cycles, rounded
+    // down: Mooneye's intr_2_mode0_timing_sprites)
+    return 172 + (gb.io[GB_SCX] & 7) + (len & ~3);
 }
 
 static void render_line(void) {
@@ -123,15 +121,19 @@ static void update(void) {
     uint8_t mode, pulse = 0;
     uint8_t stat = gb.io[GB_STAT];
     if (!gb.lcd_on) {
+        // (off: mode 0, and LYC's comparison stays as it was, whatever is
+        // written to LYC, until the LCD is on again)
         gb.mode = 0;
-        gb.stat_line = 0;
+        uint8_t s = (stat & 0x40) && gb.lyc_match;
+        if (s && !gb.stat_line) gb.io[GB_IF] |= GB_INT_STAT;
+        gb.stat_line = s;
         return;
     }
     if (gb.line < 144) {
         if (gb.dot < 4) {
             mode = 0;
             pulse = gb.line != 0 && !gb.first_line;     // mode 2's interrupt, 4 dots before the mode reads 2
-        } else if (gb.dot < 80) {
+        } else if (gb.dot < 84) {
             mode = gb.first_line ? 0 : 2;
             pulse = gb.line == 0 && gb.dot < 8 && !gb.first_line;
         } else if (gb.dot < gb.mode3_end) {
@@ -149,7 +151,10 @@ static void update(void) {
     }
     gb.mode = mode;
     gb.lyc_match = gb.ly_cmp == gb.io[GB_LYC];
-    uint8_t sig = ((stat & 0x40) && gb.lyc_match) || ((stat & 0x08) && mode == 0)
+    // (the interrupts of modes 2 and 0 are asked 4 dots before STAT shows
+    // the mode: the pulse above, and here)
+    uint8_t irq0 = mode == 0 || (gb.line < 144 && gb.dot >= 84 && gb.dot + 4 >= gb.mode3_end);
+    uint8_t sig = ((stat & 0x40) && gb.lyc_match) || ((stat & 0x08) && irq0)
         || ((stat & 0x10) && mode == 1) || ((stat & 0x20) && (mode == 2 || pulse));
     if (sig && !gb.stat_line) gb.io[GB_IF] |= GB_INT_STAT;
     gb.stat_line = sig;
@@ -172,7 +177,7 @@ void gb_ppu_tick(void) {
         if (gb.dot == 80) {
             if (gb.line == gb.io[GB_WY]) gb.win_on_frame = 1;
             scan_sprites();
-            gb.mode3_end = 80 + mode3_length();
+            gb.mode3_end = 84 + mode3_length();
             render_line();
         }
     } else if (gb.line == 144 && gb.dot == 4) {
@@ -200,7 +205,7 @@ void gb_ppu_write(uint8_t r, uint8_t v) {
             gb.line = 0;
             gb.dot = 4;
             gb.first_line = 1;
-            gb.mode3_end = 80 + 172;
+            gb.mode3_end = 84 + 172;
             gb.win_line = 0;
             gb.win_on_frame = 0;
             update();
@@ -231,11 +236,22 @@ void gb_ppu_write(uint8_t r, uint8_t v) {
     }
 }
 
-bool gb_ppu_vram_blocked(void) {
-    return gb.lcd_on && gb.mode == 3;
+// The video memory and the OAM cannot be reached while the LCD uses
+// them; reads and writes are refused at slightly different dots (Mooneye's
+// lcdon_timing and lcdon_write_timing): the video memory is not read from
+// dot 80, 4 dots before STAT shows mode 3, and not written from 84; the
+// OAM is not read from the line's start and not written from dot 4, and
+// can be written at dot 80. The line after the LCD is turned on has no
+// mode 2.
+bool gb_ppu_vram_blocked(bool write) {
+    if (!gb.lcd_on || gb.line >= 144 || gb.dot >= gb.mode3_end) return false;
+    return gb.dot >= (write || gb.first_line ? 84 : 80);
 }
-bool gb_ppu_oam_blocked(void) {
-    return gb.lcd_on && (gb.mode == 2 || gb.mode == 3);
+bool gb_ppu_oam_blocked(bool write) {
+    if (!gb.lcd_on || gb.line >= 144 || gb.dot >= gb.mode3_end) return false;
+    if (gb.first_line) return gb.dot >= 84;
+    if (write) return gb.dot >= 4 && gb.dot != 80;
+    return true;
 }
 
 void gb_ppu_reset(void) {
@@ -249,7 +265,7 @@ void gb_ppu_reset(void) {
     // blank (LY reads 0 there, STAT 85h)
     gb.line = 153;
     gb.dot = 400;
-    gb.mode3_end = 80 + 172;
+    gb.mode3_end = 84 + 172;
     memset(gb_screen, 0, sizeof(gb_screen));
     update();
 }

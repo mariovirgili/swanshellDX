@@ -54,6 +54,9 @@ for sub in ('bits', 'instr', 'interrupts', 'oam_dma', 'ppu', 'serial', 'timer', 
 add('Mooneye emulator-only/mbc1', 'mooneye-test-suite/emulator-only/mbc1', ['-m'], 600)
 add('Mooneye emulator-only/mbc2', 'mooneye-test-suite/emulator-only/mbc2', ['-m'], 600)
 add('Mooneye emulator-only/mbc5', 'mooneye-test-suite/emulator-only/mbc5', ['-m'], 600)
+def wp(r):
+    return dmg(os.path.splitext(os.path.basename(r))[0])
+add('Mooneye (wilbertpol) gpu', 'mooneye-test-suite-wilbertpol/acceptance/gpu', ['-s', '-n'], 240, wp)
 add('dmg-acid2', 'dmg-acid2', ['-n'], 60)
 
 def acid2_ok(pgm):
@@ -76,7 +79,11 @@ for title, roms, flags, frames in groups:
         line = p.stdout.strip().split('\n')[-1]
         v = line.split()[0] if line else 'ERR'
         h = line.split()[-1] if line else ''
-        if 'dmg-acid2' in r: v = 'PASS' if acid2_ok(pgm) else 'FAIL'
+        if '-s' in flags:
+            # (the older Mooneye tests: the result is on the screen)
+            t = p.stdout.upper()
+            v = 'FAIL' if 'FAIL' in t or '!' in t else 'PASS' if 'TEST OK' in t or t.count(': OK') >= 2 else 'END'
+        elif 'dmg-acid2' in r: v = 'PASS' if acid2_ok(pgm) else 'FAIL'
         elif v == 'END' and r in SEEN: v = 'PASS' if SEEN[r] == h else 'FAIL'
         res.append((r, v, h))
     n = sum(1 for x in res if x[1] == 'PASS')

@@ -147,8 +147,8 @@ void gb_ppu_reset(void);
 void gb_ppu_tick(void);             // 4 dots
 uint8_t gb_ppu_read(uint8_t reg);
 void gb_ppu_write(uint8_t reg, uint8_t v);
-bool gb_ppu_vram_blocked(void);
-bool gb_ppu_oam_blocked(void);
+bool gb_ppu_vram_blocked(bool write);
+bool gb_ppu_oam_blocked(bool write);
 // the picture: 160 x 144 of shades 0 (lightest) to 3, drawn a line at a time
 extern uint8_t gb_screen[144][160];
 
