@@ -681,17 +681,15 @@ s_wrt:
     mov [si - 0x6000], al
     cmp si, 0x9800
     jb 4f
-    xor ah, ah
-    cmp byte ptr [gbv_tiles_8000], 0
-    jnz 7f
-    cmp al, 0x80
-    jae 7f
-    inc ah                      // (LCDC bit 4 clear: 0-127 are the patterns from 9000h)
-7:
-    or ah, 0x08                 // palette 4
+    mov ah, 0x08                // palette 4
     sub si, 0x9800
     shl si, 1
-    mov [si + 0x4800], ax
+    mov [si + 0x4800], ax       // (the map for LCDC bit 4 set)
+    cmp al, 0x80
+    jae 7f
+    inc ah                      // (bit 4 clear: 0-127 are the patterns from 9000h)
+7:
+    mov [si + 0x1000], ax
 4:
     mov ax, di
     jmp 9b

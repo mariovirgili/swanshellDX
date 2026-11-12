@@ -12,7 +12,7 @@ void gb_emulate(void);
 void gb_vblank_entry(void);
 void gb_line_entry(void);
 void gb_vblank_irq(void);
-uint8_t gbv_sprites_asm(uint8_t tall);    // gb_asm.s: the WS sprite table from the OAM; how many
+uint8_t gbv_sprites_asm(void);           // gb_asm.s: the WS sprite table from the OAM; how many
 void gb_frame_keys(void);       // gb_main.c: the keys, once a frame (and the way out)
 extern volatile uint16_t gbv_vblanks;
 void gbv_stats_toggle(void);

@@ -102,12 +102,12 @@ $(ROM) $(ELF): $(ELF_STAGE1)
 	@$(MKDIR) -p $(@D)
 	$(_V)$(BUILDROM) -o $(ROM) --output-elf $(ELF) $(BUILDROMFLAGS) $<
 ifeq ($(GB),1)
-# gbswan: the C data must end below 1B00h (the sound's waves are at 1B00h,
-# the stack is 1C00h-1FFFh and the Game Boy's video memory starts at
-# 2000h: src/ggswan/GB-MEMORY-MAP.md)
+# gbswan: the C data must end below 0FC0h (the sound's waves are at 0FC0h,
+# two of the picture's maps at 1000h-1FFFh and the Game Boy's video memory
+# starts at 2000h: src/ggswan/GB-MEMORY-MAP.md)
 	$(_V)end=$$($(NM) $(ELF) | awk '$$3 == "__wf_heap_start" && $$1 != "00000000" { print $$1 }' | head -1); \
-	if [ -z "$$end" ] || [ $$((0x$$end)) -gt $$((0x1B00)) ]; then \
-		echo "gbswan: C data end at $$end, over 1B00h"; rm -f $(ROM); exit 1; fi
+	if [ -z "$$end" ] || [ $$((0x$$end)) -gt $$((0x0FC0)) ]; then \
+		echo "gbswan: C data end at $$end, over 0FC0h"; rm -f $(ROM); exit 1; fi
 endif
 
 $(ELF_STAGE1): $(OBJS)

@@ -44,7 +44,7 @@ background and the window, switched at the right lines by the line
 interrupt, with the scroll the program gave each line; the sprites are
 the WonderSwan's.
 
-## Where it is (patch 161)
+## Where it is (patch 162)
 
 The CPU is a recompiler (`gb/ws/gb_drc.c`, `gb_drc_asm.s`; `GB-ABI.md`),
 there is sound (`gb/ws/gb_sound.c`: what it does and does not, at its
@@ -66,29 +66,32 @@ Right, in the plugin:
 - rtc3test's basic tests and range tests pass but "Tick" (1004.6 ms
   for 1000: the clock counts by frames);
 - with keys, by Game Boy frames on both sides (`GBRUN_GBTIME`), the
-  160 x 144 at frame 860 against the same machine on the PC
-  (`gbftest`, its picture of one or two frames before: the plugin
-  shows a frame late): Balloon Kid, Batman, Castlevania II and Yoshi
-  pixel for pixel (Castlevania II at frames 700, 780 and 840 too); Super Mario
-  Land 3 pixels, Bubble Ghost 6 (not looked into), Super Mario Land 2
-  140; R-Type more than a thousand at every frame tried, as before
-  this patch and the one before (its stars and enemies a frame or more
-  apart: looked at, not explained).
+  160 x 144 at frame 860 is, pixel for pixel, the same machine's on the
+  PC (`gbftest`, its picture of one or two frames before: the plugin
+  shows a frame late) in all eight games. The differences the notes of
+  patches 159-161 had (Super Mario Land 3 pixels, Bubble Ghost 6, Super
+  Mario Land 2 140, R-Type over a thousand) were `gbrun.py`'s, not the
+  plugin's: it drew a line with what the line interrupt had already
+  changed (on the WonderSwan that shows from the next line, which is
+  why the list is set a line early) and with the palettes of the
+  frame's end;
+- dmg-acid2: `GB-ACCURACY.md` (right but for the eleventh sprite and
+  the lines of a window that starts in the middle of the screen).
 
 Fast enough? A Game Boy frame's time is 51,430 V30MZ cycles. Cycles a
 Game Boy frame over Game Boy frames 700-860, the same keys at the same
 Game Boy frames for every build, sound included:
 
-| game | patch 159 | patch 160 | patch 161 |
-|---|---|---|---|
-| Super Mario Land 2 (choosing a file) | 17,212 | 18,192 | 18,341 |
-| Bubble Ghost (title) | 33,117 | 33,228 | 16,602 |
-| Balloon Kid | 30,071 | 26,461 | 25,271 |
-| Super Mario Land | 32,780 | 32,623 | 32,003 |
-| Batman: Return of the Joker | 68,590 | 45,927 | 44,572 |
-| Castlevania II (first level) | 72,209 | 64,653 | 45,478 |
-| Yoshi | 54,982 | 54,034 | 46,035 |
-| R-Type | 69,048 | 58,492 | 50,425 |
+| game | patch 159 | patch 160 | patch 161 | patch 162 |
+|---|---|---|---|---|
+| Super Mario Land 2 (choosing a file) | 17,212 | 18,192 | 18,341 | 18,406 |
+| Bubble Ghost (title) | 33,117 | 33,228 | 16,602 | 16,616 |
+| Balloon Kid | 30,071 | 26,461 | 25,271 | 25,492 |
+| Super Mario Land | 32,780 | 32,623 | 32,003 | 32,071 |
+| Batman: Return of the Joker | 68,590 | 45,927 | 44,572 | 44,873 |
+| Castlevania II (first level) | 72,209 | 64,653 | 45,478 | 45,387 |
+| Yoshi | 54,982 | 54,034 | 46,035 | 45,618 |
+| R-Type | 69,048 | 58,492 | 50,425 | 50,428 |
 
 All eight are under a frame's time in these scenes, R-Type by 2%:
 other scenes of these games, and other games, will not all be.

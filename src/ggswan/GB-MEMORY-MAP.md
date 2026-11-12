@@ -5,7 +5,7 @@ gbswan is the Game Boy (DMG) plugin: `make -f Makefile.ggswan GB=1`,
 `src/ggswan/gb` (`ws/` the plugin, `core/` the Game Boy, `host/` the PC tools) (none of ggswan's is compiled in, and none of gbswan's in
 the other four plugins).
 
-This is where things are in the plugin as it is (patch 160), read from
+This is where things are in the plugin as it is (patch 162), read from
 the linked `build/gbswan.elf` and from the sources, and checked by
 running the plugin in Unicorn (`host/gbrun.py`). Gio ran the video test
 of patches 153-154 in nileswan-medem: the 2 bits a pixel color mode
@@ -35,14 +35,15 @@ So gbswan cannot be one more `-D` on those sources.
 | internal RAM | what | |
 |---|---|---|
 | 0000h-003Fh | interrupt vectors | |
-| 0040h-1AFFh | C data and bss: 6,848 bytes | used: 0040h-058Ah (the Game Boy's registers and what the machine keeps, FatFs's volume and file, the path, the recompiler's and the picture's variables). The Makefile stops the build if `__wf_heap_start` is over 1B00h |
-| 1B00h-1B3Fh | the WS's four sound waves | (the WS wants them below 4000h) |
-| 1C00h-1FFFh | stack, 1 KiB | `gb_run` (`gb/ws/gb_asm.s`) sets SP to 2000h before the game. Before that (the ROM being read: FatFs) the stack is the C library's, down from 4000h |
+| 0040h-0FBFh | C data and bss: 3,968 bytes | used: 0040h-05B3h (the Game Boy's registers and what the machine keeps, FatFs's volume and file, the path, the recompiler's and the picture's variables). The Makefile stops the build if `__wf_heap_start` is over 0FC0h |
+| 0FC0h-0FFFh | the WS's four sound waves | (the WS wants them below 4000h) |
+| 1000h-17FFh | the WS map kept for the Game Boy's map at 9800h, LCDC bit 4 clear | tiles 0-127 are WS tiles 256-383 (the patterns from 9000h). A WS map must be below 8000h |
+| 1800h-1FFFh | the same for the map at 9C00h | |
 | 2000h-37FFh | the Game Boy's patterns, its 8000h-97FFh | WS tiles 0-383 |
 | 3800h-3FFFh | the Game Boy's two maps, its 9800h-9FFFh, as it writes them | (WS tiles 384-511: never named) |
 | 4000h-47FFh | WS screen 1's map | black at the sides, clear in the middle |
-| 4800h-4FFFh | the WS map kept for the Game Boy's map at 9800h | an entry rewritten when its byte is |
-| 5000h-57FFh | the WS map kept for the Game Boy's map at 9C00h | |
+| 4800h-4FFFh | the WS map kept for the Game Boy's map at 9800h, LCDC bit 4 set | tile n is WS tile n. An entry (in both maps) is rewritten when its byte is; the line's list says which map is shown |
+| 5000h-57FFh | the same for the map at 9C00h | |
 | 5800h-59FFh | WS sprite table (128 sprites) | |
 | 5A00h-5CBFh | WS tiles 928-971: the font of the text before the game | |
 | 5FF0h-5FFFh | WS tile 1023: all color 0 | screen 1's only tile |
@@ -53,10 +54,12 @@ So gbswan cannot be one more `-D` on those sources.
 | A000h-A48Fh | the frame's changes of scroll, window, LCDC and BGP, by line | 146 of 8 bytes |
 | A500h-B75Fh, B800h-CA5Fh | the two lists the line interrupt works from (shown, being made) | 294 of 16 bytes |
 | CB00h-CB7Fh | the sprites' order (kept from frame to frame) and the keys being sorted | |
+| CB80h-CC2Fh | by a sprite's Y: is it 8 x 16 (LCDC bit 2 at its top line) | |
+| D000h-D7FFh | stack, 2 KiB | `gb_run` (`gb/ws/gb_asm.s`) sets SP to D800h before the game. Before that (the ROM being read: FatFs) the stack is the C library's, down from 4000h |
 | FE00h-FFFFh | the WS's palettes | 0: the backdrop, color 0's shade; 1: black (and the figures' white); 4: the background; 12, 13: the sprites |
 
 The rest (8000h-9DFFh, where the echo of the work RAM would fall, and
-CB80h-FDFFh) is free.
+CC30h-CFFFh, D800h-FDFFh) is free.
 
 ## The cartridge
 

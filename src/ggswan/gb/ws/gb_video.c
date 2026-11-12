@@ -4,16 +4,19 @@
  *
  * - the patterns are the Game Boy's own video memory, where it is;
  * - screen 2, seen only inside 160 x 144 in the middle, is the background
- *   and the window: each of the Game Boy's two maps has a WonderSwan map
- *   kept next to it (an entry rewritten when its byte is), and the scroll,
- *   the map and what is shown are changed at the lines the program changed
- *   them at, or where the window begins, by the line interrupt;
+ *   and the window: each of the Game Boy's two maps has two WonderSwan
+ *   maps kept next to it (their entries rewritten when its byte is), one
+ *   for each place the patterns can be taken from (LCDC bit 4), and the
+ *   scroll, the map and what is shown are changed at the lines the
+ *   program changed them at, or where the window begins, by the line
+ *   interrupt;
  * - color 0 of the background is clear: behind it are the sprites the
  *   Game Boy has "behind the background", then the backdrop, which has
  *   color 0's shade;
  * - screen 1 is the black at the two sides;
- * - the sprites are the Game Boy's 40 (an 8 x 16 one is two), leftmost
- *   first, as the DMG puts them over one another.
+ * - the sprites are the Game Boy's 40 (an 8 x 16 one is two: the size is
+ *   the one set at the sprite's top line), leftmost first, as the DMG
+ *   puts them over one another.
  *
  * A window that does not start at the left edge (rare: wipes, panels at
  * the side) has no hardware of its own: on its lines screen 2, cut at the
@@ -25,7 +28,9 @@
  *
  * The background's palette is set at the lines too. Not done yet: the
  * sprites' palettes changed in the middle of the picture (the last ones
- * are the frame's); the 10 sprites to a line.
+ * are the frame's). Not done, and not planned: the 10 sprites to a line
+ * (the eleventh is shown: counting them by line costs more than it is
+ * worth, and a game is better with it than without).
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #include <string.h>
@@ -37,7 +42,13 @@
 #include "gb_drc.h"
 
 #define SCR1        ((uint16_t*) 0x4000)
-#define MAPS        ((uint16_t*) 0x4800)    // of the Game Boy's 9800h, then (5000h) of its 9C00h
+// The Game Boy's two maps (9800h, 9C00h) each as two WS maps: with the
+// patterns from 8000h (LCDC bit 4 set: tile n is WS tile n) and with
+// those from 8800h (clear: 0-127 are WS tiles 256-383). A program may
+// change the bit in the middle of the picture (one set of patterns for
+// the game, another for the status bar): the line's list names the map.
+#define MAPS        ((uint16_t*) 0x4800)    // LCDC bit 4 set: 9800h's, then (5000h) 9C00h's
+#define MAPS_88     ((uint16_t*) 0x1000)    // LCDC bit 4 clear: 9800h's, then (1800h) 9C00h's
 #define SPR_TABLE   ((uint8_t*) 0x5800)
 #define BASE_9800   0x98                    // port 07h: screen 1 at 4000h, screen 2 at 4800h
 #define BASE_9C00   0xA8                    // ... screen 2 at 5000h
@@ -65,7 +76,6 @@ static uint8_t *list_made = list_b;
 static volatile uint8_t list_ready;
 uint8_t *gbv_split_ptr;
 
-uint8_t gbv_tiles_8000;         // LCDC bit 4 the maps were made with (gb_drc_asm.s writes map entries too)
 static volatile uint16_t frame_credit;
 volatile uint16_t gbv_vblanks;
 
@@ -108,18 +118,17 @@ void gb_vblank_irq(void) {
     ws_int_ack(WS_INT_ACK_VBLANK | WS_INT_ACK_LINE_MATCH);
 }
 
-static inline uint16_t map_entry(uint8_t n) {
-    return (gbv_tiles_8000 || n >= 128 ? n : 256 + n) | (4 << 9);
+// (gb_drc_asm.s, s_wrt, writes the two entries too)
+void gbv_vram(uint16_t off, uint8_t v) {
+    if (off >= 0x1800) {
+        MAPS[off - 0x1800] = v | (4 << 9);
+        MAPS_88[off - 0x1800] = (v >= 128 ? v : 256 + v) | (4 << 9);
+    }
 }
 
 static void rebuild_maps(void) {
-    const uint8_t *src = gb_vram + 0x1800;
-    for (uint16_t i = 0; i < 0x800; i++)
-        MAPS[i] = map_entry(src[i]);
-}
-
-void gbv_vram(uint16_t off, uint8_t v) {
-    if (off >= 0x1800) MAPS[off - 0x1800] = map_entry(v);
+    for (uint16_t i = 0x1800; i < 0x2000; i++)
+        gbv_vram(i, gb_vram[i]);
 }
 
 void gbv_oam(void) {
@@ -172,7 +181,12 @@ static void emit(uint8_t line, const raw_t *s, uint8_t what, uint8_t win_y) {
         if (s->lcdc & 1) ctrl |= WS_DISPLAY_CTRL_SCR2_ENABLE;
         if (s->lcdc & 2) ctrl |= WS_DISPLAY_CTRL_SPR_ENABLE | WS_DISPLAY_CTRL_SPR_WIN_ENABLE;
     }
+    // (port 07h's high half: the map at 4800h, 5000h, 1000h or 1800h)
     uint8_t bg_base = (s->lcdc & 0x08) ? 0xA0 : 0x90, win_base = (s->lcdc & 0x40) ? 0xA0 : 0x90;
+    if (!(s->lcdc & 0x10)) {
+        bg_base -= 0x70;
+        win_base -= 0x70;
+    }
     o[0] = line - 1;        // (set a line early: it shows from the next)
     o[5] = 0;
     o[6] = 0;
@@ -238,8 +252,29 @@ static void palettes(void) {
 // the Game Boy's sprites as the WonderSwan's: leftmost first (the same X:
 // OAM order), which is who covers whom on the DMG. In assembly
 // (gb_asm.s: gbv_sprites_asm; in C it took a fifth of a frame's time)
+// The sprites' size (LCDC bit 2) may change in the middle of the picture
+// (dmg-acid2's mouth): each sprite has the size set at its top line, from
+// a table by its Y (the line + 16), made from the frame's changes
+#define SPR_TALL ((uint8_t*) 0xCB80)
+static uint8_t tall_made = 0xFF;    // what the table is all filled with, FEh: not one value
 static void sprites(void) {
-    outportb(WS_SPR_COUNT_PORT, gbv_sprites_asm(gb_io[GB_LCDC] & 4));
+    uint8_t t = raw[raw_n - 1].lcdc & 4, mixed = 0;
+    for (uint8_t i = 0; i + 1 < raw_n; i++)
+        if ((raw[i].lcdc & 4) != t) mixed = 1;
+    if (!mixed) {
+        if (tall_made != t) {
+            memset(SPR_TALL, t, 176);
+            tall_made = t;
+        }
+    } else {
+        memset(SPR_TALL, raw[0].lcdc & 4, 16);
+        for (uint8_t i = 0; i < raw_n; i++) {
+            uint8_t from = raw[i].line, to = i + 1 < raw_n ? raw[i + 1].line : 160;
+            if (to > from) memset(SPR_TALL + 16 + from, raw[i].lcdc & 4, to - from);
+        }
+        tall_made = 0xFE;
+    }
+    outportb(WS_SPR_COUNT_PORT, gbv_sprites_asm());
 }
 
 /* ---- the figures (START + Y4): in the black at the left, 4 characters
@@ -309,10 +344,6 @@ static void stats_show(void) {
 void gbv_frame(void) {
     uint8_t was = gb_phase;
     gb_phase = GB_PHASE_VIDEO;
-    if ((gb_io[GB_LCDC] >> 4 & 1) != gbv_tiles_8000) {
-        gbv_tiles_8000 = gb_io[GB_LCDC] >> 4 & 1;
-        rebuild_maps();
-    }
     make_list();
     sprites();
     palettes();
@@ -348,7 +379,6 @@ void gbv_reset(void) {
         WS_DISPLAY_COLOR_MEM(1)[i] = i == 1 ? 0xFFF : 0x000;    // (color 1: the figures' white)
         WS_DISPLAY_COLOR_MEM(4)[i] = 0xFFF;
     }
-    gbv_tiles_8000 = gb_io[GB_LCDC] >> 4 & 1;
     rebuild_maps();
     memset(SPR_TABLE, 0, 0x200);
     for (uint8_t i = 0; i < 40; i++)        // (gb_asm.s: the sprites' order, to start with the OAM's)

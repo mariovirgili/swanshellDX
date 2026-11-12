@@ -312,6 +312,18 @@ if os.environ.get('GBRUN_WATCH'):
         m = uc.mem_read(g, 12)
         print('W %04X=%02X pc=%04X gbframe=%d a=%02X' % (addr, value & 0xFF, m[10] | m[11] << 8, st['gbframes'], uc.reg_read(UC_X86_REG_AX) & 0xFF))
     uc.hook_add(UC_HOOK_MEM_WRITE, h_w, None, wa, wa)
+vlines = None
+if os.environ.get('GBRUN_VRAMLINES'):
+    # GBRUN_VRAMLINES=frame: from that Game Boy frame on, the writes to the
+    # patterns (8000h-97FFh) by the Game Boy line they are made at: which
+    # tiles a program rewrites while the picture is being drawn
+    import collections as _c2
+    vlines = _c2.defaultdict(_c2.Counter)
+    def h_vw(uc, access, addr, size, value, _):
+        if st['gbframes'] < int(os.environ['GBRUN_VRAMLINES']): return
+        ev = int.from_bytes(uc.mem_read(syms['gbf_ev_pos'] & 0xFFFF, 2), 'little'); cy = int.from_bytes(uc.mem_read(syms['gbf_cyc'] & 0xFFFF, 2), 'little', signed=True)
+        vlines[(addr - 0x2000) >> 4][((ev - cy) % 17556) // 114] += 1
+    uc.hook_add(UC_HOOK_MEM_WRITE, h_vw, None, 0x2000, 0x37FF)
 callers = None
 if os.environ.get('GBRUN_CALLERS') and CYCLES:
     # GBRUN_CALLERS=function: who calls it (far calls), and its first argument (AX)
@@ -351,12 +363,20 @@ e = f['e_entry'] & 0xFFFFF
 uc.reg_write(UC_X86_REG_CS, 0xF000); uc.reg_write(UC_X86_REG_IP, e - 0xF0000)
 uc.reg_write(UC_X86_REG_SS, 0); uc.reg_write(UC_X86_REG_SP, 0x4000)
 line_ports = [None] * 144
+line_pals = [None] * 144
 END_SHOT = GBTIME and OUT    # (by Game Boy frames: the picture at the end, PREFIX-end.ppm)
 last_pic = [None]
 snd_frames = []
 work_frame = 0; last_gb = 0; last_work = 0
 while (GBTIME or st['frame'] < FRAMES) and not st['fail'] and not st.get('stop'):
-    # one line
+    # one line. It is drawn as the ports and the palettes are when it
+    # starts: the line interrupt of line K is served while K is being
+    # drawn and what it changes shows from K + 1 (the other plugins set
+    # theirs a line early for that, and so does gb_video.c)
+    y = st['line']
+    if y < 144 and (st['frame'] in SHOTS or END_SHOT):
+        line_ports[y] = bytes(ports)
+        line_pals[y] = [int.from_bytes(iram.raw[0xFE00 + i * 2:0xFE02 + i * 2], 'little') for i in range(256)]
     if not st['halted']:
         cs = uc.reg_read(UC_X86_REG_CS); ip = uc.reg_read(UC_X86_REG_IP)
         try:
@@ -374,19 +394,18 @@ while (GBTIME or st['frame'] < FRAMES) and not st['fail'] and not st.get('stop')
             # (Unicorn stops after a HLT: wait for an interrupt)
             st['halted'] = True
     y = st['line']
-    if y < 144 and (st['frame'] in SHOTS or END_SHOT): line_ports[y] = bytes(ports)
     st['line'] = (y + 1) % 159
     y = st['line']
     if y == 144:
         if st['frame'] in SHOTS and OUT and line_ports[0] is not None:
-            mem = bytes(iram.raw); pal = pal_of(mem)
+            mem = bytes(iram.raw)
             assert line_ports[0][0x60] & 0xE0 == 0x80, 'not the 2 bpp color mode'
-            img = b''.join(render_line(mem, line_ports[i], i, pal) for i in range(144))
+            img = b''.join(render_line(mem, line_ports[i], i, line_pals[i]) for i in range(144))
             open('%s-%04d.ppm' % (OUT, st['frame']), 'wb').write(b'P6\n224 144\n255\n' + img)
         if os.environ.get('GBRUN_SOUND'):
             snd_frames.append((bytes(ports[0x80:0x92]), bytes(iram.raw[(ports[0x8F] << 6):(ports[0x8F] << 6) + 64])))
         if END_SHOT and line_ports[143] is not None:
-            last_pic[0] = (bytes(iram.raw), list(line_ports))
+            last_pic[0] = (bytes(iram.raw), list(line_ports), list(line_pals))
         st['pend'] |= 0x40
         st['frame'] += 1
         if not GBTIME and st['frame'] in KEYS: st['keys'] = KEYS[st['frame']]
@@ -409,8 +428,8 @@ if os.environ.get('GBRUN_TEXT'):
         t = ''.join(chr(c) if 32 <= c < 127 else ' ' for c in mem[base + r * 32:base + r * 32 + 20]).rstrip()
         if t: print(t)
 if END_SHOT and last_pic[0]:
-    mem, lp = last_pic[0]; pal = pal_of(mem)
-    open('%s-end.ppm' % OUT, 'wb').write(b'P6\n224 144\n255\n' + b''.join(render_line(mem, lp[i], i, pal) for i in range(144)))
+    mem, lp, lpal = last_pic[0]
+    open('%s-end.ppm' % OUT, 'wb').write(b'P6\n224 144\n255\n' + b''.join(render_line(mem, lp[i], i, lpal[i]) for i in range(144)))
 if os.environ.get('GBRUN_SOUND') and snd_frames:
     import numpy as np, wave as _w
     RATE = 24000; N = int(RATE / 75.47)
@@ -447,6 +466,10 @@ if GBTIME:
     import zlib
     mem = bytes(iram.raw)
     print('Game Boy memory: video %08X work %08X sprites %08X high %08X' % (zlib.crc32(mem[0x2000:0x4000]), zlib.crc32(mem[0x6000:0x8000]), zlib.crc32(mem[0x9E00:0x9EA0]), zlib.crc32(mem[0x9F80:0x9FFF])))
+if vlines is not None:
+    for t in sorted(vlines):
+        c = vlines[t]; vis = sum(n for l, n in c.items() if l < 144)
+        print('tile %3d: %5d writes, %5d in lines 0-143 (lines %s)' % (t, sum(c.values()), vis, ' '.join(str(l) for l in sorted(c)[:16])))
 if st['fail']: print('fail: ' + st['fail'])
 print('WS frames %d, Game Boy frames %d' % (st['frame'], st['gbframes']))
 if CYCLES and FUNC and fhot:

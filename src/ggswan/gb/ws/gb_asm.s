@@ -17,14 +17,14 @@
 /*
  * The Game Boy's video memory is put at 2000h-3FFFh of the internal RAM
  * (the WonderSwan Color's first bank of 2 bpp tiles), where the C library
- * has the stack (its top is 4000h). gb_run moves it under 2000h, above the
- * C data (the Makefile checks that this ends below 1C00h), and calls
- * gb_emulate, which never comes back.
+ * has the stack (its top is 4000h). gb_run moves it to D000h-D7FFh, above
+ * the Game Boy's memory and the picture's lists (GB-MEMORY-MAP.md), and
+ * calls gb_emulate, which never comes back.
  */
     .global gb_run
 gb_run:
     cli
-    mov sp, 0x2000
+    mov sp, 0xD800
     IA16_CALL gb_emulate
 1:
     hlt
@@ -91,15 +91,17 @@ gb_line_entry:
     iret
 
 /*
- * uint8_t gbv_sprites_asm(uint8_t tall): the WonderSwan's sprite table
+ * uint8_t gbv_sprites_asm(void): the WonderSwan's sprite table
  * (5800h) from the Game Boy's OAM (9E00h): the sprites on the screen,
  * leftmost first and, with the same X, first in the OAM first (who covers
  * whom on the DMG; the WS puts the first of its table on top). An 8 x 16
- * sprite (tall) is two. Returns how many WS sprites.
+ * sprite is two: the size is LCDC bit 2 at the sprite's top line (the
+ * table at CB80h, made by gb_video.c). Returns how many WS sprites.
  * A WS sprite: tile, attributes (palette 12 or 13, over screen 2 unless
  * the Game Boy has it behind the background, the flips), Y, X.
  */
 #define SPR_ORDER 0xCB00        /* 40 bytes: the sprites in last frame's order, as offsets into the OAM */
+#define SPR_TALL  0xCB80        /* 176 bytes, by a sprite's Y: 8 x 16 where its top line is (LCDC bit 2 there) */
 #define SPR_KEYS  0xCB30        /* 40 words being sorted: X (FFh: not on the screen), offset */
     .global gbv_sprites_asm
 gbv_sprites_asm:
@@ -109,8 +111,6 @@ gbv_sprites_asm:
     push es
     push ss
     pop es
-    xor ah, ah
-    mov bp, ax                  // tall
     // the 40 sprites, in the order they had a frame ago (few change
     // places from one frame to the next), each put in its place among
     // those before it: by X, then by its place in the OAM; the ones not
@@ -128,7 +128,9 @@ gbv_sprites_asm:
     jz 5f
     cmp ah, 168
     jae 5f
-    test bp, bp
+    mov bp, ax
+    and bp, 0xFF
+    cmp byte ptr [bp + SPR_TALL], 0
     jnz 6f
     cmp al, 8
     ja 6f                       // (8 x 8, above the screen: not seen)
@@ -171,9 +173,11 @@ gbv_sprites_asm:
     mov ah, cs:[spr_attr + si]
     pop si
     mov cx, ss:[0x9E00 + bx]    // CL = Y, CH = X
+    mov bp, cx
+    and bp, 0xFF
     sub cl, 16
     add ch, 24
-    test bp, bp
+    cmp byte ptr [bp + SPR_TALL], 0
     jnz 7f
     stosw
     mov ax, cx

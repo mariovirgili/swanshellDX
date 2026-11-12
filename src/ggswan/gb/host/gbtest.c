@@ -13,6 +13,7 @@
  *   -k  keys (hex: right 01 left 02 up 04 down 08 A 10 B 20 SELECT 40 START 80) from a frame on
  *   -q  only the result's line
  *   -n  run all the frames (no stop at a test's end)
+ *   -d  the video memory, work RAM, OAM and high RAM at the end, to a file
  *   -s  the background's map as text at the end (tests that write their result with a font at its ASCII places)
  *   -m  a Mooneye test: LD B,B ends it (Blargg's CPU tests run LD B,B too)
  * The last line: PASS, FAIL or END (no verdict), frames, clock, the
@@ -52,7 +53,7 @@ static uint32_t screen_hash(void) {
 }
 
 int main(int argc, char **argv) {
-    const char *rom_name = NULL, *out = NULL, *keys = NULL;
+    const char *rom_name = NULL, *out = NULL, *keys = NULL, *dump = NULL;
     long frames = 3600;
     int trace = 0, all = 0, mooneye = 0, text = 0;
     for (int i = 1; i < argc; i++) {
@@ -64,6 +65,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-n")) all = 1;
         else if (!strcmp(argv[i], "-m")) mooneye = 1;
         else if (!strcmp(argv[i], "-s")) text = 1;
+        else if (!strcmp(argv[i], "-d") && i + 1 < argc) dump = argv[++i];
         else rom_name = argv[i];
     }
     if (!rom_name) { fprintf(stderr, "usage: gbtest rom.gb [-f frames] [-o out.pgm] [-t] [-k frame:keys,...] [-q] [-n] [-m]\n"); return 3; }
@@ -123,6 +125,17 @@ int main(int argc, char **argv) {
                 verdict = ram[0] == 0 ? 0 : 1;
                 if (!quiet) printf("%s", (char*) ram + 4);
             }
+        }
+    }
+    if (dump) {
+        // (the video memory, the work RAM, the OAM and the high RAM: 4000h + A0h + 7Fh bytes)
+        FILE *o = fopen(dump, "wb");
+        if (o) {
+            fwrite(gb_vram, 1, 0x2000, o);
+            fwrite(gb_wram, 1, 0x2000, o);
+            fwrite(gb_oam, 1, 0xA0, o);
+            fwrite(gb_hram, 1, 0x7F, o);
+            fclose(o);
         }
     }
     if (out) {

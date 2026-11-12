@@ -72,3 +72,23 @@ away from where the tests checked on a DMG put it.
   never does.
 - No sound in the reference (the registers keep what is written). The
   plugin's sound is `gb/ws/gb_sound.c`: once a frame, from the registers.
+
+## The plugin's picture and dmg-acid2
+
+The plugin does not draw: it sets the WonderSwan's hardware up
+(`gb/ws/gb_video.c`). dmg-acid2 in the plugin under `gbrun.py` (patch
+162; 686 of the 23,040 pixels are not the reference's):
+
+- right: the footer and the eyes' lower halves (LCDC bit 4 changed in
+  the middle of the picture: two WS maps for each of the Game Boy's),
+  the mouth (8 x 16 sprites on some lines only: the size is the one at
+  the sprite's top line), the hair's lines (the background off), the
+  nose (the flips), the moles (who covers whom);
+- wrong, and known: the "!" is covered (an eleventh sprite on its
+  lines, which the plugin shows); the left half of the right eye is a
+  white square and there are dots and a grey bar at the far left on the
+  eyes' and the chin's lines. Those are the lines of a window that
+  starts in the middle of the screen: the window is then screen 1, under
+  the background, with nothing to cut it at its edge (what is to its
+  left shows where the background has color 0), and a sprite "behind
+  the background" is over all of it.

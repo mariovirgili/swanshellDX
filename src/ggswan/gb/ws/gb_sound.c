@@ -26,7 +26,7 @@
 #include "gb.h"
 #include "gb_ws.h"
 
-#define WAVES ((uint8_t*) 0x1B00)       // the WS's four waves, 16 bytes each (GB-MEMORY-MAP.md)
+#define WAVES ((uint8_t*) 0x0FC0)       // the WS's four waves, 16 bytes each (GB-MEMORY-MAP.md)
 #define NR(x) gb_io[x]                   // FF10h + ...: 10h-14h, 16h-19h, 1Ah-1Eh, 20h-23h, 24h-26h
 
 typedef struct {
@@ -201,7 +201,7 @@ void gb_sound_init(void) {
     seq_step = 0;
     seq_acc = 0;
     outportb(WS_SOUND_CH_CTRL_PORT, 0);
-    outportb(WS_SOUND_WAVE_BASE_PORT, 0x1B00 >> 6);
+    outportb(WS_SOUND_WAVE_BASE_PORT, 0x0FC0 >> 6);
     outportb(WS_SOUND_OUT_CTRL_PORT, WS_SOUND_OUT_CTRL_HEADPHONE_ENABLE
         | WS_SOUND_OUT_CTRL_SPEAKER_ENABLE | WS_SOUND_OUT_CTRL_SPEAKER_VOLUME_100);
     outportb(WS_SOUND_NOISE_CTRL_PORT, WS_SOUND_NOISE_CTRL_ENABLE | WS_SOUND_NOISE_CTRL_RESET);

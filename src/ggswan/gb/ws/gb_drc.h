@@ -37,7 +37,6 @@ extern uint16_t drc_mbc_top, drc_mbc_hi, drc_bank_mask;
 void gbd_keys(void);            // the keys changed
 extern uint16_t drc_ram_seg;
 void gbd_write(uint16_t a, uint8_t v);
-extern uint8_t gbv_tiles_8000;
 // the routines copied to the start of every bank of code (gb_drc_asm.s)
 extern const uint8_t __far drc_stubs[];
 extern const uint16_t __far drc_stubs_size;
