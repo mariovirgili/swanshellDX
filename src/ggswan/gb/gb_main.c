@@ -70,6 +70,7 @@ static void sprite(uint8_t i, uint16_t attr, uint8_t y, uint8_t x) {
 // back to the menu, as the other plugins (START + Y1 (Y up) for a second)
 static void leave(void) {
     ia16_disable_irq();
+    outportb(WS_SDMA_CTRL_PORT, 0);
     outportb(WS_SOUND_CH_CTRL_PORT, 0);
     outportb(WS_DISPLAY_CTRL_PORT, 0);
     outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_DISABLE);
@@ -82,7 +83,15 @@ static void leave(void) {
 }
 
 void gb_main(void) {
+    // the nileswan as the other plugins set it: its registers unlocked,
+    // clock, I/O and SRAM on (the way back to the menu sends the flash a
+    // command through the SPI: with the clock off it never ends), no mask
+    // on the RAM window
     nile_io_unlock();
+    uint16_t old_mask = inportw(IO_NILE_SEG_MASK);
+    outportb(IO_NILE_POW_CNT, NILE_POW_CLOCK | NILE_POW_IO_NILE | NILE_POW_IO_2001
+        | NILE_POW_IO_2003 | NILE_POW_SRAM);
+    outportw(IO_NILE_SEG_MASK, (old_mask & NILE_SEG_MASK_ROM_MASK) | (0xF << NILE_SEG_MASK_RAM_SHIFT));
     outportb(WS_DISPLAY_CTRL_PORT, 0);
     ws_system_set_mode(WS_MODE_COLOR);          // color, 2 bits a pixel
 

@@ -8,10 +8,9 @@ the other four plugins).
 **Step GB0 (patch 153): there is no Game Boy yet.** The plugin shows a
 test of the video the rest is planned on. What is below under "now" is
 read from the linked `build/gbswan.elf` and checked by running it in
-Unicorn (`host/gbrun.py`); what is under "planned" is a plan. Nothing here
-has been run on a WonderSwan by me: the picture `gbrun.py` draws comes
-from my reading of how the WonderSwan Color's 2 bits a pixel color mode
-works, and it is that reading the test on the device is for.
+Unicorn (`host/gbrun.py`); what is under "planned" is a plan. Gio ran patch 153's
+test in nileswan-medem: all as expected but the way back to the menu,
+which patch 154 changes. Not run on a WonderSwan yet.
 
 ## Why sources and a layout of its own
 
