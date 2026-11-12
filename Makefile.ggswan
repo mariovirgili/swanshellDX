@@ -32,6 +32,14 @@ ROM		:= dist/NILESWAN/PLUG_SF.BIN
 ifeq ($(INTERP),1)
 DEFINES		+= -DGGSWAN_SF_INTERP
 endif
+else ifeq ($(GB),1)
+# GB=1: gbswan, the Game Boy plugin: its own sources (src/ggswan/gb), none
+# of the others'; output: dist/NILESWAN/PLUG_GB.BIN
+NAME		:= gbswan
+DEFINES		+= -DGGSWAN_GB
+ROM		:= dist/NILESWAN/PLUG_GB.BIN
+INCLUDEDIRS	:= src/ggswan/gb
+SOURCEDIRS	:= src/ggswan/gb
 else
 NAME		:= ggswan
 ROM		:= dist/NILESWAN/PLUG_GG.BIN
@@ -88,6 +96,13 @@ $(ROM) $(ELF): $(ELF_STAGE1)
 	@echo "  ROM     $@"
 	@$(MKDIR) -p $(@D)
 	$(_V)$(BUILDROM) -o $(ROM) --output-elf $(ELF) $(BUILDROMFLAGS) $<
+ifeq ($(GB),1)
+# gbswan: the C data must end below 1C00h (the stack is 1C00h-1FFFh and
+# the tiles the sprites can use start at 2000h: src/ggswan/GB-MEMORY-MAP.md)
+	$(_V)end=$$($(NM) $(ELF) | awk '$$3 == "__wf_heap_start" && $$1 != "00000000" { print $$1 }' | head -1); \
+	if [ -z "$$end" ] || [ $$((0x$$end)) -gt $$((0x1C00)) ]; then \
+		echo "gbswan: C data end at $$end, over 1C00h"; rm -f $(ROM); exit 1; fi
+endif
 
 $(ELF_STAGE1): $(OBJS)
 	@echo "  LD      $@"

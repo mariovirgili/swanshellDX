@@ -168,7 +168,8 @@ int ui_file_selector_get_file_icon_idx(const char __far *ext) {
         if (!strcasecmp(ext, s_file_ext_ws) || !strcasecmp(ext, s_file_ext_wsc) || !strcasecmp(ext, s_file_ext_pc2)) {
             return 2;
         } else if (!strcasecmp(ext, s_file_ext_gg) || !strcasecmp(ext, s_file_ext_sms)
-                || !strcasecmp(ext, s_file_ext_sg) || !strcasecmp(ext, s_file_ext_sf)) {
+                || !strcasecmp(ext, s_file_ext_sg) || !strcasecmp(ext, s_file_ext_sf)
+                || !strcasecmp(ext, s_file_ext_gb)) {
             // (the games of the ggswan plugins: the game icon too)
             return 2;
         } else if (!strcasecmp(ext, s_file_ext_fx)) {
