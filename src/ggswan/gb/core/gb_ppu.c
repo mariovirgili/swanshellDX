@@ -115,6 +115,17 @@ static void render_line(void) {
     }
 }
 
+void gb_ppu_draw_line(uint8_t y) {
+    gb.line = y;
+    if (y == 0) {
+        gb.win_line = 0;
+        gb.win_on_frame = 0;
+    }
+    if (y == gb.io[GB_WY]) gb.win_on_frame = 1;
+    scan_sprites();
+    render_line();
+}
+
 // the state at the dot reached: the mode STAT shows, what LYC is compared
 // with, the interrupt's signal
 static void update(void) {
@@ -175,10 +186,8 @@ void gb_ppu_tick(void) {
     if (gb.line < 144) {
         if (gb.dot == 4 && gb.line == gb.io[GB_WY]) gb.win_on_frame = 1;
         if (gb.dot == 80) {
-            if (gb.line == gb.io[GB_WY]) gb.win_on_frame = 1;
-            scan_sprites();
+            gb_ppu_draw_line(gb.line);
             gb.mode3_end = 84 + mode3_length();
-            render_line();
         }
     } else if (gb.line == 144 && gb.dot == 4) {
         gb.io[GB_IF] |= GB_INT_VBLANK;

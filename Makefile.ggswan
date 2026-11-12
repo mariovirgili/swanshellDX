@@ -36,7 +36,7 @@ else ifeq ($(GB),1)
 # GB=1: gbswan, the Game Boy plugin: its own sources (src/ggswan/gb), none
 # of the others'; output: dist/NILESWAN/PLUG_GB.BIN
 NAME		:= gbswan
-DEFINES		+= -DGGSWAN_GB
+DEFINES		+= -DGGSWAN_GB -DGB_FAST -DGB_WS
 ROM		:= dist/NILESWAN/PLUG_GB.BIN
 INCLUDEDIRS	:= src/ggswan/gb/ws src/ggswan/gb/core
 SOURCEDIRS	:= src/ggswan/gb/ws
@@ -66,6 +66,11 @@ endif
 
 SOURCES_S	:= $(shell find -L $(SOURCEDIRS) -name "*.s")
 SOURCES_C	:= $(shell find -L $(SOURCEDIRS) -name "*.c")
+ifeq ($(GB),1)
+# (the Game Boy itself: the CPU and the cartridges shared with the PC's
+# reference, and the plugin's machine)
+SOURCES_C	+= src/ggswan/gb/core/gb_cpu.c src/ggswan/gb/core/gb_cart.c src/ggswan/gb/core/gbf_hw.c
+endif
 
 WARNFLAGS	:= -Wall
 INCLUDEFLAGS	:= $(foreach path,$(INCLUDEDIRS),-I$(path)) \

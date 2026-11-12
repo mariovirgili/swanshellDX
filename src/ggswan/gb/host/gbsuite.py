@@ -3,7 +3,8 @@
 passed. The ROMs are not in the repository: the directory given is the
 unpacked game-boy-test-roms (github.com/c-sp/game-boy-test-roms, v7.0),
 which has Blargg's, Mooneye's and dmg-acid2.
-usage: gbsuite.py roms-dir [filter] [-v]
+usage: gbsuite.py roms-dir [filter] [-v] [--fast]
+--fast: the plugin's machine (gbftest) in place of the reference.
 Mooneye's tests name the machines they are for after a dash (dmgABC, G,
 S, C, A, mgb, sgb...): only those with no name or with the DMG's are run.
 Tests that end with a picture are compared with a reference picture
@@ -14,7 +15,7 @@ D = sys.argv[1]
 FILT = [a for a in sys.argv[2:] if not a.startswith('-')]
 V = '-v' in sys.argv
 HERE = os.path.dirname(os.path.abspath(__file__))
-GBTEST = os.path.join(HERE, 'gbtest')
+GBTEST = os.path.join(HERE, 'gbftest' if '--fast' in sys.argv else 'gbtest')
 
 def dmg(name):
     m = re.search(r'-([A-Za-z0-9]+)$', name)

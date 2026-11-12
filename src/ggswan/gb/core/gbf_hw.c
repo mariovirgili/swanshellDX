@@ -1,0 +1,498 @@
+/**
+ * gbswan - the plugin's machine: what is around the CPU, by events.
+ *
+ * Time is counted in machine cycles (4 clock ticks) from the start of the
+ * LCD's frame: a frame is 17556 of them, a line 114. The CPU takes cycles
+ * off gbf_cyc; when that reaches zero an event is due (the vertical blank,
+ * the frame's end, a line or a mode the STAT interrupt is asked at, the
+ * timer's overflow, the end of a serial transfer). LY, STAT, DIV and TIMA
+ * are worked out from the time when they are read.
+ *
+ * Next to the reference (gb_bus.c, gb_ppu.c): the same registers and
+ * rules, to the cycle at the events but not inside an instruction (a
+ * register is read or written as if at the instruction's last cycle... or
+ * a cycle or two before); the OAM DMA is done at once; the video memory
+ * and the OAM are never refused; the timer's faults on writes to DIV and
+ * TAC are not there.
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+#include <string.h>
+#include "gb.h"
+#include "gbv.h"
+
+#define LINE_MC 114
+#define FRAME_MC 17556
+#define VBL_MC (144 * LINE_MC + 1)
+
+#ifdef GB_WS
+gb_t gb;
+#endif
+int16_t gbf_cyc;
+static uint16_t ev_pos;         // the frame's cycle the next event is at
+static uint16_t div_off;        // DIV's 16 bits / 4 = div_off + the frame's cycle
+static uint16_t tim_last;       // (DIV / 4) the timer was brought up to
+static uint16_t ser_end;        // (DIV / 4) the serial transfer ends at
+static uint8_t ser_on;
+static uint8_t vbl_done;        // this frame's vertical blank was begun
+
+#define POS() ((uint16_t) (ev_pos - gbf_cyc))
+#define DIV_MC() ((uint16_t) (div_off + POS()))
+
+/* ---- the LCD's place in the frame ---- */
+
+uint8_t gbf_line(void) {
+    return POS() / LINE_MC;
+}
+uint8_t gbf_draw_line(void) {
+    // (a line is drawn from its 21st cycle: what changes later is for the next)
+    if (!gb.lcd_on) return 0;
+    uint16_t pos = POS();
+    uint8_t line = pos / LINE_MC;
+    if (line >= 144) return 0;      // (the vertical blank: the next frame's first)
+    return pos % LINE_MC < 21 ? line : line + 1;
+}
+
+static uint8_t ppu_mode(uint8_t line, uint8_t d) {
+    if (line >= 144) return line == 144 && d == 0 ? 0 : 1;
+    if (d < 1) return 0;
+    if (d < 21) return 2;
+    if (d < 64) return 3;
+    return 0;
+}
+static uint8_t lyc_match(uint8_t line, uint8_t d) {
+    uint8_t cmp;
+    if (line == 153) cmp = d == 0 ? 0xFF : d == 1 ? 153 : d == 2 ? 0xFF : 0;
+    else cmp = d == 0 && line != 0 ? 0xFF : line;
+    return cmp == gb.io[GB_LYC];
+}
+
+// the STAT interrupt's signal at the time reached: an interrupt on its rise
+static void stat_update(void) {
+    uint8_t stat = gb.io[GB_STAT], sig;
+    if (!gb.lcd_on) {
+        sig = (stat & 0x40) && gb.lyc_match;
+    } else {
+        uint16_t pos = POS();
+        uint8_t line = pos / LINE_MC, d = pos % LINE_MC;
+        uint8_t mode = ppu_mode(line, d);
+        gb.lyc_match = lyc_match(line, d);
+        // (mode 2's is asked at the line's first cycle, and at the vertical
+        // blank's; mode 0's a cycle before the mode shows)
+        uint8_t m2 = mode == 2 || (line < 144 && d == 0) || (line == 144 && d == 1);
+        uint8_t m0 = mode == 0 || (line < 144 && d == 63);
+        sig = ((stat & 0x40) && gb.lyc_match) || ((stat & 0x08) && m0)
+            || ((stat & 0x10) && mode == 1) || ((stat & 0x20) && m2);
+    }
+    if (sig && !gb.stat_line) gb.io[GB_IF] |= GB_INT_STAT;
+    gb.stat_line = sig;
+}
+
+/* ---- the timer and the serial port ---- */
+
+static const uint8_t GB_FAR tim_shift[4] = { 8, 2, 4, 6 };     // TAC's rates, in cycles: 256, 4, 16, 64
+
+// TIMA brought up to now
+static void timer_sync(void) {
+    uint16_t now = DIV_MC();
+    if (gb.io[GB_TAC] & 4) {
+        uint8_t sh = tim_shift[gb.io[GB_TAC] & 3];
+        uint16_t n = ((now >> sh) - (tim_last >> sh)) & (0xFFFF >> sh);
+        if (n) {
+            uint16_t t = gb.io[GB_TIMA] + n;
+            while (t > 0xFF) {
+                t = t - 0x100 + gb.io[GB_TMA];
+                gb.io[GB_IF] |= GB_INT_TIMER;
+            }
+            gb.io[GB_TIMA] = t;
+        }
+    }
+    tim_last = now;
+}
+
+static void serial_sync(void) {
+    if (ser_on && (int16_t) (DIV_MC() - ser_end) >= 0) {
+        ser_on = 0;
+        gb.io[GB_SB] = 0xFF;
+        gb.io[GB_SC] &= 0x7F;
+        gb.io[GB_IF] |= GB_INT_SERIAL;
+    }
+}
+
+/* ---- events ---- */
+
+// the next event after now
+static void schedule(void) {
+    uint16_t pos = POS();
+    uint16_t next = FRAME_MC;
+    if (gb.lcd_on) {
+        if (!vbl_done) next = VBL_MC;
+        uint8_t stat = gb.io[GB_STAT];
+        if (stat & 0x78) {
+            uint8_t line = pos / LINE_MC;
+            uint16_t start = (uint16_t) line * LINE_MC;
+            if (stat & 0x38) {
+                // (the modes' interrupts: the signal is looked at where it
+                // can rise or fall: a line's start, its second cycle, where
+                // the drawing begins and where it ends)
+                uint8_t d = pos - start;
+                uint16_t t = start + (d < 1 ? 1 : d < 21 ? 21 : d < 63 ? 63 : d < 64 ? 64 : LINE_MC);
+                if (t < next) next = t;
+            } else {
+                // (LYC's only: its line's start, and the one after)
+                uint8_t lyc = gb.io[GB_LYC];
+                if (lyc < 154) {
+                    uint16_t t = lyc ? (uint16_t) lyc * LINE_MC + 1 : 153 * LINE_MC + 3;
+                    if (t > pos && t < next) next = t;
+                    t = lyc ? (uint16_t) (lyc + 1) * LINE_MC : LINE_MC;
+                    if (t > pos && t < next) next = t;
+                    if (lyc == 153) {
+                        t = 153 * LINE_MC + 2;
+                        if (t > pos && t < next) next = t;
+                    }
+                }
+            }
+        }
+    }
+    uint16_t left = next - pos;
+    if (gb.io[GB_TAC] & 4) {
+        uint8_t sh = tim_shift[gb.io[GB_TAC] & 3];
+        uint16_t period = 1 << sh;
+        uint16_t now = div_off + pos;
+        uint16_t first = period - (now & (period - 1));
+        uint16_t more = (uint16_t) (0xFF - gb.io[GB_TIMA]) << sh;   // (the edges after the first)
+        // (tim_last may be behind now: timer_sync is run before this)
+        if (more < left && first + more < left) left = first + more;
+    }
+    if (ser_on) {
+        uint16_t t = ser_end - (div_off + pos);
+        if ((int16_t) t <= 0) t = 1;
+        if (t < left) left = t;
+    }
+    if (left == 0) left = 1;
+    ev_pos = pos + left;
+    gbf_cyc = left;
+}
+
+// the hardware brought up to now, and the next event
+static void sync(void) {
+    timer_sync();
+    serial_sync();
+    schedule();
+}
+
+static void event(void) {
+    timer_sync();
+    serial_sync();
+    uint16_t pos = POS();
+    if (gb.lcd_on && !vbl_done && pos >= VBL_MC) {
+        vbl_done = 1;
+        gb.io[GB_IF] |= GB_INT_VBLANK;
+        stat_update();
+        gbv_frame();
+        gb.frame_done = 1;
+        gb.frames++;
+    }
+    if (pos >= FRAME_MC) {
+        ev_pos -= FRAME_MC;
+        div_off += FRAME_MC;
+        vbl_done = 0;
+        if (!gb.lcd_on) {
+            gbv_frame();
+            gb.frame_done = 1;
+            gb.frames++;
+        }
+    }
+    stat_update();
+    schedule();
+}
+
+#ifdef GB_HOST
+// (for a tool that steps the CPU itself)
+void gbf_host_event(void) {
+    if (gbf_cyc > 0) gbf_cyc = 0;
+    event();
+}
+#endif
+
+void gbf_run_frame(void) {
+    gb.frame_done = 0;
+    while (!gb.frame_done) {
+        while (gbf_cyc > 0) {
+            if (gb.halted && !(gb.ie & gb.io[GB_IF] & 0x1F)) {
+                gbf_cyc = 0;        // nothing to do until the next event
+                break;
+            }
+            gb_step();
+        }
+        event();
+    }
+}
+
+/* ---- the keys ---- */
+
+static uint8_t p1_read(void) {
+    uint8_t sel = gb.io[GB_P1] & 0x30, low = 15;
+    if (!(sel & 0x10)) low &= ~(gb.keys & 15);
+    if (!(sel & 0x20)) low &= ~(gb.keys >> 4);
+    return 0xC0 | sel | low;
+}
+void gb_set_keys(uint8_t keys) {
+    uint8_t before = p1_read();
+    gb.keys = keys;
+    if (before & ~p1_read() & 15) gb.io[GB_IF] |= GB_INT_JOYPAD;
+}
+
+/* ---- memory ---- */
+
+static const uint8_t GB_FAR snd_mask[0x20] = {
+    0x80, 0x3F, 0x00, 0xFF, 0xBF, 0xFF, 0x3F, 0x00, 0xFF, 0xBF, 0x7F, 0xFF, 0x9F, 0xFF, 0xBF, 0xFF,
+    0xFF, 0x00, 0x00, 0xBF, 0x00, 0x00, 0x70, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+
+static uint8_t io_read(uint8_t r) {
+    switch (r) {
+    case GB_P1: return p1_read();
+    case GB_SB: return gb.io[GB_SB];
+    case GB_SC: serial_sync(); return gb.io[GB_SC] | 0x7E;
+    case GB_DIV: return DIV_MC() >> 6;
+    case GB_TIMA: timer_sync(); return gb.io[r];
+    case GB_TMA: return gb.io[r];
+    case GB_TAC: return gb.io[r] | 0xF8;
+    case GB_IF: return gb.io[r] | 0xE0;
+    case GB_STAT: {
+        if (!gb.lcd_on) return 0x80 | (gb.io[r] & 0x78) | (gb.lyc_match ? 4 : 0);
+        uint16_t pos = POS();
+        uint8_t line = pos / LINE_MC, d = pos % LINE_MC;
+        return 0x80 | (gb.io[r] & 0x78) | (lyc_match(line, d) ? 4 : 0) | ppu_mode(line, d);
+    }
+    case GB_LY: {
+        if (!gb.lcd_on) return 0;
+        uint16_t pos = POS();
+        return pos >= 153 * LINE_MC + 1 ? 0 : pos / LINE_MC;
+    }
+    default:
+        if (r >= 0x10 && r < 0x30) return gb.io[r] | snd_mask[r - 0x10];
+        if (r >= 0x30 && r < 0x40) return gb.io[r];
+        if (r >= 0x40 && r <= 0x4B) return gb.io[r];
+        return 0xFF;
+    }
+}
+
+static void io_write(uint8_t r, uint8_t v) {
+    uint8_t before;
+    switch (r) {
+    case GB_P1:
+        before = p1_read();
+        gb.io[r] = v & 0x30;
+        if (before & ~p1_read() & 15) gb.io[GB_IF] |= GB_INT_JOYPAD;
+        break;
+    case GB_SB:
+        gb.io[r] = v;
+        break;
+    case GB_SC:
+        gb.io[r] = v & 0x81;
+        ser_on = (v & 0x81) == 0x81;
+#ifdef GB_HOST
+        {
+            extern void (*gb_serial_hook)(uint8_t);
+            if (ser_on && gb_serial_hook) gb_serial_hook(gb.io[GB_SB]);
+        }
+#endif
+        if (ser_on) {
+            // (8 bits, one every 128 cycles of DIV's clock)
+            ser_end = (DIV_MC() & ~127) + 8 * 128;
+            sync();
+        }
+        break;
+    case GB_DIV:
+        timer_sync();
+        div_off = -POS();
+        tim_last = 0;
+        if (ser_on) ser_on = 0, gb.io[GB_SC] &= 0x7F;      // (a transfer under way is dropped: not the hardware's way)
+        schedule();
+        break;
+    case GB_TIMA:
+        timer_sync();
+        gb.io[r] = v;
+        schedule();
+        break;
+    case GB_TMA:
+        timer_sync();
+        gb.io[r] = v;
+        break;
+    case GB_TAC:
+        timer_sync();
+        gb.io[r] = v & 7;
+        schedule();
+        break;
+    case GB_IF:
+        gb.io[r] = v & 0x1F;
+        break;
+    case GB_LCDC:
+        gbv_reg(r, v);
+        if ((v & 0x80) && !gb.lcd_on) {
+            // on: the frame starts again, a cycle into line 0
+            timer_sync();
+            uint16_t pos = POS();
+            div_off += pos - 1;
+            ev_pos = gbf_cyc + 1;
+            gb.lcd_on = 1;
+            vbl_done = 0;
+            gb.io[r] = v;
+            stat_update();
+            schedule();
+        } else if (!(v & 0x80) && gb.lcd_on) {
+            gb.lcd_on = 0;
+            gb.io[r] = v;
+            stat_update();
+            schedule();
+        } else {
+            gb.io[r] = v;
+        }
+        break;
+    case GB_STAT:
+        // (the DMG's fault: for a moment every source is enabled)
+        gb.io[r] = 0x78;
+        stat_update();
+        gb.io[r] = v & 0x78;
+        stat_update();
+        schedule();
+        break;
+    case GB_LY:
+        break;
+    case GB_LYC:
+        gb.io[r] = v;
+        if (gb.lcd_on) {
+            stat_update();
+            schedule();
+        }
+        break;
+    case GB_DMA: {
+        gb.io[r] = v;
+        gbv_oam();
+        uint16_t src = (uint16_t) v << 8;
+        if (src >= 0xE000) src -= 0x2000;
+        for (uint8_t i = 0; i < 0xA0; i++)
+            gb.oam[i] = gbf_read(src + i);
+        break;
+    }
+    default:
+        if (r >= 0x40 && r <= 0x4B) {
+            if (gb.io[r] != v) gbv_reg(r, v);
+            gb.io[r] = v;
+        } else if (r >= 0x10 && r < 0x40) {
+            gb.io[r] = v;
+        }
+        break;
+    }
+}
+
+static uint8_t ram_read(uint16_t a) {
+    if (!gb.ram_on && gb.mbc) return 0xFF;
+    if (gb.mbc == 2) return GBF_RAM(a & 0x1FF) | 0xF0;
+    if (gb.mbc == 3 && gb.rtc_sel) return 0;
+    if (!gb.ram_banks) return 0xFF;
+    return GBF_RAM(a & 0x1FFF);
+}
+
+static void ram_write(uint16_t a, uint8_t v) {
+    if (!gb.ram_on && gb.mbc) return;
+    if (gb.mbc == 2) {
+        GBF_RAM(a & 0x1FF) = v & 15;
+    } else if (gb.mbc == 3 && gb.rtc_sel) {
+        return;
+    } else if (gb.ram_banks) {
+        GBF_RAM(a & 0x1FFF) = v;
+    } else {
+        return;
+    }
+    gb.ram_dirty = 1;
+}
+
+uint8_t gbf_read(uint16_t a) {
+    if (a < 0x4000) return GBF_ROM0(a);
+    if (a < 0x8000) return GBF_ROMX(a);
+    if (a < 0xA000) return gb_vram[a - 0x8000];
+    if (a < 0xC000) return ram_read(a);
+    if (a < 0xFE00) return gb_wram[a & 0x1FFF];
+    if (a >= 0xFF80) return a == 0xFFFF ? gb.ie : gb.hram[a - 0xFF80];
+    if (a >= 0xFF00) return io_read(a & 0xFF);
+    if (a < 0xFEA0) return gb.oam[a - 0xFE00];
+    return 0;
+}
+
+void gbf_write(uint16_t a, uint8_t v) {
+    if (a >= 0xC000) {
+        if (a < 0xFE00) {
+            gb_wram[a & 0x1FFF] = v;
+        } else if (a >= 0xFF80) {
+            if (a == 0xFFFF) gb.ie = v;
+            else gb.hram[a - 0xFF80] = v;
+        } else if (a >= 0xFF00) {
+            io_write(a & 0xFF, v);
+        } else if (a < 0xFEA0) {
+            if (gb.oam[a - 0xFE00] != v) {
+                gbv_oam();
+                gb.oam[a - 0xFE00] = v;
+            }
+        }
+    } else if (a >= 0xA000) {
+        ram_write(a, v);
+    } else if (a >= 0x8000) {
+        if (gb_vram[a - 0x8000] != v) {
+            gbv_vram(a - 0x8000, v);
+            gb_vram[a - 0x8000] = v;
+        }
+    } else {
+        gb_cart_write(a, v);
+        gbf_plat_map();
+    }
+}
+
+/* ---- start ---- */
+
+uint8_t gbf_load(const uint8_t GB_FAR *header, uint32_t size) {
+    uint8_t err = gb_cart_header(header, size);
+    if (err) return err;
+    gbf_reset();
+    return 0;
+}
+
+// what the DMG's boot ROM leaves when it jumps to 0100h (as gb_reset)
+void gbf_reset(void) {
+    uint8_t mbc = gb.mbc, battery = gb.has_battery, ram_banks = gb.ram_banks;
+    uint16_t rom_banks = gb.rom_banks;
+    memset(&gb, 0, sizeof(gb));
+    gb.mbc = mbc;
+    gb.has_battery = battery;
+    gb.ram_banks = ram_banks;
+    gb.rom_banks = rom_banks;
+    gb.bank_lo = 1;
+    gb_cart_map();
+    gbf_plat_map();
+    memset(gb_vram, 0, 0x2000);
+    memset(gb_wram, 0, 0x2000);
+    gb.a = 0x01; gb.f = 0xB0; gb.b = 0x00; gb.c = 0x13;
+    gb.d = 0x00; gb.e = 0xD8; gb.h = 0x01; gb.l = 0x4D;
+    gb.sp = 0xFFFE;
+    gb.pc = 0x0100;
+    gb.io[GB_IF] = 0x01;
+    static const uint8_t GB_FAR snd[0x17] = { 0x80, 0xBF, 0xF3, 0xFF, 0xBF, 0xFF, 0x3F, 0x00, 0xFF, 0xBF, 0x7F, 0xFF,
+        0x9F, 0xFF, 0xBF, 0xFF, 0xFF, 0x00, 0x00, 0xBF, 0x77, 0xF3, 0xF1 };
+    for (uint8_t i = 0; i < sizeof(snd); i++) gb.io[0x10 + i] = snd[i];
+    gb.io[GB_DMA] = 0xFF;
+    gb.io[GB_LCDC] = 0x91;
+    gb.io[GB_BGP] = 0xFC;
+    gb.io[GB_OBP0] = 0xFF;
+    gb.io[GB_OBP1] = 0xFF;
+    gb.lcd_on = 1;
+    // (in the last line of the vertical blank, as the reference)
+    ev_pos = 153 * LINE_MC + 100;
+    gbf_cyc = 0;
+    vbl_done = 1;
+    div_off = (0xABC8 >> 2) - ev_pos;
+    tim_last = 0xABC8 >> 2;
+    ser_on = 0;
+    gbv_reset();
+    stat_update();
+    schedule();
+}

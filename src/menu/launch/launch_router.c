@@ -98,8 +98,8 @@ exit_no_launch:
             if (flags & LAUNCH_ROUTER_USE_SERIAL_OUT) return ERR_FILE_NOT_EXECUTABLE;
             return launch_plugin_via_ipc(s_path_plugin_sf, path);
         } else if (!strcasecmp(ext, s_file_ext_gb)) {
-            // Game Boy ROM: gbswan (src/ggswan/gb). For now (step GB0) the
-            // plugin does not read the ROM: it shows its video test
+            // Game Boy ROM: gbswan (src/ggswan/gb). The cartridge's RAM is
+            // not saved yet
             if (flags & LAUNCH_ROUTER_USE_SERIAL_OUT) return ERR_FILE_NOT_EXECUTABLE;
             return launch_plugin_via_ipc(s_path_plugin_gb, path);
         } else if (!strcasecmp(ext, s_file_ext_gg) || !strcasecmp(ext, s_file_ext_sms)) {

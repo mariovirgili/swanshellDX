@@ -25,6 +25,17 @@
 #include "gb.h"
 
 extern void (*gb_serial_hook)(uint8_t);
+#ifdef GB_FAST
+// (the plugin's machine: the same tool, built as gbftest)
+uint8_t gb_vram[0x2000], gb_wram[0x2000];
+const uint8_t *gb_rom;
+uint8_t *gb_cart_ram;
+gb_t gb;
+void (*gb_serial_hook)(uint8_t);
+void gbf_host_event(void);
+#define gb_peek gbf_read
+#else
+#endif
 static char serial[65536];
 static unsigned serial_n;
 static int quiet;
@@ -62,7 +73,13 @@ int main(int argc, char **argv) {
     static uint8_t rom[8 << 20], ram[0x20000];
     uint32_t size = fread(rom, 1, sizeof(rom), f);
     fclose(f);
+#ifdef GB_FAST
+    gb_rom = rom;
+    gb_cart_ram = ram;
+    uint8_t err = gbf_load(rom, size);
+#else
     uint8_t err = gb_load(rom, size, ram);
+#endif
     if (err) { printf("LOAD %d\n", err); return 3; }
     gb_serial_hook = on_serial;
 
@@ -75,9 +92,17 @@ int main(int argc, char **argv) {
                 if (sscanf(p, "%ld:%x", &kf, &kv) == 2 && kf == fr) gb_set_keys(kv);
             }
         }
-        uint32_t end = gb.clock + GB_FRAME_TICKS;
         gb.frame_done = 0;
+#ifdef GB_FAST
+        while (!gb.frame_done) {
+            if (gbf_cyc <= 0 || (gb.halted && !(gb.ie & gb.io[GB_IF] & 0x1F))) {
+                gbf_host_event();
+                continue;
+            }
+#else
+        uint32_t end = gb.clock + GB_FRAME_TICKS;
         while (!gb.frame_done && (int32_t) (gb.clock - end) < 0) {
+#endif
             uint16_t pc = gb.pc;
             uint8_t op = gb_peek(pc);
             if (trace)

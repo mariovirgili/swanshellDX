@@ -1,11 +1,26 @@
 /**
- * gbswan - the Game Boy's CPU (Sharp SM83), the reference interpreter:
- * every access to the bus is a machine cycle, and the rest of the
- * hardware is moved by that cycle before the access is made (gb.h).
+ * gbswan - the Game Boy's CPU (Sharp SM83) as an interpreter. Every access
+ * to the bus is a machine cycle. In the reference the rest of the hardware
+ * is moved by that cycle before the access is made (gb.h); in the plugin's
+ * machine (GB_FAST) the cycle is counted, and the hardware catches up at
+ * the events (gbf_hw.c).
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #include "gb.h"
 
+#ifdef GB_FAST
+// the plugin's machine (gbf_hw.c): a cycle is one off the count to the next
+// event, and the hardware is brought up to date at the events
+static inline uint8_t rd(uint16_t a) {
+    gbf_cyc--;
+    return gbf_read(a);
+}
+static inline void wr(uint16_t a, uint8_t v) {
+    gbf_cyc--;
+    gbf_write(a, v);
+}
+#define idle() (gbf_cyc--)
+#else
 static uint8_t rd(uint16_t a) {
     gb_tick();
     return gb_read(a);
@@ -15,6 +30,7 @@ static void wr(uint16_t a, uint8_t v) {
     gb_write(a, v);
 }
 #define idle() gb_tick()
+#endif
 
 static uint8_t imm8(void) {
     return rd(gb.pc++);
@@ -199,16 +215,16 @@ static void interrupt(void) {
 
 void gb_step(void) {
     if (gb.locked) {
-        gb_tick();
+        idle();
         return;
     }
     if (gb.stopped) {
-        gb_tick();
+        idle();
         if (gb.keys) gb.stopped = 0;
         return;
     }
     if (gb.halted) {
-        gb_tick();
+        idle();
         if (!(gb.ie & gb.io[GB_IF] & 0x1F)) return;
         gb.halted = 0;
     }
@@ -477,9 +493,11 @@ void gb_step(void) {
     }
 }
 
+#ifndef GB_FAST
 void gb_run_frame(void) {
     uint32_t end = gb.clock + GB_FRAME_TICKS;
     gb.frame_done = 0;
     while (!gb.frame_done && (int32_t) (gb.clock - end) < 0)
         gb_step();
 }
+#endif

@@ -12,6 +12,13 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+// constant tables: in the cartridge's segment on the WonderSwan (GB_WS)
+#ifdef GB_WS
+#define GB_FAR __far
+#else
+#define GB_FAR
+#endif
+
 #define GB_FLAG_Z 0x80
 #define GB_FLAG_N 0x40
 #define GB_FLAG_H 0x20
@@ -119,11 +126,22 @@ typedef struct {
 
 extern gb_t gb;
 
-/* The memory: on the PC arrays; (later) on the WonderSwan fixed places. */
+/* The memory: on the PC arrays; on the WonderSwan fixed places of the
+   internal RAM (GB-MEMORY-MAP.md), the cartridge behind the windows. */
+#ifdef GB_WS
+#define gb_vram ((uint8_t*) 0x2000)
+#define gb_wram ((uint8_t*) 0x6000)
+#else
 extern uint8_t gb_vram[0x2000];
 extern uint8_t gb_wram[0x2000];
 extern const uint8_t *gb_rom;       // rom_banks * 4000h
 extern uint8_t *gb_cart_ram;        // ram_banks * 2000h (MBC2: 200h)
+#endif
+
+/* gb_cart.c */
+uint8_t gb_cart_header(const uint8_t GB_FAR *rom, uint32_t size);
+void gb_cart_write(uint16_t a, uint8_t v);  // a write to 0000h-7FFFh
+void gb_cart_map(void);                     // rom0_bank, romx_bank, ram_bank from the registers
 
 /* gb_bus.c */
 // rom: the whole file; ram: 32 KiB at least (kept by the caller). Returns 0,
@@ -142,6 +160,33 @@ void gb_set_keys(uint8_t keys);
 void gb_step(void);                 // one instruction, or one interrupt taken, or one cycle halted
 void gb_run_frame(void);            // to the next start of a vertical blank (or 70224 ticks with the LCD off)
 
+/* gbf_hw.c: the plugin's machine (GB_FAST). The same CPU and cartridges;
+   the bus, the timer and the LCD's timing by events, to the machine cycle
+   at the events and no finer; the picture by a backend (gbv.h). */
+extern int16_t gbf_cyc;             // machine cycles to the next event
+uint8_t gbf_load(const uint8_t GB_FAR *header, uint32_t size);     // as gb_load (the ROM and RAM: the platform's)
+void gbf_reset(void);
+uint8_t gbf_read(uint16_t a);
+void gbf_write(uint16_t a, uint8_t v);
+void gbf_run_frame(void);           // to the next vertical blank (or a frame's time with the LCD off)
+uint8_t gbf_line(void);             // the LCD's line now (0-153)
+uint8_t gbf_draw_line(void);        // the first line a change made now is seen in (0-144; 0 in the vertical blank: the next frame's)
+
+// the cartridge's memory, by platform
+#ifdef GB_WS
+#include <wonderful.h>
+extern uint16_t gbf_rom0_off, gbf_romx_off, gbf_ram_off;    // inside the windows
+#define GBF_ROM0(a) (*(const uint8_t __far*) MK_FP(0x2000, gbf_rom0_off + (a)))
+#define GBF_ROMX(a) (*(const uint8_t __far*) MK_FP(0x3000, gbf_romx_off + ((a) & 0x3FFF)))
+#define GBF_RAM(a) (*(uint8_t __far*) MK_FP(0x1000, gbf_ram_off + (a)))
+void gbf_plat_map(void);            // the windows on the banks of gb.rom0_bank, gb.romx_bank, gb.ram_bank
+#else
+#define GBF_ROM0(a) gb_rom[(uint32_t) gb.rom0_bank << 14 | (a)]
+#define GBF_ROMX(a) gb_rom[(uint32_t) gb.romx_bank << 14 | ((a) & 0x3FFF)]
+#define GBF_RAM(a) gb_cart_ram[(uint32_t) gb.ram_bank << 13 | (a)]
+#define gbf_plat_map()
+#endif
+
 /* gb_ppu.c */
 void gb_ppu_reset(void);
 void gb_ppu_tick(void);             // 4 dots
@@ -149,6 +194,7 @@ uint8_t gb_ppu_read(uint8_t reg);
 void gb_ppu_write(uint8_t reg, uint8_t v);
 bool gb_ppu_vram_blocked(bool write);
 bool gb_ppu_oam_blocked(bool write);
+void gb_ppu_draw_line(uint8_t y);    // into gb_screen, from the registers and the memory as they are
 // the picture: 160 x 144 of shades 0 (lightest) to 3, drawn a line at a time
 extern uint8_t gb_screen[144][160];
 
