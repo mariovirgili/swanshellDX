@@ -33,6 +33,7 @@
 #include "gb.h"
 #include "gbv.h"
 #include "gb_ws.h"
+#include "gb_drc.h"
 
 #define SCR1        ((uint16_t*) 0x4000)
 #define MAPS        ((uint16_t*) 0x4800)    // of the Game Boy's 9800h, then (5000h) of its 9C00h
@@ -63,9 +64,16 @@ static uint8_t *list_made = list_b;
 static volatile uint8_t list_ready;
 uint8_t *gbv_split_ptr;
 
-static uint8_t tiles_8000;      // LCDC bit 4 the maps were made with
+uint8_t gbv_tiles_8000;         // LCDC bit 4 the maps were made with (gb_drc_asm.s writes map entries too)
 static volatile uint16_t frame_credit;
 volatile uint16_t gbv_vblanks;
+
+/* What the plugin is doing, sampled at every vertical blank of the
+   WonderSwan (75 a second): for the figures on the screen. */
+volatile uint8_t gb_phase;
+static volatile uint16_t phase_n[GB_PHASES];
+static uint8_t stats_on;
+static uint16_t stats_frames;       // Game Boy frames since the figures were last shown
 
 // every WonderSwan frame (75.47 a second) earns 5973, a Game Boy frame
 // (59.73) costs 7547
@@ -74,6 +82,7 @@ volatile uint16_t gbv_vblanks;
 
 void gb_vblank_irq(void) {
     gbv_vblanks++;
+    phase_n[gb_phase]++;
     if (frame_credit < 3 * FRAME_COST) frame_credit += FRAME_EARN;
     if (list_ready) {
         uint8_t *t = list_shown;
@@ -95,7 +104,7 @@ void gb_vblank_irq(void) {
 }
 
 static inline uint16_t map_entry(uint8_t n) {
-    return (tiles_8000 || n >= 128 ? n : 256 + n) | (4 << 9);
+    return (gbv_tiles_8000 || n >= 128 ? n : 256 + n) | (4 << 9);
 }
 
 static void rebuild_maps(void) {
@@ -113,11 +122,11 @@ void gbv_oam(void) {
 
 static void raw_first(void) {
     raw[0].line = 0;
-    raw[0].lcdc = gb.io[GB_LCDC];
-    raw[0].scx = gb.io[GB_SCX];
-    raw[0].scy = gb.io[GB_SCY];
-    raw[0].wy = gb.io[GB_WY];
-    raw[0].wx = gb.io[GB_WX];
+    raw[0].lcdc = gb_io[GB_LCDC];
+    raw[0].scx = gb_io[GB_SCX];
+    raw[0].scy = gb_io[GB_SCY];
+    raw[0].wy = gb_io[GB_WY];
+    raw[0].wx = gb_io[GB_WX];
     raw_n = 1;
 }
 
@@ -203,14 +212,14 @@ static void make_list(void) {
 static const uint16_t __far shades[4] = { 0xFFF, 0xAAA, 0x555, 0x000 };
 
 static void palettes(void) {
-    uint8_t p = gb.io[GB_BGP];
+    uint8_t p = gb_io[GB_BGP];
     WS_DISPLAY_COLOR_MEM(0)[0] = shades[p & 3];
     for (uint8_t i = 1; i < 4; i++)
         WS_DISPLAY_COLOR_MEM(4)[i] = shades[(p >> (i * 2)) & 3];
-    p = gb.io[GB_OBP0];
+    p = gb_io[GB_OBP0];
     for (uint8_t i = 1; i < 4; i++)
         WS_DISPLAY_COLOR_MEM(12)[i] = shades[(p >> (i * 2)) & 3];
-    p = gb.io[GB_OBP1];
+    p = gb_io[GB_OBP1];
     for (uint8_t i = 1; i < 4; i++)
         WS_DISPLAY_COLOR_MEM(13)[i] = shades[(p >> (i * 2)) & 3];
 }
@@ -219,13 +228,13 @@ static void palettes(void) {
 // OAM order), which is who covers whom on the DMG
 static void sprites(void) {
     uint8_t order[40], n = 0;
-    uint8_t tall = gb.io[GB_LCDC] & 4;
+    uint8_t tall = gb_io[GB_LCDC] & 4;
     for (uint8_t i = 0; i < 40; i++) {
-        const uint8_t *s = gb.oam + i * 4;
+        const uint8_t *s = gb_oam + i * 4;
         if (s[0] == 0 || s[0] >= 160 || s[1] == 0 || s[1] >= 168) continue;
         if (!tall && s[0] <= 8) continue;
         uint8_t x = s[1], j = n++;
-        while (j > 0 && gb.oam[order[j - 1] * 4 + 1] > x) {
+        while (j > 0 && gb_oam[order[j - 1] * 4 + 1] > x) {
             order[j] = order[j - 1];
             j--;
         }
@@ -234,7 +243,7 @@ static void sprites(void) {
     uint8_t *o = SPR_TABLE;
     uint8_t count = 0;
     for (uint8_t k = 0; k < n; k++) {
-        const uint8_t *s = gb.oam + order[k] * 4;
+        const uint8_t *s = gb_oam + order[k] * 4;
         uint8_t f = s[3];
         // palette 12 or 13 (4 or 5 of the sprites'), over screen 2 unless
         // "behind", the flips
@@ -257,23 +266,96 @@ static void sprites(void) {
     outportb(WS_SPR_COUNT_PORT, count);
 }
 
+/* ---- the figures (START + Y4): in the black at the left, 4 characters
+   wide, once a second: frames shown a second, then the share of the time
+   (in hundredths) spent in translated code and its routines, in the
+   dispatcher, translating, on the picture, waiting for the frame's time;
+   blocks translated (hex) and times the code was all forgotten ---- */
+
+#define FONT_TILE 928
+static const char __far font_set[] = " 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ.:/-_()";
+
+static void stat_put(uint8_t row, const char __far *t) {
+    for (uint8_t c = 0; c < 4; c++) {
+        uint8_t k = 0;
+        if (*t) {
+            for (uint8_t i = 0; font_set[i]; i++)
+                if (font_set[i] == *t) { k = i; break; }
+            t++;
+        }
+        SCR1[row * 32 + c] = 0x2000 | ((FONT_TILE + k) & 511) | (1 << 9);
+    }
+}
+static void stat_num(uint8_t row, uint16_t v, uint8_t hex) {
+    char b[5];
+    for (int8_t i = 3; i >= 0; i--) {
+        uint8_t d = hex ? v & 15 : v % 10;
+        b[i] = d < 10 ? '0' + d : 'A' + d - 10;
+        v = hex ? v >> 4 : v / 10;
+    }
+    b[4] = 0;
+    stat_put(row, b);
+}
+
+void gbv_stats_toggle(void) {
+    stats_on ^= 1;
+    for (uint8_t r = 0; r < 18; r++)
+        for (uint8_t c = 0; c < 4; c++)
+            SCR1[r * 32 + c] = 0x2000 | 511 | (1 << 9);
+    ia16_disable_irq();
+    gbv_vblanks = 0;
+    for (uint8_t i = 0; i < GB_PHASES; i++) phase_n[i] = 0;
+    ia16_enable_irq();
+    stats_frames = 0;
+}
+
+static void stats_show(void) {
+    static const char __far names[GB_PHASES][4] = { "RUN", "DSP", "TRN", "VID", "IDL" };
+    uint16_t n[GB_PHASES], total;
+    ia16_disable_irq();
+    total = gbv_vblanks;
+    gbv_vblanks = 0;
+    for (uint8_t i = 0; i < GB_PHASES; i++) { n[i] = phase_n[i]; phase_n[i] = 0; }
+    ia16_enable_irq();
+    stat_put(0, "FPS");
+    stat_num(1, (uint32_t) stats_frames * 7547 / ((uint32_t) total * 100), 0);
+    stats_frames = 0;
+    for (uint8_t i = 0; i < GB_PHASES; i++) {
+        stat_put(2 + i * 2, names[i]);
+        stat_num(3 + i * 2, n[i] * 100 / total, 0);
+    }
+    stat_put(12, "BLK");
+    stat_num(13, drc_blocks, 1);
+    stat_put(14, "FLS");
+    stat_num(15, drc_flushes, 0);
+}
+
 void gbv_frame(void) {
-    if ((gb.io[GB_LCDC] >> 4 & 1) != tiles_8000) {
-        tiles_8000 = gb.io[GB_LCDC] >> 4 & 1;
+    uint8_t was = gb_phase;
+    gb_phase = GB_PHASE_VIDEO;
+    if ((gb_io[GB_LCDC] >> 4 & 1) != gbv_tiles_8000) {
+        gbv_tiles_8000 = gb_io[GB_LCDC] >> 4 & 1;
         rebuild_maps();
     }
     make_list();
     sprites();
     palettes();
+    if (stats_on) {
+        stats_frames++;
+        if (gbv_vblanks >= 75) stats_show();
+    }
     // the frame's time (none to wait for when the plugin is slow)
+    gb_phase = GB_PHASE_IDLE;
     while (frame_credit < FRAME_COST)
         ia16_halt();
+    gb_phase = GB_PHASE_VIDEO;
     ia16_disable_irq();
     frame_credit -= FRAME_COST;
     list_ready = 1;
     ia16_enable_irq();
     raw_first();
     gb_frame_keys();
+    gb_phase = was;
 }
 
 void gbv_reset(void) {
@@ -286,10 +368,10 @@ void gbv_reset(void) {
         for (uint8_t c = 0; c < 32; c++)
             SCR1[r * 32 + c] = 0x2000 | 511 | ((c >= 4 && c < 24 ? 4 : 1) << 9);
     for (uint8_t i = 0; i < 4; i++) {
-        WS_DISPLAY_COLOR_MEM(1)[i] = 0x000;
+        WS_DISPLAY_COLOR_MEM(1)[i] = i == 1 ? 0xFFF : 0x000;    // (color 1: the figures' white)
         WS_DISPLAY_COLOR_MEM(4)[i] = 0xFFF;
     }
-    tiles_8000 = gb.io[GB_LCDC] >> 4 & 1;
+    gbv_tiles_8000 = gb_io[GB_LCDC] >> 4 & 1;
     rebuild_maps();
     memset(SPR_TABLE, 0, 0x200);
     outportb(WS_SPR_BASE_PORT, 0x5800 >> 9);

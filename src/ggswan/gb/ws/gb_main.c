@@ -11,7 +11,7 @@
  *
  * Keys: the X pad is the Game Boy's; A and B; START; Y3 (Y down) or Y2
  * (Y right) is SELECT. START + Y1 (Y up) held for a second: back to the
- * menu.
+ * menu. START + Y4 (Y left): figures on the screen (gb_video.c).
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
@@ -24,6 +24,7 @@
 #include "gb.h"
 #include "gbv.h"
 #include "gb_ws.h"
+#include "gb_drc.h"
 #include "../../ws/version.h"
 
 #define ROM_MAX_BANKS 64        // of 16 KiB: 1 MiB (PSRAM banks 0-15)
@@ -38,6 +39,12 @@ void gbf_plat_map(void) {
     gbf_romx_off = (gb.romx_bank & 3) << 14;
     outportw(WS_CART_EXTBANK_RAM_PORT, gb.ram_bank >> 3);
     gbf_ram_off = (gb.ram_bank & 7) << 13;
+    // (the recompiled code's way to the two ROM areas: segments the Game
+    // Boy's address is the offset in)
+    drc_segtab[0] = 0x2000 + (gbf_rom0_off >> 4);
+    drc_segtab[1] = 0x3000 + (gbf_romx_off >> 4) - 0x400;
+    drc_key0 = gb.rom0_bank + 1;
+    drc_keyx = gb.romx_bank + 1;
 }
 
 /* ---- text (before the game, and when something is wrong): screen 2 with
@@ -187,6 +194,15 @@ void gb_frame_keys(void) {
         return;
     }
     exit_held = 0;
+    // START + Y4 (Y left): the figures on the screen, on and off
+    static uint8_t stats_held;
+    if ((k & (WS_KEY_START | WS_KEY_Y4)) == (WS_KEY_START | WS_KEY_Y4)) {
+        if (!stats_held) gbv_stats_toggle();
+        stats_held = 1;
+        return;
+    }
+    if (!(k & WS_KEY_Y4)) stats_held = 0;
+    else if (stats_held) return;       // (START let go first: not the game's)
     uint8_t g = 0;
     if (k & WS_KEY_X2) g |= GB_KEY_RIGHT;
     if (k & WS_KEY_X4) g |= GB_KEY_LEFT;
@@ -204,8 +220,10 @@ void gb_frame_keys(void) {
 // (on the stack below 2000h: gb_asm.s)
 void gb_emulate(void) {
     gbf_reset();
+    gbd_init();
+    gb_phase = GB_PHASE_DISP;
     for (;;)
-        gbf_run_frame();
+        gbd_run_frame();
 }
 
 int main(void) {

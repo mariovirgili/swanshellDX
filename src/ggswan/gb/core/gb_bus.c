@@ -51,18 +51,18 @@ static void ram_write(uint16_t a, uint8_t v) {
 
 static bool timer_signal(void) {
     static const uint8_t bit[4] = { 9, 3, 5, 7 };
-    return (gb.io[GB_TAC] & 4) && (gb.div >> bit[gb.io[GB_TAC] & 3] & 1);
+    return (gb_io[GB_TAC] & 4) && (gb.div >> bit[gb_io[GB_TAC] & 3] & 1);
 }
 static void tima_inc(void) {
-    if (++gb.io[GB_TIMA] == 0)
+    if (++gb_io[GB_TIMA] == 0)
         gb.tima_state = 1;   // reads 0 for a cycle, then TMA and the interrupt
 }
 static void serial_clock(void) {
     if (!gb.serial_bits) return;
-    gb.io[GB_SB] = gb.io[GB_SB] << 1 | 1;
+    gb_io[GB_SB] = gb_io[GB_SB] << 1 | 1;
     if (--gb.serial_bits == 0) {
-        gb.io[GB_SC] &= 0x7F;
-        gb.io[GB_IF] |= GB_INT_SERIAL;
+        gb_io[GB_SC] &= 0x7F;
+        gb_io[GB_IF] |= GB_INT_SERIAL;
     }
 }
 // DIV's 16 bits change: the timer counts on the fall of one of its bits
@@ -76,14 +76,14 @@ static void set_div(uint16_t v) {
 }
 
 static uint8_t p1_read(void) {
-    uint8_t sel = gb.io[GB_P1] & 0x30, low = 15;
+    uint8_t sel = gb_io[GB_P1] & 0x30, low = 15;
     if (!(sel & 0x10)) low &= ~(gb.keys & 15);
     if (!(sel & 0x20)) low &= ~(gb.keys >> 4);
     return 0xC0 | sel | low;
 }
 static void p1_changed(uint8_t before) {
     if (before & ~p1_read() & 15)
-        gb.io[GB_IF] |= GB_INT_JOYPAD;
+        gb_io[GB_IF] |= GB_INT_JOYPAD;
 }
 void gb_set_keys(uint8_t keys) {
     uint8_t before = p1_read();
@@ -98,8 +98,8 @@ void gb_tick(void) {
     if (gb.tima_state == 2) {
         gb.tima_state = 0;
     } else if (gb.tima_state == 1) {
-        gb.io[GB_TIMA] = gb.io[GB_TMA];
-        gb.io[GB_IF] |= GB_INT_TIMER;
+        gb_io[GB_TIMA] = gb_io[GB_TMA];
+        gb_io[GB_IF] |= GB_INT_TIMER;
         gb.tima_state = 2;
     }
     set_div(gb.div + 4);
@@ -113,7 +113,7 @@ void gb_tick(void) {
     if (gb.dma_active == 1) {
         uint16_t src = (uint16_t) gb.dma_page << 8 | gb.dma_pos;
         if (src >= 0xE000) src -= 0x2000;
-        gb.oam[gb.dma_pos] = gb_peek(src);
+        gb_oam[gb.dma_pos] = gb_peek(src);
         if (++gb.dma_pos == 0xA0) gb.dma_active = 2;
     }
     gb_ppu_tick();
@@ -129,16 +129,16 @@ static const uint8_t snd_mask[0x20] = {
 static uint8_t io_read(uint8_t r) {
     switch (r) {
     case GB_P1: return p1_read();
-    case GB_SB: return gb.io[GB_SB];
-    case GB_SC: return gb.io[GB_SC] | 0x7E;
+    case GB_SB: return gb_io[GB_SB];
+    case GB_SC: return gb_io[GB_SC] | 0x7E;
     case GB_DIV: return gb.div >> 8;
-    case GB_TIMA: case GB_TMA: return gb.io[r];
-    case GB_TAC: return gb.io[r] | 0xF8;
-    case GB_IF: return gb.io[r] | 0xE0;
-    case GB_DMA: return gb.io[r];
+    case GB_TIMA: case GB_TMA: return gb_io[r];
+    case GB_TAC: return gb_io[r] | 0xF8;
+    case GB_IF: return gb_io[r] | 0xE0;
+    case GB_DMA: return gb_io[r];
     default:
-        if (r >= 0x10 && r < 0x30) return gb.io[r] | snd_mask[r - 0x10];
-        if (r >= 0x30 && r < 0x40) return gb.io[r];
+        if (r >= 0x10 && r < 0x30) return gb_io[r] | snd_mask[r - 0x10];
+        if (r >= 0x30 && r < 0x40) return gb_io[r];
         if (r >= 0x40 && r <= 0x4B) return gb_ppu_read(r);
         return 0xFF;
     }
@@ -150,17 +150,17 @@ static void io_write(uint8_t r, uint8_t v) {
     switch (r) {
     case GB_P1:
         before = p1_read();
-        gb.io[r] = v & 0x30;
+        gb_io[r] = v & 0x30;
         p1_changed(before);
         break;
     case GB_SB:
-        gb.io[r] = v;
+        gb_io[r] = v;
         break;
     case GB_SC:
-        gb.io[r] = v & 0x81;
+        gb_io[r] = v & 0x81;
         gb.serial_bits = (v & 0x81) == 0x81 ? 8 : 0;
 #ifdef GB_HOST
-        if ((v & 0x81) == 0x81 && gb_serial_hook) gb_serial_hook(gb.io[GB_SB]);
+        if ((v & 0x81) == 0x81 && gb_serial_hook) gb_serial_hook(gb_io[GB_SB]);
 #endif
         break;
     case GB_DIV:
@@ -171,16 +171,16 @@ static void io_write(uint8_t r, uint8_t v) {
         // it takes the reload's and the interrupt's place)
         if (gb.tima_state == 2) break;
         gb.tima_state = 0;
-        gb.io[r] = v;
+        gb_io[r] = v;
         break;
     case GB_TMA:
-        gb.io[r] = v;
-        if (gb.tima_state == 2) gb.io[GB_TIMA] = v;
+        gb_io[r] = v;
+        if (gb.tima_state == 2) gb_io[GB_TIMA] = v;
         break;
     case GB_TAC:
         was = timer_signal();
-        before = gb.io[r];
-        gb.io[r] = v & 7;
+        before = gb_io[r];
+        gb_io[r] = v & 7;
         if (was && !timer_signal()) {
             tima_inc();
         } else if (!(before & 4) && (v & 4)) {
@@ -191,16 +191,16 @@ static void io_write(uint8_t r, uint8_t v) {
         }
         break;
     case GB_IF:
-        gb.io[r] = v & 0x1F;
+        gb_io[r] = v & 0x1F;
         break;
     case GB_DMA:
-        gb.io[r] = v;
+        gb_io[r] = v;
         gb.dma_next = v;
         gb.dma_wait = 2;
         break;
     default:
         if (r >= 0x40 && r <= 0x4B) gb_ppu_write(r, v);
-        else if (r >= 0x10 && r < 0x40) gb.io[r] = v;   // (the sound: registers only, for now)
+        else if (r >= 0x10 && r < 0x40) gb_io[r] = v;   // (the sound: registers only, for now)
         break;
     }
 }
@@ -214,11 +214,11 @@ uint8_t gb_peek(uint16_t a) {
     case 6: return gb_wram[a & 0x1FFF];
     default:
         if (a < 0xFE00) return gb_wram[a & 0x1FFF];
-        if (a < 0xFEA0) return gb.oam[a - 0xFE00];
+        if (a < 0xFEA0) return gb_oam[a - 0xFE00];
         if (a < 0xFF00) return 0;
         if (a < 0xFF80) return io_read(a & 0xFF);
-        if (a < 0xFFFF) return gb.hram[a - 0xFF80];
-        return gb.ie;
+        if (a < 0xFFFF) return gb_hram[a - 0xFF80];
+        return gb_ie;
     }
 }
 
@@ -249,14 +249,14 @@ void gb_write(uint16_t a, uint8_t v) {
         if (a < 0xFE00) {
             gb_wram[a & 0x1FFF] = v;
         } else if (a < 0xFEA0) {
-            if (!gb.dma_active && !gb_ppu_oam_blocked(true)) gb.oam[a - 0xFE00] = v;
+            if (!gb.dma_active && !gb_ppu_oam_blocked(true)) gb_oam[a - 0xFE00] = v;
         } else if (a < 0xFF00) {
         } else if (a < 0xFF80) {
             io_write(a & 0xFF, v);
         } else if (a < 0xFFFF) {
-            gb.hram[a - 0xFF80] = v;
+            gb_hram[a - 0xFF80] = v;
         } else {
-            gb.ie = v;
+            gb_ie = v;
         }
         break;
     }
@@ -282,11 +282,11 @@ void gb_reset(void) {
     gb.sp = 0xFFFE;
     gb.pc = 0x0100;
     gb.div = 0xABC8;
-    gb.io[GB_P1] = 0x00;
-    gb.io[GB_IF] = 0x01;
+    gb_io[GB_P1] = 0x00;
+    gb_io[GB_IF] = 0x01;
     static const uint8_t snd[0x17] = { 0x80, 0xBF, 0xF3, 0xFF, 0xBF, 0xFF, 0x3F, 0x00, 0xFF, 0xBF, 0x7F, 0xFF,
         0x9F, 0xFF, 0xBF, 0xFF, 0xFF, 0x00, 0x00, 0xBF, 0x77, 0xF3, 0xF1 };
-    memcpy(gb.io + 0x10, snd, sizeof(snd));
-    gb.io[GB_DMA] = 0xFF;
+    memcpy(gb_io + 0x10, snd, sizeof(snd));
+    gb_io[GB_DMA] = 0xFF;
     gb_ppu_reset();
 }

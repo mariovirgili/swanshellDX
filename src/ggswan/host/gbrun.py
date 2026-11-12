@@ -10,12 +10,14 @@ usage: gbrun.py build/gbswan.elf rom.gb frames [out-prefix] [keys "frame:hex,...
   out-prefix: PREFIX-NNNN.ppm of the frames in GBRUN_SHOTS (default: the last)
   keys: what ws_keypad_scan returns (Y1-Y4 001 002 004 008, X1-X4 010 020
         040 080, START 200, A 400, B 800), held from that frame on
-Environment: GBRUN_SHOTS=n,n,...  GBRUN_LINE=instructions a line (default
+Environment: GBRUN_TEXT=1 (the Game Boy's background map as text at the
+end)  GBRUN_SHOTS=n,n,...  GBRUN_LINE=instructions a line (default
 80: about 256 cycles; only how fast the plugin seems depends on it)
 GBRUN_CYCLES=1: count V30MZ cycles (Mednafen's costs, as wsrun.py) in
 place of instructions: slow, for measuring.
 Prints, at the end and every 75 frames: Game Boy frames shown, and
-instructions (or cycles) run a Game Boy frame."""
+instructions (or cycles) run a Game Boy frame; with GBRUN_CYCLES, where
+the cycles went."""
 import sys, os, ctypes
 from elftools.elf.elffile import ELFFile
 from unicorn import *
@@ -27,6 +29,9 @@ KEYS = dict((int(k.split(':')[0]), int(k.split(':')[1], 16)) for k in sys.argv[5
 SHOTS = set(int(x) for x in os.environ.get('GBRUN_SHOTS', str(FRAMES - 1)).split(',') if x)
 LINE_INSNS = int(os.environ.get('GBRUN_LINE', '80'))
 CYCLES = bool(os.environ.get('GBRUN_CYCLES'))
+UNIT = 'cycles' if CYCLES else 'instructions'
+PROF_FROM = int(os.environ.get('GBRUN_PROF_FROM', '0'))    # (the cycles counted by function from this frame on)
+prof_gb0 = [0]
 
 f = ELFFile(open(ELF, 'rb'))
 uc = Uc(UC_ARCH_X86, UC_MODE_16)
@@ -115,11 +120,40 @@ def h_sd(uc, addr, size, name):
 for n in ('f_mount', 'f_open', 'f_read', 'f_close', 'fail', 'gbv_frame'):
     if n in syms: uc.hook_add(UC_HOOK_CODE, h_sd, n, syms[n], syms[n])
 
+cyc = [0, 0]      # V30MZ cycles run; where the line being run ends
+prof = {}
 if CYCLES:
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    cyc = [0]
+    # Mednafen's V30MZ costs: wsrun.py's table (taken from its source)
+    import bisect, collections
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'wsrun.py')).read()
+    exec(src[src.index('STR_CYC = '):src.index('def cost(code):')], globals())
+    funcs = []
+    for y in f.get_section_by_name('.symtab').iter_symbols():
+        if y['st_info']['type'] == 'STT_FUNC' and y['st_size']:
+            a0 = y['st_value'] & 0xFFFFF
+            funcs.append((a0, a0 + y['st_size'], y.name))
+    funcs.sort(); starts = [x[0] for x in funcs]
+    stubs_n = syms['drc_stubs_end'] - syms['drc_stubs'] if 'drc_stubs' in syms else 0
+    def where(addr):
+        if 0x50000 <= addr < 0xD0000:
+            return 'translated code' if (addr & 0xFFFF) >= stubs_n else 'the routines it calls'
+        i = bisect.bisect_right(starts, addr) - 1
+        return funcs[i][2] if i >= 0 and funcs[i][0] <= addr < funcs[i][1] else '?%05X' % (addr & 0xFFF00)
+    prof = collections.Counter()
+    jst = [0, 0, 0]
+    ccache = {}
     def h_cyc(uc, addr, size, _):
-        cyc[0] += 3     # (a flat cost for now: see wsrun.py for Mednafen's table)
+        code = bytes(uc.mem_read(addr, size))
+        k = ccache.get(code)
+        if k is None or code[0] in (0xF2, 0xF3):
+            k = cost_m(code, uc.reg_read(UC_X86_REG_CX), jst[2] != addr)
+            if code[0] not in (0xF2, 0xF3): ccache[code] = k
+        c, ex = k
+        if jst[0] and addr != jst[1]: c += jst[0]
+        jst[0] = ex; jst[1] = addr + size; jst[2] = addr
+        cyc[0] += c
+        prof[where(addr)] += c
+        if cyc[0] >= cyc[1]: uc.emu_stop()
     uc.hook_add(UC_HOOK_CODE, h_cyc)
 
 def irq(n):
@@ -200,6 +234,32 @@ def render_line(mem, p, y, pal):
         out += bytes((((c >> 8) & 15) * 17, ((c >> 4) & 15) * 17, (c & 15) * 17))
     return bytes(out)
 
+if os.environ.get('GBRUN_WATCH'):
+    # GBRUN_WATCH=addr: every write to that byte of the internal RAM, with the
+    # Game Boy's PC as the plugin has it (gb.pc: the last block's exit) and A
+    wa = int(os.environ['GBRUN_WATCH'], 16)
+    def h_w(uc, access, addr, size, value, _):
+        g = syms['gb']
+        m = uc.mem_read(g, 12)
+        print('W %04X=%02X pc=%04X gbframe=%d a=%02X' % (addr, value & 0xFF, m[10] | m[11] << 8, st['gbframes'], uc.reg_read(UC_X86_REG_AX) & 0xFF))
+    uc.hook_add(UC_HOOK_MEM_WRITE, h_w, None, wa, wa)
+callers = None
+if os.environ.get('GBRUN_CALLERS') and CYCLES:
+    # GBRUN_CALLERS=function: who calls it (far calls), and its first argument (AX)
+    import collections as _c
+    callers = _c.Counter()
+    def h_call(uc, addr, size, _):
+        if st['frame'] < PROF_FROM: return
+        sp = uc.reg_read(UC_X86_REG_SP)
+        ip, cs = int.from_bytes(uc.mem_read(sp, 2), 'little'), int.from_bytes(uc.mem_read(sp + 2, 2), 'little')
+        if addr == syms.get('gbd_enter'):
+            # (the dispatcher entering a block: the Game Boy's PC)
+            g = syms['gb']; m = uc.mem_read(g, 12)
+            callers['enter', '%04X' % (m[10] | m[11] << 8)] += 1
+        else:
+            callers[where((cs << 4) + ip), '%04X' % (uc.reg_read(UC_X86_REG_AX) & 0xFFF0)] += 1
+    a0 = syms[os.environ['GBRUN_CALLERS']]
+    uc.hook_add(UC_HOOK_CODE, h_call, None, a0, a0)
 e = f['e_entry'] & 0xFFFFF
 uc.reg_write(UC_X86_REG_CS, 0xF000); uc.reg_write(UC_X86_REG_IP, e - 0xF0000)
 uc.reg_write(UC_X86_REG_SS, 0); uc.reg_write(UC_X86_REG_SP, 0x4000)
@@ -210,11 +270,15 @@ while st['frame'] < FRAMES and not st['fail']:
     if not st['halted']:
         cs = uc.reg_read(UC_X86_REG_CS); ip = uc.reg_read(UC_X86_REG_IP)
         try:
-            uc.emu_start((cs << 4) + ip, 0xFFFFFFFF, count=LINE_INSNS)
+            if CYCLES:
+                cyc[1] += 256
+                if cyc[0] < cyc[1]: uc.emu_start((cs << 4) + ip, 0xFFFFFFFF)
+            else:
+                uc.emu_start((cs << 4) + ip, 0xFFFFFFFF, count=LINE_INSNS)
         except UcError as x:
             cs = uc.reg_read(UC_X86_REG_CS); ip = uc.reg_read(UC_X86_REG_IP)
             print('stopped: %s at %04X:%04X' % (x, cs, ip)); break
-        st['work'] += LINE_INSNS
+        st['work'] = cyc[0] if CYCLES else st['work'] + LINE_INSNS
         cs = uc.reg_read(UC_X86_REG_CS); ip = uc.reg_read(UC_X86_REG_IP)
         if uc.mem_read((cs << 4) + ip - 1, 1)[0] == 0xF4 and uc.mem_read((cs << 4) + ip, 1)[0] != 0xF4:
             # (Unicorn stops after a HLT: wait for an interrupt)
@@ -232,14 +296,38 @@ while st['frame'] < FRAMES and not st['fail']:
         st['pend'] |= 0x40
         st['frame'] += 1
         if st['frame'] in KEYS: st['keys'] = KEYS[st['frame']]
+        if CYCLES and st['frame'] == PROF_FROM:
+            prof.clear(); prof_gb0[0] = st['gbframes']
         if st['frame'] % 75 == 0:
             g = st['gbframes'] - last_gb
-            print('frame %d: %d Game Boy frames (%.1f a second), %d instructions each' % (st['frame'], st['gbframes'], g * 75.47 / 75, (st['work'] - last_work) // max(g, 1)))
+            print('frame %d: %d Game Boy frames (%.1f a second), %d %s each' % (st['frame'], st['gbframes'], g * 75.47 / 75, (st['work'] - last_work) // max(g, 1), UNIT))
             last_gb = st['gbframes']; last_work = st['work']
     if y == ports[3]: st['pend'] |= 0x10
     en = st['pend'] & ports[0xB2]
     for n in (7, 6, 5, 4, 3, 2, 1, 0):
         if en >> n & 1:
             irq(n); break
+if os.environ.get('GBRUN_TEXT'):
+    # the Game Boy's background map as text (test ROMs with a font at its ASCII places)
+    mem = bytes(iram.raw)
+    base = 0x3C00 if mem[0x9F40] & 8 else 0x3800
+    for r in range(18):
+        t = ''.join(chr(c) if 32 <= c < 127 else ' ' for c in mem[base + r * 32:base + r * 32 + 20]).rstrip()
+        if t: print(t)
+if os.environ.get('GBRUN_SYMS'):
+    # GBRUN_SYMS=name,name,...: the plugin's variables (16 bits) at the end
+    mem = bytes(iram.raw)
+    print(' '.join('%s=%d' % (n, mem[syms[n] & 0xFFFF] | mem[(syms[n] & 0xFFFF) + 1] << 8) for n in os.environ['GBRUN_SYMS'].split(',')))
+if os.environ.get('GBRUN_PEEK'):
+    # GBRUN_PEEK=addr,addr,...: bytes of the internal RAM at the end (hex)
+    mem = bytes(iram.raw)
+    print(' '.join('%s=%02X' % (a, mem[int(a, 16)]) for a in os.environ['GBRUN_PEEK'].split(',')))
 if st['fail']: print('fail: ' + st['fail'])
 print('WS frames %d, Game Boy frames %d' % (st['frame'], st['gbframes']))
+if callers:
+    for k, v in callers.most_common(12): print('  %6d  %s %s' % (v, k[0], k[1]))
+if CYCLES and st['gbframes']:
+    tot = sum(prof.values())
+    print('V30MZ cycles a Game Boy frame, from frame %d: %d (a WonderSwan frame has 40704, a Game Boy frame\'s time 51430)' % (PROF_FROM, tot // max(1, st['gbframes'] - prof_gb0[0])))
+    for k, v in prof.most_common(14): print('  %5.1f%%  %s' % (100.0 * v / tot, k))
+

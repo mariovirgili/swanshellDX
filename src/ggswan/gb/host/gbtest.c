@@ -32,7 +32,6 @@ const uint8_t *gb_rom;
 uint8_t *gb_cart_ram;
 gb_t gb;
 void (*gb_serial_hook)(uint8_t);
-void gbf_host_event(void);
 #define gb_peek gbf_read
 #else
 #endif
@@ -95,7 +94,7 @@ int main(int argc, char **argv) {
         gb.frame_done = 0;
 #ifdef GB_FAST
         while (!gb.frame_done) {
-            if (gbf_cyc <= 0 || (gb.halted && !(gb.ie & gb.io[GB_IF] & 0x1F))) {
+            if (gbf_cyc <= 0 || (gb.halted && !(gb_ie & gb_io[GB_IF] & 0x1F))) {
                 gbf_host_event();
                 continue;
             }
@@ -135,7 +134,7 @@ int main(int argc, char **argv) {
         fclose(o);
     }
     if (text) {
-        const uint8_t *map = gb_vram + ((gb.io[GB_LCDC] & 8) ? 0x1C00 : 0x1800);
+        const uint8_t *map = gb_vram + ((gb_io[GB_LCDC] & 8) ? 0x1C00 : 0x1800);
         for (int r = 0; r < 18; r++) {
             for (int c = 0; c < 20; c++) {
                 uint8_t ch = map[r * 32 + c];

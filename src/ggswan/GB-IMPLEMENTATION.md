@@ -44,23 +44,44 @@ background and the window, switched at the right lines by the line
 interrupt, with the scroll the program gave each line; the sprites are
 the WonderSwan's.
 
-## Where it is (patch 157)
+## Where it is (patch 158)
 
-The plugin starts the eight games tried and shows their first screens as
-the PC does (below). **It is far too slow to play**: the CPU is still the
-C interpreter, about a million V30MZ instructions for a Game Boy frame
-in `gbrun.py`, where a WonderSwan frame has time for some fifteen
-thousand: about a frame a second. The CPU is the next step.
+The CPU is a recompiler now (`gb/ws/gb_drc.c`, `gb_drc_asm.s`;
+`GB-ABI.md`). Everything below is from `gbrun.py` (the plugin in Unicorn,
+the cycles by Mednafen's table of V30MZ costs): **nothing of gbswan since
+the video test has been run on a WonderSwan or in nileswan-medem.**
 
-`gbcmp.py`, 900 WonderSwan frames (713 Game Boy frames at full speed in
-Unicorn), no keys, the plugin's 160 x 144 against `gbftest`'s:
+Right: the 11 ROMs of Blargg's `cpu_instrs` say "Passed" run by the
+plugin (their code is run from RAM, so through the translator). After
+713 Game Boy frames with no keys (`gbcmp.py`) the plugin's 160 x 144 is
+the PC's pixel for pixel in six games (Balloon Kid, Batman: Return of
+the Joker, R-Type, Super Mario Land, Super Mario Land 2, Yoshi); 6
+pixels differ in Bubble Ghost (not looked into), 27 in Castlevania II's
+moving title.
 
-| game | pixels that differ |
-|---|---|
-| Balloon Kid, Batman: Return of the Joker, R-Type, Super Mario Land, Super Mario Land 2, Yoshi | 0 |
-| Bubble Ghost | 6 (not looked into) |
-| Castlevania II | 299: its title is uncovered by a window whose left edge moves; the two were not at the same frame of it |
+Fast enough? A Game Boy frame's time is 51,430 V30MZ cycles. Cycles a
+Game Boy frame, WonderSwan frames 900-1100, after START and a few keys
+(what each game was showing then was not checked one by one):
+
+| game | cycles a frame | |
+|---|---|---|
+| Batman: Return of the Joker | 30,988 | full speed |
+| Super Mario Land (in the first level) | 40,072 | full speed |
+| Balloon Kid | 62,238 | about 80% |
+| R-Type | 110,343 | under half: the memory routines |
+| Castlevania II | 469,996 | a tenth: the STAT interrupt's events, four a line, in C |
+| Yoshi | 510,361 | a tenth: a loop reading the keys through C |
+| Super Mario Land 2 | 895,374 | a twentieth: cartridge RAM and bank changes through C |
+
+(Bubble Ghost's figure was lost in that run.) With the C interpreter
+(patch 157) all of them took about a million instructions a frame.
+
+START + Y4 (Y left) shows figures in the black at the left, once a
+second: FPS (Game Boy frames shown), then hundredths of the time in
+translated code and its routines (RUN), the dispatcher and events
+(DSP), translating (TRN), the frame's end (VID), waiting for the
+frame's time (IDL); blocks translated (BLK, hex), times the code was
+forgotten (FLS).
 
 Not done: sound, the cartridge RAM saved to a file, the 10 sprites to a
 line, palettes changed inside a frame, MBC3's clock, ROMs over 1 MiB.
-Nothing of this has been run on a WonderSwan or in nileswan-medem.

@@ -193,21 +193,21 @@ static void op_cb(void) {
     }
 }
 
-static void interrupt(void) {
+void gb_cpu_interrupt(void) {
     gb.ime = 0;
     idle();
     idle();
     wr(--gb.sp, gb.pc >> 8);
     // (which one, and whether any, is decided here: the push of the high
     // byte may have written IE)
-    uint8_t pend = gb.ie & gb.io[GB_IF] & 0x1F;
+    uint8_t pend = gb_ie & gb_io[GB_IF] & 0x1F;
     wr(--gb.sp, gb.pc & 0xFF);
     if (!pend) {
         gb.pc = 0;
     } else {
         uint8_t n = 0;
         while (!(pend >> n & 1)) n++;
-        gb.io[GB_IF] &= ~(1 << n);
+        gb_io[GB_IF] &= ~(1 << n);
         gb.pc = 0x40 + n * 8;
     }
     idle();
@@ -225,11 +225,11 @@ void gb_step(void) {
     }
     if (gb.halted) {
         idle();
-        if (!(gb.ie & gb.io[GB_IF] & 0x1F)) return;
+        if (!(gb_ie & gb_io[GB_IF] & 0x1F)) return;
         gb.halted = 0;
     }
-    if (gb.ime && (gb.ie & gb.io[GB_IF] & 0x1F)) {
-        interrupt();
+    if (gb.ime && (gb_ie & gb_io[GB_IF] & 0x1F)) {
+        gb_cpu_interrupt();
         return;
     }
     if (gb.ei_delay) {
@@ -247,7 +247,7 @@ void gb_step(void) {
     switch (op >> 6) {
     case 1:
         if (op == 0x76) {       // HALT
-            if (!gb.ime && (gb.ie & gb.io[GB_IF] & 0x1F)) gb.halt_bug = 1;
+            if (!gb.ime && (gb_ie & gb_io[GB_IF] & 0x1F)) gb.halt_bug = 1;
             else gb.halted = 1;
         } else {
             set_r(y, get_r(z));

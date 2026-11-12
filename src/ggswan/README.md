@@ -6,7 +6,7 @@ emulated by a dynamic recompiler (Z80 to V30MZ code), with the original
 interpreter kept for the parts that need it. The Game Gear video memory is
 mapped onto the WonderSwan's own tile and screen hardware.
 
-Status: fairly stable (patch 157). It has been tested mostly in the
+Status: fairly stable (patch 158). It has been tested mostly in the
 nileswan-medem emulator and with the host test tools; tests on real
 hardware are still to come.
 
@@ -159,6 +159,7 @@ interrupts a second).
 - `GB-ACCURACY.md`: the Game Boy's reference on the PC and the test ROMs
   it passes
 - `GB-IMPLEMENTATION.md`: how gbswan is made and where it is
+- `GB-ABI.md`: the code gbswan's recompiler writes
 
 ## smsswan: the Master System plugin
 
@@ -364,7 +365,7 @@ it are listed in order without one.
 - lighter DYN lookup and class routine for deferred tile bytes
 - OUTI runs to CRAM handled in the run routine
 
-### Patches 90-157
+### Patches 90-158
 
 | Patch | Change |
 |---|---|
@@ -436,3 +437,4 @@ it are listed in order without one.
 | 155 | gbswan, step GB1, on the PC only: the Game Boy itself as a reference, in `gb/core` (the SM83 with every bus access a machine cycle, the bus, MBC1, MBC2, MBC3 without its clock, MBC5, the timer, the serial port, the keys, the OAM DMA, and the LCD with a picture drawn a line at a time); `gb/host/gbtest` runs a ROM (trace, keys, picture) and `gb/host/gbsuite.py` the test ROMs: Blargg's `cpu_instrs`, `instr_timing`, `mem_timing`, `mem_timing-2`, `halt_bug`, the 54 of Mooneye's acceptance tests for the DMG that are not about the LCD, 27 of 28 of its cartridge tests, dmg-acid2; 5 of 12 of Mooneye's LCD tests. `GB-ACCURACY.md`. The plugin on the WonderSwan is still the video test (its sources moved to `gb/ws`) |
 | 156 | gbswan, step GB2, on the PC only: the LCD's timing as the test ROMs measure it (when STAT shows each mode and when its interrupts are asked, the video memory and the OAM refused to reads and writes at their own dots, the line after the LCD is turned on, LYC's comparison kept with the LCD off, what the sprites add to the drawing of a line). Mooneye's `acceptance/ppu`: 12 of 12 (5 before); dmg-acid2 the same picture as its reference; 33 of 47 of the older LCD tests of wilbertpol's fork, run by `gbsuite.py` from the text they leave on the screen (`gbtest -s`). `GB-ACCURACY.md` |
 | 157 | gbswan, steps GB3-GB5: the plugin runs Game Boy programs, far too slowly to play (about a frame a second: the CPU is the C interpreter). `gb/core/gbf_hw.c`, the machine by events (cycles counted to the next thing due; LY, STAT, DIV, TIMA worked out when read), with the reference's CPU and mappers; on the PC with the reference's renderer (`gbftest`) it shows the same pictures as the reference in the eight games tried, and passes the tests that are not about timing. `gb/ws`: the ROM read into PSRAM and mapped by the cartridge's windows (1 MiB at most), the picture with the WonderSwan's hardware (the video memory as the tiles, a WonderSwan map kept for each Game Boy map, screen 2 for background and window switched at their lines by the line interrupt, the sprites sorted as the DMG covers them), the keys. `host/gbrun.py` now runs the plugin with a ROM and the interrupts; `host/gbcmp.py`: the plugin's first screens are the PC's in six games of eight, pixel for pixel. `GB-IMPLEMENTATION.md`. Not run on a WonderSwan |
+| 158 | gbswan, step GB7 first: a recompiler for the Game Boy's CPU (`gb/ws/gb_drc.c`, `gb_drc_asm.s`, `GB-ABI.md`): A, BC, DE, HL, SP in AL, CX, DX, BX, BP; Z, H, C the V30MZ's own flags, kept in AH only when something would lose them (a pass over the block finds which are still wanted); everything from 8000h up but the cartridge's RAM 6000h lower in the internal RAM, the high RAM and the I/O registers too; blocks joined by jumps, returns looked up by an assembly routine; code in RAM translated with a copy of its bytes to compare; loops that wait on memory, LY or STAT given their time at once; what is not translated left to the interpreter an instruction at a time. In `gbrun.py`: Blargg's 11 CPU test ROMs pass in the plugin, the first screens are as before, and a frame costs 31-62 thousand V30MZ cycles in Batman, Super Mario Land and Balloon Kid (51,430 is full speed), 110 thousand in R-Type, half a million and more in Castlevania II, Yoshi and Super Mario Land 2 (`GB-IMPLEMENTATION.md`). Figures on the screen with START + Y4 (Y left). Not run on a WonderSwan |

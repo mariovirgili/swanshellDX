@@ -67,8 +67,10 @@
 
 typedef struct {
     // CPU
-    uint8_t a, f, b, c, d, e, h, l;
+    // (pairs low byte first: the recompiler keeps BC, DE, HL in 16 bit registers)
+    uint8_t a, f, c, b, e, d, l, h;
     uint16_t sp, pc;
+    uint8_t lcd_on;         // (here for the recompiled code)
     uint8_t ime;            // interrupts enabled
     uint8_t ei_delay;       // EI: enabled after the next instruction
     uint8_t halted;
@@ -97,7 +99,6 @@ typedef struct {
     uint8_t lyc_match;      // STAT bit 2
     uint8_t ly_cmp;         // the value LYC is compared with, or FFh: none
     uint16_t mode3_end;     // the dot mode 3 ends at, this line
-    uint8_t lcd_on;
     uint8_t first_line;     // the line after the LCD is turned on: no mode 2
     uint8_t win_line;       // the window's own line counter
     uint8_t win_on_frame;   // WY was met this frame
@@ -118,20 +119,33 @@ typedef struct {
     uint8_t ram_dirty;
 
     uint8_t keys;
-    uint8_t ie;
-    uint8_t io[0x80];
-    uint8_t hram[0x7F];
-    uint8_t oam[0xA0];
+#ifndef GB_WS
+    uint8_t ie_;
+    uint8_t io_[0x80];
+    uint8_t hram_[0x7F];
+    uint8_t oam_[0xA0];
+#endif
 } gb_t;
 
 extern gb_t gb;
 
 /* The memory: on the PC arrays; on the WonderSwan fixed places of the
    internal RAM (GB-MEMORY-MAP.md), the cartridge behind the windows. */
+// (on the WonderSwan everything from 8000h up but the cartridge's RAM is
+// 6000h lower in the internal RAM: the OAM, the I/O registers, the high
+// RAM and IE too, where the recompiled code reaches them)
 #ifdef GB_WS
 #define gb_vram ((uint8_t*) 0x2000)
 #define gb_wram ((uint8_t*) 0x6000)
+#define gb_oam ((uint8_t*) 0x9E00)
+#define gb_io ((uint8_t*) 0x9F00)
+#define gb_hram ((uint8_t*) 0x9F80)
+#define gb_ie (*(uint8_t*) 0x9FFF)
 #else
+#define gb_oam gb.oam_
+#define gb_io gb.io_
+#define gb_hram gb.hram_
+#define gb_ie gb.ie_
 extern uint8_t gb_vram[0x2000];
 extern uint8_t gb_wram[0x2000];
 extern const uint8_t *gb_rom;       // rom_banks * 4000h
@@ -158,17 +172,22 @@ void gb_set_keys(uint8_t keys);
 
 /* gb_cpu.c */
 void gb_step(void);                 // one instruction, or one interrupt taken, or one cycle halted
+void gb_cpu_interrupt(void);        // the interrupt pending taken (its 5 cycles)
 void gb_run_frame(void);            // to the next start of a vertical blank (or 70224 ticks with the LCD off)
 
 /* gbf_hw.c: the plugin's machine (GB_FAST). The same CPU and cartridges;
    the bus, the timer and the LCD's timing by events, to the machine cycle
    at the events and no finer; the picture by a backend (gbv.h). */
 extern int16_t gbf_cyc;             // machine cycles to the next event
+extern uint16_t gbf_ev_pos;         // the frame's cycle that event is at (now: gbf_ev_pos - gbf_cyc)
 uint8_t gbf_load(const uint8_t GB_FAR *header, uint32_t size);     // as gb_load (the ROM and RAM: the platform's)
 void gbf_reset(void);
 uint8_t gbf_read(uint16_t a);
 void gbf_write(uint16_t a, uint8_t v);
 void gbf_run_frame(void);           // to the next vertical blank (or a frame's time with the LCD off)
+void gbf_host_event(void);          // the event due (or, before its time, the time skipped to it)
+uint8_t gbf_io_read(uint8_t r);
+void gbf_io_write(uint8_t r, uint8_t v);
 uint8_t gbf_line(void);             // the LCD's line now (0-153)
 uint8_t gbf_draw_line(void);        // the first line a change made now is seen in (0-144; 0 in the vertical blank: the next frame's)
 

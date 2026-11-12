@@ -28,7 +28,8 @@
 gb_t gb;
 #endif
 int16_t gbf_cyc;
-static uint16_t ev_pos;         // the frame's cycle the next event is at
+uint16_t gbf_ev_pos;            // the frame's cycle the next event is at
+#define ev_pos gbf_ev_pos
 static uint16_t div_off;        // DIV's 16 bits / 4 = div_off + the frame's cycle
 static uint16_t tim_last;       // (DIV / 4) the timer was brought up to
 static uint16_t ser_end;        // (DIV / 4) the serial transfer ends at
@@ -63,12 +64,12 @@ static uint8_t lyc_match(uint8_t line, uint8_t d) {
     uint8_t cmp;
     if (line == 153) cmp = d == 0 ? 0xFF : d == 1 ? 153 : d == 2 ? 0xFF : 0;
     else cmp = d == 0 && line != 0 ? 0xFF : line;
-    return cmp == gb.io[GB_LYC];
+    return cmp == gb_io[GB_LYC];
 }
 
 // the STAT interrupt's signal at the time reached: an interrupt on its rise
 static void stat_update(void) {
-    uint8_t stat = gb.io[GB_STAT], sig;
+    uint8_t stat = gb_io[GB_STAT], sig;
     if (!gb.lcd_on) {
         sig = (stat & 0x40) && gb.lyc_match;
     } else {
@@ -83,7 +84,7 @@ static void stat_update(void) {
         sig = ((stat & 0x40) && gb.lyc_match) || ((stat & 0x08) && m0)
             || ((stat & 0x10) && mode == 1) || ((stat & 0x20) && m2);
     }
-    if (sig && !gb.stat_line) gb.io[GB_IF] |= GB_INT_STAT;
+    if (sig && !gb.stat_line) gb_io[GB_IF] |= GB_INT_STAT;
     gb.stat_line = sig;
 }
 
@@ -94,16 +95,16 @@ static const uint8_t GB_FAR tim_shift[4] = { 8, 2, 4, 6 };     // TAC's rates, i
 // TIMA brought up to now
 static void timer_sync(void) {
     uint16_t now = DIV_MC();
-    if (gb.io[GB_TAC] & 4) {
-        uint8_t sh = tim_shift[gb.io[GB_TAC] & 3];
+    if (gb_io[GB_TAC] & 4) {
+        uint8_t sh = tim_shift[gb_io[GB_TAC] & 3];
         uint16_t n = ((now >> sh) - (tim_last >> sh)) & (0xFFFF >> sh);
         if (n) {
-            uint16_t t = gb.io[GB_TIMA] + n;
+            uint16_t t = gb_io[GB_TIMA] + n;
             while (t > 0xFF) {
-                t = t - 0x100 + gb.io[GB_TMA];
-                gb.io[GB_IF] |= GB_INT_TIMER;
+                t = t - 0x100 + gb_io[GB_TMA];
+                gb_io[GB_IF] |= GB_INT_TIMER;
             }
-            gb.io[GB_TIMA] = t;
+            gb_io[GB_TIMA] = t;
         }
     }
     tim_last = now;
@@ -112,9 +113,9 @@ static void timer_sync(void) {
 static void serial_sync(void) {
     if (ser_on && (int16_t) (DIV_MC() - ser_end) >= 0) {
         ser_on = 0;
-        gb.io[GB_SB] = 0xFF;
-        gb.io[GB_SC] &= 0x7F;
-        gb.io[GB_IF] |= GB_INT_SERIAL;
+        gb_io[GB_SB] = 0xFF;
+        gb_io[GB_SC] &= 0x7F;
+        gb_io[GB_IF] |= GB_INT_SERIAL;
     }
 }
 
@@ -126,7 +127,7 @@ static void schedule(void) {
     uint16_t next = FRAME_MC;
     if (gb.lcd_on) {
         if (!vbl_done) next = VBL_MC;
-        uint8_t stat = gb.io[GB_STAT];
+        uint8_t stat = gb_io[GB_STAT];
         if (stat & 0x78) {
             uint8_t line = pos / LINE_MC;
             uint16_t start = (uint16_t) line * LINE_MC;
@@ -139,7 +140,7 @@ static void schedule(void) {
                 if (t < next) next = t;
             } else {
                 // (LYC's only: its line's start, and the one after)
-                uint8_t lyc = gb.io[GB_LYC];
+                uint8_t lyc = gb_io[GB_LYC];
                 if (lyc < 154) {
                     uint16_t t = lyc ? (uint16_t) lyc * LINE_MC + 1 : 153 * LINE_MC + 3;
                     if (t > pos && t < next) next = t;
@@ -154,12 +155,12 @@ static void schedule(void) {
         }
     }
     uint16_t left = next - pos;
-    if (gb.io[GB_TAC] & 4) {
-        uint8_t sh = tim_shift[gb.io[GB_TAC] & 3];
+    if (gb_io[GB_TAC] & 4) {
+        uint8_t sh = tim_shift[gb_io[GB_TAC] & 3];
         uint16_t period = 1 << sh;
         uint16_t now = div_off + pos;
         uint16_t first = period - (now & (period - 1));
-        uint16_t more = (uint16_t) (0xFF - gb.io[GB_TIMA]) << sh;   // (the edges after the first)
+        uint16_t more = (uint16_t) (0xFF - gb_io[GB_TIMA]) << sh;   // (the edges after the first)
         // (tim_last may be behind now: timer_sync is run before this)
         if (more < left && first + more < left) left = first + more;
     }
@@ -186,7 +187,7 @@ static void event(void) {
     uint16_t pos = POS();
     if (gb.lcd_on && !vbl_done && pos >= VBL_MC) {
         vbl_done = 1;
-        gb.io[GB_IF] |= GB_INT_VBLANK;
+        gb_io[GB_IF] |= GB_INT_VBLANK;
         stat_update();
         gbv_frame();
         gb.frame_done = 1;
@@ -206,19 +207,17 @@ static void event(void) {
     schedule();
 }
 
-#ifdef GB_HOST
-// (for a tool that steps the CPU itself)
+// (for what steps the CPU itself: the PC's tools, the recompiler)
 void gbf_host_event(void) {
     if (gbf_cyc > 0) gbf_cyc = 0;
     event();
 }
-#endif
 
 void gbf_run_frame(void) {
     gb.frame_done = 0;
     while (!gb.frame_done) {
         while (gbf_cyc > 0) {
-            if (gb.halted && !(gb.ie & gb.io[GB_IF] & 0x1F)) {
+            if (gb.halted && !(gb_ie & gb_io[GB_IF] & 0x1F)) {
                 gbf_cyc = 0;        // nothing to do until the next event
                 break;
             }
@@ -231,7 +230,7 @@ void gbf_run_frame(void) {
 /* ---- the keys ---- */
 
 static uint8_t p1_read(void) {
-    uint8_t sel = gb.io[GB_P1] & 0x30, low = 15;
+    uint8_t sel = gb_io[GB_P1] & 0x30, low = 15;
     if (!(sel & 0x10)) low &= ~(gb.keys & 15);
     if (!(sel & 0x20)) low &= ~(gb.keys >> 4);
     return 0xC0 | sel | low;
@@ -239,7 +238,7 @@ static uint8_t p1_read(void) {
 void gb_set_keys(uint8_t keys) {
     uint8_t before = p1_read();
     gb.keys = keys;
-    if (before & ~p1_read() & 15) gb.io[GB_IF] |= GB_INT_JOYPAD;
+    if (before & ~p1_read() & 15) gb_io[GB_IF] |= GB_INT_JOYPAD;
 }
 
 /* ---- memory ---- */
@@ -248,21 +247,21 @@ static const uint8_t GB_FAR snd_mask[0x20] = {
     0x80, 0x3F, 0x00, 0xFF, 0xBF, 0xFF, 0x3F, 0x00, 0xFF, 0xBF, 0x7F, 0xFF, 0x9F, 0xFF, 0xBF, 0xFF,
     0xFF, 0x00, 0x00, 0xBF, 0x00, 0x00, 0x70, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
 
-static uint8_t io_read(uint8_t r) {
+uint8_t gbf_io_read(uint8_t r) {
     switch (r) {
     case GB_P1: return p1_read();
-    case GB_SB: return gb.io[GB_SB];
-    case GB_SC: serial_sync(); return gb.io[GB_SC] | 0x7E;
+    case GB_SB: return gb_io[GB_SB];
+    case GB_SC: serial_sync(); return gb_io[GB_SC] | 0x7E;
     case GB_DIV: return DIV_MC() >> 6;
-    case GB_TIMA: timer_sync(); return gb.io[r];
-    case GB_TMA: return gb.io[r];
-    case GB_TAC: return gb.io[r] | 0xF8;
-    case GB_IF: return gb.io[r] | 0xE0;
+    case GB_TIMA: timer_sync(); return gb_io[r];
+    case GB_TMA: return gb_io[r];
+    case GB_TAC: return gb_io[r] | 0xF8;
+    case GB_IF: return gb_io[r] | 0xE0;
     case GB_STAT: {
-        if (!gb.lcd_on) return 0x80 | (gb.io[r] & 0x78) | (gb.lyc_match ? 4 : 0);
+        if (!gb.lcd_on) return 0x80 | (gb_io[r] & 0x78) | (gb.lyc_match ? 4 : 0);
         uint16_t pos = POS();
         uint8_t line = pos / LINE_MC, d = pos % LINE_MC;
-        return 0x80 | (gb.io[r] & 0x78) | (lyc_match(line, d) ? 4 : 0) | ppu_mode(line, d);
+        return 0x80 | (gb_io[r] & 0x78) | (lyc_match(line, d) ? 4 : 0) | ppu_mode(line, d);
     }
     case GB_LY: {
         if (!gb.lcd_on) return 0;
@@ -270,31 +269,31 @@ static uint8_t io_read(uint8_t r) {
         return pos >= 153 * LINE_MC + 1 ? 0 : pos / LINE_MC;
     }
     default:
-        if (r >= 0x10 && r < 0x30) return gb.io[r] | snd_mask[r - 0x10];
-        if (r >= 0x30 && r < 0x40) return gb.io[r];
-        if (r >= 0x40 && r <= 0x4B) return gb.io[r];
+        if (r >= 0x10 && r < 0x30) return gb_io[r] | snd_mask[r - 0x10];
+        if (r >= 0x30 && r < 0x40) return gb_io[r];
+        if (r >= 0x40 && r <= 0x4B) return gb_io[r];
         return 0xFF;
     }
 }
 
-static void io_write(uint8_t r, uint8_t v) {
+void gbf_io_write(uint8_t r, uint8_t v) {
     uint8_t before;
     switch (r) {
     case GB_P1:
         before = p1_read();
-        gb.io[r] = v & 0x30;
-        if (before & ~p1_read() & 15) gb.io[GB_IF] |= GB_INT_JOYPAD;
+        gb_io[r] = v & 0x30;
+        if (before & ~p1_read() & 15) gb_io[GB_IF] |= GB_INT_JOYPAD;
         break;
     case GB_SB:
-        gb.io[r] = v;
+        gb_io[r] = v;
         break;
     case GB_SC:
-        gb.io[r] = v & 0x81;
+        gb_io[r] = v & 0x81;
         ser_on = (v & 0x81) == 0x81;
 #ifdef GB_HOST
         {
             extern void (*gb_serial_hook)(uint8_t);
-            if (ser_on && gb_serial_hook) gb_serial_hook(gb.io[GB_SB]);
+            if (ser_on && gb_serial_hook) gb_serial_hook(gb_io[GB_SB]);
         }
 #endif
         if (ser_on) {
@@ -307,25 +306,25 @@ static void io_write(uint8_t r, uint8_t v) {
         timer_sync();
         div_off = -POS();
         tim_last = 0;
-        if (ser_on) ser_on = 0, gb.io[GB_SC] &= 0x7F;      // (a transfer under way is dropped: not the hardware's way)
+        if (ser_on) ser_on = 0, gb_io[GB_SC] &= 0x7F;      // (a transfer under way is dropped: not the hardware's way)
         schedule();
         break;
     case GB_TIMA:
         timer_sync();
-        gb.io[r] = v;
+        gb_io[r] = v;
         schedule();
         break;
     case GB_TMA:
         timer_sync();
-        gb.io[r] = v;
+        gb_io[r] = v;
         break;
     case GB_TAC:
         timer_sync();
-        gb.io[r] = v & 7;
+        gb_io[r] = v & 7;
         schedule();
         break;
     case GB_IF:
-        gb.io[r] = v & 0x1F;
+        gb_io[r] = v & 0x1F;
         break;
     case GB_LCDC:
         gbv_reg(r, v);
@@ -337,50 +336,54 @@ static void io_write(uint8_t r, uint8_t v) {
             ev_pos = gbf_cyc + 1;
             gb.lcd_on = 1;
             vbl_done = 0;
-            gb.io[r] = v;
+            gb_io[r] = v;
             stat_update();
             schedule();
         } else if (!(v & 0x80) && gb.lcd_on) {
             gb.lcd_on = 0;
-            gb.io[r] = v;
+            gb_io[r] = v;
             stat_update();
             schedule();
         } else {
-            gb.io[r] = v;
+            gb_io[r] = v;
         }
         break;
     case GB_STAT:
         // (the DMG's fault: for a moment every source is enabled)
-        gb.io[r] = 0x78;
+        gb_io[r] = 0x78;
         stat_update();
-        gb.io[r] = v & 0x78;
+        gb_io[r] = v & 0x78;
         stat_update();
         schedule();
         break;
     case GB_LY:
         break;
     case GB_LYC:
-        gb.io[r] = v;
+        gb_io[r] = v;
         if (gb.lcd_on) {
             stat_update();
             schedule();
         }
         break;
     case GB_DMA: {
-        gb.io[r] = v;
+        gb_io[r] = v;
         gbv_oam();
         uint16_t src = (uint16_t) v << 8;
         if (src >= 0xE000) src -= 0x2000;
-        for (uint8_t i = 0; i < 0xA0; i++)
-            gb.oam[i] = gbf_read(src + i);
+        if (src >= 0xC000) {
+            memcpy(gb_oam, gb_wram + (src & 0x1FFF), 0xA0);     // (the usual: from the work RAM)
+        } else {
+            for (uint8_t i = 0; i < 0xA0; i++)
+                gb_oam[i] = gbf_read(src + i);
+        }
         break;
     }
     default:
         if (r >= 0x40 && r <= 0x4B) {
-            if (gb.io[r] != v) gbv_reg(r, v);
-            gb.io[r] = v;
+            if (gb_io[r] != v) gbv_reg(r, v);
+            gb_io[r] = v;
         } else if (r >= 0x10 && r < 0x40) {
-            gb.io[r] = v;
+            gb_io[r] = v;
         }
         break;
     }
@@ -414,9 +417,9 @@ uint8_t gbf_read(uint16_t a) {
     if (a < 0xA000) return gb_vram[a - 0x8000];
     if (a < 0xC000) return ram_read(a);
     if (a < 0xFE00) return gb_wram[a & 0x1FFF];
-    if (a >= 0xFF80) return a == 0xFFFF ? gb.ie : gb.hram[a - 0xFF80];
-    if (a >= 0xFF00) return io_read(a & 0xFF);
-    if (a < 0xFEA0) return gb.oam[a - 0xFE00];
+    if (a >= 0xFF80) return a == 0xFFFF ? gb_ie : gb_hram[a - 0xFF80];
+    if (a >= 0xFF00) return gbf_io_read(a & 0xFF);
+    if (a < 0xFEA0) return gb_oam[a - 0xFE00];
     return 0;
 }
 
@@ -425,14 +428,14 @@ void gbf_write(uint16_t a, uint8_t v) {
         if (a < 0xFE00) {
             gb_wram[a & 0x1FFF] = v;
         } else if (a >= 0xFF80) {
-            if (a == 0xFFFF) gb.ie = v;
-            else gb.hram[a - 0xFF80] = v;
+            if (a == 0xFFFF) gb_ie = v;
+            else gb_hram[a - 0xFF80] = v;
         } else if (a >= 0xFF00) {
-            io_write(a & 0xFF, v);
+            gbf_io_write(a & 0xFF, v);
         } else if (a < 0xFEA0) {
-            if (gb.oam[a - 0xFE00] != v) {
+            if (gb_oam[a - 0xFE00] != v) {
                 gbv_oam();
-                gb.oam[a - 0xFE00] = v;
+                gb_oam[a - 0xFE00] = v;
             }
         }
     } else if (a >= 0xA000) {
@@ -471,19 +474,22 @@ void gbf_reset(void) {
     gbf_plat_map();
     memset(gb_vram, 0, 0x2000);
     memset(gb_wram, 0, 0x2000);
+#ifdef GB_WS
+    memset((uint8_t*) 0x8000, 0, 0x2000);       // (the OAM, the I/O registers, the high RAM)
+#endif
     gb.a = 0x01; gb.f = 0xB0; gb.b = 0x00; gb.c = 0x13;
     gb.d = 0x00; gb.e = 0xD8; gb.h = 0x01; gb.l = 0x4D;
     gb.sp = 0xFFFE;
     gb.pc = 0x0100;
-    gb.io[GB_IF] = 0x01;
+    gb_io[GB_IF] = 0x01;
     static const uint8_t GB_FAR snd[0x17] = { 0x80, 0xBF, 0xF3, 0xFF, 0xBF, 0xFF, 0x3F, 0x00, 0xFF, 0xBF, 0x7F, 0xFF,
         0x9F, 0xFF, 0xBF, 0xFF, 0xFF, 0x00, 0x00, 0xBF, 0x77, 0xF3, 0xF1 };
-    for (uint8_t i = 0; i < sizeof(snd); i++) gb.io[0x10 + i] = snd[i];
-    gb.io[GB_DMA] = 0xFF;
-    gb.io[GB_LCDC] = 0x91;
-    gb.io[GB_BGP] = 0xFC;
-    gb.io[GB_OBP0] = 0xFF;
-    gb.io[GB_OBP1] = 0xFF;
+    for (uint8_t i = 0; i < sizeof(snd); i++) gb_io[0x10 + i] = snd[i];
+    gb_io[GB_DMA] = 0xFF;
+    gb_io[GB_LCDC] = 0x91;
+    gb_io[GB_BGP] = 0xFC;
+    gb_io[GB_OBP0] = 0xFF;
+    gb_io[GB_OBP1] = 0xFF;
     gb.lcd_on = 1;
     // (in the last line of the vertical blank, as the reference)
     ev_pos = 153 * LINE_MC + 100;
