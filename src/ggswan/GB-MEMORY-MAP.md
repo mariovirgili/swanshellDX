@@ -2,7 +2,7 @@
 
 gbswan is the Game Boy (DMG) plugin: `make -f Makefile.ggswan GB=1`,
 `dist/NILESWAN/PLUG_GB.BIN`, `.gb` in the menu, sources of its own in
-`src/ggswan/gb` (none of ggswan's is compiled in, and none of gbswan's in
+`src/ggswan/gb` (`ws/` the plugin, `core/` the Game Boy, `host/` the PC tools) (none of ggswan's is compiled in, and none of gbswan's in
 the other four plugins).
 
 **Step GB0 (patch 153): there is no Game Boy yet.** The plugin shows a
@@ -37,7 +37,7 @@ So gbswan cannot be one more `-D` on those sources.
 |---|---|---|
 | 0000h-003Fh | interrupt vectors | |
 | 0040h-1BFFh | C data and bss: 7,104 bytes | used now: 2 bytes (0040h-0041h). The Makefile stops the build if `__wf_heap_start` is over 1C00h |
-| 1C00h-1FFFh | stack, 1 KiB | `gb_run` (`gb/gb_start.s`) sets SP to 2000h before `gb_main`. Lowest SP seen in `gbrun.py`: 1FD6h |
+| 1C00h-1FFFh | stack, 1 KiB | `gb_run` (`gb/ws/gb_start.s`) sets SP to 2000h before `gb_main`. Lowest SP seen in `gbrun.py`: 1FD6h |
 | 2000h-37FFh | the Game Boy's patterns, its 8000h-97FFh | WS tiles 0-383 |
 | 3800h-3FFFh | the Game Boy's two maps, its 9800h-9FFFh, as it writes them | (WS tiles 384-511: never named) |
 | 4000h-47FFh | WS screen 1 | the shade of the background's color 0; black at the sides |
@@ -62,7 +62,7 @@ video memory at 2000h-3FFFh instead there is nothing to copy:
 - the background's pattern for the byte n in the map is WS tile n when
   LCDC bit 4 is set (8000h + n × 16), and when it is clear WS tile
   256 + n for n below 128 (9000h on) and n for the others (8800h on):
-  `BG_PATTERN` in `gb/gb_main.c`.
+  `BG_PATTERN` in `gb/ws/gb_main.c`.
 
 Both are in the first bank. The second bank (4000h-5FFFh) is left for the
 WS's own two screens and sprite table, which have to be below 8000h

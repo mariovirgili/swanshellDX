@@ -6,7 +6,7 @@ emulated by a dynamic recompiler (Z80 to V30MZ code), with the original
 interpreter kept for the parts that need it. The Game Gear video memory is
 mapped onto the WonderSwan's own tile and screen hardware.
 
-Status: fairly stable (patch 154). It has been tested mostly in the
+Status: fairly stable (patch 155). It has been tested mostly in the
 nileswan-medem emulator and with the host test tools; tests on real
 hardware are still to come.
 
@@ -156,6 +156,8 @@ interrupts a second).
   built-in IPL, what the plugin still needs.
 - `GB-MEMORY-MAP.md`: gbswan, the Game Boy plugin being started (its own
   sources, in `gb/`): the memory map and the video test of step GB0
+- `GB-ACCURACY.md`: the Game Boy's reference on the PC and the test ROMs
+  it passes
 
 ## smsswan: the Master System plugin
 
@@ -361,7 +363,7 @@ it are listed in order without one.
 - lighter DYN lookup and class routine for deferred tile bytes
 - OUTI runs to CRAM handled in the run routine
 
-### Patches 90-154
+### Patches 90-155
 
 | Patch | Change |
 |---|---|
@@ -430,3 +432,4 @@ it are listed in order without one.
 | 152 | The sprite collision flag's walk of the sprite table in assembly (`coll_scan`, `drc_asm.s`; the rows of a pair that overlaps stay in C, `coll_pair`), and the sprites with a tile found to have no pixel passed over at once. Batman Returns in `wsrun.py`: 96/86/83 k cycles a frame in its first level before, 93/83/79 k now; before the game 94/31/59/30 k, now 87/22/50/22 k (85/20/48/19 k with no flag at all, patch 148). `colltest.py`: the device's routine in Unicorn on 3,102 states saved by `wssim` (`GGSWAN_COLLDUMP`), the same flag as the C in all of them |
 | 153 | gbswan, a Game Boy plugin, step GB0: nothing of the Game Boy yet. `PLUG_GB.BIN` (`GB=1`, sources of its own in `gb/`), `.gb` in the menu; it shows a test of the video planned: the WonderSwan Color's 2 bits a pixel color mode, whose tiles are the Game Boy's byte for byte, the Game Boy's video memory at 2000h-3FFFh of the internal RAM so that background and sprites use the patterns where the program writes them, the C data and stack below 2000h (checked at build), screen 1 for color 0's shade, screen 2 in a 160 x 144 window, sprites over and behind it cut by the sprite window. `GB-MEMORY-MAP.md`; `host/gbrun.py` runs the device build in Unicorn and draws that mode. Not run on a WonderSwan. The other four plugins: the same sources |
 | 154 | gbswan: START + Y1 (Y up) stopped the emulator instead of going back to the menu (Gio, nileswan-medem; the rest of step GB0's test was as expected there). The plugin now sets the nileswan up as the other plugins do before anything else (clock, I/O and SRAM on, the RAM window's mask): the difference found with their way out, not confirmed as the cause |
+| 155 | gbswan, step GB1, on the PC only: the Game Boy itself as a reference, in `gb/core` (the SM83 with every bus access a machine cycle, the bus, MBC1, MBC2, MBC3 without its clock, MBC5, the timer, the serial port, the keys, the OAM DMA, and the LCD with a picture drawn a line at a time); `gb/host/gbtest` runs a ROM (trace, keys, picture) and `gb/host/gbsuite.py` the test ROMs: Blargg's `cpu_instrs`, `instr_timing`, `mem_timing`, `mem_timing-2`, `halt_bug`, the 54 of Mooneye's acceptance tests for the DMG that are not about the LCD, 27 of 28 of its cartridge tests, dmg-acid2; 5 of 12 of Mooneye's LCD tests. `GB-ACCURACY.md`. The plugin on the WonderSwan is still the video test (its sources moved to `gb/ws`) |

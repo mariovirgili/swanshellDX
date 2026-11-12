@@ -38,8 +38,8 @@ else ifeq ($(GB),1)
 NAME		:= gbswan
 DEFINES		+= -DGGSWAN_GB
 ROM		:= dist/NILESWAN/PLUG_GB.BIN
-INCLUDEDIRS	:= src/ggswan/gb
-SOURCEDIRS	:= src/ggswan/gb
+INCLUDEDIRS	:= src/ggswan/gb/ws src/ggswan/gb/core
+SOURCEDIRS	:= src/ggswan/gb/ws
 else
 NAME		:= ggswan
 ROM		:= dist/NILESWAN/PLUG_GG.BIN
