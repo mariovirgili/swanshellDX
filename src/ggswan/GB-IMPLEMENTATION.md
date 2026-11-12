@@ -44,7 +44,7 @@ background and the window, switched at the right lines by the line
 interrupt, with the scroll the program gave each line; the sprites are
 the WonderSwan's.
 
-## Where it is (patch 162)
+## Where it is (patch 163)
 
 The CPU is a recompiler (`gb/ws/gb_drc.c`, `gb_drc_asm.s`; `GB-ABI.md`),
 there is sound (`gb/ws/gb_sound.c`: what it does and does not, at its
@@ -93,8 +93,26 @@ Game Boy frames for every build, sound included:
 | Yoshi | 54,982 | 54,034 | 46,035 | 45,618 |
 | R-Type | 69,048 | 58,492 | 50,425 | 50,428 |
 
-All eight are under a frame's time in these scenes, R-Type by 2%:
-other scenes of these games, and other games, will not all be.
+**These scenes said too little.** Gio ran patch 161 in nileswan-medem
+(the first run of the recompiler anywhere but `gbrun.py`): the
+pictures were right, and the games in play were far slower than the
+table: Yoshi 8 frames a second, Super Mario Land 2 27-35, Balloon Kid
+48-51, Castlevania II 21-38, R-Type 42-49, Batman 42; only Super Mario
+Land and Bubble Ghost at full speed. The table's scenes are titles,
+menus and the first seconds of a level. Two of his scenes measured
+here since (cycles a Game Boy frame, 162 then 163):
+
+| scene | patch 162 | patch 163 |
+|---|---|---|
+| Yoshi, in play | 349,589 | 53,446 |
+| Super Mario Land 2, walking in the first level | 82,174 | 59,132 |
+
+(349,589 is 8.8 frames a second: what he saw.) Yoshi did its sums
+with DAA and shifts through HL, which went to the interpreter one
+instruction at a time, and all through pointers into the high RAM;
+Super Mario Land 2 keeps its variables and its stack in the
+cartridge's RAM. Both are still over a frame's time, and Balloon Kid,
+Castlevania II, R-Type and Batman in play have not been measured here.
 
 **The table patch 159 came with was not a fair comparison**: its keys
 were at WonderSwan frames, so a faster or slower build was measured at

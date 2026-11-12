@@ -142,11 +142,9 @@ static const uint8_t __far op_cyc[256] = {
 
 static uint8_t interp_op(uint8_t op, uint8_t cb) {
     switch (op) {
-    case 0x08: case 0x10: case 0x27: case 0x39: case 0x76: case 0xE8: case 0xF8:
+    case 0x08: case 0x10: case 0x39: case 0x76: case 0xE8: case 0xF8:
     case 0xD3: case 0xDB: case 0xDD: case 0xE3: case 0xE4: case 0xEB: case 0xEC: case 0xED: case 0xF4: case 0xFC: case 0xFD:
         return 1;
-    case 0xCB:
-        return (cb & 7) == 6 && (cb >> 6) != 1;
     default:
         return 0;
     }
@@ -167,6 +165,7 @@ static uint8_t op_flags(uint8_t op, uint8_t cb) {
         case 6: return y == 6 ? F_OUT : 0;
         default:
             if (y < 4) return FALL | (y >= 2 ? RD(FC) : 0);
+            if (y == 4) return FALL | RD(FH | FC);      // DAA
             if (y == 5) return FH;
             if (y == 6) return FH | FC;
             return FH | FC | RD(FC);
@@ -186,6 +185,7 @@ static uint8_t op_flags(uint8_t op, uint8_t cb) {
         if (y == 0) return F_END | F_OUT;
         if (y == 1) {
             uint8_t cx = cb >> 6, cy = (cb >> 3) & 7;
+            if ((cb & 7) == 6 && cx != 1) return F_OUT;     // (the write to (HL) may leave)
             if (cx == 0) return FALL | ((cy == 2 || cy == 3) ? RD(FC) : 0);
             if (cx == 1) return FZ | FH;
             return 0;
@@ -200,6 +200,12 @@ static uint8_t op_flags(uint8_t op, uint8_t cb) {
 #define MAXI 40
 static uint16_t i_pc[MAXI + 1];
 static uint8_t i_live[MAXI];    // the flags needed before each instruction
+// BC, DE, HL before each instruction, when the block's own code says what
+// they are (LD rr, nn and then only INC, DEC and the like) and that is an
+// address in the work RAM or the high RAM: its place in the internal RAM
+// (0: not known, or elsewhere). An access through the register is then an
+// access to that place, with nothing to check.
+static uint16_t i_dir[3][MAXI];
 static uint8_t n_ins;
 
 // the translator's state
@@ -214,6 +220,7 @@ static uint8_t after_ei;    // the instruction after EI: whatever leaves the blo
 static uint8_t idle;        // the block is a loop that waits: 1 on memory, 2 on LY, 3 on STAT
 static uint8_t idle_i;      // ... and this instruction is its jump back
 static uint8_t cur_i;       // the instruction being translated
+static uint16_t cur_dir;    // the place its access through BC, DE or HL is known to be at (i_dir), or 0
 static uint8_t cur_wait;    // translating a waiting loop's read of STAT: the modes it goes round in
 static uint8_t idle_first;  // translating that loop's first instruction (its read of STAT)
 static uint8_t stat_at[3], stat_mask[3], n_stat;   // such loops inside the block: their STAT reads, the modes
@@ -319,9 +326,11 @@ static void exit_interp(uint16_t pc) {
     jmp_stub(ST_EXIT);
 }
 
-// "cmp; jb slow; cmp; jae slow" on the address in BX (hl) or SI: the fast
-// case, the work RAM and what is above it but the I/O registers, follows;
-// returns where the two jumps' distances go
+// "cmp; jb slow; cmp; jae high" on the address in BX (hl) or SI: the fast
+// case, the work RAM (and its echo's place), follows; returns where the
+// two jumps' distances go. "high" (slow_starts) sends the high RAM back
+// to the fast case too: its place in the internal RAM is by the same
+// rule (programs keep counters and pointers' targets there)
 static uint16_t range_check(uint8_t hl) {
     if (hl) { E(0x80); E(0xFF); E(0xC0); } else { E(0x81); E(0xFE); EW(0xC000); }
     E(0x72); E(0);
@@ -331,11 +340,24 @@ static uint16_t range_check(uint8_t hl) {
     return j;
 }
 // the fast case is done: jump over the slow one, which starts here
-static uint16_t slow_starts(uint16_t j, uint8_t hl) {
+// (wr: a write, which IE, FFFFh, is not for here: an interrupt may be due)
+static uint16_t slow_starts(uint16_t j, uint8_t hl, uint8_t wr) {
     E(0xEB); E(0);
     uint16_t done = code_top;
-    code[j - 1] = code_top - j;
-    j += hl ? 5 : 6;
+    uint16_t fast = j + (hl ? 5 : 6);
+    code[fast - 1] = code_top - fast;
+    E(0x81); E(hl ? 0xFB : 0xFE); EW(0xFF80);       // cmp bx/si, FF80h
+    if (wr) {
+        E(0x72); E(6);                              // jb slow
+        E(0x81); E(hl ? 0xFB : 0xFE); EW(0xFFFF);
+        E(0x75);                                    // jne fast
+        uint8_t rel = fast - (code_top + 1);
+        E(rel);
+    } else {
+        E(0x73);                                    // jae fast
+        uint8_t rel = fast - (code_top + 1);
+        E(rel);
+    }
     code[j - 1] = code_top - j;
     return done;
 }
@@ -343,10 +365,14 @@ static uint16_t slow_starts(uint16_t j, uint8_t hl) {
 
 // r (an x86 8 bit register) = the byte at HL (hl) or at SI
 static void read_to(uint8_t r, uint8_t hl) {
+    if (cur_dir) {
+        E(0x8A); E(0x06 | r << 3); EW(cur_dir);     // mov r, [..]
+        return;
+    }
     clob();
     uint16_t j = range_check(hl);
     E(0x8A); E(0x80 | r << 3 | (hl ? 7 : 4)); EW(0xA000);   // mov r, [bx or si - 6000h]
-    uint16_t done = slow_starts(j, hl);
+    uint16_t done = slow_starts(j, hl, 0);
     if (hl) { E(0x89); E(0xDE); }               // mov si, bx
     if (r == 0) {
         call_stub(ST_RD);
@@ -360,6 +386,11 @@ static void read_to(uint8_t r, uint8_t hl) {
 // the byte at HL (hl) or at SI = r, or = imm when r is FFh; next: the
 // address after this instruction
 static void write_from(uint8_t r, uint8_t imm, uint8_t hl, uint16_t next) {
+    if (cur_dir) {
+        if (r != 0xFF) { E(0x88); E(0x06 | r << 3); EW(cur_dir); }      // mov [..], r
+        else { E(0xC6); E(0x06); EW(cur_dir); E(imm); }
+        return;
+    }
     mat();
     nflush();
     uint16_t j = range_check(hl);
@@ -368,7 +399,7 @@ static void write_from(uint8_t r, uint8_t imm, uint8_t hl, uint16_t next) {
     } else {
         E(0xC6); E(0x80 | (hl ? 7 : 4)); EW(0xA000); E(imm);
     }
-    uint16_t done = slow_starts(j, hl);
+    uint16_t done = slow_starts(j, hl, 1);
     if (r != 0xFF) {
         E(0x88); E(0x06 | r << 3); EW(ADDR(drc_tmp));
     } else {
@@ -458,9 +489,46 @@ static uint8_t io_write(uint8_t n, uint16_t next) {
     return 0;
 }
 
+// The stack in the cartridge's RAM (where it is as the block is
+// translated: Super Mario Land 2 keeps it there): "is SP in it (from lo to
+// hi), is it plain RAM and enabled; ES = its segment", the fast case
+// follows; returns where the three jumps to the slow case are counted from
+static uint8_t sp_cart;
+static uint16_t cart_sp_check(uint16_t lo, uint16_t hi) {
+    E(0x81); E(0xFD); EW(lo);                   // cmp bp, lo
+    E(0x72); E(0);                              // jb slow
+    uint16_t j = code_top;
+    E(0x81); E(0xFD); EW(hi);                   // cmp bp, hi
+    E(0x77); E(0);                              // ja slow
+    E(0x80); E(0x3E); EW(ADDR(drc_ram_ok)); E(1);
+    E(0x75); E(0);                              // jne slow
+    E(0x8E); E(0x06); EW(ADDR(drc_ram_seg));    // mov es, [drc_ram_seg]
+    return j;
+}
+static uint16_t cart_sp_slow(uint16_t j) {
+    E(0xEB); E(0);
+    uint16_t done = code_top;
+    code[j - 1] = code_top - j;
+    code[j + 5] = code_top - (j + 6);
+    code[j + 12] = code_top - (j + 13);
+    return done;
+}
+
 // push the word in the x86 register r (0xFF: the constant v)
 static void push16(uint8_t r, uint16_t v) {
     clob();
+    if (sp_cart) {
+        uint16_t j = cart_sp_check(0xA002, 0xC000);
+        if (r != 0xFF) { E(0x26); E(0x89); E(0x46 | r << 3); E(0xFE); }     // mov es:[bp - 2], r
+        else { E(0x26); E(0xC7); E(0x46); E(0xFE); EW(v); }
+        E(0x8D); E(0x6E); E(0xFE);              // lea bp, [bp - 2]
+        uint16_t done = cart_sp_slow(j);
+        if (r != 0xFF) { E(0x89); E(0xC6 | r << 3); }
+        else { E(0xBE); EW(v); }
+        call_stub(ST_PUSH);
+        SLOW_ENDS(done);
+        return;
+    }
     E(0x81); E(0xFD); EW(0xC002);               // cmp bp, C002h
     E(0x72); E(0);
     uint16_t j = code_top;
@@ -478,6 +546,16 @@ static void push16(uint8_t r, uint16_t v) {
 // pop a word into the x86 register r (6: SI)
 static void pop16(uint8_t r) {
     clob();
+    if (sp_cart) {
+        uint16_t j = cart_sp_check(0xA000, 0xBFFE);
+        E(0x26); E(0x8B); E(0x46 | r << 3); E(0x00);    // mov r, es:[bp]
+        E(0x8D); E(0x6E); E(0x02);              // lea bp, [bp + 2]
+        uint16_t done = cart_sp_slow(j);
+        call_stub(ST_POP);
+        if (r != 6) { E(0x89); E(0xF0 | r); }
+        SLOW_ENDS(done);
+        return;
+    }
     E(0x81); E(0xFD); EW(0xC000);               // cmp bp, C000h
     E(0x72); E(0);
     uint16_t j = code_top;
@@ -537,6 +615,7 @@ static void translate_block(void) {
         // (the instruction's cycles are counted before it: an exit inside
         // it has them)
         cyc += op_cyc[op];
+        cur_dir = (x == 0 && z == 2 && y < 4) ? i_dir[y >> 1][i] : i_dir[2][i];
         if (x == 1) {
             if (z == 6) read_to(R8[y], 1);
             else if (y == 6) write_from(R8[z], 0, 1, next);
@@ -544,12 +623,15 @@ static void translate_block(void) {
             continue;
         }
         if (x == 2) {
-            if (z == 6) {
+            if (z == 6 && cur_dir) {
+                if (y == 1 || y == 3) carry_in();
+                E(alu_x86[y] | 2); E(0x06); EW(cur_dir);        // op al, [..]
+            } else if (z == 6) {
                 clob();
                 uint16_t j = range_check(1);
                 if (y == 1 || y == 3) carry_in();
                 E(alu_x86[y] | 2); E(0x87); EW(0xA000);         // op al, [bx - 6000h]
-                uint16_t done = slow_starts(j, 1);
+                uint16_t done = slow_starts(j, 1, 0);
                 E(0x89); E(0xDE);
                 call_stub(ST_RDT);
                 if (y == 1 || y == 3) carry_in();
@@ -623,7 +705,12 @@ static void translate_block(void) {
                 break;
             }
             case 4: case 5:
-                if (y == 6) {
+                if (y == 6 && cur_dir) {
+                    carry_in();
+                    E(0xFE); E(z == 4 ? 0x06 : 0x0E); EW(cur_dir);     // inc / dec byte [..]
+                    fl = 1;
+                    hfix = 0;
+                } else if (y == 6) {
                     mat();
                     nflush();
                     call_stub(z == 4 ? ST_INC_HL : ST_DEC_HL);
@@ -648,6 +735,10 @@ static void translate_block(void) {
                     E(0x80); E(0xE4); E(0x01);                  // lahf; and ah, 1
                     fl = 0;
                     nst = 0;
+                } else if (y == 4) {                            // DAA
+                    mat();
+                    nflush();
+                    call_stub(ST_DAA);
                 } else if (y == 5) {                            // CPL
                     E(0xF6); E(0xD0);                           // not al
                     if (fl) hfix = 2;
@@ -733,6 +824,28 @@ static void translate_block(void) {
                 else io_read(nn & 0xFF);
             } else if (nn >= 0xC000 && nn < 0xFE00) {
                 E(y == 5 ? 0xA2 : 0xA0); EW((nn >= 0xE000 ? nn - 0x2000 : nn) - 0x6000);
+            } else if (nn >= 0xA000 && nn < 0xC000) {
+                // the cartridge's RAM (some programs keep their variables
+                // there): when it is plain RAM and enabled, through its
+                // segment here; else the routine
+                if (y == 5) { mat(); nflush(); } else clob();
+                E(0x80); E(0x3E); EW(ADDR(drc_ram_ok)); E(1);   // cmp byte [drc_ram_ok], 1
+                E(0x75); E(0);                                  // jne slow
+                uint16_t j = code_top;
+                E(0x8E); E(0x06); EW(ADDR(drc_ram_seg));        // mov es, [drc_ram_seg]
+                E(0x26); E(y == 5 ? 0xA2 : 0xA0); EW(nn);       // mov es:[nn], al / mov al, es:[nn]
+                E(0xEB); E(0);
+                uint16_t done = code_top;
+                code[j - 1] = code_top - j;
+                E(0xBE); EW(nn);
+                if (y == 5) {
+                    E(0xA2); EW(ADDR(drc_tmp));
+                    call_stub(ST_WRT);
+                    EW(next);
+                } else {
+                    call_stub(ST_RD);
+                }
+                SLOW_ENDS(done);
             } else {
                 E(0xBE); EW(nn);                                // mov si, nn
                 if (y == 5) {
@@ -760,21 +873,98 @@ static void translate_block(void) {
             } else {                                            // CB
                 cyc++;
                 uint8_t cx = b1 >> 6, cy = (b1 >> 3) & 7, r = R8[b1 & 7];
-                if ((b1 & 7) == 6) {                            // BIT n, (HL)
+                if ((b1 & 7) == 6 && cx == 1) {                 // BIT n, (HL)
                     cyc++;
                     mat();
                     E(0x80); E(0xE4); E(0x01);                  // and ah, 1
                     E(0x80); E(0xCC); E(0x10);                  // or ah, 10h
-                    uint16_t j = range_check(1);
-                    E(0xF6); E(0x87); EW(0xA000); E(1 << cy);   // test byte [bx - 6000h], m
-                    uint16_t done = slow_starts(j, 1);
-                    E(0x89); E(0xDE);
-                    call_stub(ST_RDT);
-                    E(0xF6); E(0x06); EW(ADDR(drc_tmp)); E(1 << cy);
-                    SLOW_ENDS(done);
+                    if (cur_dir) {
+                        E(0xF6); E(0x06); EW(cur_dir); E(1 << cy);
+                    } else {
+                        uint16_t j = range_check(1);
+                        E(0xF6); E(0x87); EW(0xA000); E(1 << cy);   // test byte [bx - 6000h], m
+                        uint16_t done = slow_starts(j, 1, 0);
+                        E(0x89); E(0xDE);
+                        call_stub(ST_RDT);
+                        E(0xF6); E(0x06); EW(ADDR(drc_tmp)); E(1 << cy);
+                        SLOW_ENDS(done);
+                    }
                     E(0x75); E(0x03);                           // jnz +3
                     E(0x80); E(0xCC); E(0x40);                  // or ah, 40h
                     nst = 0;
+                } else if ((b1 & 7) == 6 && cur_dir) {
+                    // the others on (HL), at a known place: as on a register
+                    uint16_t t = cur_dir;
+                    cyc += 2;
+                    if (cx == 0) {
+                        if (cy == 2 || cy == 3) carry_in();
+                        switch (cy) {
+                        case 0: case 1: case 2: case 3:
+                            E(0xD0); E(cy << 3 | 0x06); EW(t);
+                            E(0xFE); E(0x06); EW(t); E(0xFE); E(0x0E); EW(t);
+                            break;
+                        case 4: E(0xD0); E(0x26); EW(t); break;
+                        case 5: E(0xD0); E(0x3E); EW(t); break;
+                        case 7: E(0xD0); E(0x2E); EW(t); break;
+                        default:
+                            E(0xC0); E(0x06); EW(t); E(4);
+                            E(0x80); E(0x0E); EW(t); E(0);
+                            break;
+                        }
+                        fl = 1;
+                        hfix = 1;
+                        nst = 0;
+                    } else {
+                        clob();
+                        E(0x80); E(cx == 2 ? 0x26 : 0x0E); EW(t); E(cx == 2 ? (uint8_t) ~(1 << cy) : 1 << cy);
+                    }
+                } else if ((b1 & 7) == 6) {
+                    // the others on (HL): in the work RAM or the high
+                    // RAM where the byte is; elsewhere the byte to
+                    // drc_tmp, the instruction on it there, and written
+                    // back (which may leave the block, as any write
+                    // through HL). The flags end in AH either way.
+                    cyc += 2;
+                    mat();
+                    if (cx == 0) nst = 0;
+                    nflush();
+                    uint16_t j = range_check(1), done = 0;
+                    for (uint8_t slow = 0; slow < 2; slow++) {
+                        // the operand: [bx - 6000h], then [drc_tmp]
+                        uint8_t rm = slow ? 0x06 : 0x87;
+                        uint16_t t = slow ? ADDR(drc_tmp) : 0xA000;
+                        if (slow) {
+                            done = slow_starts(j, 1, 1);
+                            E(0x89); E(0xDE);                   // mov si, bx
+                            call_stub(ST_RDT);
+                        }
+                        if (cx == 0) {
+                            if (cy == 2 || cy == 3) { E(0xD0); E(0xEC); }       // shr ah, 1: CF = C
+                            switch (cy) {
+                            case 0: case 1: case 2: case 3:     // RLC, RRC, RL, RR
+                                E(0xD0); E(cy << 3 | rm); EW(t);
+                                E(0xFE); E(rm); EW(t); E(0xFE); E(0x08 | rm); EW(t);    // inc, dec: ZF, CF kept
+                                break;
+                            case 4: E(0xD0); E(0x20 | rm); EW(t); break;    // SLA
+                            case 5: E(0xD0); E(0x38 | rm); EW(t); break;    // SRA
+                            case 7: E(0xD0); E(0x28 | rm); EW(t); break;    // SRL
+                            default:                            // SWAP
+                                E(0xC0); E(rm); EW(t); E(4);    // rol byte [..], 4
+                                E(0x80); E(0x08 | rm); EW(t); E(0);     // or byte [..], 0
+                                break;
+                            }
+                            E(0x9F); E(0x80); E(0xE4); E(0xEF); // lahf; and ah, EFh (H clear)
+                        } else {                                // RES, SET
+                            E(0x80); E((cx == 2 ? 0x20 : 0x08) | rm); EW(t); E(cx == 2 ? (uint8_t) ~(1 << cy) : 1 << cy);
+                        }
+                        if (slow) {
+                            E(0x89); E(0xDE);
+                            call_stub(ST_WRT);
+                            EW(next);
+                        }
+                    }
+                    SLOW_ENDS(done);
+                    fl = 0;
                 } else if (cx == 0) {
                     switch (cy) {
                     case 0: case 1:                             // RLC, RRC
@@ -900,10 +1090,37 @@ static void scan_block(uint16_t pc) {
     uint8_t fa[MAXI];
     n_ins = 0;
     uint8_t after_ei = 0, total = 0;
+    uint16_t kv[3] = { 0, 0, 0 };
+    uint8_t kn[3] = { 0, 0, 0 };
     while (n_ins < MAXI && total < 90) {
         uint8_t op = gbf_read(pc);
         total += op_cyc[op] + 2;
-        uint8_t f = op_flags(op, gbf_read(pc + 1));
+        uint8_t cb = gbf_read(pc + 1);
+        uint8_t f = op_flags(op, cb);
+        for (uint8_t k = 0; k < 3; k++)
+            i_dir[k][n_ins] = !kn[k] ? 0 : (kv[k] >= 0xC000 && kv[k] < 0xE000) || (kv[k] >= 0xFF80 && kv[k] < 0xFFFF) ? kv[k] - 0x6000 : 0;
+        {
+            // the flags again, for an access that cannot leave the block
+            uint8_t ox = op >> 6, oy = (op >> 3) & 7, oz = op & 7;
+            if (i_dir[2][n_ins]) {
+                if ((ox == 1 && oy == 6 && oz != 6) || op == 0x36 || op == 0x22 || op == 0x32) f = 0;
+                else if (op == 0x34 || op == 0x35) f = FZ | FH;
+                else if (op == 0xCB && (cb & 7) == 6 && (cb >> 6) != 1)
+                    f = (cb >> 6) ? 0 : FALL | (((cb >> 3) & 7) == 2 || ((cb >> 3) & 7) == 3 ? RD(FC) : 0);
+            }
+            if ((op == 0x02 && i_dir[0][n_ins]) || (op == 0x12 && i_dir[1][n_ins])) f = 0;
+            // what the instruction does to BC, DE, HL
+            uint8_t rr = (op >> 4) & 3;
+            if (ox == 0 && oz == 1 && !(op & 8) && rr < 3) { kn[rr] = 1; kv[rr] = cb | (uint16_t) gbf_read(pc + 2) << 8; }
+            else if (ox == 0 && oz == 3 && rr < 3) kv[rr] += (op & 8) ? -1 : 1;
+            else if (op == 0x22 || op == 0x2A) kv[2]++;
+            else if (op == 0x32 || op == 0x3A) kv[2]--;
+            else if (ox == 0 && oz == 1 && (op & 8)) kn[2] = 0;                        // ADD HL, rr
+            else if ((ox == 1 && oy < 6) || (ox == 0 && (oz == 4 || oz == 5 || oz == 6) && oy < 6)) kn[oy >> 1] = 0;   // LD r, x; INC r; DEC r; LD r, n
+            else if (ox == 3 && oz == 1 && !(op & 8) && rr < 3) kn[rr] = 0;            // POP rr
+            else if (op == 0xCB && (cb & 7) < 6 && (cb >> 6) != 1) kn[(cb & 7) >> 1] = 0;
+            else if (op == 0xF8) kn[2] = 0;
+        }
         i_pc[n_ins] = pc;
         fa[n_ins++] = f;
         pc += op_len[op];
@@ -1006,6 +1223,7 @@ static blk_t __far *translate(uint16_t pc, uint16_t key) {
         }
         blk_pc = pc;
         in_ram = key == KEY_RAM;
+        sp_cart = gb.sp >= 0xA000 && gb.sp < 0xC000;
         scan_block(pc);
         if (in_ram) {
             // the bytes translated, then their number, before the code
@@ -1079,11 +1297,17 @@ void gbd_run_frame(void) {
                 // code in RAM: still the bytes that were translated?
                 const uint8_t __far *c = MK_FP(b->seg, b->off - 1);
                 uint8_t len = *c;
-                for (uint8_t i = 0; i < len; i++)
-                    if (c[(int16_t) i - len] != gbf_read(pc + i)) {
-                        b = 0;
-                        break;
-                    }
+                c -= len;
+                if ((pc >= 0xC000 && pc < 0xDF00) || (pc >= 0xFF80 && pc < 0xFFC0)) {
+                    // (the work RAM, the high RAM: where they are)
+                    if (_fmemcmp(c, MK_FP(0, pc - 0x6000), len)) b = 0;
+                } else {
+                    for (uint8_t i = 0; i < len; i++)
+                        if (c[i] != gbf_read(pc + i)) {
+                            b = 0;
+                            break;
+                        }
+                }
             }
             if (!b) {
                 uint16_t flushes = drc_flushes;

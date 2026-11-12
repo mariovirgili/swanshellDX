@@ -40,6 +40,7 @@
 #include "gbv.h"
 #include "gb_ws.h"
 #include "gb_drc.h"
+#include "../../ws/version.h"
 
 #define SCR1        ((uint16_t*) 0x4000)
 // The Game Boy's two maps (9800h, 9C00h) each as two WS maps: with the
@@ -339,6 +340,8 @@ static void stats_show(void) {
     stat_num(13, drc_blocks, 1);
     stat_put(14, "FLS");
     stat_num(15, drc_flushes, 0);
+    stat_put(16, "PAT");                // the patch this build is
+    stat_num(17, GGSWAN_PATCH, 0);
 }
 
 void gbv_frame(void) {

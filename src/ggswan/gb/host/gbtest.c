@@ -14,6 +14,7 @@
  *   -q  only the result's line
  *   -n  run all the frames (no stop at a test's end)
  *   -d  the video memory, work RAM, OAM and high RAM at the end, to a file
+ *   -H  their checksums at each frame's end, to a file (as gbrun.py's GBRUN_FHASH: where the plugin and this part)
  *   -s  the background's map as text at the end (tests that write their result with a font at its ASCII places)
  *   -m  a Mooneye test: LD B,B ends it (Blargg's CPU tests run LD B,B too)
  * The last line: PASS, FAIL or END (no verdict), frames, clock, the
@@ -52,6 +53,16 @@ static uint32_t screen_hash(void) {
     return h;
 }
 
+static FILE *hashes;
+static uint32_t crc32(const uint8_t *p, size_t n) {
+    uint32_t c = 0xFFFFFFFFu;
+    while (n--) {
+        c ^= *p++;
+        for (int k = 0; k < 8; k++) c = (c >> 1) ^ (0xEDB88320u & -(c & 1));
+    }
+    return ~c;
+}
+
 int main(int argc, char **argv) {
     const char *rom_name = NULL, *out = NULL, *keys = NULL, *dump = NULL;
     long frames = 3600;
@@ -66,6 +77,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-m")) mooneye = 1;
         else if (!strcmp(argv[i], "-s")) text = 1;
         else if (!strcmp(argv[i], "-d") && i + 1 < argc) dump = argv[++i];
+        else if (!strcmp(argv[i], "-H") && i + 1 < argc) hashes = fopen(argv[++i], "w");
         else rom_name = argv[i];
     }
     if (!rom_name) { fprintf(stderr, "usage: gbtest rom.gb [-f frames] [-o out.pgm] [-t] [-k frame:keys,...] [-q] [-n] [-m]\n"); return 3; }
@@ -84,6 +96,7 @@ int main(int argc, char **argv) {
     if (err) { printf("LOAD %d\n", err); return 3; }
     gb_serial_hook = on_serial;
 
+    FILE *hashes_f = hashes;
     int verdict = 2;
     long fr = 0;
     while (fr < frames && (verdict == 2 || all)) {
@@ -117,6 +130,9 @@ int main(int argc, char **argv) {
             }
         }
         fr++;
+        if (hashes_f)
+            fprintf(hashes_f, "%ld %08lX %08lX %08lX %08lX\n", fr, (unsigned long) crc32(gb_vram, 0x2000),
+                (unsigned long) crc32(gb_wram, 0x2000), (unsigned long) crc32(gb_oam, 0xA0), (unsigned long) crc32(gb_hram, 0x7F));
         if (verdict == 2) {
             serial[serial_n] = 0;
             if (strstr(serial, "Passed")) verdict = 0;

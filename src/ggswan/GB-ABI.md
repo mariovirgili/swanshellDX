@@ -65,7 +65,17 @@ window.
   WonderSwan map entry kept next to a map byte, the echo, the OAM, the
   high RAM, and C for the I/O registers and the cartridge's RAM and
   registers. LY and STAT are read by the routine itself, from the time.
-- **A constant address** is sorted out when the block is translated.
+- The high RAM through a pointer is in line too (a third comparison,
+  off the work RAM's path).
+- **A pointer the block itself loads** (`LD HL, nn`, `LD DE, nn`,
+  `LD BC, nn`, then only INC, DEC, `(HL+)`, `(HL-)`: `i_dir`) into the
+  work RAM or the high RAM is that address: the access is one
+  instruction on it, nothing checked, and cannot leave the block.
+- **A constant address** is sorted out when the block is translated; in
+  the cartridge's RAM it is an access through the RAM's segment after
+  one test that it is plain RAM and enabled (`drc_ram_ok`).
+- **A stack in the cartridge's RAM** (where SP is when the block is
+  translated): PUSH and POP in line the same way.
 - A write to an I/O register or to the cartridge's registers may not
   come back: when an interrupt can now be taken, the time to the next
   event has run out or the code's own ROM bank has changed
@@ -114,9 +124,11 @@ with no routine.
 - Code in RAM has a copy of its bytes before it, compared at every
   entry from the dispatcher; it is joined to nothing but itself.
 - What the translator does not do is run by the interpreter, one
-  instruction, and the next block starts after it: HALT, STOP, DAA,
-  LD (nn), SP, ADD HL, SP, ADD SP, e, LD HL, SP + e, and the CB
-  operations on (HL) other than BIT.
+  instruction, and the next block starts after it: HALT, STOP,
+  LD (nn), SP, ADD HL, SP, ADD SP, e, LD HL, SP + e. (Until patch 163
+  DAA and the CB operations on (HL) other than BIT too: a program that
+  does its sums with them, as Yoshi does, went through the dispatcher
+  hundreds of times a frame.)
 
 ## Interrupts
 

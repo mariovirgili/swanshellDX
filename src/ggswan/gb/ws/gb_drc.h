@@ -57,7 +57,7 @@ extern const uint16_t __far drc_stubs_size;
 #define ST_SKIP_LINE 33     /* a loop that waits on LY: the time to the next line passed */
 #define ST_SKIP_MODE 36     /* ... on STAT: to the next change of mode */
 #define ST_P1        39     /* P1 = AL (the keys' rows selected) */
-#define ST_WAIT_MODE 42     /* a loop on STAT's mode: to the first cycle of a mode not in the byte after the call */
+#define ST_DAA       42     /* DAA: A in AL, the flags in AH (N from drc_n) */
 #define ST_STAT      45     /* AL = STAT */
 #define ST_LY        48     /* AL = LY */
 #define ST_WAIT_STAT 51     /* AL = STAT, in a loop that goes round while the mode is in the byte after the call: at the first cycle it is not */

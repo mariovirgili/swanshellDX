@@ -80,7 +80,7 @@ drc_stubs:
     .byte 0xE9
     .word s_p1 - . - 2
     .byte 0xE9
-    .word s_wait_mode - . - 2
+    .word s_daa - . - 2
     .byte 0xE9
     .word s_stat_e - . - 2
     .byte 0xE9
@@ -629,6 +629,50 @@ s_skip_mode:
     pop dx
     pop ax
 1:
+    ret
+
+// DAA. AL = A, AH = the flags (Z 40h, H 10h, C 01h), N in drc_n. After an
+// addition: 60h more if C or A over 99h (C set), 6 more if H or the low
+// digit over 9. After a subtraction: 60h less if C, 6 less if H. H
+// cleared, C set or kept, Z from the result.
+s_daa:
+    push bx
+    mov bl, ah
+    and bl, 1                   // BL = C after
+    test byte ptr [drc_n], 0x40
+    jnz 5f
+    test ah, 1
+    jnz 1f
+    cmp al, 0x99
+    jbe 2f
+1:
+    add al, 0x60
+    mov bl, 1
+2:
+    test ah, 0x10
+    jnz 3f
+    mov bh, al
+    and bh, 0x0F
+    cmp bh, 9
+    jbe 8f
+3:
+    add al, 6
+    jmp 8f
+5:
+    test ah, 1
+    jz 6f
+    sub al, 0x60
+6:
+    test ah, 0x10
+    jz 8f
+    sub al, 6
+8:
+    mov ah, bl
+    test al, al
+    jnz 9f
+    or ah, 0x40
+9:
+    pop bx
     ret
 
 // P1 = AL: the rows selected (bits 4 and 5, 0 selects); what it then
