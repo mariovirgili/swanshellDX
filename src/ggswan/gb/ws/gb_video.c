@@ -225,45 +225,10 @@ static void palettes(void) {
 }
 
 // the Game Boy's sprites as the WonderSwan's: leftmost first (the same X:
-// OAM order), which is who covers whom on the DMG
+// OAM order), which is who covers whom on the DMG. In assembly
+// (gb_asm.s: gbv_sprites_asm; in C it took a fifth of a frame's time)
 static void sprites(void) {
-    uint8_t order[40], n = 0;
-    uint8_t tall = gb_io[GB_LCDC] & 4;
-    for (uint8_t i = 0; i < 40; i++) {
-        const uint8_t *s = gb_oam + i * 4;
-        if (s[0] == 0 || s[0] >= 160 || s[1] == 0 || s[1] >= 168) continue;
-        if (!tall && s[0] <= 8) continue;
-        uint8_t x = s[1], j = n++;
-        while (j > 0 && gb_oam[order[j - 1] * 4 + 1] > x) {
-            order[j] = order[j - 1];
-            j--;
-        }
-        order[j] = i;
-    }
-    uint8_t *o = SPR_TABLE;
-    uint8_t count = 0;
-    for (uint8_t k = 0; k < n; k++) {
-        const uint8_t *s = gb_oam + order[k] * 4;
-        uint8_t f = s[3];
-        // palette 12 or 13 (4 or 5 of the sprites'), over screen 2 unless
-        // "behind", the flips
-        uint8_t hi = ((f & 0x10) ? 5 << 1 : 4 << 1) | ((f & 0x80) ? 0 : 0x20)
-            | ((f & 0x20) ? 0x40 : 0) | ((f & 0x40) ? 0x80 : 0);
-        uint8_t y = s[0] - 16, x = s[1] + (GB_X0 - 8);
-        if (tall) {
-            uint8_t top = s[2] & 0xFE, bottom = s[2] | 1;
-            if (f & 0x40) { top |= 1; bottom &= 0xFE; }
-            o[0] = top; o[1] = hi; o[2] = y; o[3] = x;
-            o[4] = bottom; o[5] = hi; o[6] = y + 8; o[7] = x;
-            o += 8;
-            count += 2;
-        } else {
-            o[0] = s[2]; o[1] = hi; o[2] = y; o[3] = x;
-            o += 4;
-            count++;
-        }
-    }
-    outportb(WS_SPR_COUNT_PORT, count);
+    outportb(WS_SPR_COUNT_PORT, gbv_sprites_asm(gb_io[GB_LCDC] & 4));
 }
 
 /* ---- the figures (START + Y4): in the black at the left, 4 characters
@@ -340,6 +305,7 @@ void gbv_frame(void) {
     make_list();
     sprites();
     palettes();
+    gb_sound_frame();
     if (stats_on) {
         stats_frames++;
         if (gbv_vblanks >= 75) stats_show();

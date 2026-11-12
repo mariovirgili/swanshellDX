@@ -77,6 +77,8 @@ drc_stubs:
     .word s_skip_line - . - 2
     .byte 0xE9
     .word s_skip_mode - . - 2
+    .byte 0xE9
+    .word s_p1 - . - 2
 
 // leave for the address in SI. When nothing is due (cycles left, no EI
 // waiting) and the address is in ROM, the block is looked for here: the
@@ -147,8 +149,19 @@ s_rd:
     cmp si, 0xC000
     jae 2f
     cmp si, 0xA000
-    jae 4f
+    jae 7f
     mov al, [si - 0x6000]       // the video memory
+    ret
+7:
+    // the cartridge's RAM: behind the RAM window when it is plain RAM
+    // and enabled (gb_main.c: gbf_plat_map), or C
+    cmp byte ptr [drc_ram_ok], 1
+    jb 4f
+    mov al, 0xFF
+    ja 6f                       // (none, or disabled)
+    mov es, [drc_ram_seg]
+    mov al, es:[si]
+6:
     ret
 2:
     cmp si, 0xE000
@@ -315,6 +328,18 @@ s_skip_mode:
 1:
     ret
 
+// P1 = AL: the rows selected (bits 4 and 5, 0 selects); what it then
+// reads is in a table made when the keys change (gb_drc.c: gbd_keys)
+s_p1:
+    push bx
+    mov bl, al
+    shr bl, 4
+    and bx, 3
+    mov bl, [drc_p1_tab + bx]
+    mov [0x9F00], bl
+    pop bx
+    ret
+
 s_rdt:
     push ax
     call s_rd
@@ -377,14 +402,89 @@ s_wrt:
     cmp si, 0xFF00
     jb 2b                       // the OAM
 6:
-    // the cartridge's registers or an I/O register: C, then the dispatcher
-    pop di
+    // the write that changes the second ROM area's bank, here (2000h up
+    // to MBC1's and MBC3's 3FFFh or MBC5's 2FFFh; gb_main.c: gbf_plat_map)
+    mov di, si
+    shr di, 8
+    cmp di, 0x20
+    jb 6f
+    cmp di, [drc_mbc_top]
+    jae 6f
+    push ax
+    push dx
+    mov al, [drc_tmp]
+    and al, [drc_mbc_and]
+    mov [gb + GB_BANK_LO], al
+    jnz 1f
+    cmp byte ptr [drc_mbc_z1], 0
+    je 1f
+    mov al, 1
+1:
+    xor ah, ah
+    or ax, [drc_mbc_hi]
+    and ax, [drc_bank_mask]
+    cmp ax, [gb + GB_ROMX]
+    je 2f
+    mov [gb + GB_ROMX], ax
+    mov dx, ax
+    inc dx
+    mov [drc_keyx], dx
+    mov dx, ax
+    and dx, 3
+    shl dx, 14
+    mov [gbf_romx_off], dx
+    shr dx, 4
+    add dx, 0x2C00
+    mov [drc_segtab + 2], dx
+    shr ax, 2
+    out 0xD4, ax                // the ROM1 window's bank
+    pop dx
+    pop ax
+    // (code in the second area itself: through the dispatcher)
+    mov di, sp
+    mov di, [di]
     mov di, cs:[di]
+    cmp di, 0x4000
+    jb 9b
+    add sp, 2
     mov [gb + GB_PC], di
+    jmp s_exit
+2:
+    pop dx
+    pop ax
+    jmp 9b
+6:
+    // the cartridge's registers or an I/O register: C (gb_drc.c:
+    // gbd_write), which says whether the dispatcher is needed: 1 yes (an
+    // interrupt may be due, the time's events have changed, the first ROM
+    // area has another bank), 2 if the code is in the second ROM area
+    // (it has another bank), 0 no
     call s_cwrite
+    cmp byte ptr [drc_must], 0
+    je 9b
+    mov di, sp
+    mov di, [di]                // (where the call returns to: the word)
+    mov di, cs:[di]             // the next instruction's address
+    cmp byte ptr [drc_must], 2
+    jne 7f
+    cmp di, 0x4000
+    jb 9b                       // (code in the first ROM area: on)
+7:
+    add sp, 2
+    mov [gb + GB_PC], di
     jmp s_exit
 5:
-    // the cartridge's RAM: C, and on
+    // the cartridge's RAM
+    cmp byte ptr [drc_ram_ok], 1
+    jb 8f
+    ja 9b                       // (none, or disabled: lost)
+    mov es, [drc_ram_seg]
+    mov di, ax
+    mov al, [drc_tmp]
+    mov es:[si], al
+    mov ax, di
+    jmp 9b
+8:
     call s_cwrite
     jmp 9b
 
@@ -396,7 +496,7 @@ s_cwrite:
     push dx
     mov ax, si
     mov dl, [drc_tmp]
-    IA16_CALL gbf_write
+    IA16_CALL gbd_write
     pop dx
     pop cx
     pop bx
@@ -405,6 +505,19 @@ s_cwrite:
 
 // push SI on the Game Boy's stack (anywhere: the fast case is inline)
 s_push:
+    // (a stack in the cartridge's RAM, when that is plain RAM)
+    lea di, [bp - 2]
+    cmp di, 0xA000
+    jb 1f
+    cmp bp, 0xC000
+    ja 1f
+    cmp byte ptr [drc_ram_ok], 1
+    jne 1f
+    mov es, [drc_ram_seg]
+    mov es:[di], si
+    mov bp, di
+    ret
+1:
     push ax
     mov ax, si
     mov [drc_tmp], ah
@@ -434,6 +547,17 @@ s_wr_noexit:
 
 // SI = the word popped
 s_pop:
+    cmp bp, 0xA000
+    jb 1f
+    cmp bp, 0xBFFE
+    ja 1f
+    cmp byte ptr [drc_ram_ok], 1
+    jne 1f
+    mov es, [drc_ram_seg]
+    mov si, es:[bp]
+    lea bp, [bp + 2]
+    ret
+1:
     push ax
     mov si, bp
     call s_rd

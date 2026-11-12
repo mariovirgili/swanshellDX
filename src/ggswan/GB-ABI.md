@@ -64,11 +64,13 @@ window.
   high RAM, and C for the I/O registers and the cartridge's RAM and
   registers. LY and STAT are read by the routine itself, from the time.
 - **A constant address** is sorted out when the block is translated.
-- A write that ends in C for an I/O register or the cartridge's
-  registers does not come back: the block is left for the next
-  instruction through the dispatcher, which sees what the write
-  changed (an interrupt due, another ROM bank). The word after such a
-  call is that instruction's address.
+- A write to an I/O register or to the cartridge's registers may not
+  come back: when an interrupt may be due, the time's events have
+  changed or the code's own ROM bank has (`drc_must`), the block is
+  left for the next instruction through the dispatcher. The word after
+  such a call is that instruction's address. The scroll, the palettes,
+  the DMA register, P1 and the ROM bank written from the first ROM
+  area go on in the block.
 
 ## Time
 

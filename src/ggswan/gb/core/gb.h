@@ -71,6 +71,10 @@ typedef struct {
     uint8_t a, f, c, b, e, d, l, h;
     uint16_t sp, pc;
     uint8_t lcd_on;         // (here for the recompiled code)
+    uint8_t keys;
+    uint8_t bank_lo;        // the cartridge's bank register (the low one), as written
+    uint8_t bank_hi;
+    uint16_t romx_bank;     // what 4000h shows
     uint8_t ime;            // interrupts enabled
     uint8_t ei_delay;       // EI: enabled after the next instruction
     uint8_t halted;
@@ -109,16 +113,14 @@ typedef struct {
     uint8_t mbc;            // 0 none, 1, 2, 3, 5
     uint8_t ram_on;
     uint8_t mbc1_mode;
-    uint8_t bank_lo, bank_hi;       // the registers as written
     uint8_t rtc_sel;
     uint16_t rom_banks;     // of 16 KiB (a power of two)
     uint8_t ram_banks;      // of 8 KiB (MBC2: 0, its 512 half bytes apart)
-    uint16_t rom0_bank, romx_bank;  // what 0000h and 4000h show
+    uint16_t rom0_bank;     // what 0000h shows
     uint8_t ram_bank;
     uint8_t has_battery;
     uint8_t ram_dirty;
 
-    uint8_t keys;
 #ifndef GB_WS
     uint8_t ie_;
     uint8_t io_[0x80];

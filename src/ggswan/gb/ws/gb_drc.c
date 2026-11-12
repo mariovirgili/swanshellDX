@@ -24,14 +24,20 @@
 #include "gb.h"
 #include "gb_drc.h"
 #include "gb_ws.h"
+extern uint16_t gbf_rom0_off, gbf_romx_off, gbf_ram_off;
 
 _Static_assert(offsetof(gb_t, a) == GB_A && offsetof(gb_t, c) == GB_BC && offsetof(gb_t, e) == GB_DE
     && offsetof(gb_t, l) == GB_HL && offsetof(gb_t, sp) == GB_SP && offsetof(gb_t, pc) == GB_PC
-    && offsetof(gb_t, lcd_on) == GB_LCD_ON, "gb_drc.h");
+    && offsetof(gb_t, lcd_on) == GB_LCD_ON && offsetof(gb_t, keys) == GB_KEYS
+    && offsetof(gb_t, bank_lo) == GB_BANK_LO && offsetof(gb_t, romx_bank) == GB_ROMX, "gb_drc.h");
 
 uint8_t drc_ah, drc_n, drc_tmp, drc_ei, drc_interp;
 uint16_t drc_link, drc_link_seg, drc_segtab[4];
 uint16_t drc_key0, drc_keyx, drc_jmp[2];
+uint8_t drc_must, drc_ram_ok;
+uint8_t drc_mbc_and, drc_mbc_z1, drc_p1_tab[4];
+uint16_t drc_mbc_top, drc_mbc_hi, drc_bank_mask;
+uint16_t drc_ram_seg;
 uint16_t drc_blocks, drc_flushes;
 
 /* ---- the blocks' table and the code ---- */
@@ -73,6 +79,40 @@ static void EW(uint16_t w) {
     code[code_top++] = w >> 8;
 }
 #define ADDR(x) ((uint16_t) (uintptr_t) &(x))
+
+// the I/O registers a write to which changes nothing the dispatcher must
+// see (unless it raises an interrupt: gbd_write)
+static uint8_t io_quiet(uint8_t r) {
+    return r == GB_P1 || r == GB_SB || r == GB_SCY || r == GB_SCX || (r >= GB_DMA && r <= GB_WX);
+}
+
+// a write from translated code that is not plain memory (gb_drc_asm.s:
+// s_wrt); drc_must: whether the dispatcher is needed after it
+void gbd_write(uint16_t a, uint8_t v) {
+    if (a < 0x8000) {
+        uint16_t k0 = drc_key0, kx = drc_keyx;
+        gbf_write(a, v);
+        drc_must = drc_key0 != k0 ? 1 : drc_keyx != kx ? 2 : 0;
+    } else if (a >= 0xFF00) {
+        uint8_t before = gb_io[GB_IF];
+        gbf_write(a, v);
+        drc_must = a == 0xFFFF || !io_quiet(a & 0xFF) || gb_io[GB_IF] != before;
+    } else {
+        gbf_write(a, v);
+        drc_must = 0;
+    }
+}
+
+// what P1 reads for each selection of rows (bits 5 and 4), with the keys
+// held now (gb_drc_asm.s: s_p1)
+void gbd_keys(void) {
+    for (uint8_t i = 0; i < 4; i++) {
+        uint8_t low = 15;
+        if (!(i & 1)) low &= ~(gb.keys & 15);
+        if (!(i & 2)) low &= ~(gb.keys >> 4);
+        drc_p1_tab[i] = 0xC0 | i << 4 | low;
+    }
+}
 
 /* ---- the translator ---- */
 
@@ -178,6 +218,7 @@ static uint8_t live;        // the flags needed before the instruction being tra
 static uint16_t blk_pc;
 static uint8_t in_ram;
 static uint8_t idle;        // the block is a loop that waits: 1 on memory, 2 on LY, 3 on STAT
+static uint8_t idle_i;      // ... and this instruction is its jump back
 
 static const uint8_t __far R8[8] = { 5, 1, 6, 2, 7, 3, 0xFF, 0 };  // B C D E H L - A: CH CL DH DL BH BL AL
 static const uint8_t __far R16[4] = { 1, 2, 3, 5 };                // BC DE HL SP: CX DX BX BP
@@ -339,7 +380,7 @@ static void alu_done(uint8_t op) {
 
 // LDH A, (n) and LD A, (FFnn)
 static void io_read(uint8_t n) {
-    if (n >= 0x80 || n == GB_SB || n == GB_TMA || n == GB_LCDC || n == GB_SCY || n == GB_SCX
+    if (n >= 0x80 || n == GB_P1 || n == GB_SB || n == GB_TMA || n == GB_LCDC || n == GB_SCY || n == GB_SCX
         || (n >= GB_LYC && n <= GB_WX) || (n >= 0x30 && n < 0x40)) {
         E(0xA0); EW(0x9F00 + n);                // mov al, [..]
         return;
@@ -355,6 +396,11 @@ static uint8_t io_write(uint8_t n, uint16_t next) {
         E(0xA2); EW(0x9F00 + n);                // mov [..], al
         return 0;
     }
+    if (n == GB_P1) {
+        mat();
+        call_stub(ST_P1);
+        return 0;
+    }
     mat();
     nflush();
     sub_cyc();
@@ -362,7 +408,7 @@ static uint8_t io_write(uint8_t n, uint16_t next) {
     E(0xBE); EW(0xFF00 | n);
     call_stub(ST_WRT);
     EW(next);
-    return 1;
+    return !io_quiet(n);
 }
 
 // push the word in the x86 register r (0xFF: the constant v)
@@ -466,13 +512,14 @@ static void translate_block(void) {
             case 0:
                 if (y == 0) break;                              // NOP
                 if (y == 3) {                                   // JR e
+                    if (idle && i == idle_i && (uint16_t) (next + (int8_t) b1) == blk_pc) wait_skip();
                     exit_to(next + (int8_t) b1, 0);
                     ended = 1;
                 } else {                                        // JR cc, e
                     uint16_t j = unless(y - 4);
                     uint8_t s_fl = fl, s_hfix = hfix;
                     int8_t s_nmem = nmem;
-                    if (idle && (uint16_t) (next + (int8_t) b1) == blk_pc) wait_skip();
+                    if (idle && i == idle_i && (uint16_t) (next + (int8_t) b1) == blk_pc) wait_skip();
                     exit_to(next + (int8_t) b1, 1);
                     fl = s_fl; hfix = s_hfix; nmem = s_nmem;
                     code[j - 1] = code_top - j;
@@ -609,7 +656,7 @@ static void translate_block(void) {
                 uint16_t j = unless(y);
                 uint8_t s_fl = fl, s_hfix = hfix;
                 int8_t s_nmem = nmem;
-                if (idle && nn == blk_pc) wait_skip();
+                if (idle && i == idle_i && nn == blk_pc) wait_skip();
                 exit_to(nn, 1);
                 fl = s_fl; hfix = s_hfix; nmem = s_nmem;
                 code[j - 1] = code_top - j;
@@ -647,6 +694,7 @@ static void translate_block(void) {
             break;
         case 3:
             if (y == 0) {                                       // JP nn
+                if (idle && i == idle_i && nn == blk_pc) wait_skip();
                 exit_to(nn, 0);
                 ended = 1;
             } else if (y == 6) {                                // DI
@@ -770,7 +818,7 @@ static void scan_block(uint16_t pc) {
         // (the I/O registers written by LDH (n), A that end the block)
         if (op == 0xE0) {
             uint8_t n = gbf_read(pc - 1);
-            if (!((n >= 0x80 && n != 0xFF) || (n >= 0x10 && n < 0x40))) break;
+            if (!((n >= 0x80 && n != 0xFF) || (n >= 0x10 && n < 0x40) || io_quiet(n))) break;
         }
         if (op == 0xFB) after_ei = 1;
         if (in_ram && pc - blk_pc > 48) break;
@@ -780,35 +828,34 @@ static void scan_block(uint16_t pc) {
     // and a conditional jump back to the start; nothing written, no
     // register but A changed
     idle = 0;
-    if (!in_ram && n_ins >= 2 && n_ins <= 6) {
-        uint8_t kind = 1, ok = 1, loaded = 0;
-        for (uint8_t i = 0; i < n_ins && ok; i++) {
+    if (!in_ram) {
+        uint8_t kind = 1, loaded = 0;
+        for (uint8_t i = 0; i < n_ins && i < 6; i++) {
             uint8_t op = gbf_read(i_pc[i]), b1 = gbf_read(i_pc[i] + 1);
-            if (i == n_ins - 1) {
-                uint16_t t;
-                if ((op & 0xE7) == 0x20) t = i_pc[i] + 2 + (int8_t) b1;
-                else if ((op & 0xE7) == 0xC2) t = b1 | (uint16_t) gbf_read(i_pc[i] + 2) << 8;
-                else { ok = 0; break; }
-                ok = t == blk_pc && loaded;
+            if ((op & 0xE7) == 0x20 || (op & 0xE7) == 0xC2 || op == 0x18 || op == 0xC3) {
+                // the first jump: back to the block's start?
+                uint16_t t = (op & 0xC0) ? b1 | (uint16_t) gbf_read(i_pc[i] + 2) << 8 : i_pc[i] + 2 + (int8_t) b1;
+                // (a jump to itself is a wait too: for an interrupt)
+                if (t == blk_pc && (loaded || (i == 0 && (op == 0x18 || op == 0xC3)))) {
+                    idle = kind;
+                    idle_i = i;
+                }
+                break;
             } else if (op == 0xF0 || op == 0xFA) {
                 uint16_t a = op == 0xF0 ? 0xFF00 | b1 : b1 | (uint16_t) gbf_read(i_pc[i] + 2) << 8;
-                if (a == 0xFF04 || a == 0xFF05) ok = 0;
-                else if (a == 0xFF44) { if (kind < 2) kind = 2; }
+                if (a == 0xFF04 || a == 0xFF05) break;
+                if (a == 0xFF44) { if (kind < 2) kind = 2; }
                 else if (a == 0xFF41) kind = 3;
                 loaded = 1;
-            } else if (op == 0x7E || op == 0x0A || op == 0x1A) {
-                kind = kind;        // LD A, (HL) / (BC) / (DE): memory (an I/O register read this way is not known: no skip)
-                ok = 0;
             } else if ((op >= 0xB8 && op <= 0xBF && op != 0xBE) || (op >= 0xA0 && op <= 0xB7 && (op & 7) != 6)
                 || op == 0xFE || op == 0xE6 || op == 0xF6 || op == 0xEE || op == 0x00 || op == 0x2F
                 || (op == 0xCB && (b1 >> 6) == 1 && (b1 & 7) == 7)) {
                 // CP, AND, OR, XOR with a register or a constant, CPL, BIT n, A
-                if (!loaded) ok = 0;
+                if (!loaded) break;
             } else {
-                ok = 0;
+                break;
             }
         }
-        if (ok) idle = kind;
     }
     uint8_t need = FALL;        // (after the block: all of them)
     for (uint8_t i = n_ins; i-- > 0;) {
@@ -880,6 +927,7 @@ void gbd_init(void) {
     drc_flushes = 0;
     drc_ei = drc_interp = 0;
     from_gbf();
+    gbd_keys();
 }
 
 void gbd_run_frame(void) {

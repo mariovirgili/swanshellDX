@@ -44,7 +44,19 @@ void gbf_plat_map(void) {
     drc_segtab[0] = 0x2000 + (gbf_rom0_off >> 4);
     drc_segtab[1] = 0x3000 + (gbf_romx_off >> 4) - 0x400;
     drc_key0 = gb.rom0_bank + 1;
-    drc_keyx = gb.romx_bank + 1;
+    // the cartridge's RAM for the recompiled code: 1 plain RAM that can
+    // be reached, 2 none or disabled (reads FFh, writes lost), 0 ask C
+    // (MBC2's half bytes, MBC3's clock)
+    drc_ram_ok = gb.mbc == 2 || (gb.mbc == 3 && gb.rtc_sel) ? 0 : gb.ram_banks && (gb.ram_on || !gb.mbc) ? 1 : 2;
+    drc_ram_seg = 0x1000 + (gbf_ram_off >> 4) - 0xA00;
+    // the write that changes the second ROM area's bank (gb_drc_asm.s:
+    // s_wrt): 2000h up to drc_mbc_top (its high byte), the bits of the
+    // value that count, whether 0 means 1, the other register's bits
+    drc_mbc_top = gb.mbc == 1 || gb.mbc == 3 ? 0x40 : gb.mbc == 5 ? 0x30 : 0;
+    drc_mbc_and = gb.mbc == 1 ? 0x1F : gb.mbc == 3 ? 0x7F : 0xFF;
+    drc_mbc_z1 = gb.mbc != 5;
+    drc_mbc_hi = gb.mbc == 1 ? (uint16_t) gb.bank_hi << 5 : gb.mbc == 5 ? (uint16_t) (gb.mbc1_mode & 1) << 8 : 0;
+    drc_bank_mask = gb.rom_banks - 1;
 }
 
 /* ---- text (before the game, and when something is wrong): screen 2 with
@@ -212,7 +224,10 @@ void gb_frame_keys(void) {
     if (k & WS_KEY_B) g |= GB_KEY_B;
     if (k & (WS_KEY_Y3 | WS_KEY_Y2)) g |= GB_KEY_SELECT;
     if (k & WS_KEY_START) g |= GB_KEY_START;
-    if (g != gb.keys) gb_set_keys(g);
+    if (g != gb.keys) {
+        gb_set_keys(g);
+        gbd_keys();
+    }
 }
 
 /* ---- start ---- */
@@ -221,6 +236,7 @@ void gb_frame_keys(void) {
 void gb_emulate(void) {
     gbf_reset();
     gbd_init();
+    gb_sound_init();
     gb_phase = GB_PHASE_DISP;
     for (;;)
         gbd_run_frame();

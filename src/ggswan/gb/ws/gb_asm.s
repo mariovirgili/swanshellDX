@@ -79,3 +79,121 @@ gb_line_entry:
     pop bx
     pop ax
     iret
+
+/*
+ * uint8_t gbv_sprites_asm(uint8_t tall): the WonderSwan's sprite table
+ * (5800h) from the Game Boy's OAM (9E00h): the sprites on the screen,
+ * leftmost first and, with the same X, first in the OAM first (who covers
+ * whom on the DMG; the WS puts the first of its table on top). An 8 x 16
+ * sprite (tall) is two. Returns how many WS sprites.
+ * A WS sprite: tile, attributes (palette 12 or 13, over screen 2 unless
+ * the Game Boy has it behind the background, the flips), Y, X.
+ */
+#define SPR_ORDER 0xB940        /* 40 bytes: the sprites in order, as offsets into the OAM */
+    .global gbv_sprites_asm
+gbv_sprites_asm:
+    push si
+    push di
+    push bp
+    push es
+    push ss
+    pop es
+    xor ah, ah
+    mov bp, ax                  // tall
+    xor cx, cx                  // sprites found
+    mov si, 0x9E00
+1:
+    mov ax, ss:[si]             // AL = Y, AH = X
+    test al, al
+    jz 5f
+    cmp al, 160
+    jae 5f
+    test ah, ah
+    jz 5f
+    cmp ah, 168
+    jae 5f
+    test bp, bp
+    jnz 2f
+    cmp al, 8
+    jbe 5f                      // (8 x 8, above the screen)
+2:
+    // its place: after the last one not to its right
+    mov bx, cx
+3:
+    test bx, bx
+    jz 4f
+    mov dl, ss:[SPR_ORDER - 1 + bx]
+    xor dh, dh
+    mov di, dx
+    cmp ss:[0x9E01 + di], ah
+    jbe 4f
+    mov ss:[SPR_ORDER + bx], dl
+    dec bx
+    jmp 3b
+4:
+    mov dx, si
+    mov ss:[SPR_ORDER + bx], dl     // (the low byte: 00h-9Ch)
+    inc cx
+5:
+    add si, 4
+    cmp si, 0x9EA0
+    jb 1b
+
+    mov di, 0x5800
+    xor dx, dx                  // WS sprites written
+    xor si, si
+    jcxz 9f
+6:
+    xor bx, bx
+    mov bl, ss:[SPR_ORDER + si]
+    mov ax, ss:[0x9E02 + bx]    // AL = tile, AH = flags
+    push si
+    mov si, ax
+    shr si, 12                  // the flags' high half
+    mov ah, cs:[spr_attr + si]
+    pop si
+    push cx
+    mov cx, ss:[0x9E00 + bx]    // CL = Y, CH = X
+    sub cl, 16
+    add ch, 24
+    test bp, bp
+    jnz 7f
+    stosw
+    mov ax, cx
+    stosw
+    inc dx
+    jmp 8f
+7:
+    // 8 x 16: the even tile on top, the odd one below; the other way
+    // round when flipped upside down
+    and al, 0xFE
+    test ah, 0x80
+    jz 1f
+    or al, 1
+1:
+    stosw
+    xchg ax, cx
+    stosw
+    xchg ax, cx
+    xor al, 1
+    stosw
+    mov ax, cx
+    add al, 8
+    stosw
+    add dx, 2
+8:
+    pop cx
+    inc si
+    loop 6b
+9:
+    mov ax, dx
+    pop es
+    pop bp
+    pop di
+    pop si
+    IA16_RET
+// the WS attribute byte for the Game Boy's flags' high half (bit 3
+// behind the background, 2 upside down, 1 mirrored, 0 the second palette)
+spr_attr:
+    .byte 0x28, 0x2A, 0x68, 0x6A, 0xA8, 0xAA, 0xE8, 0xEA
+    .byte 0x08, 0x0A, 0x48, 0x4A, 0x88, 0x8A, 0xC8, 0xCA

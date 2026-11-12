@@ -64,4 +64,5 @@ away from where the tests checked on a DMG put it.
 - The serial port has no other end: a transfer with the Game Boy's own
   clock ends after 8 bits with FFh received, one with the other's clock
   never does.
-- No sound yet (the registers keep what is written).
+- No sound in the reference (the registers keep what is written). The
+  plugin's sound is `gb/ws/gb_sound.c`: once a frame, from the registers.

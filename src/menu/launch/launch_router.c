@@ -98,9 +98,38 @@ exit_no_launch:
             if (flags & LAUNCH_ROUTER_USE_SERIAL_OUT) return ERR_FILE_NOT_EXECUTABLE;
             return launch_plugin_via_ipc(s_path_plugin_sf, path);
         } else if (!strcasecmp(ext, s_file_ext_gb)) {
-            // Game Boy ROM: gbswan (src/ggswan/gb). The cartridge's RAM is
-            // not saved yet
+            // Game Boy ROM: gbswan (src/ggswan/gb). A cartridge with a
+            // battery (its type, at 0147h of the ROM) has its RAM, up to
+            // 32 KiB, in the first 32 KiB of the SRAM: saved as for a WS
+            // game, game.sav next to the .gb, loaded now and written back
+            // by the menu when it starts again (the plugin's START + Y1
+            // goes back to the menu)
             if (flags & LAUNCH_ROUTER_USE_SERIAL_OUT) return ERR_FILE_NOT_EXECUTABLE;
+            {
+                launch_rom_metadata_t gb_meta;
+                memset(&gb_meta, 0, sizeof(gb_meta));
+                FIL f;
+                uint8_t type = 0;
+                unsigned int br = 0;
+                int16_t result = f_open(&f, path, FA_OPEN_EXISTING | FA_READ);
+                if (result != FR_OK)
+                    return result;
+                gb_meta.id = f.obj.sclust;
+                if (f_lseek(&f, 0x147) == FR_OK)
+                    f_read(&f, &type, 1, &br);
+                f_close(&f);
+                if (br == 1 && (type == 0x03 || type == 0x06 || type == 0x09 || type == 0x0F || type == 0x10
+                        || type == 0x13 || type == 0x1B || type == 0x1E)) {
+                    gb_meta.sram_size = 32 * 1024L;
+                    result = launch_restore_save_data(path, &gb_meta);
+                    if (result == ERR_MCU_COMM_FAILED) {
+                        if (!launch_ui_handle_mcu_comm_error(&gb_meta))
+                            return result;
+                    } else if (result != FR_OK) {
+                        return result;
+                    }
+                }
+            }
             return launch_plugin_via_ipc(s_path_plugin_gb, path);
         } else if (!strcasecmp(ext, s_file_ext_gg) || !strcasecmp(ext, s_file_ext_sms)) {
             // Game Gear ROM: ggswan emulator plugin; Master System ROM:

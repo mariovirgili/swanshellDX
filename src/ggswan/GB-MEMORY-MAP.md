@@ -35,7 +35,8 @@ So gbswan cannot be one more `-D` on those sources.
 | internal RAM | what | |
 |---|---|---|
 | 0000h-003Fh | interrupt vectors | |
-| 0040h-1BFFh | C data and bss: 7,104 bytes | used: 0040h-078Ch (the Game Boy's registers, its OAM, high RAM and I/O registers, FatFs's volume and file, the path). The Makefile stops the build if `__wf_heap_start` is over 1C00h |
+| 0040h-1AFFh | C data and bss: 6,848 bytes | used: 0040h-058Ah (the Game Boy's registers and what the machine keeps, FatFs's volume and file, the path, the recompiler's and the picture's variables). The Makefile stops the build if `__wf_heap_start` is over 1B00h |
+| 1B00h-1B3Fh | the WS's four sound waves | (the WS wants them below 4000h) |
 | 1C00h-1FFFh | stack, 1 KiB | `gb_run` (`gb/ws/gb_asm.s`) sets SP to 2000h before the game. Before that (the ROM being read: FatFs) the stack is the C library's, down from 4000h |
 | 2000h-37FFh | the Game Boy's patterns, its 8000h-97FFh | WS tiles 0-383 |
 | 3800h-3FFFh | the Game Boy's two maps, its 9800h-9FFFh, as it writes them | (WS tiles 384-511: never named) |
@@ -46,11 +47,15 @@ So gbswan cannot be one more `-D` on those sources.
 | 5A00h-5CBFh | WS tiles 928-971: the font of the text before the game | |
 | 5FF0h-5FFFh | WS tile 1023: all color 0 | screen 1's only tile |
 | 6000h-7FFFh | the Game Boy's work RAM, its C000h-DFFFh | (and the buffer the ROM is read through, before the game) |
+| 9E00h-9E9Fh | the Game Boy's OAM, its FE00h | |
+| 9F00h-9F7Fh | its I/O registers, as written (FF00h) | P1 as it reads |
+| 9F80h-9FFEh, 9FFFh | its high RAM and IE | |
 | A000h-A36Bh | the frame's changes of scroll, window and LCDC, by line | 146 of 6 bytes |
 | A400h-AD2Fh, B000h-B92Fh | the two lists the line interrupt works from (shown, being made) | 294 of 8 bytes |
-| FE00h-FFFFh | the WS's palettes | 0: the backdrop, color 0's shade; 1: black; 4: the background; 12, 13: the sprites |
+| FE00h-FFFFh | the WS's palettes | 0: the backdrop, color 0's shade; 1: black (and the figures' white); 4: the background; 12, 13: the sprites |
 
-The rest (8000h-9FFFh, AD30h-AFFFh, B930h-FDFFh) is free.
+The rest (8000h-9DFFh, where the echo of the work RAM would fall, AD30h-AFFFh,
+B930h-FDFFh) is free.
 
 ## The cartridge
 
@@ -78,10 +83,11 @@ video memory at 2000h-3FFFh instead there is nothing to copy:
 Both are in the first bank. The second bank (4000h-5FFFh) is left for the
 WS's own maps and sprite table, which have to be below 8000h (their base
 addresses are 4 and 6 bits). The Game Boy's address and the internal
-RAM's differ by 6000h in 8000h-9FFFh and in C000h-DFFFh.
+RAM's differ by 6000h in 8000h-9FFFh and from C000h up (the echo apart).
 
-## Planned (not done)
+## The recompiler's memory
 
-The recompiler's tables and code: the free internal RAM above, and PSRAM
-banks after the ROM's, as ggswan. The registers and the calling rules of
-the recompiled code will be in `GB-ABI.md` when there is one.
+PSRAM through the linear area (segment n000h is the PSRAM bank 10h + n
+here, above the ROM's banks 0-15): the blocks' table in segment 4000h
+(4096 places of 8 bytes), translated code in segments 5000h-C000h, each
+starting with a copy of the routines the code calls. `GB-ABI.md`.

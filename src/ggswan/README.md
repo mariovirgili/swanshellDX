@@ -6,7 +6,7 @@ emulated by a dynamic recompiler (Z80 to V30MZ code), with the original
 interpreter kept for the parts that need it. The Game Gear video memory is
 mapped onto the WonderSwan's own tile and screen hardware.
 
-Status: fairly stable (patch 158). It has been tested mostly in the
+Status: fairly stable (patch 159). It has been tested mostly in the
 nileswan-medem emulator and with the host test tools; tests on real
 hardware are still to come.
 
@@ -365,7 +365,7 @@ it are listed in order without one.
 - lighter DYN lookup and class routine for deferred tile bytes
 - OUTI runs to CRAM handled in the run routine
 
-### Patches 90-158
+### Patches 90-159
 
 | Patch | Change |
 |---|---|
@@ -438,3 +438,4 @@ it are listed in order without one.
 | 156 | gbswan, step GB2, on the PC only: the LCD's timing as the test ROMs measure it (when STAT shows each mode and when its interrupts are asked, the video memory and the OAM refused to reads and writes at their own dots, the line after the LCD is turned on, LYC's comparison kept with the LCD off, what the sprites add to the drawing of a line). Mooneye's `acceptance/ppu`: 12 of 12 (5 before); dmg-acid2 the same picture as its reference; 33 of 47 of the older LCD tests of wilbertpol's fork, run by `gbsuite.py` from the text they leave on the screen (`gbtest -s`). `GB-ACCURACY.md` |
 | 157 | gbswan, steps GB3-GB5: the plugin runs Game Boy programs, far too slowly to play (about a frame a second: the CPU is the C interpreter). `gb/core/gbf_hw.c`, the machine by events (cycles counted to the next thing due; LY, STAT, DIV, TIMA worked out when read), with the reference's CPU and mappers; on the PC with the reference's renderer (`gbftest`) it shows the same pictures as the reference in the eight games tried, and passes the tests that are not about timing. `gb/ws`: the ROM read into PSRAM and mapped by the cartridge's windows (1 MiB at most), the picture with the WonderSwan's hardware (the video memory as the tiles, a WonderSwan map kept for each Game Boy map, screen 2 for background and window switched at their lines by the line interrupt, the sprites sorted as the DMG covers them), the keys. `host/gbrun.py` now runs the plugin with a ROM and the interrupts; `host/gbcmp.py`: the plugin's first screens are the PC's in six games of eight, pixel for pixel. `GB-IMPLEMENTATION.md`. Not run on a WonderSwan |
 | 158 | gbswan, step GB7 first: a recompiler for the Game Boy's CPU (`gb/ws/gb_drc.c`, `gb_drc_asm.s`, `GB-ABI.md`): A, BC, DE, HL, SP in AL, CX, DX, BX, BP; Z, H, C the V30MZ's own flags, kept in AH only when something would lose them (a pass over the block finds which are still wanted); everything from 8000h up but the cartridge's RAM 6000h lower in the internal RAM, the high RAM and the I/O registers too; blocks joined by jumps, returns looked up by an assembly routine; code in RAM translated with a copy of its bytes to compare; loops that wait on memory, LY or STAT given their time at once; what is not translated left to the interpreter an instruction at a time. In `gbrun.py`: Blargg's 11 CPU test ROMs pass in the plugin, the first screens are as before, and a frame costs 31-62 thousand V30MZ cycles in Batman, Super Mario Land and Balloon Kid (51,430 is full speed), 110 thousand in R-Type, half a million and more in Castlevania II, Yoshi and Super Mario Land 2 (`GB-IMPLEMENTATION.md`). Figures on the screen with START + Y4 (Y left). Not run on a WonderSwan |
+| 159 | gbswan: sound (`gb/ws/gb_sound.c`: the two squares, the wave with the Game Boy's own samples and the noise on the WonderSwan's four channels, lengths, envelopes and sweep stepped once a frame); a cartridge with a battery saved to `.sav` by the menu as the Game Gear's are (the menu's part only compiled); and speed. The STAT interrupt's events only where its signal can rise; P1, the ROM bank register, the cartridge's RAM and a stack in it by the assembly routines; writes to the scroll, palettes and DMA registers that stay in the block; the sprite table in assembly; a fault of 158 fixed (a loop that jumps back to its start taken for one that waits whichever of its jumps did it: Balloon Kid's water a frame out). In `gbrun.py`, cycles a frame with sound (51,430 is full speed): Castlevania II 27 thousand (470 before), Balloon Kid 30, Super Mario Land 31, Bubble Ghost 34, Batman 48, Yoshi 55 (510), R-Type 65 (110), Super Mario Land 2 70 (895). `gbrun.py`: a profile by routine and by block, the sound registers as a WAV, HLT told from a stop elsewhere. Not run on a WonderSwan |

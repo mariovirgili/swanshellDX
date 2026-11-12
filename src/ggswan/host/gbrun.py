@@ -10,7 +10,10 @@ usage: gbrun.py build/gbswan.elf rom.gb frames [out-prefix] [keys "frame:hex,...
   out-prefix: PREFIX-NNNN.ppm of the frames in GBRUN_SHOTS (default: the last)
   keys: what ws_keypad_scan returns (Y1-Y4 001 002 004 008, X1-X4 010 020
         040 080, START 200, A 400, B 800), held from that frame on
-Environment: GBRUN_TEXT=1 (the Game Boy's background map as text at the
+Environment: GBRUN_SOUND=file.wav (what the WonderSwan's sound registers
+would play, as they are at each frame's end: squares from the wave tables,
+the noise as white noise at its volume: for the notes, not the timbre)
+GBRUN_TEXT=1 (the Game Boy's background map as text at the
 end)  GBRUN_SHOTS=n,n,...  GBRUN_LINE=instructions a line (default
 80: about 256 cycles; only how fast the plugin seems depends on it)
 GBRUN_CYCLES=1: count V30MZ cycles (Mednafen's costs, as wsrun.py) in
@@ -49,6 +52,19 @@ syms = {}
 for y in f.get_section_by_name('.symtab').iter_symbols():
     syms.setdefault(y.name, y['st_value'] & 0xFFFFF)
 
+# where the plugin's HLT instructions are (Unicorn stops after one, and
+# stops elsewhere too: a byte F4h before the stop is not enough to tell)
+import capstone
+_md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_16)
+HLTS = set()
+for y in f.get_section_by_name('.symtab').iter_symbols():
+    if y['st_info']['type'] == 'STT_FUNC' and y['st_size']:
+        a0 = y['st_value'] & 0xFFFFF
+        for ins in _md.disasm(bytes(uc.mem_read(a0, y['st_size'])), a0):
+            if ins.mnemonic == 'hlt': HLTS.add(ins.address)
+if 'gb_run' in syms:
+    for ins in _md.disasm(bytes(uc.mem_read(syms['gb_run'], 16)), syms['gb_run']):
+        if ins.mnemonic == 'hlt': HLTS.add(ins.address)
 rom = open(ROM, 'rb').read()
 path = b'/GAME.GB\0'
 for b in sram: ctypes.memmove(ctypes.addressof(b) + 0xE0, path, len(path))
@@ -134,15 +150,27 @@ if CYCLES:
             funcs.append((a0, a0 + y['st_size'], y.name))
     funcs.sort(); starts = [x[0] for x in funcs]
     stubs_n = syms['drc_stubs_end'] - syms['drc_stubs'] if 'drc_stubs' in syms else 0
+    # (the routines copied to each bank of code: by their labels in gb_drc_asm.s)
+    sl = sorted((v - syms['drc_stubs'], k) for k, v in syms.items() if k.startswith('s_') and syms['drc_stubs'] <= v < syms['drc_stubs_end']) if 'drc_stubs' in syms else []
+    stub_at = [0] + [x[0] for x in sl]; stub_names = ['table'] + [x[1] for x in sl]
     def where(addr):
         if 0x50000 <= addr < 0xD0000:
-            return 'translated code' if (addr & 0xFFFF) >= stubs_n else 'the routines it calls'
+            if (addr & 0xFFFF) >= stubs_n: return 'translated code'
+            i = bisect.bisect_right(stub_at, addr & 0xFFFF) - 1
+            return 'routine ' + stub_names[i]
         i = bisect.bisect_right(starts, addr) - 1
         return funcs[i][2] if i >= 0 and funcs[i][0] <= addr < funcs[i][1] else '?%05X' % (addr & 0xFFF00)
     prof = collections.Counter()
+    HOT = bool(os.environ.get('GBRUN_HOT'))     # GBRUN_HOT=1: the blocks most cycles are spent in
+    hot = collections.Counter()
     jst = [0, 0, 0]
     ccache = {}
     def h_cyc(uc, addr, size, _):
+        # (Unicorn drops what a hook raises: say it)
+        try: h_cyc2(uc, addr, size)
+        except Exception:
+            import traceback; traceback.print_exc(); os._exit(1)
+    def h_cyc2(uc, addr, size):
         code = bytes(uc.mem_read(addr, size))
         k = ccache.get(code)
         if k is None or code[0] in (0xF2, 0xF3):
@@ -152,7 +180,9 @@ if CYCLES:
         if jst[0] and addr != jst[1]: c += jst[0]
         jst[0] = ex; jst[1] = addr + size; jst[2] = addr
         cyc[0] += c
-        prof[where(addr)] += c
+        w = where(addr)
+        prof[w] += c
+        if w == 'translated code' and HOT: hot[addr] += c
         if cyc[0] >= cyc[1]: uc.emu_stop()
     uc.hook_add(UC_HOOK_CODE, h_cyc)
 
@@ -260,10 +290,29 @@ if os.environ.get('GBRUN_CALLERS') and CYCLES:
             callers[where((cs << 4) + ip), '%04X' % (uc.reg_read(UC_X86_REG_AX) & 0xFFF0)] += 1
     a0 = syms[os.environ['GBRUN_CALLERS']]
     uc.hook_add(UC_HOOK_CODE, h_call, None, a0, a0)
+stubcalls = None
+if os.environ.get('GBRUN_STUB') and CYCLES:
+    # GBRUN_STUB=s_stat (a label of gb_drc_asm.s): the blocks whose code is
+    # running when that routine is reached (the nearest return address in
+    # translated code on the stack), with the Game Boy bytes they start with
+    import collections as _c
+    stubcalls = _c.Counter()
+    soff = syms[os.environ['GBRUN_STUB']] - syms['drc_stubs']
+    def h_stub(uc, addr, size, _):
+        if st['frame'] < PROF_FROM: return
+        sp = uc.reg_read(UC_X86_REG_SP)
+        for k in range(0, 12, 2):
+            r = int.from_bytes(uc.mem_read(sp + k, 2), 'little')
+            if r >= stubs_n:
+                stubcalls[addr >> 16, r] += 1
+                break
+    for seg in range(5, 13):
+        uc.hook_add(UC_HOOK_CODE, h_stub, None, (seg << 16) + soff, (seg << 16) + soff)
 e = f['e_entry'] & 0xFFFFF
 uc.reg_write(UC_X86_REG_CS, 0xF000); uc.reg_write(UC_X86_REG_IP, e - 0xF0000)
 uc.reg_write(UC_X86_REG_SS, 0); uc.reg_write(UC_X86_REG_SP, 0x4000)
 line_ports = [None] * 144
+snd_frames = []
 work_frame = 0; last_gb = 0; last_work = 0
 while st['frame'] < FRAMES and not st['fail']:
     # one line
@@ -280,7 +329,7 @@ while st['frame'] < FRAMES and not st['fail']:
             print('stopped: %s at %04X:%04X' % (x, cs, ip)); break
         st['work'] = cyc[0] if CYCLES else st['work'] + LINE_INSNS
         cs = uc.reg_read(UC_X86_REG_CS); ip = uc.reg_read(UC_X86_REG_IP)
-        if uc.mem_read((cs << 4) + ip - 1, 1)[0] == 0xF4 and uc.mem_read((cs << 4) + ip, 1)[0] != 0xF4:
+        if ((cs << 4) + ip - 1) & 0xFFFFF in HLTS:
             # (Unicorn stops after a HLT: wait for an interrupt)
             st['halted'] = True
     y = st['line']
@@ -293,11 +342,13 @@ while st['frame'] < FRAMES and not st['fail']:
             assert line_ports[0][0x60] & 0xE0 == 0x80, 'not the 2 bpp color mode'
             img = b''.join(render_line(mem, line_ports[i], i, pal) for i in range(144))
             open('%s-%04d.ppm' % (OUT, st['frame']), 'wb').write(b'P6\n224 144\n255\n' + img)
+        if os.environ.get('GBRUN_SOUND'):
+            snd_frames.append((bytes(ports[0x80:0x92]), bytes(iram.raw[(ports[0x8F] << 6):(ports[0x8F] << 6) + 64])))
         st['pend'] |= 0x40
         st['frame'] += 1
         if st['frame'] in KEYS: st['keys'] = KEYS[st['frame']]
         if CYCLES and st['frame'] == PROF_FROM:
-            prof.clear(); prof_gb0[0] = st['gbframes']
+            prof.clear(); hot.clear(); prof_gb0[0] = st['gbframes']
         if st['frame'] % 75 == 0:
             g = st['gbframes'] - last_gb
             print('frame %d: %d Game Boy frames (%.1f a second), %d %s each' % (st['frame'], st['gbframes'], g * 75.47 / 75, (st['work'] - last_work) // max(g, 1), UNIT))
@@ -314,6 +365,28 @@ if os.environ.get('GBRUN_TEXT'):
     for r in range(18):
         t = ''.join(chr(c) if 32 <= c < 127 else ' ' for c in mem[base + r * 32:base + r * 32 + 20]).rstrip()
         if t: print(t)
+if os.environ.get('GBRUN_SOUND') and snd_frames:
+    import numpy as np, wave as _w
+    RATE = 24000; N = int(RATE / 75.47)
+    out = np.zeros(len(snd_frames) * N); ph = [0.0] * 4
+    rng = np.random.default_rng(1)
+    for fi, (p, wt) in enumerate(snd_frames):
+        mix = np.zeros(N)
+        for c in range(4):
+            if not (p[0x10] >> c & 1): continue
+            n = (p[c * 2] | p[c * 2 + 1] << 8) & 0x7FF
+            vol = ((p[8 + c] >> 4) + (p[8 + c] & 15)) / 30.0
+            if c == 3 and p[0x10] & 0x80:
+                mix += (rng.random(N) - 0.5) * vol
+                continue
+            freq = 3072000.0 / (2048 - n) / 32
+            tab = np.array([(wt[c * 16 + i // 2] >> (4 * (i & 1))) & 15 for i in range(32)]) / 15.0 - 0.5
+            idx = (ph[c] + np.arange(N) * freq * 32 / RATE)
+            mix += tab[idx.astype(int) % 32] * vol
+            ph[c] = (ph[c] + N * freq * 32 / RATE) % 32
+        out[fi * N:(fi + 1) * N] = mix / 4
+    w = _w.open(os.environ['GBRUN_SOUND'], 'wb'); w.setnchannels(1); w.setsampwidth(2); w.setframerate(RATE)
+    w.writeframes((out * 28000).astype('<i2').tobytes()); w.close()
 if os.environ.get('GBRUN_SYMS'):
     # GBRUN_SYMS=name,name,...: the plugin's variables (16 bits) at the end
     mem = bytes(iram.raw)
@@ -324,6 +397,33 @@ if os.environ.get('GBRUN_PEEK'):
     print(' '.join('%s=%02X' % (a, mem[int(a, 16)]) for a in os.environ['GBRUN_PEEK'].split(',')))
 if st['fail']: print('fail: ' + st['fail'])
 print('WS frames %d, Game Boy frames %d' % (st['frame'], st['gbframes']))
+if CYCLES and HOT and hot:
+    tab = bytes(psram[0x14].raw)
+    blocks = sorted((int.from_bytes(tab[i + 6:i + 8], 'little') >> 12, int.from_bytes(tab[i + 4:i + 6], 'little'),
+        int.from_bytes(tab[i:i + 2], 'little'), int.from_bytes(tab[i + 2:i + 4], 'little')) for i in range(0, 4096 * 8, 8) if tab[i + 2] | tab[i + 3])
+    keys = [(b[0], b[1]) for b in blocks]
+    by = collections.Counter(); size = {}
+    for a, n in hot.items():
+        i = bisect.bisect_right(keys, (a >> 16, a & 0xFFFF)) - 1
+        if i >= 0 and blocks[i][0] == a >> 16:
+            by[blocks[i][2], blocks[i][3]] += n
+    tot = sum(hot.values())
+    for (pc, key), n in by.most_common(8):
+        a = pc if pc < 0x4000 else (key - 1) * 0x4000 + (pc - 0x4000)
+        print('  %5.1f%% of translated code: block %04X (bank %d): %s' % (100.0 * n / tot, pc, key - 1, rom[a:a + 20].hex() if key != 0xFFFF else 'RAM'))
+if stubcalls:
+    tab = bytes(psram[0x14].raw)
+    blocks = sorted((int.from_bytes(tab[i + 6:i + 8], 'little') >> 12, int.from_bytes(tab[i + 4:i + 6], 'little'),
+        int.from_bytes(tab[i:i + 2], 'little'), int.from_bytes(tab[i + 2:i + 4], 'little')) for i in range(0, 4096 * 8, 8) if tab[i + 2] | tab[i + 3])
+    by = collections.Counter()
+    for (seg, r), n in stubcalls.items():
+        best = None
+        for b in blocks:
+            if b[0] == seg and b[1] <= r: best = b
+        if best: by[best[2], best[3]] += n
+    for (pc, key), n in by.most_common(10):
+        a = pc if pc < 0x4000 else (key - 1) * 0x4000 + (pc - 0x4000)
+        print('  %6d  block %04X (bank %d): %s' % (n, pc, key - 1, rom[a:a + 14].hex() if key != 0xFFFF else 'RAM'))
 if callers:
     for k, v in callers.most_common(12): print('  %6d  %s %s' % (v, k[0], k[1]))
 if CYCLES and st['gbframes']:

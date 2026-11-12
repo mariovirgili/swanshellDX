@@ -12,9 +12,12 @@ void gb_emulate(void);
 void gb_vblank_entry(void);
 void gb_line_entry(void);
 void gb_vblank_irq(void);
+uint8_t gbv_sprites_asm(uint8_t tall);    // gb_asm.s: the WS sprite table from the OAM; how many
 void gb_frame_keys(void);       // gb_main.c: the keys, once a frame (and the way out)
 extern volatile uint16_t gbv_vblanks;
 void gbv_stats_toggle(void);
+void gb_sound_init(void);       // gb_sound.c
+void gb_sound_frame(void);
 // what the plugin is doing (the figures on the screen)
 #define GB_PHASE_RUN   0    // translated code, its routines, what they call
 #define GB_PHASE_DISP  1    // the dispatcher, the events, the interpreter's steps

@@ -18,6 +18,9 @@
 #define GB_SP 8
 #define GB_PC 10
 #define GB_LCD_ON 12
+#define GB_KEYS 13
+#define GB_BANK_LO 14
+#define GB_ROMX 16
 
 #ifndef __ASSEMBLER__
 #include <stdint.h>
@@ -28,6 +31,12 @@ extern uint8_t drc_ah, drc_n, drc_tmp, drc_ei, drc_interp;
 extern uint16_t drc_link, drc_link_seg, drc_segtab[4];
 extern uint16_t drc_key0, drc_keyx;     // the table's key of the ROM bank at 0000h and at 4000h
 extern uint16_t drc_jmp[2];
+extern uint8_t drc_must, drc_ram_ok;
+extern uint8_t drc_mbc_and, drc_mbc_z1, drc_p1_tab[4];
+extern uint16_t drc_mbc_top, drc_mbc_hi, drc_bank_mask;
+void gbd_keys(void);            // the keys changed
+extern uint16_t drc_ram_seg;
+void gbd_write(uint16_t a, uint8_t v);
 extern uint8_t gbv_tiles_8000;
 // the routines copied to the start of every bank of code (gb_drc_asm.s)
 extern const uint8_t __far drc_stubs[];
@@ -48,6 +57,7 @@ extern const uint16_t __far drc_stubs_size;
 #define ST_DEC_HL    30
 #define ST_SKIP_LINE 33     /* a loop that waits on LY: the time to the next line passed */
 #define ST_SKIP_MODE 36     /* ... on STAT: to the next change of mode */
-#define ST_COUNT     13
+#define ST_P1        39     /* P1 = AL (the keys' rows selected) */
+#define ST_COUNT     14
 
 #endif

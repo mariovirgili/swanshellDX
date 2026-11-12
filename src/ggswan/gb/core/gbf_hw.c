@@ -67,25 +67,25 @@ static uint8_t lyc_match(uint8_t line, uint8_t d) {
     return cmp == gb_io[GB_LYC];
 }
 
-// the STAT interrupt's signal at the time reached: an interrupt on its rise
-static void stat_update(void) {
-    uint8_t stat = gb_io[GB_STAT], sig;
-    if (!gb.lcd_on) {
-        sig = (stat & 0x40) && gb.lyc_match;
-    } else {
-        uint16_t pos = POS();
-        uint8_t line = pos / LINE_MC, d = pos % LINE_MC;
-        uint8_t mode = ppu_mode(line, d);
-        gb.lyc_match = lyc_match(line, d);
-        // (mode 2's is asked at the line's first cycle, and at the vertical
-        // blank's; mode 0's a cycle before the mode shows)
-        uint8_t m2 = mode == 2 || (line < 144 && d == 0) || (line == 144 && d == 1);
-        uint8_t m0 = mode == 0 || (line < 144 && d == 63);
-        sig = ((stat & 0x40) && gb.lyc_match) || ((stat & 0x08) && m0)
-            || ((stat & 0x10) && mode == 1) || ((stat & 0x20) && m2);
-    }
-    if (sig && !gb.stat_line) gb_io[GB_IF] |= GB_INT_STAT;
-    gb.stat_line = sig;
+// the STAT interrupt's signal at a cycle of the frame (the LCD on)
+static uint8_t stat_sig(uint16_t pos) {
+    uint8_t stat = gb_io[GB_STAT];
+    uint8_t line = pos / LINE_MC, d = pos % LINE_MC;
+    uint8_t mode = ppu_mode(line, d);
+    // (mode 2's is asked at the line's first cycle, and at the vertical
+    // blank's; mode 0's a cycle before the mode shows)
+    uint8_t m2 = mode == 2 || (line < 144 && d == 0) || (line == 144 && d == 1);
+    uint8_t m0 = mode == 0 || (line < 144 && d == 63);
+    return ((stat & 0x40) && lyc_match(line, d)) || ((stat & 0x08) && m0)
+        || ((stat & 0x10) && mode == 1) || ((stat & 0x20) && m2);
+}
+static uint8_t stat_now(void) {
+    if (!gb.lcd_on) return (gb_io[GB_STAT] & 0x40) && gb.lyc_match;
+    return stat_sig(POS());
+}
+// the signal was `before`; an interrupt if it is up now
+static void stat_rise(uint8_t before) {
+    if (!before && stat_now()) gb_io[GB_IF] |= GB_INT_STAT;
 }
 
 /* ---- the timer and the serial port ---- */
@@ -127,31 +127,31 @@ static void schedule(void) {
     uint16_t next = FRAME_MC;
     if (gb.lcd_on) {
         if (!vbl_done) next = VBL_MC;
+        // the cycles the STAT interrupt's signal can rise at, by what is
+        // enabled: where the drawing ends (mode 0), a line's start (mode
+        // 2, and mode 0 after the vertical blank), the vertical blank's
+        // second cycle (modes 1 and 2), LYC's line
         uint8_t stat = gb_io[GB_STAT];
         if (stat & 0x78) {
-            uint8_t line = pos / LINE_MC;
-            uint16_t start = (uint16_t) line * LINE_MC;
-            if (stat & 0x38) {
-                // (the modes' interrupts: the signal is looked at where it
-                // can rise or fall: a line's start, its second cycle, where
-                // the drawing begins and where it ends)
-                uint8_t d = pos - start;
-                uint16_t t = start + (d < 1 ? 1 : d < 21 ? 21 : d < 63 ? 63 : d < 64 ? 64 : LINE_MC);
+            uint8_t line = pos / LINE_MC, d = pos - (uint16_t) line * LINE_MC;
+            uint16_t start = (uint16_t) line * LINE_MC, t;
+            if (stat & 0x08) {
+                t = line < 144 ? (d < 63 ? start + 63 : line < 143 ? start + LINE_MC + 63 : FRAME_MC) : FRAME_MC;
                 if (t < next) next = t;
-            } else {
-                // (LYC's only: its line's start, and the one after)
+            }
+            if (stat & 0x20) {
+                t = line < 143 ? start + LINE_MC : line < 144 ? VBL_MC : (pos < VBL_MC ? VBL_MC : FRAME_MC);
+                if (t < next) next = t;
+            }
+            if ((stat & 0x30) && pos < VBL_MC && VBL_MC < next) next = VBL_MC;
+            if (stat & 0x40) {
                 uint8_t lyc = gb_io[GB_LYC];
                 if (lyc < 154) {
-                    uint16_t t = lyc ? (uint16_t) lyc * LINE_MC + 1 : 153 * LINE_MC + 3;
+                    t = lyc ? (uint16_t) lyc * LINE_MC + 1 : 153 * LINE_MC + 3;
                     if (t > pos && t < next) next = t;
-                    t = lyc ? (uint16_t) (lyc + 1) * LINE_MC : LINE_MC;
-                    if (t > pos && t < next) next = t;
-                    if (lyc == 153) {
-                        t = 153 * LINE_MC + 2;
-                        if (t > pos && t < next) next = t;
-                    }
                 }
             }
+            if (next <= pos) next = pos + 1;
         }
     }
     uint16_t left = next - pos;
@@ -185,10 +185,14 @@ static void event(void) {
     timer_sync();
     serial_sync();
     uint16_t pos = POS();
+    // the STAT interrupt: did its signal rise at the cycle this event was
+    // set for? (the CPU may be a cycle or two past it)
+    if (gb.lcd_on && (gb_io[GB_STAT] & 0x78) && ev_pos && ev_pos < FRAME_MC
+        && stat_sig(ev_pos) && !stat_sig(ev_pos - 1))
+        gb_io[GB_IF] |= GB_INT_STAT;
     if (gb.lcd_on && !vbl_done && pos >= VBL_MC) {
         vbl_done = 1;
         gb_io[GB_IF] |= GB_INT_VBLANK;
-        stat_update();
         gbv_frame();
         gb.frame_done = 1;
         gb.frames++;
@@ -197,13 +201,14 @@ static void event(void) {
         ev_pos -= FRAME_MC;
         div_off += FRAME_MC;
         vbl_done = 0;
+        // (line 0's first cycle: mode 0 after the vertical blank's mode 1)
+        if (gb.lcd_on && (gb_io[GB_STAT] & 0x28) && !(gb_io[GB_STAT] & 0x10)) gb_io[GB_IF] |= GB_INT_STAT;
         if (!gb.lcd_on) {
             gbv_frame();
             gb.frame_done = 1;
             gb.frames++;
         }
     }
-    stat_update();
     schedule();
 }
 
@@ -229,16 +234,18 @@ void gbf_run_frame(void) {
 
 /* ---- the keys ---- */
 
-static uint8_t p1_read(void) {
-    uint8_t sel = gb_io[GB_P1] & 0x30, low = 15;
+// (gb_io[GB_P1] is kept as it reads: the selection written and the keys)
+static void p1_set(uint8_t sel) {
+    uint8_t before = gb_io[GB_P1], low = 15;
+    sel &= 0x30;
     if (!(sel & 0x10)) low &= ~(gb.keys & 15);
     if (!(sel & 0x20)) low &= ~(gb.keys >> 4);
-    return 0xC0 | sel | low;
+    gb_io[GB_P1] = 0xC0 | sel | low;
+    if (before & ~gb_io[GB_P1] & 15) gb_io[GB_IF] |= GB_INT_JOYPAD;
 }
 void gb_set_keys(uint8_t keys) {
-    uint8_t before = p1_read();
     gb.keys = keys;
-    if (before & ~p1_read() & 15) gb_io[GB_IF] |= GB_INT_JOYPAD;
+    p1_set(gb_io[GB_P1]);
 }
 
 /* ---- memory ---- */
@@ -249,7 +256,7 @@ static const uint8_t GB_FAR snd_mask[0x20] = {
 
 uint8_t gbf_io_read(uint8_t r) {
     switch (r) {
-    case GB_P1: return p1_read();
+    case GB_P1: return gb_io[GB_P1];
     case GB_SB: return gb_io[GB_SB];
     case GB_SC: serial_sync(); return gb_io[GB_SC] | 0x7E;
     case GB_DIV: return DIV_MC() >> 6;
@@ -277,12 +284,9 @@ uint8_t gbf_io_read(uint8_t r) {
 }
 
 void gbf_io_write(uint8_t r, uint8_t v) {
-    uint8_t before;
     switch (r) {
     case GB_P1:
-        before = p1_read();
-        gb_io[r] = v & 0x30;
-        if (before & ~p1_read() & 15) gb_io[GB_IF] |= GB_INT_JOYPAD;
+        p1_set(v);
         break;
     case GB_SB:
         gb_io[r] = v;
@@ -331,38 +335,47 @@ void gbf_io_write(uint8_t r, uint8_t v) {
         if ((v & 0x80) && !gb.lcd_on) {
             // on: the frame starts again, a cycle into line 0
             timer_sync();
+            uint8_t was = stat_now();
             uint16_t pos = POS();
             div_off += pos - 1;
             ev_pos = gbf_cyc + 1;
             gb.lcd_on = 1;
             vbl_done = 0;
             gb_io[r] = v;
-            stat_update();
+            stat_rise(was);
             schedule();
         } else if (!(v & 0x80) && gb.lcd_on) {
+            // off: LYC's comparison stays as it is
+            uint16_t pos = POS();
+            gb.lyc_match = lyc_match(pos / LINE_MC, pos % LINE_MC);
             gb.lcd_on = 0;
             gb_io[r] = v;
-            stat_update();
             schedule();
         } else {
             gb_io[r] = v;
         }
         break;
-    case GB_STAT:
+    case GB_STAT: {
         // (the DMG's fault: for a moment every source is enabled)
+        uint8_t was = stat_now();
         gb_io[r] = 0x78;
-        stat_update();
+        stat_rise(was);
+        was = stat_now();
         gb_io[r] = v & 0x78;
-        stat_update();
+        stat_rise(was);
         schedule();
         break;
+    }
     case GB_LY:
         break;
     case GB_LYC:
-        gb_io[r] = v;
         if (gb.lcd_on) {
-            stat_update();
+            uint8_t was = stat_now();
+            gb_io[r] = v;
+            stat_rise(was);
             schedule();
+        } else {
+            gb_io[r] = v;
         }
         break;
     case GB_DMA: {
@@ -372,6 +385,9 @@ void gbf_io_write(uint8_t r, uint8_t v) {
         if (src >= 0xE000) src -= 0x2000;
         if (src >= 0xC000) {
             memcpy(gb_oam, gb_wram + (src & 0x1FFF), 0xA0);     // (the usual: from the work RAM)
+        } else if (src >= 0xA000 && gb.ram_banks && (gb.ram_on || !gb.mbc) && gb.mbc != 2 && !(gb.mbc == 3 && gb.rtc_sel)) {
+            for (uint8_t i = 0; i < 0xA0; i++)                  // (from the cartridge's RAM)
+                gb_oam[i] = GBF_RAM((src & 0x1FFF) + i);
         } else {
             for (uint8_t i = 0; i < 0xA0; i++)
                 gb_oam[i] = gbf_read(src + i);
@@ -482,6 +498,7 @@ void gbf_reset(void) {
     gb.sp = 0xFFFE;
     gb.pc = 0x0100;
     gb_io[GB_IF] = 0x01;
+    gb_io[GB_P1] = 0xCF;
     static const uint8_t GB_FAR snd[0x17] = { 0x80, 0xBF, 0xF3, 0xFF, 0xBF, 0xFF, 0x3F, 0x00, 0xFF, 0xBF, 0x7F, 0xFF,
         0x9F, 0xFF, 0xBF, 0xFF, 0xFF, 0x00, 0x00, 0xBF, 0x77, 0xF3, 0xF1 };
     for (uint8_t i = 0; i < sizeof(snd); i++) gb_io[0x10 + i] = snd[i];
@@ -499,6 +516,5 @@ void gbf_reset(void) {
     tim_last = 0xABC8 >> 2;
     ser_on = 0;
     gbv_reset();
-    stat_update();
     schedule();
 }
