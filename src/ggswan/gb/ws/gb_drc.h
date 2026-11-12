@@ -44,6 +44,11 @@ extern const uint16_t __far drc_stub_offs[];
 #endif
 
 /* where the routines are in a bank of code: a jump each, 3 bytes apart */
+/* The small tables s_exit_dyn looks in first (gb_drc_asm.s): 512 places
+   of 8 bytes as the blocks' table's, in the internal RAM */
+#define DRC_RC0 0xD800
+#define DRC_RCX 0xE800
+
 #define ST_EXIT      0      /* leave: gb.pc is set */
 #define ST_EXIT_DYN  3      /* leave to the address in SI */
 #define ST_RD        6      /* AL = the byte at SI */
@@ -64,6 +69,13 @@ extern const uint16_t __far drc_stub_offs[];
 #define ST_WAIT_STAT 51     /* AL = STAT, in a loop that goes round while the mode is in the byte after the call: at the first cycle it is not */
 #define ST_DELAY_BC  54     /* DEC BC / LD A, B / OR C / JR NZ: all the turns there is time for but the last */
 #define ST_EXIT_DYN_F 57    /* ST_EXIT_DYN straight after the cycles were taken off gbf_cyc: the flags are that subtraction's */
-#define ST_COUNT     20
+#define ST_COPY0     60     /* the copying loops (gb_drc_asm.s: s_copy0-4): all the turns but the last at once */
+#define ST_COPY1     63
+#define ST_COPY2     66
+#define ST_COPY3     69
+#define ST_COPY4     72
+#define ST_FILL0     75     /* LD (HL+), A / DEC B / JR NZ, as the copying loops */
+#define ST_SKIP_HL   78     /* a loop on the byte at HL: LY, to the next line; RAM, to the next event */
+#define ST_COUNT     27
 
 #endif

@@ -63,6 +63,7 @@ static void code_bank(uint16_t seg) {
 }
 
 static void flush(void) {
+    memset((uint8_t*) DRC_RC0, 0xFF, 0x2000);       // (no address is FFFFh: both small tables empty)
     _fmemset(TABLE, 0, 0x8000);
     _fmemset(TABLE + TABLE_N / 2, 0, 0x8000);
     code_bank(DRC_CODE_SEG);
@@ -92,6 +93,14 @@ void gbd_write(uint16_t a, uint8_t v) {
         gbf_write(a, v);
         drc_must = drc_key0 != k0 ? 1 : drc_keyx != kx ? 2 : 0;
     } else {
+        // An event that is due (a block goes on to its end past the
+        // event's cycle) is done before a register is written: the write
+        // may set the next event from the time now, and the one that was
+        // due would never be looked at. Super Mario Land lost its STAT
+        // interrupt that way on the frames a timer interrupt came just
+        // before it, and its picture was drawn with the status bar's
+        // scroll for a frame (patches 160-166).
+        if (a >= 0xFF00 && gbf_cyc <= 0) gbf_host_event();
         gbf_write(a, v);
         drc_must = a >= 0xFF00 && ((gb.ime && (gb_ie & gb_io[GB_IF] & 0x1F)) || gbf_cyc <= 0);
     }
@@ -299,6 +308,7 @@ static void sub_cyc(void) {
     cyc = 0;
 }
 
+static uint16_t loop_body;  // in a block that starts with a call for a whole loop: where the loop's own code starts (0: no such call)
 // leave for a known address; link: the dispatcher may join the jump to
 // the block there
 static void exit_to(uint16_t target, uint8_t extra) {
@@ -322,7 +332,15 @@ static void exit_to(uint16_t target, uint8_t extra) {
     E(0x83); E(cyc + extra ? 0x2E : 0x3E); EW(ADDR(gbf_cyc)); E(cyc + extra);     // sub (or cmp) word [gbf_cyc], n
     E(0x7E); E(0x05);                           // jle +5
     uint16_t site = code_top;
-    E(0xE9); EW(2); E(0x90); E(0x90);           // jmp near (to the next line, until joined)
+    if (loop_body && target == blk_pc) {
+        // (a loop with a routine called at its start, for all its turns at
+        // once: round to after that call, not through it every turn)
+        uint16_t rel = loop_body - (code_top + 3);
+        E(0xE9); EW(rel); E(0x90); E(0x90);
+        link = 0;
+    } else {
+        E(0xE9); EW(2); E(0x90); E(0x90);       // jmp near (to the next line, until joined)
+    }
     E(0xC7); E(0x06); EW(ADDR(gb) + GB_PC); EW(target);
     E(0xC7); E(0x06); EW(ADDR(drc_link)); EW(link ? site : 0);
     if (link) { E(0xC7); E(0x06); EW(ADDR(drc_link_seg)); EW(code_seg); }
@@ -406,6 +424,23 @@ static uint16_t cart_else(uint16_t j) {
     return done;
 }
 
+// A read through BX (hl) or SI that is not in the RAM above C000h: from
+// the ROM here, by its area's segment (tables are read this way all the
+// time); "is the address below 8000h; ES = its area's segment", the
+// caller's instruction with an ES prefix follows, then rom_else and the
+// routine's call for the rest
+static uint16_t rom_open(uint8_t hl) {
+    if (hl) { E(0xF6); E(0xC7); E(0x80); } else { E(0xF7); E(0xC6); EW(0x8000); }   // test bh, 80h / test si, 8000h
+    E(0x75); E(0);                                  // jnz: not the ROM
+    uint16_t j = code_top;
+    E(0x8E); E(0x06); EW(ADDR(drc_segtab));         // mov es, [drc_segtab]
+    if (hl) { E(0x80); E(0xFF); E(0x40); } else { E(0x81); E(0xFE); EW(0x4000); }   // cmp bh, 40h / cmp si, 4000h
+    E(0x72); E(4);                                  // jb +4
+    E(0x8E); E(0x06); EW(ADDR(drc_segtab) + 2);     // mov es, [drc_segtab + 2]
+    return j;
+}
+#define rom_else cart_else
+
 // r (an x86 8 bit register) = the byte at HL (hl) or at SI
 static void read_to(uint8_t r, uint8_t hl) {
     if (cur_dir) {
@@ -422,6 +457,9 @@ static void read_to(uint8_t r, uint8_t hl) {
     uint16_t j = range_check(hl);
     E(0x8A); E(0x80 | r << 3 | (hl ? 7 : 4)); EW(0xA000);   // mov r, [bx or si - 6000h]
     uint16_t done = slow_starts(j, hl, 0);
+    uint16_t rj = rom_open(hl);
+    E(0x26); E(0x8A); E(r << 3 | (hl ? 7 : 4));     // mov r, es:[bx or si]
+    uint16_t rdone = rom_else(rj);
     if (hl) { E(0x89); E(0xDE); }               // mov si, bx
     if (r == 0) {
         call_stub(ST_RD);
@@ -430,6 +468,7 @@ static void read_to(uint8_t r, uint8_t hl) {
         E(0x8A); E(0x06 | r << 3); EW(ADDR(drc_tmp));
     }
     SLOW_ENDS(done);
+    SLOW_ENDS(rdone);
     if (cdone) SLOW_ENDS(cdone);
 }
 
@@ -520,6 +559,13 @@ static int16_t known_a(void) {
 static uint8_t io_write(uint8_t n, uint16_t next) {
     if ((n >= 0x80 && n != 0xFF) || (n >= 0x10 && n < 0x40)) {
         E(0xA2); EW(0x9F00 + n);                // mov [..], al
+        if (n == 0x14 || n == 0x19 || n == 0x1E || n == 0x23) {
+            // (a channel's start is remembered: gbf_hw.c, gbf_trig)
+            clob();
+            E(0x84); E(0xC0);                   // test al, al
+            E(0x79); E(0x05);                   // jns +5
+            E(0x80); E(0x0E); EW(ADDR(gbf_trig)); E(n == 0x14 ? 1 : n == 0x19 ? 2 : n == 0x1E ? 4 : 8);
+        }
         return 0;
     }
     if (n == GB_P1) {
@@ -642,21 +688,45 @@ static uint16_t unless(uint8_t c) {
 static void wait_skip(void) {
     mat();
     if (idle == 1) { E(0xC7); E(0x06); EW(ADDR(gbf_cyc)); EW(0); }
+    else if (idle == 4) call_stub(ST_SKIP_HL);
     else if (idle == 3 && idle_modes) { }       // (its read of STAT does the waiting: io_read)
     else call_stub(idle == 2 ? ST_SKIP_LINE : ST_SKIP_MODE);
 }
 
 __attribute__((noinline)) static void translate_block(void) {
     uint8_t ended = 0;
+    uint16_t block_start = code_top;
     fl = 0;
     hfix = 0;
     nst = nmem = -1;
     cyc = 0;
     after_ei = 0;
+    // (the loops that copy bytes: gb_drc_asm.s, s_copy0-4)
+    loop_body = 0;
+    if (!in_ram) {
+        static const uint8_t __far copy_loops[5][9] = {
+            { 6, 0x2A, 0x12, 0x13, 0x05, 0x20, 0xFA },
+            { 6, 0x1A, 0x22, 0x13, 0x05, 0x20, 0xFA },
+            { 8, 0x2A, 0x12, 0x13, 0x0B, 0x78, 0xB1, 0x20, 0xF8 },
+            { 8, 0x1A, 0x22, 0x13, 0x0B, 0x78, 0xB1, 0x20, 0xF8 },
+            { 6, 0x0A, 0x03, 0x22, 0x15, 0x20, 0xFA },
+        };
+        for (uint8_t k = 0; k < 5; k++) {
+            uint8_t len = copy_loops[k][0], j = 0;
+            while (j < len && rb(blk_pc + j) == copy_loops[k][1 + j]) j++;
+            if (j == len) {
+                call_stub(ST_COPY0 + k * 3);
+                break;
+            }
+        }
+        if (rb(blk_pc) == 0x22 && rb(blk_pc + 1) == 0x05 && rb(blk_pc + 2) == 0x20 && rb(blk_pc + 3) == 0xFC)
+            call_stub(ST_FILL0);
+    }
     // (a countdown of BC, a program's delay: gb_drc_asm.s, s_delay_bc)
     if (!in_ram && n_ins >= 4 && rb(blk_pc) == 0x0B && rb(blk_pc + 1) == 0x78 && rb(blk_pc + 2) == 0xB1
         && rb(blk_pc + 3) == 0x20 && rb(blk_pc + 4) == 0xFB)
         call_stub(ST_DELAY_BC);
+    if (code_top != block_start) loop_body = code_top;
     for (uint8_t i = 0; i < n_ins && !ended; i++) {
         uint16_t pc = i_pc[i], next = i_pc[i + 1];
         uint8_t op = rb(pc), b1 = rb(pc + 1), b2 = rb(pc + 2);
@@ -706,11 +776,16 @@ __attribute__((noinline)) static void translate_block(void) {
                 if (y == 1 || y == 3) carry_in();
                 E(alu_x86[y] | 2); E(0x87); EW(0xA000);         // op al, [bx - 6000h]
                 uint16_t done = slow_starts(j, 1, 0);
+                uint16_t rj = rom_open(1);
+                if (y == 1 || y == 3) carry_in();
+                E(0x26); E(alu_x86[y] | 2); E(0x07);            // op al, es:[bx]
+                uint16_t rdone = rom_else(rj);
                 E(0x89); E(0xDE);
                 call_stub(ST_RDT);
                 if (y == 1 || y == 3) carry_in();
                 E(alu_x86[y] | 2); E(0x06); EW(ADDR(drc_tmp));
                 SLOW_ENDS(done);
+                SLOW_ENDS(rdone);
                 if (cdone) SLOW_ENDS(cdone);
             } else {
                 if (y == 1 || y == 3) carry_in();
@@ -1218,6 +1293,14 @@ __attribute__((noinline)) static void scan_block(uint16_t pc) {
     // and a conditional jump back to the start; nothing written, no
     // register but A changed
     idle = 0;
+    // (CP (HL) / JR cc to itself: a wait for the byte HL points at to be,
+    // or stop being, A. Donkey Kong Land waits for a line that way, HL at
+    // LY: what HL is, is seen when it runs. gb_drc_asm.s, s_skip_hl)
+    if (!in_ram && n_ins >= 2 && rb(blk_pc) == 0xBE && (rb(blk_pc + 1) & 0xE7) == 0x20 && rb(blk_pc + 2) == 0xFD) {
+        idle = 4;
+        idle_i = 1;
+        idle_modes = 0;
+    } else
     if (!in_ram) {
         uint8_t kind = 1, loaded = 0;
         for (uint8_t i = 0; i < n_ins && i < 6; i++) {
@@ -1280,14 +1363,34 @@ __attribute__((noinline)) static void scan_block(uint16_t pc) {
     }
 }
 
+// A block's places in the table: the hash's, then far from it. (Until
+// patch 167 the next seven: the blocks of one routine, a few bytes apart,
+// have neighbouring first places and soon filled each other's; Donkey
+// Kong Land forgot everything with 1,247 blocks of 8,192.)
+#define PROBES 12
+#define PLACE(h, i) (((h) ^ (uint16_t) (i) * 0x0B6Du) & (TABLE_N - 1))
+#define RAM_FORMS 6     // the forms a block of code in RAM is translated in, besides its first
 static blk_t __far *find(uint16_t pc, uint16_t key) {
     uint16_t h = hash(pc, key);
-    for (uint8_t i = 0; i < 8; i++) {
-        blk_t __far *b = &TABLE[(h + i) & (TABLE_N - 1)];
+    for (uint8_t i = 0; i < PROBES; i++) {
+        blk_t __far *b = &TABLE[PLACE(h, i)];
         if (!b->key) return 0;
         if (b->pc == pc && b->key == key) return b;
     }
     return 0;
+}
+
+// code in RAM: still the bytes that were translated? (a copy of them is
+// before the block's code, and their number)
+static uint8_t ram_same(blk_t __far *b, uint16_t pc) {
+    const uint8_t __far *c = MK_FP(b->seg, b->off - 1);
+    uint8_t len = *c;
+    c -= len;
+    if ((pc >= 0xC000 && pc <= 0xE000 - len) || (pc >= 0xFF80 && pc <= 0xFFFF - len))
+        return !_fmemcmp(c, MK_FP(0, pc - 0x6000), len);     // (the work RAM, the high RAM: where they are)
+    for (uint8_t i = 0; i < len; i++)
+        if (c[i] != gbf_read(pc + i)) return 0;
+    return 1;
 }
 
 __attribute__((noinline)) static blk_t __far *translate(uint16_t pc, uint16_t key) {
@@ -1298,8 +1401,8 @@ __attribute__((noinline)) static blk_t __far *translate(uint16_t pc, uint16_t ke
         }
         uint16_t h = hash(pc, key);
         blk_t __far *b = 0;
-        for (uint8_t i = 0; i < 8 && !b; i++) {
-            blk_t __far *t = &TABLE[(h + i) & (TABLE_N - 1)];
+        for (uint8_t i = 0; i < PROBES && !b; i++) {
+            blk_t __far *t = &TABLE[PLACE(h, i)];
             if (!t->key || (t->pc == pc && t->key == key)) b = t;
         }
         if (!b) {
@@ -1307,13 +1410,15 @@ __attribute__((noinline)) static blk_t __far *translate(uint16_t pc, uint16_t ke
             continue;
         }
         blk_pc = pc;
-        in_ram = key == KEY_RAM;
+        in_ram = key >= 0x8000;
         sp_cart = gb.sp >= 0xA000 && gb.sp < 0xC000;
         tfill(pc);
         scan_block(pc);
         if (in_ram) {
-            // the bytes translated, then their number, before the code
+            // the forms of it met since (gbd_run_frame), the bytes
+            // translated, then their number, before the code
             uint8_t len = i_pc[n_ins] - pc;
+            E(0);
             for (uint8_t i = 0; i < len; i++) E(rb(pc + i));
             E(len);
         }
@@ -1380,20 +1485,47 @@ void gbd_run_frame(void) {
             uint16_t pc = gb.pc;
             uint16_t key = pc < 0x4000 ? gb.rom0_bank + 1 : pc < 0x8000 ? gb.romx_bank + 1 : KEY_RAM;
             blk_t __far *b = find(pc, key);
-            if (b && key == KEY_RAM) {
-                // code in RAM: still the bytes that were translated?
+            if (b && key == KEY_RAM && !ram_same(b, pc)) {
+                // Code in RAM that is no longer the bytes translated. A
+                // program that keeps changing a routine there (an operand,
+                // a jump's target: Donkey Kong Land, R-Type II, Race
+                // Drivin') had it translated again every time, thousands
+                // of blocks, the table and the code's room filled and
+                // forgotten. So each form of it is kept: besides the first
+                // (key FFFFh), under a key made of its first bytes, as
+                // many as the first form has (12 at most).
                 const uint8_t __far *c = MK_FP(b->seg, b->off - 1);
                 uint8_t len = *c;
-                c -= len;
-                if ((pc >= 0xC000 && pc < 0xDF00) || (pc >= 0xFF80 && pc < 0xFFC0)) {
-                    // (the work RAM, the high RAM: where they are)
-                    if (_fmemcmp(c, MK_FP(0, pc - 0x6000), len)) b = 0;
-                } else {
-                    for (uint8_t i = 0; i < len; i++)
-                        if (c[i] != gbf_read(pc + i)) {
-                            b = 0;
-                            break;
-                        }
+                if (len > 12) len = 12;
+                uint16_t h = 0;
+                for (uint8_t i = 0; i < len; i++) {
+                    h = (h << 3 | h >> 13) ^ gbf_read(pc + i);
+                }
+                key = 0x8000 | (h & 0x7FFE);
+                b = find(pc, key);
+                if (b && !ram_same(b, pc)) b = 0;
+                if (!b) {
+                    // A new form. The first form counts them (the byte
+                    // before its copy of the bytes): after RAM_FORMS the
+                    // code there is taken for one made anew every time
+                    // (Donkey Kong Land's LD HL, nn / CALL and LD SP, nn /
+                    // JP in RAM, their operands written before every use:
+                    // seven blocks a frame translated, never used twice)
+                    // and is run by the interpreter, as far as the first
+                    // form went, to a jump taken or to an interrupt due.
+                    uint8_t __far *cnt = MK_FP(FP_SEG(c), FP_OFF(c) - *c - 1);
+                    if (*cnt >= RAM_FORMS) {
+                        uint16_t end = pc + *c;
+                        drc_link = 0;
+                        to_gbf();
+                        do {
+                            gb_step();
+                        } while (gbf_cyc > 0 && gb.pc > pc && gb.pc < end && !gb.halted && !gb.stopped
+                                 && !(gb.ime && (gb_ie & gb_io[GB_IF] & 0x1F)));
+                        from_gbf();
+                        continue;
+                    }
+                    (*cnt)++;
                 }
             }
             if (!b) {

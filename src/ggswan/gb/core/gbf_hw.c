@@ -121,6 +121,8 @@ static void serial_sync(void) {
 
 /* ---- events ---- */
 
+static uint16_t stat_done;      // the frame's cycle up to which the STAT interrupt's signal has been looked at
+
 // the next event after now
 static void schedule(void) {
     uint16_t pos = POS();
@@ -133,26 +135,39 @@ static void schedule(void) {
         // second cycle (modes 1 and 2), LYC's line
         uint8_t stat = gb_io[GB_STAT];
         if (stat & 0x78) {
-            uint8_t line = pos / LINE_MC, d = pos - (uint16_t) line * LINE_MC;
+            // (from the last cycle the signal was looked at, not from now:
+            // the recompiled code runs a block to its end, past an event's
+            // cycle, and a rise between that cycle and now would not be
+            // found: an event set for the past is done at once. Super
+            // Mario Land's LYC interrupt was lost that way on the frames
+            // its timer's interrupt came a few cycles before it.)
+            uint16_t from = stat_done < pos ? stat_done : pos;
+            uint8_t line = from / LINE_MC, d = from - (uint16_t) line * LINE_MC;
             uint16_t start = (uint16_t) line * LINE_MC, t;
             if (stat & 0x08) {
                 t = line < 144 ? (d < 63 ? start + 63 : line < 143 ? start + LINE_MC + 63 : FRAME_MC) : FRAME_MC;
                 if (t < next) next = t;
             }
             if (stat & 0x20) {
-                t = line < 143 ? start + LINE_MC : line < 144 ? VBL_MC : (pos < VBL_MC ? VBL_MC : FRAME_MC);
+                t = line < 143 ? start + LINE_MC : line < 144 ? VBL_MC : (from < VBL_MC ? VBL_MC : FRAME_MC);
                 if (t < next) next = t;
             }
-            if ((stat & 0x30) && pos < VBL_MC && VBL_MC < next) next = VBL_MC;
+            if ((stat & 0x30) && from < VBL_MC && VBL_MC < next) next = VBL_MC;
             if (stat & 0x40) {
                 uint8_t lyc = gb_io[GB_LYC];
                 if (lyc < 154) {
                     t = lyc ? (uint16_t) lyc * LINE_MC + 1 : 153 * LINE_MC + 3;
-                    if (t > pos && t < next) next = t;
+                    if (t > from && t < next) next = t;
                 }
             }
-            if (next <= pos) next = pos + 1;
+            if (next <= from) next = from + 1;
         }
+    }
+    if (next <= pos) {
+        // (already passed: now)
+        ev_pos = next;
+        gbf_cyc = (int16_t) (next - pos);
+        return;
     }
     uint16_t left = next - pos;
     if (gb_io[GB_TAC] & 4) {
@@ -211,6 +226,7 @@ static void event(void) {
             gb_rtc_frame();
         }
     }
+    stat_done = ev_pos;
     schedule();
 }
 
@@ -285,6 +301,8 @@ uint8_t gbf_io_read(uint8_t r) {
     }
 }
 
+uint8_t gbf_trig;       // bit n: channel n + 1 was started (NRx4 written with bit 7) since the sound last looked
+
 void gbf_io_write(uint8_t r, uint8_t v) {
     switch (r) {
     case GB_P1:
@@ -345,6 +363,7 @@ void gbf_io_write(uint8_t r, uint8_t v) {
             vbl_done = 0;
             gb_io[r] = v;
             stat_rise(was);
+            stat_done = POS();
             schedule();
         } else if (!(v & 0x80) && gb.lcd_on) {
             // off: LYC's comparison stays as it is
@@ -365,6 +384,7 @@ void gbf_io_write(uint8_t r, uint8_t v) {
         was = stat_now();
         gb_io[r] = v & 0x78;
         stat_rise(was);
+        stat_done = POS();
         schedule();
         break;
     }
@@ -375,6 +395,7 @@ void gbf_io_write(uint8_t r, uint8_t v) {
             uint8_t was = stat_now();
             gb_io[r] = v;
             stat_rise(was);
+            stat_done = POS();
             schedule();
         } else {
             gb_io[r] = v;
@@ -407,6 +428,15 @@ void gbf_io_write(uint8_t r, uint8_t v) {
             gb_io[r] = v;
         } else if (r >= 0x10 && r < 0x40) {
             gb_io[r] = v;
+            // (a channel started: kept for the sound, which looks once a
+            // frame, by when the program may have written the register
+            // again without the bit)
+            if (v & 0x80) {
+                if (r == 0x14) gbf_trig |= 1;
+                else if (r == 0x19) gbf_trig |= 2;
+                else if (r == 0x1E) gbf_trig |= 4;
+                else if (r == 0x23) gbf_trig |= 8;
+            }
         }
         break;
     }
@@ -470,8 +500,19 @@ void gbf_write(uint16_t a, uint8_t v) {
             gb_vram[a - 0x8000] = v;
         }
     } else {
+        // (the windows and what the recompiled code keeps of all this are
+        // set again only when something has changed: programs write the
+        // same bank, or "RAM on", over and over; Race Drivin' and X spent
+        // a twelfth of their time there),
+        // and only the RAM's part when only that has
+        uint16_t r0 = gb.rom0_bank, rx = gb.romx_bank;
+        uint8_t rb = gb.ram_bank, on = gb.ram_on, rs = gb.rtc_sel, hi = gb.bank_hi, mo = gb.mbc1_mode;
         gb_cart_write(a, v);
-        gbf_plat_map();
+        if (r0 != gb.rom0_bank || rx != gb.romx_bank || mo != gb.mbc1_mode || (hi != gb.bank_hi && gb.mbc == 1)) {
+            gbf_plat_map();
+        } else if (rb != gb.ram_bank || on != gb.ram_on || rs != gb.rtc_sel) {
+            gbf_plat_ram();     // (X turns the RAM on and off around every use of it)
+        }
     }
 }
 
@@ -525,5 +566,6 @@ void gbf_reset(void) {
     tim_last = 0xABC8 >> 2;
     ser_on = 0;
     gbv_reset();
+    stat_done = POS();
     schedule();
 }

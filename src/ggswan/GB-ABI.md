@@ -111,6 +111,27 @@ it, from a table for the lines of the picture), and need not be a
 block's start: `LDH A, (41h)`, tests, a conditional jump back to the
 read, anywhere in a block.
 
+A loop that only copies or fills is done at once when a block starts
+with it (`s_copy0`-`s_copy4`, `s_fill0`): `LD A, (HL+) / LD (DE), A /
+INC DE / DEC B / JR NZ`, the same with BC counted by `LD A, B / OR C`,
+their mirrors from (DE) to (HL+), `LD A, (BC) / INC BC / LD (HL+), A /
+DEC D / JR NZ`, and `LD (HL+), A / DEC B / JR NZ`. As many turns as
+fit: the source wholly in ROM, tiles, work RAM or high RAM, the
+destination in the tiles (8000h-97FFh), work RAM or high RAM, and the
+time to the next event; registers, flags and cycles are left as the
+loop's turns would have. What does not fit (the maps, OAM, I/O,
+cartridge RAM, a bank's edge) runs as translated, and the jump back
+goes to after the routine's call, not to it again.
+
+A loop of `CP (HL) / JR cc` on itself waits for what is at HL to
+change (`s_skip_hl`): with HL = FF44h and the jump taken while LY is
+not A, the time to the line before the one waited for is taken off at
+once and the rest by lines; with HL in RAM the time to the next event
+(only an interrupt can change it).
+
+A read through HL, BC or DE from below 8000h is in line: the ROM's
+segment for that area and the byte, no routine.
+
 A write of a constant to P1 (`LD A, n` before it in the block and A
 left alone since) is the table's byte for those rows of keys, moved
 with no routine.
@@ -120,15 +141,34 @@ with no routine.
 - A block ends at a jump, call or return, after the instruction that
   follows EI, or after 40 instructions or about 90 cycles.
 - The table (PSRAM, segment 4000h, 8192 places of 8 bytes) is keyed by
-  address and ROM bank + 1 (FFFFh for code in RAM). The code is in
+  address and ROM bank + 1 (FFFFh for code in RAM). A block is at the
+  hash's place or at one of eleven others far from it (`PLACE` in
+  `gb_drc.c`); when all twelve are taken everything is forgotten. The code is in
   segments 5000h-C000h; when the last is full everything is forgotten.
 - An exit to a constant address in the same ROM area, or in the first
   one, is a jump the dispatcher joins to the block there. The others
   (returns, JP HL, calls from the first ROM area into the second) look
   the block up in the table themselves (`s_exit_dyn`) and go through
   the dispatcher only when it is not at its first place there.
+  Before the table they look in two smaller ones in the console's own
+  RAM (D800h for the first ROM area, E800h for the second: 512 places
+  of 8 bytes, the address's low 9 bits; the address, the block's
+  offset and segment and, in the second, the bank's key): a hit is a
+  near compare or two and a far jump, with no segment register loaded.
+  A miss that the big table answers fills the place. Both are emptied
+  when the blocks are forgotten, the first also when the first area's
+  bank changes (`gb_main.c`).
 - Code in RAM has a copy of its bytes before it, compared at every
-  entry from the dispatcher; it is joined to nothing but itself.
+  entry from the dispatcher; it is joined to nothing but itself. When
+  the bytes are no longer those, the block is not thrown away: the
+  form now there is looked up, and translated if new, under a key of
+  its own, 8000h + a 15-bit sum of its first bytes (as many as the
+  first form has, 12 at most; bit 0 clear, so never FFFFh), and
+  compared in full as well. A program that keeps changing a routine in
+  RAM (an operand, a jump's target) has each form translated once.
+  (Until patch 167 the changed block was translated again every time:
+  Donkey Kong Land, R-Type II and Race Drivin' filled the table and
+  the code's room over and over.)
 - What the translator does not do is run by the interpreter, one
   instruction, and the next block starts after it: HALT, STOP,
   LD (nn), SP, ADD HL, SP, ADD SP, e, LD HL, SP + e. (Until patch 163

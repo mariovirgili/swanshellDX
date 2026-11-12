@@ -164,6 +164,7 @@ uint8_t gb_cart_header(const uint8_t GB_FAR *rom, uint32_t size);
 void gb_rtc_frame(void);            // a frame's time for MBC3's clock
 uint8_t gb_rtc_read(void);
 void gb_rtc_write(uint8_t v);
+extern uint8_t gbf_trig;
 void gb_cart_write(uint16_t a, uint8_t v);  // a write to 0000h-7FFFh
 void gb_cart_map(void);                     // rom0_bank, romx_bank, ram_bank from the registers
 
@@ -209,11 +210,13 @@ extern uint16_t gbf_rom0_off, gbf_romx_off, gbf_ram_off;    // inside the window
 #define GBF_ROMX(a) (*(const uint8_t __far*) MK_FP(0x3000, gbf_romx_off + ((a) & 0x3FFF)))
 #define GBF_RAM(a) (*(uint8_t __far*) MK_FP(0x1000, gbf_ram_off + (a)))
 void gbf_plat_map(void);            // the windows on the banks of gb.rom0_bank, gb.romx_bank, gb.ram_bank
+void gbf_plat_ram(void);            // the part of it for the cartridge's RAM alone (its bank, on or off)
 #else
 #define GBF_ROM0(a) gb_rom[(uint32_t) gb.rom0_bank << 14 | (a)]
 #define GBF_ROMX(a) gb_rom[(uint32_t) gb.romx_bank << 14 | ((a) & 0x3FFF)]
 #define GBF_RAM(a) gb_cart_ram[(uint32_t) gb.ram_bank << 13 | (a)]
 #define gbf_plat_map()
+#define gbf_plat_ram()
 #endif
 
 /* gb_ppu.c */

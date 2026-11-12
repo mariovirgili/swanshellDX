@@ -44,7 +44,7 @@ background and the window, switched at the right lines by the line
 interrupt, with the scroll the program gave each line; the sprites are
 the WonderSwan's.
 
-## Where it is (patch 166)
+## Where it is (patch 167)
 
 The CPU is a recompiler (`gb/ws/gb_drc.c`, `gb_drc_asm.s`; `GB-ABI.md`),
 there is sound (`gb/ws/gb_sound.c`: what it does and does not, at its
@@ -131,6 +131,86 @@ and the frames measured:
 - Yoshi `240:200,256:0,360:200,376:0,480:400,496:0`, 600-720;
 - Super Mario Land 2 `240:200,256:0,400:40,460:0,700:400,716:0,900:400,916:0,1100:400,1116:0,1300:20`, 1320-1440;
 - Balloon Kid `240:200,256:0,360:200,376:0,480:400,496:0,560:200,576:0,640:20,700:420,720:20,760:420,780:20,820:420,840:20,900:420,920:20,980:420,1000:20`, 900-1060.
+
+**Patch 167: another set.** Gio ran 166 in nileswan-medem: Super Mario
+Land, Bubble Ghost, R-Type, Yoshi and Balloon Kid at 52-60 frames a
+second, so they are no longer measured; Super Mario Land 2 58 falling
+to 43 with enemies about and 38 on the map, Batman 45-60, Castlevania
+II 21 at its title and 28-51 in play. And five more ROMs of his:
+Donkey Kong Land 8-11 frames a second, Race Drivin' 13-14, X 27-28,
+ZAS 44, R-Type II 48-58 with its status bar wrong at times. The set
+is now these eight, in play (`gbplay2.sh` in the session's notes; the
+keys below). Cycles a Game Boy frame, 51,430 being full speed; "before"
+is patch 166 for the first three and patch 167's work as it stood
+before the five were looked at for the others:
+
+| scene | before | 167 |
+|---|---|---|
+| Castlevania II, Crystal Castle | 60,906 | 58,256 |
+| Batman, the first level | 61,353 | 58,734 |
+| Super Mario Land 2, the first level | 53,013 | 51,606 |
+| R-Type II, the first level | 45,756 | 35,563 |
+| ZAS, in play | 67,393 | 67,813 |
+| Donkey Kong Land, the first level | 143,178 | 90,499 |
+| Race Drivin', driving | 151,752 | 142,393 |
+| X, in the tunnel | 111,375 | 114,516 |
+
+(Castlevania II, Batman, R-Type II and ZAS are of the build before the
+last change, to the writes of the cartridge's registers; Super Mario
+Land 2 and Donkey Kong Land, measured again after it, moved by 64 and
+62 cycles.) **Only R-Type II is under a frame's time**, Super Mario
+Land 2 at it. **X is 3% slower than before**: see below. What was found:
+- R-Type II, Donkey Kong Land and Race Drivin' change code they keep
+  in RAM, and every change was a block translated again: 5,214 blocks
+  in R-Type II's scene (601 now), the table and the code's room
+  forgotten once or twice a scene in the other two. Each form is now
+  kept (`GB-ABI.md`, "Blocks"); Donkey Kong Land's, which are made
+  anew for every use (`LD HL, nn / CALL`, `LD SP, nn / JP` with the
+  operands written just before), go to the interpreter after six.
+- Donkey Kong Land forgot everything with 1,247 blocks in a table of
+  8,192: a block's eight places were the hash's and the seven after
+  it, and the blocks of one routine have neighbouring hashes. The
+  places are now spread (twelve of them).
+- Race Drivin' writes the cartridge's registers all the time with
+  what is already there: the windows are now set again only when
+  something has changed (148,656 to 142,393), and only the RAM's part
+  when only that has. X's writes do change something every time
+  (which register is not known yet), so it pays for the comparison and
+  saves nothing: 110,909 before the change, 114,516 after. Its path
+  through C for those writes (a seventh of its time) is the next
+  thing to look at.
+- What is left in Donkey Kong Land (a quarter still translating and
+  looking blocks up), Race Drivin' and X (a third in the translated
+  code itself: they draw their pictures by program; the real Game Boy
+  shows a few of them a second), and ZAS has not been looked at.
+
+The keys: R-Type II `240:200,256:0,400:200,416:0,1150:200,1166:0,1300:200,1316:0,1500:420`,
+1500-1660; ZAS `240:200,256:0,400:200,416:0,560:400,576:0,800:420`,
+900-1060; Donkey Kong Land `240:200,256:0,400:200,416:0,560:400,576:0,720:200,736:0,880:400,896:0,1000:20,1150:420,1170:20`,
+1040-1200; Race Drivin' `240:200,256:0,400:200,416:0,560:400,576:0,720:200,736:0,880:400,896:0,1000:420`,
+1100-1260; X: START at 240, then A every 160 frames from 400 to 2160,
+2300-2460.
+
+In play the plugin's picture is no longer the PC machine's pixel for
+pixel at a given frame, as it is in the old eight scenes: an interrupt
+is taken at a block's end, a few cycles late, and a game that reads
+the keys or the time can come to be a frame apart. The end pictures
+were looked at beside `gbftest`'s (R-Type II's, Race Drivin's and X's
+are one of its frames to the pixel; the others show the same scene a
+little further on or back).
+
+He also saw, in 166, Super Mario Land's whole picture jump sideways
+for an instant now and then. Its status bar is a STAT interrupt at a
+line (LYC) that sets the scroll; when a timer interrupt came a few
+cycles before it, the block running went on past the line's cycle,
+the timer's event set the next event from the time *now*, and the
+line's interrupt, already behind, was never raised: a frame drawn
+with the status bar's scroll all the way down. Events that are due
+are now done before the next is looked for (`gbf_hw.c`: `stat_done`),
+and before an I/O register is written. With his keys the scroll at
+each frame goes up evenly over 2,400 frames. R-Type II's status bar
+is probably the same fault (it is right in every picture here, but
+it was not seen wrong here before either).
 
 He also saw Super Mario Land's scroll move in jerks. That was a fault
 in how a frame's list reaches the screen, put right in patch 164

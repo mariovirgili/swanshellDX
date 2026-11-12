@@ -8,8 +8,11 @@
  *   noise;
  * - lengths, envelopes and channel 1's sweep are stepped here, at the
  *   Game Boy's 512 Hz in the mean (8.57 steps a frame);
- * - a channel is started when bit 7 of its fourth register is found set
- *   (the bit is then cleared: it reads 1 anyway).
+ * - a channel is started when its fourth register was written with bit
+ *   7 set since the last frame (gbf_hw.c and the recompiler keep that in
+ *   gbf_trig: until patch 166 the bit was looked for in the register,
+ *   and a program that writes the register again in the same frame, for
+ *   the note's pitch, had taken it away: notes not started).
  *
  * So everything is a frame late at most and no finer than a frame: two
  * starts of a channel inside a frame are one, a wave changed while it
@@ -125,16 +128,18 @@ void gb_sound_frame(void) {
         outportb(WS_SOUND_CH_CTRL_PORT, 0);
         for (uint8_t c = 0; c < 4; c++) ch[c].on = 0;
         NR(0x26) &= 0x80;
+        gbf_trig = 0;
         return;
     }
     for (uint8_t c = 0; c < 4; c++) {
-        if (NR(reg4[c]) & 0x80) {
+        if ((NR(reg4[c]) & 0x80) || (gbf_trig & (1 << c))) {
             NR(reg4[c]) &= 0x7F;
             trigger(c);
         }
         // (the DAC turned off turns the channel off)
         if (c == 2 ? !(NR(0x1A) & 0x80) : !(NR(reg2[c]) & 0xF8)) ch[c].on = 0;
     }
+    gbf_trig = 0;
     seq_acc += 8572;
     while (seq_acc >= 1000) {
         seq_acc -= 1000;

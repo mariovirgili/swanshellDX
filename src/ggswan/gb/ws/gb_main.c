@@ -32,26 +32,33 @@
 
 uint16_t gbf_rom0_off, gbf_romx_off, gbf_ram_off;
 
-void gbf_plat_map(void) {
-    outportw(WS_CART_EXTBANK_ROM0_PORT, gb.rom0_bank >> 2);
-    gbf_rom0_off = (gb.rom0_bank & 3) << 14;
-    outportw(WS_CART_EXTBANK_ROM1_PORT, gb.romx_bank >> 2);
-    gbf_romx_off = (gb.romx_bank & 3) << 14;
+void gbf_plat_ram(void) {
     outportw(WS_CART_EXTBANK_RAM_PORT, gb.ram_bank >> 3);
     gbf_ram_off = (gb.ram_bank & 7) << 13;
-    // (the recompiled code's way to the two ROM areas: segments the Game
-    // Boy's address is the offset in)
-    drc_segtab[0] = 0x2000 + (gbf_rom0_off >> 4);
-    drc_segtab[1] = 0x3000 + (gbf_romx_off >> 4) - 0x400;
-    drc_key0 = gb.rom0_bank + 1;
-    drc_keyx = gb.romx_bank + 1;
-    drc_hash0 = drc_key0 << 5;      // (their part of the table's hash)
-    drc_hashx = drc_keyx << 5;
     // the cartridge's RAM for the recompiled code: 1 plain RAM that can
     // be reached, 2 none or disabled (reads FFh, writes lost), 0 ask C
     // (MBC2's half bytes, MBC3's clock)
     drc_ram_ok = gb.mbc == 2 || (gb.mbc == 3 && gb.rtc_sel) ? 0 : gb.ram_banks && (gb.ram_on || !gb.mbc) ? 1 : 2;
     drc_ram_seg = 0x1000 + (gbf_ram_off >> 4) - 0xA00;
+}
+
+void gbf_plat_map(void) {
+    outportw(WS_CART_EXTBANK_ROM0_PORT, gb.rom0_bank >> 2);
+    gbf_rom0_off = (gb.rom0_bank & 3) << 14;
+    outportw(WS_CART_EXTBANK_ROM1_PORT, gb.romx_bank >> 2);
+    gbf_romx_off = (gb.romx_bank & 3) << 14;
+    // (the recompiled code's way to the two ROM areas: segments the Game
+    // Boy's address is the offset in)
+    drc_segtab[0] = 0x2000 + (gbf_rom0_off >> 4);
+    drc_segtab[1] = 0x3000 + (gbf_romx_off >> 4) - 0x400;
+    // (the first ROM area's bank has changed: MBC1's mode. s_exit_dyn's
+    // small table for that area has no bank in it)
+    if (drc_key0 != gb.rom0_bank + 1) memset((uint8_t*) DRC_RC0, 0xFF, 0x1000);
+    drc_key0 = gb.rom0_bank + 1;
+    drc_keyx = gb.romx_bank + 1;
+    drc_hash0 = drc_key0 << 5;      // (their part of the table's hash)
+    drc_hashx = drc_keyx << 5;
+    gbf_plat_ram();
     // the write that changes the second ROM area's bank (gb_drc_asm.s:
     // s_wrt): 2000h up to drc_mbc_top (its high byte), the bits of the
     // value that count, whether 0 means 1, the other register's bits

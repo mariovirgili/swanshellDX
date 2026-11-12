@@ -91,6 +91,20 @@ drc_stubs:
     .word s_delay_bc - . - 2
     .byte 0xE9
     .word s_exit_dyn_f - . - 2
+    .byte 0xE9
+    .word s_copy0 - . - 2
+    .byte 0xE9
+    .word s_copy1 - . - 2
+    .byte 0xE9
+    .word s_copy2 - . - 2
+    .byte 0xE9
+    .word s_copy3 - . - 2
+    .byte 0xE9
+    .word s_copy4 - . - 2
+    .byte 0xE9
+    .word s_fill0 - . - 2
+    .byte 0xE9
+    .word s_skip_hl - . - 2
 
 // leave for the address in SI. When there are cycles left and the
 // address is in ROM, the block is looked for here: the table's first
@@ -101,8 +115,32 @@ s_exit_dyn:
     cmp word ptr [gbf_cyc], 0
 s_exit_dyn_f:
     jle 9f
+    // first the two small tables in the internal RAM (512 places each,
+    // by the address' low bits; filled below): the first ROM area's has
+    // no bank to compare (it is emptied if that bank ever changes)
+    cmp si, 0x4000
+    jae 4f
+    mov di, si
+    shl di, 3
+    and di, 0x0FF8
+    cmp [di + DRC_RC0], si
+    jne 5f
+    jmp far ptr [di + DRC_RC0 + 4]
+4:
     test si, si
     js 9f
+    mov di, si
+    shl di, 3
+    and di, 0x0FF8
+    cmp [di + DRC_RCX], si
+    jne 5f
+    mov si, [di + DRC_RCX + 2]
+    cmp si, [drc_keyx]
+    mov si, [di + DRC_RCX]
+    jne 5f
+    jmp far ptr [di + DRC_RCX + 4]
+5:
+    // the blocks' table: its first place for the address
     mov di, si
     shr di, 6
     xor di, si
@@ -117,9 +155,13 @@ s_exit_dyn_f:
     push ax
     mov ax, [drc_keyx]
     cmp es:[di + 2], ax
-    pop ax
-    jne 9f
-    jmp far ptr es:[di + 4]
+    jne 8f
+    push bx
+    mov bx, si
+    shl bx, 3
+    and bx, 0x0FF8
+    add bx, DRC_RCX
+    jmp 2f
 1:
     xor di, [drc_hash0]
     and di, 8191
@@ -129,9 +171,25 @@ s_exit_dyn_f:
     push ax
     mov ax, [drc_key0]
     cmp es:[di + 2], ax
+    jne 8f
+    push bx
+    mov bx, si
+    shl bx, 3
+    and bx, 0x0FF8
+    add bx, DRC_RC0
+2:
+    // found: into the small table, and there
+    mov [bx], si
+    mov [bx + 2], ax
+    mov ax, es:[di + 4]
+    mov [bx + 4], ax
+    mov ax, es:[di + 6]
+    mov [bx + 6], ax
+    pop bx
     pop ax
-    jne 9f
     jmp far ptr es:[di + 4]
+8:
+    pop ax
 9:
     mov [gb + GB_PC], si
 s_exit:
@@ -589,6 +647,69 @@ s_wait_mode:
 // A loop that only reads LY and tests it: nothing changes before the next
 // line, so the time to it is taken off the count at once (to the line's
 // second cycle, where LY has changed in every line)
+// a loop that only compares A with the byte at HL, about to go round: HL
+// at LY, as s_skip_line; in the work RAM or the high RAM (only an
+// interrupt writes it), to the next event; anything else, nothing
+s_skip_hl:
+    cmp bx, 0xFF44
+    je 3f
+    cmp bx, 0xC000
+    jb 2f
+    cmp bx, 0xFE00
+    jb 1f
+    cmp bx, 0xFF80
+    jb 2f
+1:
+    mov word ptr [gbf_cyc], 0
+2:
+    ret
+3:
+    // LY: A is the line waited for. More than a line away: to the second
+    // cycle of the line before it (or as far as the time to the next
+    // event goes) at once; the last line and a bit by s_skip_line, a line
+    // a turn, so that what LY reads around the line's start is its own
+    cmp byte ptr [gb + GB_LCD_ON], 0
+    je 2b
+    cmp al, 154
+    jae s_skip_line
+    push ax
+    push cx
+    push dx
+    mov cl, al
+    mov ax, [gbf_ev_pos]
+    sub ax, [gbf_cyc]
+    mov dl, 114
+    div dl                      // AL = the line, AH = the cycle in it
+    mov ch, ah
+    dec cl
+    sub cl, al                  // lines to the one before the line wanted
+    jns 4f
+    add cl, 154
+4:
+    cmp cl, 2
+    jb 6f
+    mov al, cl
+    mul dl                      // AX = those lines' cycles
+    mov dl, ch
+    xor dh, dh
+    sub ax, dx
+    inc ax
+    mov dx, [gbf_cyc]
+    dec dx
+    jle 6f
+    cmp ax, dx
+    jbe 5f
+    mov ax, dx
+5:
+    sub [gbf_cyc], ax
+    pop dx
+    pop cx
+    pop ax
+    ret
+6:
+    pop dx
+    pop cx
+    pop ax
 s_skip_line:
     cmp byte ptr [gb + GB_LCD_ON], 0
     je 1f
@@ -634,6 +755,209 @@ s_skip_mode:
     pop dx
     pop ax
 1:
+    ret
+
+/*
+ * The loops that copy bytes (LD A, (HL+) / LD (DE), A / INC DE / DEC B /
+ * JR NZ and its like: gb_drc.c, copy_loops). At the loop's start: when
+ * all of what is still to copy but the last byte, or as much as there is
+ * time for before the next event, comes from the ROM, the video memory,
+ * the work RAM or the high RAM and goes to the patterns (8000h-97FFh),
+ * the work RAM or the high RAM, those bytes are
+ * moved at once, and the pointers, the count and the time are as after
+ * those turns. The block's own code then does a turn as ever (A, the
+ * flags and the way out are its). Anything else (the video memory, the
+ * registers, the cartridge's RAM): nothing here, the loop as before.
+ */
+// AX = the turns to do here: the most (SI: the count less one) or what the
+// time allows at DI cycles a turn; ZF if none
+copy_k:
+    mov ax, [gbf_cyc]
+    dec ax
+    jle 1f
+    push dx
+    xor dx, dx
+    div di
+    pop dx
+    cmp ax, si
+    jbe 2f
+    mov ax, si
+2:
+    test ax, ax
+    ret
+1:
+    xor ax, ax
+    ret
+// AX bytes from SI to DI (the Game Boy's addresses); CF if they are not
+// all where this can be done (nothing copied then). BX, CX, DX, AX kept
+copy_do:
+    push cx
+    push ax
+    mov cx, ax
+    mov ax, di
+    add ax, cx                  // (the end)
+    jc 8f
+    cmp di, 0x8000
+    jb 8f
+    cmp ax, 0x9800              // (the patterns: as they are; the maps
+    jbe 1f                      // have the WonderSwan's to keep too: not here)
+    cmp di, 0xC000
+    jb 8f
+    cmp ax, 0xE000
+    jbe 1f
+    cmp di, 0xFF80
+    jb 8f
+    cmp ax, 0xFFFF
+    ja 8f
+1:
+    sub di, 0x6000
+    mov ax, si
+    add ax, cx
+    jc 8f
+    cmp si, 0x8000
+    jb 3f
+    cmp ax, 0xA000              // (the video memory, all of it)
+    jbe 2f
+    cmp si, 0xC000
+    jb 8f
+    cmp ax, 0xE000
+    jbe 2f
+    cmp si, 0xFF80
+    jb 8f
+    cmp ax, 0xFFFF
+    ja 8f
+2:
+    sub si, 0x6000
+    push ss
+    pop es
+    cld
+    rep movsb
+    jmp 7f
+3:
+    // from the ROM: one of its two areas, through its segment
+    cmp si, 0x4000
+    jae 4f
+    cmp ax, 0x4000
+    ja 8f
+    mov ax, [drc_segtab]
+    jmp 5f
+4:
+    cmp ax, 0x8000
+    ja 8f
+    mov ax, [drc_segtab + 2]
+5:
+    push ss
+    pop es
+    push ds
+    mov ds, ax
+    cld
+    rep movsb
+    pop ds
+7:
+    pop ax
+    pop cx
+    clc
+    ret
+8:
+    pop ax
+    pop cx
+    stc
+    ret
+
+// src, dst: the pointers' registers; cnt: the count's (8 bits: 0 is 256;
+// 16 bits: 0 is 65536); cyc: the Game Boy's cycles a turn
+.macro COPY_LOOP src, dst, cnt, wide, cyc
+    push ax
+.if \wide
+    mov si, \cnt
+    dec si
+.else
+    mov al, \cnt
+    xor ah, ah
+    dec al
+    mov si, ax
+.endif
+    mov di, \cyc
+    call copy_k
+    jz 9f
+    mov si, \src
+    mov di, \dst
+    call copy_do
+    jc 9f
+    add \src, ax
+    add \dst, ax
+.if \wide
+    sub \cnt, ax
+.else
+    sub \cnt, al
+.endif
+    push dx
+    mov di, \cyc
+    mul di
+    pop dx
+    sub [gbf_cyc], ax
+9:
+    pop ax
+    ret
+.endm
+s_copy0:    // LD A, (HL+) / LD (DE), A / INC DE / DEC B / JR NZ
+    COPY_LOOP bx, dx, ch, 0, 10
+s_copy1:    // LD A, (DE) / LD (HL+), A / INC DE / DEC B / JR NZ
+    COPY_LOOP dx, bx, ch, 0, 10
+s_copy2:    // LD A, (HL+) / LD (DE), A / INC DE / DEC BC / LD A, B / OR C / JR NZ
+    COPY_LOOP bx, dx, cx, 1, 13
+s_copy3:    // LD A, (DE) / LD (HL+), A / INC DE / DEC BC / LD A, B / OR C / JR NZ
+    COPY_LOOP dx, bx, cx, 1, 13
+s_copy4:    // LD A, (BC) / INC BC / LD (HL+), A / DEC D / JR NZ
+    COPY_LOOP cx, bx, dh, 0, 10
+
+s_fill0:    // LD (HL+), A / DEC B / JR NZ: into the patterns, the work RAM or the high RAM
+    push ax
+    mov al, ch
+    xor ah, ah
+    dec al
+    mov si, ax
+    mov di, 6
+    call copy_k
+    jz 9f
+    mov si, bx
+    add si, ax
+    jc 9f
+    cmp bx, 0x8000
+    jb 9f
+    cmp si, 0x9800
+    jbe 1f
+    cmp bx, 0xC000
+    jb 9f
+    cmp si, 0xE000
+    jbe 1f
+    cmp bx, 0xFF80
+    jb 9f
+    cmp si, 0xFFFF
+    ja 9f
+1:
+    push cx
+    push ax
+    mov cx, ax
+    mov di, bx
+    sub di, 0x6000
+    push ss
+    pop es
+    mov si, sp
+    mov al, ss:[si + 4]         // (A, as it was pushed)
+    cld
+    rep stosb
+    pop ax
+    pop cx
+    add bx, ax
+    sub ch, al
+    mov si, ax
+    shl ax, 1
+    add ax, si
+    shl ax, 1                   // 6 cycles a turn
+    sub [gbf_cyc], ax
+9:
+    pop ax
     ret
 
 // A loop that only counts BC down (DEC BC / LD A, B / OR C / JR NZ, 7
@@ -1075,3 +1399,10 @@ drc_stub_offs:
     .word s_wait_stat - drc_stubs
     .word s_delay_bc - drc_stubs
     .word s_exit_dyn_f - drc_stubs
+    .word s_copy0 - drc_stubs
+    .word s_copy1 - drc_stubs
+    .word s_copy2 - drc_stubs
+    .word s_copy3 - drc_stubs
+    .word s_copy4 - drc_stubs
+    .word s_fill0 - drc_stubs
+    .word s_skip_hl - drc_stubs

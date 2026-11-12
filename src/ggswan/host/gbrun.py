@@ -345,6 +345,14 @@ if os.environ.get('GBRUN_CALLERS') and CYCLES:
             callers[where((cs << 4) + ip), '%04X' % (uc.reg_read(UC_X86_REG_AX) & 0xFFF0)] += 1
     a0 = syms[os.environ['GBRUN_CALLERS']]
     uc.hook_add(UC_HOOK_CODE, h_call, None, a0, a0)
+if os.environ.get('GBRUN_TRANS'):
+    # GBRUN_TRANS=frame: from that Game Boy frame on, every block translated:
+    # its address, is it code in RAM, the ROM banks' keys, flushes so far
+    def h_tr(uc, addr, size, _):
+        if st['gbframes'] < int(os.environ['GBRUN_TRANS']): return
+        r = lambda n, k=2: int.from_bytes(uc.mem_read(syms[n] & 0xFFFF, k), 'little')
+        print('T %d pc=%04X ram=%d key0=%d keyx=%d flushes=%d at %04X:%04X' % (st['gbframes'], r('blk_pc'), r('in_ram', 1), r('drc_key0'), r('drc_keyx'), r('drc_flushes'), r('code_seg'), r('code_top')))
+    uc.hook_add(UC_HOOK_CODE, h_tr, None, syms['translate_block'], syms['translate_block'])
 stubcalls = None
 if os.environ.get('GBRUN_STUB') and CYCLES:
     # GBRUN_STUB=s_stat (a label of gb_drc_asm.s): the blocks whose code is
@@ -378,10 +386,11 @@ while (GBTIME or st['frame'] < FRAMES) and not st['fail'] and not st.get('stop')
     # drawn and what it changes shows from K + 1 (the other plugins set
     # theirs a line early for that, and so does gb_video.c)
     y = st['line']
+    if y == 8 and os.environ.get('GBRUN_SCROLL'): st['scroll8'] = ports[0x12]
     if y == 100 and os.environ.get('GBRUN_SCROLL'):
         # GBRUN_SCROLL=1: at each WonderSwan frame (its line 100) screen 2's X scroll, the first sprite's X and the Game Boy frames done: how evenly a scrolling game moves
         t = (ports[4] & 0x3F) << 9
-        print('S %d gb %d scroll %d spr0 %d,%d' % (st['frame'], st['gbframes'], ports[0x12], iram.raw[t + 3], iram.raw[t + 2]))
+        print('S %d gb %d scroll %d spr0 %d,%d top %d' % (st['frame'], st['gbframes'], ports[0x12], iram.raw[t + 3][0] if isinstance(iram.raw[t + 3], bytes) else iram.raw[t + 3], iram.raw[t + 2][0] if isinstance(iram.raw[t + 2], bytes) else iram.raw[t + 2], st.get('scroll8', -1)) + ((' list %04X lines %d %d %d ready %d raw_n %d' % ((lambda lp: (lp, iram.raw[lp][0] if isinstance(iram.raw[lp], bytes) else iram.raw[lp], iram.raw[lp + 16][0] if isinstance(iram.raw[lp + 16], bytes) else iram.raw[lp + 16], iram.raw[lp + 32][0] if isinstance(iram.raw[lp + 32], bytes) else iram.raw[lp + 32]))(int.from_bytes(iram.raw[syms['list_shown'] & 0xFFFF:(syms['list_shown'] & 0xFFFF) + 2], 'little')) + (iram.raw[syms['list_ready'] & 0xFFFF][0] if isinstance(iram.raw[syms['list_ready'] & 0xFFFF], bytes) else iram.raw[syms['list_ready'] & 0xFFFF], iram.raw[syms['raw_n'] & 0xFFFF][0] if isinstance(iram.raw[syms['raw_n'] & 0xFFFF], bytes) else iram.raw[syms['raw_n'] & 0xFFFF]))) if 'list_shown' in syms else ''))
     y = st['line']
     if y < 144 and (st['frame'] in SHOTS or END_SHOT):
         line_ports[y] = bytes(ports)
@@ -499,7 +508,7 @@ if CYCLES and HOT and hot:
     tot = sum(hot.values())
     for (pc, key), n in by.most_common(8):
         a = pc if pc < 0x4000 else (key - 1) * 0x4000 + (pc - 0x4000)
-        print('  %5.1f%% of translated code: block %04X (bank %d): %s' % (100.0 * n / tot, pc, key - 1, rom[a:a + 20].hex() if key != 0xFFFF else 'RAM'))
+        print('  %5.1f%% of translated code: block %04X (bank %d): %s' % (100.0 * n / tot, pc, key - 1, rom[a:a + 20].hex() if key < 0x8000 else 'RAM'))
 if stubcalls:
     tab = bytes(psram[0x14].raw)
     blocks = sorted((int.from_bytes(tab[i + 6:i + 8], 'little') >> 12, int.from_bytes(tab[i + 4:i + 6], 'little'),
@@ -512,7 +521,7 @@ if stubcalls:
         if best: by[best[2], best[3]] += n
     for (pc, key), n in by.most_common(10):
         a = pc if pc < 0x4000 else (key - 1) * 0x4000 + (pc - 0x4000)
-        print('  %6d  block %04X (bank %d): %s' % (n, pc, key - 1, rom[a:a + 14].hex() if key != 0xFFFF else 'RAM'))
+        print('  %6d  block %04X (bank %d): %s' % (n, pc, key - 1, rom[a:a + 14].hex() if key < 0x8000 else 'RAM'))
 if callers:
     print('  calls: %d' % sum(callers.values()))
     for k, v in callers.most_common(12): print('  %6d  %s %s' % (v, k[0], k[1]))

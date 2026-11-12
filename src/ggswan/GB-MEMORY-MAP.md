@@ -56,10 +56,11 @@ So gbswan cannot be one more `-D` on those sources.
 | CB00h-CB7Fh | the sprites' order (kept from frame to frame) and the keys being sorted | |
 | CB80h-CC2Fh | by a sprite's Y: is it 8 x 16 (LCDC bit 2 at its top line) | |
 | D000h-D7FFh | stack, 2 KiB | `gb_run` (`gb/ws/gb_asm.s`) sets SP to D800h before the game. Before that (the ROM being read: FatFs) the stack is the C library's, down from 4000h |
+| D800h-E7FFh, E800h-F7FFh | where the blocks of the first and of the second ROM area are, by address (512 places of 8 bytes each: `GB-ABI.md`, "Blocks") | all FFh when the blocks are forgotten; the first also when the first area's bank changes |
 | FE00h-FFFFh | the WS's palettes | 0: the backdrop, color 0's shade; 1: black (and the figures' white); 4: the background; 12, 13: the sprites |
 
 The rest (8000h-9DFFh, where the echo of the work RAM would fall, and
-CC30h-CFFFh, D800h-FDFFh) is free.
+CC30h-CFFFh, F800h-FDFFh) is free.
 
 ## The cartridge
 
