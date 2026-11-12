@@ -79,48 +79,54 @@ drc_stubs:
     .word s_skip_mode - . - 2
     .byte 0xE9
     .word s_p1 - . - 2
+    .byte 0xE9
+    .word s_wait_mode - . - 2
+    .byte 0xE9
+    .word s_stat_e - . - 2
+    .byte 0xE9
+    .word s_ly_e - . - 2
+    .byte 0xE9
+    .word s_wait_stat - . - 2
 
-// leave for the address in SI. When nothing is due (cycles left, no EI
-// waiting) and the address is in ROM, the block is looked for here: the
-// table's first place for it (gb_drc.c: hash), and if it is there the jump
-// is made without the dispatcher
+// leave for the address in SI. When there are cycles left and the
+// address is in ROM, the block is looked for here: the table's first
+// place for it (gb_drc.c: hash), and if it is there the jump is made
+// through the table, without the dispatcher. (After EI the translator
+// does not come here: gb_drc.c, after_ei)
 s_exit_dyn:
     cmp word ptr [gbf_cyc], 0
     jle 9f
-    cmp byte ptr [drc_ei], 0
-    jne 9f
     test si, si
     js 9f
-    mov di, [drc_key0]
+    mov di, si
+    shr di, 6
+    xor di, si
+    mov es, [drc_tseg]
     cmp si, 0x4000
     jb 1f
-    mov di, [drc_keyx]
+    xor di, [drc_hashx]
+    and di, 4095
+    shl di, 3
+    cmp es:[di], si
+    jne 9f
+    push ax
+    mov ax, [drc_keyx]
+    cmp es:[di + 2], ax
+    pop ax
+    jne 9f
+    jmp far ptr es:[di + 4]
 1:
-    push bx
-    mov bx, di
-    shl bx, 5
-    xor bx, si
-    push si
-    shr si, 6
-    xor bx, si
-    pop si
-    and bx, 4095
-    shl bx, 3
-    push DRC_TABLE_SEG
-    pop es
-    cmp es:[bx], si
-    jne 8f
-    cmp es:[bx + 2], di
-    jne 8f
-    mov di, es:[bx + 4]
-    mov [drc_jmp], di
-    mov di, es:[bx + 6]
-    mov [drc_jmp + 2], di
-    pop bx
-    .byte 0xFF, 0x2E            // jmp far [drc_jmp]
-    .word drc_jmp
-8:
-    pop bx
+    xor di, [drc_hash0]
+    and di, 4095
+    shl di, 3
+    cmp es:[di], si
+    jne 9f
+    push ax
+    mov ax, [drc_key0]
+    cmp es:[di + 2], ax
+    pop ax
+    jne 9f
+    jmp far ptr es:[di + 4]
 9:
     mov [gb + GB_PC], si
 s_exit:
@@ -136,11 +142,13 @@ s_exit:
 s_rd:
     cmp si, 0x8000
     jae 1f
-    mov di, si
-    rol di, 2
-    and di, 3
-    shl di, 1
-    mov es, [drc_segtab + di]
+    cmp si, 0x4000
+    jae 0f
+    mov es, [drc_segtab]
+    mov al, es:[si]
+    ret
+0:
+    mov es, [drc_segtab + 2]
     mov al, es:[si]
     ret
 1:
@@ -195,6 +203,17 @@ s_rd:
     mov ah, [drc_ah]
     ret
 
+// (LDH A, (41h) and LDH A, (44h) come straight here)
+s_stat_e:
+    mov si, 0xFF41
+    cmp byte ptr [gb + GB_LCD_ON], 0
+    jne s_stat
+    jmp s_rd
+s_ly_e:
+    mov si, 0xFF44
+    cmp byte ptr [gb + GB_LCD_ON], 0
+    jne s_ly
+    jmp s_rd
 // LY and STAT from the time (gbf_hw.c: gbf_io_read), the LCD on: the
 // frame's cycle now is gbf_ev_pos - gbf_cyc, 114 to a line
 s_ly:
@@ -222,6 +241,24 @@ s_stat:
     sub ax, [gbf_cyc]
     mov dl, 114
     div dl                      // AL = the line, AH = the cycle in it
+    // the usual case: a line's cycle from 1 on, not line 153: the mode
+    // from a table, LYC compared with the line
+    test ah, ah
+    jz 7f
+    cmp al, 153
+    je 7f
+    mov dh, 1
+    cmp al, 144
+    jae 1f
+    push bx
+    mov bl, ah
+    xor bh, bh
+    mov dh, cs:[bx + stat_modes - drc_stubs]
+    pop bx
+1:
+    mov dl, al
+    jmp 5f
+7:
     // DL = what LYC is compared with
     mov dl, al
     cmp al, 153
@@ -276,6 +313,207 @@ s_stat:
     xor ah, ah
     or ax, di
     pop dx
+    ret
+// the mode at each cycle of a line of the picture
+stat_modes:
+    .byte 0
+    .fill 20, 1, 2
+    .fill 43, 1, 3
+    .fill 50, 1, 0
+
+// AL = STAT, read by a loop that only tests the mode and goes round while
+// it is one of those in the byte after the call (bit n: mode n): the
+// time to the first cycle of another mode is taken off the count first,
+// so the loop goes round once. The modes of a line: 0 at its first
+// cycle, 2 from 1, 3 from 21, 0 from 64; the vertical blank is mode 1.
+s_wait_stat:
+    pop di
+    inc di
+    push di
+    cmp byte ptr [gb + GB_LCD_ON], 0
+    jne 1f
+    mov si, 0xFF41
+    jmp s_rd
+1:
+    push bx
+    push cx
+    push dx
+    mov bl, cs:[di - 1]         // the modes it goes round in
+    mov di, ax
+    mov ax, [gbf_ev_pos]
+    sub ax, [gbf_cyc]
+    mov si, ax                  // the frame's cycle
+    mov dl, 114
+    div dl                      // AL = the line, AH = the cycle in it
+    xor cx, cx                  // cycles passed over
+    cmp al, 144
+    jae 4f
+2:
+    // the mode here; if the loop goes on in it, on to where it changes
+    push bx
+    mov bl, ah
+    xor bh, bh
+    mov dh, cs:[bx + stat_modes - drc_stubs]
+    pop bx
+    push cx
+    mov cl, dh
+    mov ch, 1
+    shl ch, cl
+    test bl, ch
+    pop cx
+    jz 5f
+    mov dl, 1
+    cmp ah, 1
+    jb 3f
+    mov dl, 21
+    cmp ah, 21
+    jb 3f
+    mov dl, 64
+    cmp ah, 64
+    jb 3f
+    // the next line's second cycle (or the vertical blank)
+    mov dl, 115
+    sub dl, ah
+    xor dh, dh
+    add cx, dx
+    inc al
+    mov ah, 1
+    cmp al, 144
+    jb 2b
+    mov dh, 1                   // (line 144, cycle 1: the vertical blank)
+    test bl, 2
+    jz 5f
+    mov si, 144 * 114 + 1
+    jmp 6f
+3:
+    sub dl, ah
+    add ah, dl
+    xor dh, dh
+    add cx, dx
+    jmp 2b
+4:
+    // the vertical blank: mode 1 (line 144's first cycle: 0)
+    mov dh, 1
+    cmp al, 144
+    jne 7f
+    test ah, ah
+    jnz 7f
+    xor dh, dh
+    jmp 5f
+7:
+    test bl, 2
+    jz 5f
+6:
+    // (the loop goes on through the vertical blank: to the next frame's
+    // first cycle, mode 0, and on from there)
+    mov ax, 17556
+    sub ax, si
+    add cx, ax
+    xor ax, ax
+    jmp 2b
+5:
+    sub [gbf_cyc], cx
+    // DL = what LYC is compared with there
+    mov dl, al
+    cmp al, 153
+    jne 7f
+    mov dl, 0xFF
+    cmp ah, 1
+    jb 8f
+    mov dl, 153
+    je 8f
+    mov dl, 0xFF
+    cmp ah, 2
+    je 8f
+    xor dl, dl
+    jmp 8f
+7:
+    test ah, ah
+    jnz 8f
+    test al, al
+    jz 8f
+    mov dl, 0xFF
+8:
+    mov al, [0x9F41]
+    and al, 0x78
+    or al, 0x80
+    or al, dh
+    cmp dl, [0x9F45]
+    jne 9f
+    or al, 4
+9:
+    and di, 0xFF00
+    xor ah, ah
+    or ax, di
+    pop dx
+    pop cx
+    pop bx
+    ret
+
+// A loop that reads STAT and goes round while the mode is one of those in
+// the byte after the call (bit n: mode n), about to go round: the time
+// to the first cycle of another mode is taken off the count. In the
+// picture's lines only (in the vertical blank the loop just goes round)
+s_wait_mode:
+    pop di
+    inc di
+    push di
+    cmp byte ptr [gb + GB_LCD_ON], 0
+    je 9f
+    push ax
+    push bx
+    push dx
+    mov bl, cs:[di - 1]         // the modes that keep it going round
+    mov ax, [gbf_ev_pos]
+    sub ax, [gbf_cyc]
+    mov dl, 114
+    div dl                      // AL = the line, AH = the cycle in it
+    cmp al, 143
+    jae 8f
+    // the changes of mode from here on: cycle 1 (mode 2), 21 (3), 64
+    // (0), and the next line's 1, 21, 64
+    cmp ah, 64
+    jae 5f
+    cmp ah, 21
+    jae 4f
+    mov dx, 0x0201
+    call 1f
+    mov dx, 0x0315
+    call 1f
+4:
+    mov dx, 0x0040
+    call 1f
+5:
+    mov dx, 0x0273
+    call 1f
+    mov dx, 0x0387
+    call 1f
+    mov dx, 0x00B2
+    call 1f
+8:
+    pop dx
+    pop bx
+    pop ax
+9:
+    ret
+1:
+    // (DL = a cycle, DH = the mode from it: the one, if it is ahead and
+    // the loop does not go on in that mode)
+    cmp dl, ah
+    jbe 2f
+    push cx
+    mov cl, dh
+    mov ch, 1
+    shl ch, cl
+    test bl, ch
+    pop cx
+    jnz 2f
+    sub dl, ah
+    xor dh, dh
+    sub [gbf_cyc], dx
+    pop dx                      // (out of the list: not back to it)
+    jmp 8b
+2:
     ret
 
 // A loop that only reads LY and tests it: nothing changes before the next
@@ -429,6 +667,8 @@ s_wrt:
     mov dx, ax
     inc dx
     mov [drc_keyx], dx
+    shl dx, 5
+    mov [drc_hashx], dx
     mov dx, ax
     and dx, 3
     shl dx, 14

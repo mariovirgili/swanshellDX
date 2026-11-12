@@ -5,7 +5,7 @@ gbswan is the Game Boy (DMG) plugin: `make -f Makefile.ggswan GB=1`,
 `src/ggswan/gb` (`ws/` the plugin, `core/` the Game Boy, `host/` the PC tools) (none of ggswan's is compiled in, and none of gbswan's in
 the other four plugins).
 
-This is where things are in the plugin as it is (patch 157), read from
+This is where things are in the plugin as it is (patch 160), read from
 the linked `build/gbswan.elf` and from the sources, and checked by
 running the plugin in Unicorn (`host/gbrun.py`). Gio ran the video test
 of patches 153-154 in nileswan-medem: the 2 bits a pixel color mode
@@ -50,12 +50,13 @@ So gbswan cannot be one more `-D` on those sources.
 | 9E00h-9E9Fh | the Game Boy's OAM, its FE00h | |
 | 9F00h-9F7Fh | its I/O registers, as written (FF00h) | P1 as it reads |
 | 9F80h-9FFEh, 9FFFh | its high RAM and IE | |
-| A000h-A36Bh | the frame's changes of scroll, window and LCDC, by line | 146 of 6 bytes |
-| A400h-AD2Fh, B000h-B92Fh | the two lists the line interrupt works from (shown, being made) | 294 of 8 bytes |
+| A000h-A48Fh | the frame's changes of scroll, window, LCDC and BGP, by line | 146 of 8 bytes |
+| A500h-B75Fh, B800h-CA5Fh | the two lists the line interrupt works from (shown, being made) | 294 of 16 bytes |
+| CB00h-CB7Fh | the sprites' order (kept from frame to frame) and the keys being sorted | |
 | FE00h-FFFFh | the WS's palettes | 0: the backdrop, color 0's shade; 1: black (and the figures' white); 4: the background; 12, 13: the sprites |
 
-The rest (8000h-9DFFh, where the echo of the work RAM would fall, AD30h-AFFFh,
-B930h-FDFFh) is free.
+The rest (8000h-9DFFh, where the echo of the work RAM would fall, and
+CB80h-FDFFh) is free.
 
 ## The cartridge
 

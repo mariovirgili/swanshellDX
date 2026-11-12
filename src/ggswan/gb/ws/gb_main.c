@@ -44,6 +44,9 @@ void gbf_plat_map(void) {
     drc_segtab[0] = 0x2000 + (gbf_rom0_off >> 4);
     drc_segtab[1] = 0x3000 + (gbf_romx_off >> 4) - 0x400;
     drc_key0 = gb.rom0_bank + 1;
+    drc_keyx = gb.romx_bank + 1;
+    drc_hash0 = drc_key0 << 5;      // (their part of the table's hash)
+    drc_hashx = drc_keyx << 5;
     // the cartridge's RAM for the recompiled code: 1 plain RAM that can
     // be reached, 2 none or disabled (reads FFh, writes lost), 0 ask C
     // (MBC2's half bytes, MBC3's clock)

@@ -33,7 +33,7 @@ _Static_assert(offsetof(gb_t, a) == GB_A && offsetof(gb_t, c) == GB_BC && offset
 
 uint8_t drc_ah, drc_n, drc_tmp, drc_ei, drc_interp;
 uint16_t drc_link, drc_link_seg, drc_segtab[4];
-uint16_t drc_key0, drc_keyx, drc_jmp[2];
+uint16_t drc_key0, drc_keyx, drc_hash0, drc_hashx, drc_tseg = DRC_TABLE_SEG;
 uint8_t drc_must, drc_ram_ok;
 uint8_t drc_mbc_and, drc_mbc_z1, drc_p1_tab[4];
 uint16_t drc_mbc_top, drc_mbc_hi, drc_bank_mask;
@@ -80,26 +80,19 @@ static void EW(uint16_t w) {
 }
 #define ADDR(x) ((uint16_t) (uintptr_t) &(x))
 
-// the I/O registers a write to which changes nothing the dispatcher must
-// see (unless it raises an interrupt: gbd_write)
-static uint8_t io_quiet(uint8_t r) {
-    return r == GB_P1 || r == GB_SB || r == GB_SCY || r == GB_SCX || (r >= GB_DMA && r <= GB_WX);
-}
-
 // a write from translated code that is not plain memory (gb_drc_asm.s:
-// s_wrt); drc_must: whether the dispatcher is needed after it
+// s_wrt); drc_must: whether the dispatcher is needed after it: 1 an
+// interrupt can be taken now, or the time to the next event has run out
+// (or the first ROM area has another bank); 2 the second ROM area has
+// another bank (the dispatcher if the code is there); 0 on with the block
 void gbd_write(uint16_t a, uint8_t v) {
     if (a < 0x8000) {
         uint16_t k0 = drc_key0, kx = drc_keyx;
         gbf_write(a, v);
         drc_must = drc_key0 != k0 ? 1 : drc_keyx != kx ? 2 : 0;
-    } else if (a >= 0xFF00) {
-        uint8_t before = gb_io[GB_IF];
-        gbf_write(a, v);
-        drc_must = a == 0xFFFF || !io_quiet(a & 0xFF) || gb_io[GB_IF] != before;
     } else {
         gbf_write(a, v);
-        drc_must = 0;
+        drc_must = a >= 0xFF00 && ((gb.ime && (gb_ie & gb_io[GB_IF] & 0x1F)) || gbf_cyc <= 0);
     }
 }
 
@@ -217,8 +210,11 @@ static uint16_t cyc;        // cycles not yet taken off gbf_cyc
 static uint8_t live;        // the flags needed before the instruction being translated
 static uint16_t blk_pc;
 static uint8_t in_ram;
+static uint8_t after_ei;    // the instruction after EI: whatever leaves the block goes to the dispatcher
 static uint8_t idle;        // the block is a loop that waits: 1 on memory, 2 on LY, 3 on STAT
 static uint8_t idle_i;      // ... and this instruction is its jump back
+static uint8_t idle_first;  // translating that loop's first instruction (its read of STAT)
+static uint8_t idle_modes;  // (on STAT) the modes it goes round in, when that is all it depends on (else 0)
 
 static const uint8_t __far R8[8] = { 5, 1, 6, 2, 7, 3, 0xFF, 0 };  // B C D E H L - A: CH CL DH DL BH BL AL
 static const uint8_t __far R16[4] = { 1, 2, 3, 5 };                // BC DE HL SP: CX DX BX BP
@@ -275,6 +271,13 @@ static void exit_to(uint16_t target, uint8_t extra) {
     mat();
     nflush();
     uint8_t link = in_ram ? target == blk_pc : (target < 0x4000 || (blk_pc >= 0x4000 && target >= 0x4000 && target < 0x8000));
+    if (after_ei) {
+        if (cyc + extra) { E(0x83); E(0x2E); EW(ADDR(gbf_cyc)); E(cyc + extra); }
+        E(0xC7); E(0x06); EW(ADDR(gb) + GB_PC); EW(target);
+        E(0xC7); E(0x06); EW(ADDR(drc_link)); EW(0);
+        jmp_stub(ST_EXIT);
+        return;
+    }
     if (!link && !in_ram) {
         // (not to be joined: the table is looked in by the routine)
         if (cyc + extra) { E(0x83); E(0x2E); EW(ADDR(gbf_cyc)); E(cyc + extra); }
@@ -296,6 +299,11 @@ static void exit_dyn(uint8_t extra) {
     mat();
     nflush();
     if (cyc + extra) { E(0x83); E(0x2E); EW(ADDR(gbf_cyc)); E(cyc + extra); }
+    if (after_ei) {
+        E(0x89); E(0x36); EW(ADDR(gb) + GB_PC);     // mov [gb.pc], si
+        jmp_stub(ST_EXIT);
+        return;
+    }
     jmp_stub(ST_EXIT_DYN);
 }
 // the instruction at pc is the interpreter's
@@ -387,6 +395,16 @@ static void io_read(uint8_t n) {
     }
     clob();
     sub_cyc();
+    if (n == GB_STAT && idle == 3 && idle_modes && idle_first) {
+        // (the read of a loop that waits for a mode: the wait is done there)
+        call_stub(ST_WAIT_STAT);
+        E(idle_modes);
+        return;
+    }
+    if (n == GB_STAT || n == GB_LY) {
+        call_stub(n == GB_STAT ? ST_STAT : ST_LY);
+        return;
+    }
     E(0xBE); EW(0xFF00 | n);                    // mov si, FFnn
     call_stub(ST_RD);
 }
@@ -408,7 +426,7 @@ static uint8_t io_write(uint8_t n, uint16_t next) {
     E(0xBE); EW(0xFF00 | n);
     call_stub(ST_WRT);
     EW(next);
-    return !io_quiet(n);
+    return 0;
 }
 
 // push the word in the x86 register r (0xFF: the constant v)
@@ -459,6 +477,7 @@ static uint16_t unless(uint8_t c) {
 static void wait_skip(void) {
     mat();
     if (idle == 1) { E(0xC7); E(0x06); EW(ADDR(gbf_cyc)); EW(0); }
+    else if (idle == 3 && idle_modes) { }       // (its read of STAT does the waiting: io_read)
     else call_stub(idle == 2 ? ST_SKIP_LINE : ST_SKIP_MODE);
 }
 
@@ -468,12 +487,15 @@ static void translate_block(void) {
     hfix = 0;
     nst = nmem = -1;
     cyc = 0;
+    after_ei = 0;
     for (uint8_t i = 0; i < n_ins && !ended; i++) {
         uint16_t pc = i_pc[i], next = i_pc[i + 1];
         uint8_t op = gbf_read(pc), b1 = gbf_read(pc + 1), b2 = gbf_read(pc + 2);
         uint16_t nn = b1 | (uint16_t) b2 << 8;
         uint8_t x = op >> 6, y = (op >> 3) & 7, z = op & 7, p = (op >> 4) & 3;
         live = i_live[i];
+        idle_first = i == 0;
+        after_ei = i > 0 && gbf_read(i_pc[i - 1]) == 0xFB;
         if (interp_op(op, b1)) {
             exit_interp(pc);
             ended = 1;
@@ -799,7 +821,45 @@ static void translate_block(void) {
             ended = 1;
         }
     }
+    after_ei = 0;
     if (!ended) exit_to(i_pc[n_ins], 0);
+}
+
+// a loop that waits on STAT (its instructions 0 to n - 1, the last the
+// jump back): the modes it goes round in, if the mode alone decides (the
+// same whatever STAT's other bits are); 0 if not, or if it is not known
+static uint8_t wait_modes(uint8_t n) {
+    uint8_t mask = 0;
+    for (uint8_t m = 0; m < 4; m++) {
+        uint8_t taken[2];
+        for (uint8_t v = 0; v < 2; v++) {
+            uint8_t a = (v ? 0xFC : 0x80) | m, z = 0, c = 0, cknown = 0, seen = 0;
+            for (uint8_t i = 0; i < n; i++) {
+                uint8_t op = gbf_read(i_pc[i]), b1 = gbf_read(i_pc[i] + 1);
+                if (op == 0xF0 || op == 0xFA) {
+                    if (b1 != 0x41 || seen || i != 0) return 0;     // (STAT, once, first)
+                    seen = 1;
+                } else if (op == 0xE6) { a &= b1; z = !a; c = 0; cknown = 1; }
+                else if (op == 0xF6) { a |= b1; z = !a; c = 0; cknown = 1; }
+                else if (op == 0xEE) { a ^= b1; z = !a; c = 0; cknown = 1; }
+                else if (op == 0xFE) { z = a == b1; c = a < b1; cknown = 1; }
+                else if (op == 0xA7 || op == 0xB7) { z = !a; c = 0; cknown = 1; }
+                else if (op == 0x2F) { a = ~a; }
+                else if (op == 0xCB && (b1 >> 6) == 1 && (b1 & 7) == 7) { z = !(a >> ((b1 >> 3) & 7) & 1); cknown = 0; }
+                else if (op == 0x00) { }
+                else if (i == n - 1) {
+                    uint8_t cc = (op >> 3) & 3;
+                    if (cc >= 2 && !cknown) return 0;
+                    taken[v] = cc == 0 ? !z : cc == 1 ? z : cc == 2 ? !c : c;
+                } else {
+                    return 0;
+                }
+            }
+        }
+        if (taken[0] != taken[1]) return 0;
+        if (taken[0]) mask |= 1 << m;
+    }
+    return mask == 15 ? 0 : mask;
 }
 
 // the instructions of the block at pc, and the flags needed before each
@@ -815,11 +875,6 @@ static void scan_block(uint16_t pc) {
         fa[n_ins++] = f;
         pc += op_len[op];
         if ((f & F_END) || after_ei) break;
-        // (the I/O registers written by LDH (n), A that end the block)
-        if (op == 0xE0) {
-            uint8_t n = gbf_read(pc - 1);
-            if (!((n >= 0x80 && n != 0xFF) || (n >= 0x10 && n < 0x40) || io_quiet(n))) break;
-        }
         if (op == 0xFB) after_ei = 1;
         if (in_ram && pc - blk_pc > 48) break;
     }
@@ -839,6 +894,7 @@ static void scan_block(uint16_t pc) {
                 if (t == blk_pc && (loaded || (i == 0 && (op == 0x18 || op == 0xC3)))) {
                     idle = kind;
                     idle_i = i;
+                    idle_modes = kind == 3 && op != 0x18 && op != 0xC3 ? wait_modes(i + 1) : 0;
                 }
                 break;
             } else if (op == 0xF0 || op == 0xFA) {

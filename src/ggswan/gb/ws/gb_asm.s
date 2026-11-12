@@ -45,11 +45,13 @@ gb_vblank_entry:
     iret
 
 /*
- * The line interrupt: the next entry of the list of changes (8 bytes: the
- * WonderSwan line to do it at or FFh for no more, screen 2's X and Y
+ * The line interrupt: the next entry of the list of changes (16 bytes:
+ * the WonderSwan line to do it at or FFh for no more, screen 2's X and Y
  * scroll, the screens' maps, the display control, screen 1's X and Y
- * scroll, the right edge of what is seen of screen 2), which shows from
- * the line after. Then the interrupt is set for the entry after.
+ * scroll, the right edge of what is seen of screen 2, then the
+ * background's four colors: the backdrop and palette 4's 1-3), which
+ * shows from the line after. Then the interrupt is set for the entry
+ * after.
  */
     .global gb_line_entry
 gb_line_entry:
@@ -70,7 +72,15 @@ gb_line_entry:
     out 0x11, al
     mov al, ss:[bx + 7]
     out 0x0A, al
-    add bx, 8
+    mov ax, ss:[bx + 8]
+    mov ss:[0xFE00], ax
+    mov ax, ss:[bx + 10]
+    mov ss:[0xFE82], ax
+    mov ax, ss:[bx + 12]
+    mov ss:[0xFE84], ax
+    mov ax, ss:[bx + 14]
+    mov ss:[0xFE86], ax
+    add bx, 16
     mov ss:[gbv_split_ptr], bx
     mov al, ss:[bx]
     out 0x03, al
@@ -89,7 +99,8 @@ gb_line_entry:
  * A WS sprite: tile, attributes (palette 12 or 13, over screen 2 unless
  * the Game Boy has it behind the background, the flips), Y, X.
  */
-#define SPR_ORDER 0xB940        /* 40 bytes: the sprites in order, as offsets into the OAM */
+#define SPR_ORDER 0xCB00        /* 40 bytes: the sprites in last frame's order, as offsets into the OAM */
+#define SPR_KEYS  0xCB30        /* 40 words being sorted: X (FFh: not on the screen), offset */
     .global gbv_sprites_asm
 gbv_sprites_asm:
     push si
@@ -100,10 +111,15 @@ gbv_sprites_asm:
     pop es
     xor ah, ah
     mov bp, ax                  // tall
-    xor cx, cx                  // sprites found
-    mov si, 0x9E00
+    // the 40 sprites, in the order they had a frame ago (few change
+    // places from one frame to the next), each put in its place among
+    // those before it: by X, then by its place in the OAM; the ones not
+    // on the screen last
+    xor si, si
 1:
-    mov ax, ss:[si]             // AL = Y, AH = X
+    xor bx, bx
+    mov bl, ss:[SPR_ORDER + si]
+    mov ax, ss:[0x9E00 + bx]    // AL = Y, AH = X
     test al, al
     jz 5f
     cmp al, 160
@@ -113,46 +129,47 @@ gbv_sprites_asm:
     cmp ah, 168
     jae 5f
     test bp, bp
-    jnz 2f
+    jnz 6f
     cmp al, 8
-    jbe 5f                      // (8 x 8, above the screen)
-2:
-    // its place: after the last one not to its right
-    mov bx, cx
-3:
-    test bx, bx
-    jz 4f
-    mov dl, ss:[SPR_ORDER - 1 + bx]
-    xor dh, dh
-    mov di, dx
-    cmp ss:[0x9E01 + di], ah
-    jbe 4f
-    mov ss:[SPR_ORDER + bx], dl
-    dec bx
-    jmp 3b
-4:
-    mov dx, si
-    mov ss:[SPR_ORDER + bx], dl     // (the low byte: 00h-9Ch)
-    inc cx
+    ja 6f                       // (8 x 8, above the screen: not seen)
 5:
-    add si, 4
-    cmp si, 0x9EA0
+    mov ah, 0xFF
+6:
+    mov al, bl
+    mov di, si
+    shl di, 1
+2:
+    test di, di
+    jz 3f
+    mov dx, ss:[SPR_KEYS - 2 + di]
+    cmp dx, ax
+    jbe 3f
+    mov ss:[SPR_KEYS + di], dx
+    sub di, 2
+    jmp 2b
+3:
+    mov ss:[SPR_KEYS + di], ax
+    inc si
+    cmp si, 40
     jb 1b
 
     mov di, 0x5800
     xor dx, dx                  // WS sprites written
     xor si, si
-    jcxz 9f
 6:
-    xor bx, bx
-    mov bl, ss:[SPR_ORDER + si]
+    mov bx, ss:[SPR_KEYS + si]
+    shr si, 1
+    mov ss:[SPR_ORDER + si], bl
+    shl si, 1
+    cmp bh, 0xFF
+    je 8f
+    xor bh, bh
     mov ax, ss:[0x9E02 + bx]    // AL = tile, AH = flags
     push si
     mov si, ax
     shr si, 12                  // the flags' high half
     mov ah, cs:[spr_attr + si]
     pop si
-    push cx
     mov cx, ss:[0x9E00 + bx]    // CL = Y, CH = X
     sub cl, 16
     add ch, 24
@@ -182,10 +199,9 @@ gbv_sprites_asm:
     stosw
     add dx, 2
 8:
-    pop cx
-    inc si
-    loop 6b
-9:
+    add si, 2
+    cmp si, 80
+    jb 6b
     mov ax, dx
     pop es
     pop bp

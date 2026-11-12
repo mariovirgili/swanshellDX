@@ -30,7 +30,7 @@ void gbd_enter(uint16_t off, uint16_t seg);     // gb_drc_asm.s: runs translated
 extern uint8_t drc_ah, drc_n, drc_tmp, drc_ei, drc_interp;
 extern uint16_t drc_link, drc_link_seg, drc_segtab[4];
 extern uint16_t drc_key0, drc_keyx;     // the table's key of the ROM bank at 0000h and at 4000h
-extern uint16_t drc_jmp[2];
+extern uint16_t drc_hash0, drc_hashx, drc_tseg;     // the keys' part of the table's hash; the table's segment
 extern uint8_t drc_must, drc_ram_ok;
 extern uint8_t drc_mbc_and, drc_mbc_z1, drc_p1_tab[4];
 extern uint16_t drc_mbc_top, drc_mbc_hi, drc_bank_mask;
@@ -58,6 +58,10 @@ extern const uint16_t __far drc_stubs_size;
 #define ST_SKIP_LINE 33     /* a loop that waits on LY: the time to the next line passed */
 #define ST_SKIP_MODE 36     /* ... on STAT: to the next change of mode */
 #define ST_P1        39     /* P1 = AL (the keys' rows selected) */
-#define ST_COUNT     14
+#define ST_WAIT_MODE 42     /* a loop on STAT's mode: to the first cycle of a mode not in the byte after the call */
+#define ST_STAT      45     /* AL = STAT */
+#define ST_LY        48     /* AL = LY */
+#define ST_WAIT_STAT 51     /* AL = STAT, in a loop that goes round while the mode is in the byte after the call: at the first cycle it is not */
+#define ST_COUNT     18
 
 #endif

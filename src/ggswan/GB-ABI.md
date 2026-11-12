@@ -65,12 +65,11 @@ window.
   registers. LY and STAT are read by the routine itself, from the time.
 - **A constant address** is sorted out when the block is translated.
 - A write to an I/O register or to the cartridge's registers may not
-  come back: when an interrupt may be due, the time's events have
-  changed or the code's own ROM bank has (`drc_must`), the block is
-  left for the next instruction through the dispatcher. The word after
-  such a call is that instruction's address. The scroll, the palettes,
-  the DMA register, P1 and the ROM bank written from the first ROM
-  area go on in the block.
+  come back: when an interrupt can now be taken, the time to the next
+  event has run out or the code's own ROM bank has changed
+  (`drc_must`), the block is left for the next instruction through the
+  dispatcher. The word after such a call is that instruction's
+  address. Otherwise the block goes on.
 
 ## Time
 
@@ -90,9 +89,8 @@ event (memory: only an interrupt writes it) or the next line or mode
 
 ## Blocks
 
-- A block ends at a jump, call or return, at a write to an I/O register
-  with a constant address, after the instruction that follows EI, or
-  after 40 instructions or about 90 cycles.
+- A block ends at a jump, call or return, after the instruction that
+  follows EI, or after 40 instructions or about 90 cycles.
 - The table (PSRAM, segment 4000h, 4096 places of 8 bytes) is keyed by
   address and ROM bank + 1 (FFFFh for code in RAM). The code is in
   segments 5000h-C000h; when the last is full everything is forgotten.

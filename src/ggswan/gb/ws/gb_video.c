@@ -23,8 +23,9 @@
  * instead), and so is what is to the left of the edge behind the
  * background's color 0.
  *
- * Not done yet: the palettes changed in the middle of the picture (the
- * last ones are the frame's); the 10 sprites to a line.
+ * The background's palette is set at the lines too. Not done yet: the
+ * sprites' palettes changed in the middle of the picture (the last ones
+ * are the frame's); the 10 sprites to a line.
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 #include <string.h>
@@ -46,19 +47,19 @@
 
 /* The changes of the frame being run, as the Game Boy's registers. */
 typedef struct {
-    uint8_t line, lcdc, scx, scy, wy, wx;
+    uint8_t line, lcdc, scx, scy, wy, wx, bgp, pad;
 } raw_t;
 // (a program may change something on every line: room for all of them,
 // in the internal RAM above the Game Boy's: GB-MEMORY-MAP.md)
 #define RAW_MAX 146
-#define raw ((raw_t*) 0xA000)
+#define raw ((raw_t*) 0xA000)        // (146 of 8 bytes: to A48Fh)
 static uint8_t raw_n;
 
-/* What the interrupts do: 8 bytes a change (gb_asm.s). Two lists: the one
+/* What the interrupts do: 16 bytes a change (gb_asm.s). Two lists: the one
    being shown and the one being made. */
 #define OUT_MAX (RAW_MAX * 2 + 2)
-#define list_a ((uint8_t*) 0xA400)
-#define list_b ((uint8_t*) 0xB000)
+#define list_a ((uint8_t*) 0xA500)     // (294 of 16 bytes: to B75Fh; the other to CA5Fh)
+#define list_b ((uint8_t*) 0xB800)
 static uint8_t *volatile list_shown = list_a;
 static uint8_t *list_made = list_b;
 static volatile uint8_t list_ready;
@@ -98,8 +99,12 @@ void gb_vblank_irq(void) {
     outportb(0x10, l[5]);
     outportb(0x11, l[6]);
     outportb(0x0A, l[7]);
-    gbv_split_ptr = (uint8_t*) l + 8;
-    outportb(WS_DISPLAY_LINE_IRQ_PORT, l[8]);
+    WS_DISPLAY_COLOR_MEM(0)[0] = *(const uint16_t*) (l + 8);
+    WS_DISPLAY_COLOR_MEM(4)[1] = *(const uint16_t*) (l + 10);
+    WS_DISPLAY_COLOR_MEM(4)[2] = *(const uint16_t*) (l + 12);
+    WS_DISPLAY_COLOR_MEM(4)[3] = *(const uint16_t*) (l + 14);
+    gbv_split_ptr = (uint8_t*) l + 16;
+    outportb(WS_DISPLAY_LINE_IRQ_PORT, l[16]);
     ws_int_ack(WS_INT_ACK_VBLANK | WS_INT_ACK_LINE_MATCH);
 }
 
@@ -127,11 +132,12 @@ static void raw_first(void) {
     raw[0].scy = gb_io[GB_SCY];
     raw[0].wy = gb_io[GB_WY];
     raw[0].wx = gb_io[GB_WX];
+    raw[0].bgp = gb_io[GB_BGP];
     raw_n = 1;
 }
 
 void gbv_reg(uint8_t reg, uint8_t v) {
-    if (reg > GB_SCX && reg < GB_WY) return;    // (LY, LYC, DMA, the palettes: at the frame's end)
+    if (reg > GB_SCX && reg < GB_WY && reg != GB_BGP) return;   // (LY, LYC, DMA, the sprites' palettes: at the frame's end)
     uint8_t line = gbf_draw_line();
     if (line >= 144) return;                    // (after the last line: the next frame's start has it)
     raw_t *r = &raw[raw_n - 1];
@@ -146,9 +152,12 @@ void gbv_reg(uint8_t reg, uint8_t v) {
     case GB_SCX: r->scx = v; break;
     case GB_SCY: r->scy = v; break;
     case GB_WY: r->wy = v; break;
+    case GB_BGP: r->bgp = v; break;
     default: r->wx = v; break;
     }
 }
+
+static const uint16_t __far shades[4] = { 0xFFF, 0xAAA, 0x555, 0x000 };
 
 #define BASE_BORDER 0x08        // (port 07h's low half: screen 1 at 4000h)
 static uint8_t *out;
@@ -157,7 +166,7 @@ static uint8_t *out;
 static void emit(uint8_t line, const raw_t *s, uint8_t what, uint8_t win_y) {
     uint8_t *o = out;
     // (the same line twice: the later one)
-    if (o != list_made && o[-8] == (uint8_t) (line - 1)) o -= 8;
+    if (o != list_made && o[-16] == (uint8_t) (line - 1)) o -= 16;
     uint8_t ctrl = CTRL_BASE;
     if (s->lcdc & 0x80) {
         if (s->lcdc & 1) ctrl |= WS_DISPLAY_CTRL_SCR2_ENABLE;
@@ -184,7 +193,12 @@ static void emit(uint8_t line, const raw_t *s, uint8_t what, uint8_t win_y) {
         }
     }
     o[4] = ctrl;
-    out = o + 8;
+    // the background's palette from this line: color 0's shade (the
+    // backdrop's), then colors 1-3
+    uint16_t *c = (uint16_t*) (o + 8);
+    for (uint8_t i = 0; i < 4; i++)
+        c[i] = shades[(s->bgp >> (i * 2)) & 3];
+    out = o + 16;
 }
 
 // the frame's changes as the interrupts' list
@@ -209,13 +223,10 @@ static void make_list(void) {
     out[0] = 0xFF;
 }
 
-static const uint16_t __far shades[4] = { 0xFFF, 0xAAA, 0x555, 0x000 };
-
+// the sprites' palettes (the background's is in the lists: it may change
+// at a line)
 static void palettes(void) {
-    uint8_t p = gb_io[GB_BGP];
-    WS_DISPLAY_COLOR_MEM(0)[0] = shades[p & 3];
-    for (uint8_t i = 1; i < 4; i++)
-        WS_DISPLAY_COLOR_MEM(4)[i] = shades[(p >> (i * 2)) & 3];
+    uint8_t p;
     p = gb_io[GB_OBP0];
     for (uint8_t i = 1; i < 4; i++)
         WS_DISPLAY_COLOR_MEM(12)[i] = shades[(p >> (i * 2)) & 3];
@@ -340,6 +351,8 @@ void gbv_reset(void) {
     gbv_tiles_8000 = gb_io[GB_LCDC] >> 4 & 1;
     rebuild_maps();
     memset(SPR_TABLE, 0, 0x200);
+    for (uint8_t i = 0; i < 40; i++)        // (gb_asm.s: the sprites' order, to start with the OAM's)
+        ((uint8_t*) 0xCB00)[i] = i * 4;
     outportb(WS_SPR_BASE_PORT, 0x5800 >> 9);
     outportb(WS_SPR_FIRST_PORT, 0);
     outportb(WS_SPR_COUNT_PORT, 0);

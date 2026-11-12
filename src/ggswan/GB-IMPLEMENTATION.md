@@ -44,7 +44,7 @@ background and the window, switched at the right lines by the line
 interrupt, with the scroll the program gave each line; the sprites are
 the WonderSwan's.
 
-## Where it is (patch 159)
+## Where it is (patch 160)
 
 The CPU is a recompiler (`gb/ws/gb_drc.c`, `gb_drc_asm.s`; `GB-ABI.md`),
 there is sound (`gb/ws/gb_sound.c`: what it does and does not, at its
@@ -55,44 +55,50 @@ V30MZ costs): **nothing of gbswan since the video test has been run on a
 WonderSwan or in nileswan-medem**, the sound has not been heard by
 anybody, and the menu's part of the saves was only compiled.
 
-Right: the 11 ROMs of Blargg's `cpu_instrs` say "Passed" run by the
-plugin (their code is run from RAM, so through the translator). After
-713 Game Boy frames with no keys (`gbcmp.py`) the plugin's 160 x 144 is
-the PC's pixel for pixel in six games (Balloon Kid, Batman: Return of
-the Joker, R-Type, Super Mario Land, Super Mario Land 2, Yoshi); 6
-pixels differ in Bubble Ghost (not looked into), 27 in Castlevania II's
-moving title. With keys the games go on into play; that is looked at,
-not compared.
+Right, in the plugin:
+- the 11 ROMs of Blargg's `cpu_instrs` say "Passed" (their code is run
+  from RAM, so through the translator);
+- 13 of Mooneye's cartridge tests say "Test OK" (MBC1: bits_bank1,
+  bits_bank2, bits_mode, bits_ramg, ram_64kb, ram_256kb, rom_512kb,
+  rom_1Mb; MBC2: bits_romb, rom_512kb, ram; MBC5: rom_512kb, rom_1Mb);
+- after 713 Game Boy frames with no keys (`gbcmp.py`) the 160 x 144 is
+  the PC's pixel for pixel in six games; 6 pixels differ in Bubble
+  Ghost (not looked into), Castlevania II's title is moving;
+- with keys, by Game Boy frames on both sides (`GBRUN_GBTIME`), at
+  frame 840: Balloon Kid, Castlevania II and Yoshi the PC's pixel for
+  pixel in play; Super Mario Land 3 pixels, Bubble Ghost 6, Super Mario
+  Land 2 140; Batman in the middle of a fade and R-Type with its stars
+  a frame apart (what the plugin shows is a frame behind for the scroll
+  and the palette and not for the tiles and sprites: looked at, taken
+  for that, not proved).
 
 Fast enough? A Game Boy frame's time is 51,430 V30MZ cycles. Cycles a
-Game Boy frame, WonderSwan frames 900-1100, after START and a few keys,
-sound included (the screen each was at is in the third column):
+Game Boy frame over Game Boy frames 700-860, the same keys at the same
+Game Boy frames for every build, sound included:
 
-| game | patch 158 | patch 159 | |
+| game | patch 159 | patch 160 | |
 |---|---|---|---|
-| Castlevania II | 469,996 | 27,178 | title: full speed |
-| Balloon Kid | 62,238 | 30,062 | first level: full speed |
-| Super Mario Land | 40,072 | 30,998 | first level: full speed |
-| Bubble Ghost | ? | 33,780 | title: full speed |
-| Batman: Return of the Joker | 30,988 | 48,058 | a later screen than in 158: full speed, just |
-| Yoshi | 510,361 | 54,636 | game screen, paused: 94% |
-| R-Type | 110,343 | 64,609 | first level: 80% |
-| Super Mario Land 2 | 895,374 | 69,778 | the map: 74% |
+| Super Mario Land 2 (choosing a file) | 17,212 | 18,192 | full speed |
+| Balloon Kid | 30,071 | 26,461 | full speed |
+| Super Mario Land | 32,780 | 32,623 | full speed |
+| Bubble Ghost (title) | 33,117 | 33,250 | full speed |
+| Batman: Return of the Joker | 68,590 | 45,927 | full speed (was 75%) |
+| Yoshi | 54,982 | 53,694 | 96% |
+| R-Type | 69,048 | 58,492 | 88% (was 74%) |
+| Castlevania II (first level) | 72,209 | 64,653 | 80% (was 71%) |
 
-What made the difference: the STAT interrupt's events only where its
-signal can rise (one a frame for the vertical blank's, not four a
-line); loops that wait told apart from loops that merely jump back to
-their start (a fault of 158: Balloon Kid's water was a frame out); P1,
-the ROM bank register, the cartridge's RAM and a stack kept in it
-(Super Mario Land 2) done by the assembly routines, not C; writes to
-the scroll, the palettes and the DMA register that go on in the block;
-the sprite table made in assembly (in C it took 8-13 thousand cycles a
-frame); the OAM DMA as one copy.
+**The table patch 159 came with was not a fair comparison**: its keys
+were at WonderSwan frames, so a faster or slower build was measured at
+another place in the game, and one build against another meant
+nothing. The 159 column above is 159 measured again this way; by it
+Batman, R-Type and Castlevania II were slower in play than 159's table
+said.
 
-What is still slow, by the profile: R-Type waits for the horizontal
-blank before each byte it writes to the video memory (a quarter of its
-time is reading STAT); Yoshi's and Super Mario Land 2's time is spread
-over the translated code and the memory routines.
+What is still slow, by the profile: R-Type and Castlevania II wait for
+the horizontal blank before each byte they write to the video memory
+(a tenth to a fifth of their time is that wait, already one routine
+call a wait); Yoshi's time is in the translated code of a loop that
+reads the keys all frame long.
 
 START + Y4 (Y left) shows figures in the black at the left, once a
 second: FPS (Game Boy frames shown), then hundredths of the time in
@@ -101,5 +107,6 @@ translated code and its routines (RUN), the dispatcher and events
 frame's time (IDL); blocks translated (BLK, hex), times the code was
 forgotten (FLS).
 
-Not done: the 10 sprites to a line, palettes changed inside a frame,
-MBC3's clock, ROMs over 1 MiB, cartridge RAM over 32 KiB.
+Not done: the 10 sprites to a line, the sprites' palettes changed
+inside a frame, MBC3's clock, ROMs over 1 MiB, cartridge RAM over
+32 KiB.
