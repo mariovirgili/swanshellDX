@@ -6,7 +6,7 @@ emulated by a dynamic recompiler (Z80 to V30MZ code), with the original
 interpreter kept for the parts that need it. The Game Gear video memory is
 mapped onto the WonderSwan's own tile and screen hardware.
 
-Status: fairly stable (patch 165). It has been tested mostly in the
+Status: fairly stable (patch 166). It has been tested mostly in the
 nileswan-medem emulator and with the host test tools; tests on real
 hardware are still to come.
 
@@ -365,7 +365,7 @@ it are listed in order without one.
 - lighter DYN lookup and class routine for deferred tile bytes
 - OUTI runs to CRAM handled in the run routine
 
-### Patches 90-165
+### Patches 90-166
 
 | Patch | Change |
 |---|---|
@@ -445,3 +445,4 @@ it are listed in order without one.
 | 163 | gbswan after its first run in nileswan-medem (Gio, patch 161): the pictures right, the games in play far slower than the scenes measured here said (Yoshi 8 frames a second, Super Mario Land 2 27-35). In the recompiler now: DAA; RLC, RL, SLA, SWAP, SRL, RES, SET and the like on (HL) (they went to the interpreter, an instruction at a time); the high RAM through HL, BC, DE with no routine; a pointer loaded with a constant in the block (LD HL, nn, then INC and DEC) is that address, with nothing checked; a constant address in the cartridge's RAM and a stack there, in line. Yoshi in play 349,589 cycles a frame to 53,446, Super Mario Land 2 in its first level 82,174 to 59,132 (51,430 is full speed: both still over). START + Y4 (Y left) shows the patch number too (PAT). Not run on a WonderSwan |
 | 164 | gbswan: a scrolling picture went a step back every few frames (Gio: Super Mario Land's scroll in jerks). Two faults in how a frame's list of scroll and map changes reaches the screen. The list was marked ready after the wait for the frame's time, by when the vertical blank interrupt, served during the wait, could have shown it already: the mark then stood for the other list, an older frame's, shown next. And the frames' time was counted in whole WonderSwan frames, so every Game Boy frame started at a vertical blank and ended near the next: a little more work and its picture missed it. Now the list is ready when made, one not shown yet is not made over, and the frames start 200.91 WonderSwan lines apart by the line counter. In `gbrun.py`, walking right in Super Mario Land, screen 2's scroll at each WonderSwan frame: before 252 252 254 255 0 0 255 1 (back and forth), now every value once and in order, one frame in four or five shown twice (59.7 pictures a second on a 75.5 Hz screen). Not run on a WonderSwan |
 | 165 | gbswan: the blocks' table has 8,192 places (4,096: with about 3,000 blocks a new one found no place in 8 tries and everything was forgotten and translated again, which is the pause Gio saw in Castlevania II with FLS at 1); the translator reads a block's bytes once, from where they are; a pointer the block loads into the cartridge's RAM is accessed in line; the OAM copied from the cartridge's RAM in one move (Super Mario Land 2, every frame). Super Mario Land 2 in its first level 59,132 cycles a frame to 55,454, Yoshi in play 53,446 to 52,490 (51,430 is full speed). Balloon Kid in play measured for the first time: 62,267, of which about 17,000 are the translation of the two new blocks a frame that scene meets (some 9,000 cycles a block: the translator is slow, and that is what a game does when something new comes on the screen). Not run on a WonderSwan |
+| 166 | gbswan: six scenes in play are now what is measured (Castlevania II's Crystal Castle, Batman's and R-Type's first levels, Yoshi, Super Mario Land 2's first level, Balloon Kid's stage 1: `GB-IMPLEMENTATION.md`). The translated code calls its routines where they are (it went through a table of jumps: 4 cycles a call, thousands of calls a frame); a return's lookup starts from the flags of the cycles' subtraction; a loop that only counts BC down is passed over to its last turn; the translator's first pass does less for each instruction. Cycles a frame in play, 165 then 166 (51,430 is full speed): Castlevania II 63,426 to 60,906, Batman 63,630 to 61,353, R-Type 54,691 to 53,042, Super Mario Land 2 55,454 to 53,013, Balloon Kid 62,267 to 58,809, Yoshi 52,490 to 50,548: only Yoshi under a frame's time. Not run on a WonderSwan |

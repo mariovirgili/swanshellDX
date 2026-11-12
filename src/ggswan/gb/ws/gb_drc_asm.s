@@ -87,6 +87,10 @@ drc_stubs:
     .word s_ly_e - . - 2
     .byte 0xE9
     .word s_wait_stat - . - 2
+    .byte 0xE9
+    .word s_delay_bc - . - 2
+    .byte 0xE9
+    .word s_exit_dyn_f - . - 2
 
 // leave for the address in SI. When there are cycles left and the
 // address is in ROM, the block is looked for here: the table's first
@@ -95,6 +99,7 @@ drc_stubs:
 // does not come here: gb_drc.c, after_ei)
 s_exit_dyn:
     cmp word ptr [gbf_cyc], 0
+s_exit_dyn_f:
     jle 9f
     test si, si
     js 9f
@@ -631,6 +636,36 @@ s_skip_mode:
 1:
     ret
 
+// A loop that only counts BC down (DEC BC / LD A, B / OR C / JR NZ, 7
+// cycles a turn: a program's way of waiting). At its start: as many turns
+// as BC and the time to the next event allow, less the last one, are taken
+// off BC and off the time at once; the block's own code then does a turn
+// as ever (so the flags, A and the leaving are its).
+s_delay_bc:
+    push ax
+    push dx
+    mov ax, [gbf_cyc]
+    dec ax
+    jle 9f
+    xor dx, dx
+    mov si, 7
+    div si                      // AX = the turns there is time for
+    mov si, cx
+    dec si                      // BC - 1 (BC = 0 counts 65536)
+    cmp ax, si
+    jbe 1f
+    mov ax, si
+1:
+    sub cx, ax
+    mov si, ax
+    shl ax, 3
+    sub ax, si
+    sub [gbf_cyc], ax
+9:
+    pop dx
+    pop ax
+    ret
+
 // DAA. AL = A, AH = the flags (Z 40h, H 10h, C 01h), N in drc_n. After an
 // addition: 60h more if C or A over 99h (C set), 6 more if H or the low
 // digit over 9. After a subtraction: 60h less if C, 6 less if H. H
@@ -1016,3 +1051,27 @@ drc_stubs_end:
     .global drc_stubs_size
 drc_stubs_size:
     .word drc_stubs_end - drc_stubs
+// where each routine is in the copy, in the table's order: the translator
+// calls them there (through the table's jump each call was 4 cycles more)
+    .global drc_stub_offs
+drc_stub_offs:
+    .word s_exit - drc_stubs
+    .word s_exit_dyn - drc_stubs
+    .word s_rd - drc_stubs
+    .word s_rdt - drc_stubs
+    .word s_wrt - drc_stubs
+    .word s_push - drc_stubs
+    .word s_pop - drc_stubs
+    .word s_push_af - drc_stubs
+    .word s_pop_af - drc_stubs
+    .word s_inc_hl - drc_stubs
+    .word s_dec_hl - drc_stubs
+    .word s_skip_line - drc_stubs
+    .word s_skip_mode - drc_stubs
+    .word s_p1 - drc_stubs
+    .word s_daa - drc_stubs
+    .word s_stat_e - drc_stubs
+    .word s_ly_e - drc_stubs
+    .word s_wait_stat - drc_stubs
+    .word s_delay_bc - drc_stubs
+    .word s_exit_dyn_f - drc_stubs

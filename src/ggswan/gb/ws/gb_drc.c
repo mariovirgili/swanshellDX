@@ -172,7 +172,7 @@ static uint8_t interp_op(uint8_t op, uint8_t cb) {
     }
 }
 
-static uint8_t op_flags(uint8_t op, uint8_t cb) {
+__attribute__((noinline)) static uint8_t op_flags(uint8_t op, uint8_t cb) {
     if (interp_op(op, cb)) return F_END | F_OUT;
     uint8_t x = op >> 6, y = (op >> 3) & 7, z = op & 7;
     if (x == 1) return z == 6 ? 0 : y == 6 ? F_OUT : 0;
@@ -283,13 +283,14 @@ static void nflush(void) {
         nmem = nst;
     }
 }
+static uint16_t stub_off[ST_COUNT];     // (drc_stub_offs, copied: gbd_init)
 static void call_stub(uint8_t st) {
     E(0xE8);
-    EW(st - (code_top + 2));
+    EW(stub_off[st / 3] - (code_top + 2));
 }
 static void jmp_stub(uint8_t st) {
     E(0xE9);
-    EW(st - (code_top + 2));
+    EW(stub_off[st / 3] - (code_top + 2));
 }
 // the cycles so far off the count (the V30MZ's flags are changed)
 static void sub_cyc(void) {
@@ -315,7 +316,7 @@ static void exit_to(uint16_t target, uint8_t extra) {
         // (not to be joined: the table is looked in by the routine)
         if (cyc + extra) { E(0x83); E(0x2E); EW(ADDR(gbf_cyc)); E(cyc + extra); }
         E(0xBE); EW(target);                    // mov si, target
-        jmp_stub(ST_EXIT_DYN);
+        jmp_stub(cyc + extra ? ST_EXIT_DYN_F : ST_EXIT_DYN);
         return;
     }
     E(0x83); E(cyc + extra ? 0x2E : 0x3E); EW(ADDR(gbf_cyc)); E(cyc + extra);     // sub (or cmp) word [gbf_cyc], n
@@ -337,7 +338,7 @@ static void exit_dyn(uint8_t extra) {
         jmp_stub(ST_EXIT);
         return;
     }
-    jmp_stub(ST_EXIT_DYN);
+    jmp_stub(cyc + extra ? ST_EXIT_DYN_F : ST_EXIT_DYN);
 }
 // the instruction at pc is the interpreter's
 static void exit_interp(uint16_t pc) {
@@ -645,13 +646,17 @@ static void wait_skip(void) {
     else call_stub(idle == 2 ? ST_SKIP_LINE : ST_SKIP_MODE);
 }
 
-static void translate_block(void) {
+__attribute__((noinline)) static void translate_block(void) {
     uint8_t ended = 0;
     fl = 0;
     hfix = 0;
     nst = nmem = -1;
     cyc = 0;
     after_ei = 0;
+    // (a countdown of BC, a program's delay: gb_drc_asm.s, s_delay_bc)
+    if (!in_ram && n_ins >= 4 && rb(blk_pc) == 0x0B && rb(blk_pc + 1) == 0x78 && rb(blk_pc + 2) == 0xB1
+        && rb(blk_pc + 3) == 0x20 && rb(blk_pc + 4) == 0xFB)
+        call_stub(ST_DELAY_BC);
     for (uint8_t i = 0; i < n_ins && !ended; i++) {
         uint16_t pc = i_pc[i], next = i_pc[i + 1];
         uint8_t op = rb(pc), b1 = rb(pc + 1), b2 = rb(pc + 2);
@@ -1156,21 +1161,31 @@ static uint8_t wait_modes(uint8_t s, uint8_t n) {
 }
 
 // the instructions of the block at pc, and the flags needed before each
-static void scan_block(uint16_t pc) {
+__attribute__((noinline)) static void scan_block(uint16_t pc) {
     uint8_t fa[MAXI];
     n_ins = 0;
     uint8_t after_ei = 0, total = 0;
     uint16_t kv[3] = { 0, 0, 0 };
-    uint8_t kn[3] = { 0, 0, 0 };
+    uint8_t kn[3] = { 0, 0, 0 }, any = 0, has41 = 0;
     while (n_ins < MAXI && total < 90) {
         uint8_t op = rb(pc);
         total += op_cyc[op] + 2;
         uint8_t cb = rb(pc + 1);
         uint8_t f = op_flags(op, cb);
-        for (uint8_t k = 0; k < 3; k++)
-            i_dir[k][n_ins] = !kn[k] ? 0 : (kv[k] >= 0xC000 && kv[k] < 0xE000) || (kv[k] >= 0xFF80 && kv[k] < 0xFFFF) ? kv[k] - 0x6000
-                : kv[k] >= 0xA000 && kv[k] < 0xC000 ? kv[k] : 0;    // (A000h up: the cartridge's RAM, the address itself)
-        {
+        i_dir[0][n_ins] = i_dir[1][n_ins] = i_dir[2][n_ins] = 0;
+        if (op == 0xF0 && cb == 0x41 && n_ins) has41 = 1;
+        if ((op & 0xCF) == 0x01 && op < 0x30) {
+            // LD rr, nn: known from here
+            uint8_t rr = op >> 4;
+            kn[rr] = 1;
+            kv[rr] = cb | (uint16_t) rb(pc + 2) << 8;
+            any = 1;
+        } else if (any) {
+            // (only once one of them is known: most blocks never come here)
+            for (uint8_t k = 0; k < 3; k++)
+                if (kn[k])
+                    i_dir[k][n_ins] = (kv[k] >= 0xC000 && kv[k] < 0xE000) || (kv[k] >= 0xFF80 && kv[k] < 0xFFFF) ? kv[k] - 0x6000
+                        : kv[k] >= 0xA000 && kv[k] < 0xC000 ? kv[k] : 0;    // (A000h up: the cartridge's RAM, the address itself)
             // the flags again, for an access that cannot leave the block
             uint8_t ox = op >> 6, oy = (op >> 3) & 7, oz = op & 7;
             if (i_dir[2][n_ins] && i_dir[2][n_ins] < 0xA000) {
@@ -1182,8 +1197,7 @@ static void scan_block(uint16_t pc) {
             if ((op == 0x02 && i_dir[0][n_ins] && i_dir[0][n_ins] < 0xA000) || (op == 0x12 && i_dir[1][n_ins] && i_dir[1][n_ins] < 0xA000)) f = 0;
             // what the instruction does to BC, DE, HL
             uint8_t rr = (op >> 4) & 3;
-            if (ox == 0 && oz == 1 && !(op & 8) && rr < 3) { kn[rr] = 1; kv[rr] = cb | (uint16_t) rb(pc + 2) << 8; }
-            else if (ox == 0 && oz == 3 && rr < 3) kv[rr] += (op & 8) ? -1 : 1;
+            if (ox == 0 && oz == 3 && rr < 3) kv[rr] += (op & 8) ? -1 : 1;
             else if (op == 0x22 || op == 0x2A) kv[2]++;
             else if (op == 0x32 || op == 0x3A) kv[2]--;
             else if (ox == 0 && oz == 1 && (op & 8)) kn[2] = 0;                        // ADD HL, rr
@@ -1237,7 +1251,7 @@ static void scan_block(uint16_t pc) {
     // the same wait further on in the block (LDH A, (41h), tests, a
     // conditional jump back to that read): the read does the waiting too
     n_stat = 0;
-    if (!in_ram) {
+    if (!in_ram && has41) {
         for (uint8_t s = 1; s + 1 < n_ins && n_stat < 3; s++) {
             if (rb(i_pc[s]) != 0xF0 || rb(i_pc[s] + 1) != 0x41) continue;
             for (uint8_t i = s + 1; i < n_ins && i < s + 6; i++) {
@@ -1276,7 +1290,7 @@ static blk_t __far *find(uint16_t pc, uint16_t key) {
     return 0;
 }
 
-static blk_t __far *translate(uint16_t pc, uint16_t key) {
+__attribute__((noinline)) static blk_t __far *translate(uint16_t pc, uint16_t key) {
     for (;;) {
         if (code_top > CODE_LIMIT) {
             if (code_seg >= DRC_CODE_SEG + (DRC_CODE_SEGS - 1) * 0x1000u) flush();
@@ -1325,6 +1339,7 @@ static void from_gbf(void) {
 }
 
 void gbd_init(void) {
+    for (uint8_t i = 0; i < ST_COUNT; i++) stub_off[i] = drc_stub_offs[i];
     flush();
     drc_flushes = 0;
     drc_ei = drc_interp = 0;

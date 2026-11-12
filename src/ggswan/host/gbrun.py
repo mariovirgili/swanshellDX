@@ -483,7 +483,7 @@ if st['fail']: print('fail: ' + st['fail'])
 print('WS frames %d, Game Boy frames %d' % (st['frame'], st['gbframes']))
 if CYCLES and FUNC and fhot:
     tot = sum(fhot.values())
-    for a, n in sorted(fhot.most_common(22)):
+    for a, n in sorted(fhot.most_common(40)):
         ins = next(_md.disasm(bytes(uc.mem_read(a, 8)), a))
         print('  %5.1f%%  x%-6d %05X  %s %s' % (100.0 * n / tot, fcnt[a], a, ins.mnemonic, ins.op_str))
 if CYCLES and HOT and hot:

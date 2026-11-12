@@ -40,6 +40,7 @@ void gbd_write(uint16_t a, uint8_t v);
 // the routines copied to the start of every bank of code (gb_drc_asm.s)
 extern const uint8_t __far drc_stubs[];
 extern const uint16_t __far drc_stubs_size;
+extern const uint16_t __far drc_stub_offs[];
 #endif
 
 /* where the routines are in a bank of code: a jump each, 3 bytes apart */
@@ -61,6 +62,8 @@ extern const uint16_t __far drc_stubs_size;
 #define ST_STAT      45     /* AL = STAT */
 #define ST_LY        48     /* AL = LY */
 #define ST_WAIT_STAT 51     /* AL = STAT, in a loop that goes round while the mode is in the byte after the call: at the first cycle it is not */
-#define ST_COUNT     18
+#define ST_DELAY_BC  54     /* DEC BC / LD A, B / OR C / JR NZ: all the turns there is time for but the last */
+#define ST_EXIT_DYN_F 57    /* ST_EXIT_DYN straight after the cycles were taken off gbf_cyc: the flags are that subtraction's */
+#define ST_COUNT     20
 
 #endif

@@ -44,7 +44,7 @@ background and the window, switched at the right lines by the line
 interrupt, with the scroll the program gave each line; the sprites are
 the WonderSwan's.
 
-## Where it is (patch 165)
+## Where it is (patch 166)
 
 The CPU is a recompiler (`gb/ws/gb_drc.c`, `gb_drc_asm.s`; `GB-ABI.md`),
 there is sound (`gb/ws/gb_sound.c`: what it does and does not, at its
@@ -102,24 +102,35 @@ Land and Bubble Ghost at full speed. The table's scenes are titles,
 menus and the first seconds of a level. Two of his scenes measured
 here since (cycles a Game Boy frame, 162 then 163):
 
-| scene | patch 162 | patch 163 | patch 165 |
-|---|---|---|---|
-| Yoshi, in play | 349,589 | 53,446 | 52,490 |
-| Super Mario Land 2, walking in the first level | 82,174 | 59,132 | 55,454 |
-| Balloon Kid, flying right in stage 1 | | 65,503 (164) | 62,267 |
+| scene (keys in `gbrun.py`'s notes below) | 162 | 163 | 165 | 166 |
+|---|---|---|---|---|
+| Yoshi, in play | 349,589 | 53,446 | 52,490 | 50,548 |
+| Super Mario Land 2, walking in the first level | 82,174 | 59,132 | 55,454 | 53,013 |
+| Balloon Kid, flying right in stage 1 | | | 62,267 | 58,809 |
+| Castlevania II, Crystal Castle: walking, the whip, a jump | | | 63,426 | 60,906 |
+| Batman, the first level: walking, a jump, a punch | | | 63,630 | 61,353 |
+| R-Type, the first level: moving and firing | | | 54,691 | 53,042 |
 
 (349,589 is 8.8 frames a second: what he saw.) Yoshi did its sums
 with DAA and shifts through HL, which went to the interpreter one
 instruction at a time, and all through pointers into the high RAM;
 Super Mario Land 2 keeps its variables and its stack in the
-cartridge's RAM. All three are still over a frame's time. About 17,000 of Balloon Kid's
-are translation: that scene meets two new blocks a frame, at some 9,000
-cycles a block (the translator is slow: about 950 cycles for each
-Game Boy instruction), so a game slows down whenever something new
-comes on the screen, and stops for a moment if the table fills and
-everything is translated again (Castlevania II did by its second
-screen with the 4,096 places it had until patch 164; 8,192 now).
-Castlevania II, R-Type and Batman in play have not been measured here.
+cartridge's RAM. **Only Yoshi is under a frame's time**; the others
+are at 84 to 97% of full speed, by this count. Where their time goes
+(patch 165's profiles): Castlevania II, 13% in the lookup of returns
+(about 175 a frame, small routines that change the ROM bank);
+Batman and Balloon Kid, a fifth to a quarter translating the blocks
+those scenes keep meeting (some 9,000 cycles a block in 165, about
+6,000 now); R-Type, 17% waiting for the horizontal blank.
+
+The keys, by Game Boy frame (`frame:keys` as `ws_keypad_scan`'s bits),
+and the frames measured:
+- Castlevania II `240:200,256:0,360:200,376:0,480:200,496:0,1050:200,1066:0,1900:20,2020:820,2030:20,2080:420,2100:20`, 2000-2160;
+- Batman `240:200,256:0,360:200,376:0,480:200,496:0,600:200,616:0,960:20,1040:420,1060:20,1100:820,1110:20`, 1000-1160;
+- R-Type `240:200,256:0,360:200,376:0,480:400,496:0,560:200,576:0,640:20,700:420,760:410,820:440,880:420,940:410,1000:440`, 860-1020;
+- Yoshi `240:200,256:0,360:200,376:0,480:400,496:0`, 600-720;
+- Super Mario Land 2 `240:200,256:0,400:40,460:0,700:400,716:0,900:400,916:0,1100:400,1116:0,1300:20`, 1320-1440;
+- Balloon Kid `240:200,256:0,360:200,376:0,480:400,496:0,560:200,576:0,640:20,700:420,720:20,760:420,780:20,820:420,840:20,900:420,920:20,980:420,1000:20`, 900-1060.
 
 He also saw Super Mario Land's scroll move in jerks. That was a fault
 in how a frame's list reaches the screen, put right in patch 164

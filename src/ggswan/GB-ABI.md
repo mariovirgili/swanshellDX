@@ -96,6 +96,10 @@ through HL to an I/O register or to the cartridge's registers leaves the
 block without its cycles so far: the CPU is that much ahead (a few
 cycles), the one known shortcut in the count.
 
+A loop that only counts BC down (`DEC BC / LD A, B / OR C / JR NZ`, a
+program's delay) is passed over to its last turn, or as far as the
+time to the next event goes (`s_delay_bc`).
+
 A loop that only loads A from memory or an I/O register, tests it and
 jumps back is a wait: nothing can change what it reads before the next
 event (memory: only an interrupt writes it) or the next line or mode
