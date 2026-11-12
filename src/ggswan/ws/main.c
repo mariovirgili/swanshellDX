@@ -1514,7 +1514,7 @@ uint8_t gg_platform_sprite_status(void) {
     const uint8_t *reg = gg.vdp.reg;
     if (!(reg[1] & 0x40))
         return 0;
-    static uint8_t head[16], nxt[64], sy[64];
+    static uint8_t head[16], nxt[64], sy[64], sx[64];
     // (a sprite with no pixel hits nothing: 1 here once that is found, 2
     // if it has one. A table never written is 64 empty sprites in one
     // place, 2016 pairs with all their rows to compare: 1.4 million
@@ -1526,6 +1526,16 @@ uint8_t gg_platform_sprite_status(void) {
     uint8_t lines = (uint8_t) GG_ACTIVE;
     memset(head, 0xFF, sizeof(head));
     memset(emp, 0, sizeof(emp));
+#ifdef GGSWAN_HOST
+    static unsigned long st_calls, st_spr, st_rect, st_pairs, st_rows, st_hit;
+    #define ST(x) (x)
+    st_calls++;
+    if (getenv("GGSWAN_COLLSTAT") && st_calls % 500 == 0)
+        fprintf(stderr, "COLL after %lu calls: sprites %.1f, rectangle tests %.1f, pairs compared %.2f, rows %.1f a call; hits %lu\n",
+                st_calls, (double) st_spr / st_calls, (double) st_rect / st_calls, (double) st_pairs / st_calls, (double) st_rows / st_calls, st_hit);
+#else
+    #define ST(x) ((void) 0)
+#endif
     uint16_t emp_tile = 0xFFFF;
     uint8_t emp_is = 0;
     for (uint8_t i = 0; i < 64; i++) {
@@ -1537,13 +1547,19 @@ uint8_t gg_platform_sprite_status(void) {
             continue;
         uint8_t x = sat[0x80 + i * 2];
         uint8_t b = y >> 4;
+        ST(st_spr++);
+        // (most of the time goes here, not in the rows: Batman Returns has
+        // 100 pairs to look at a frame and 2 that overlap. Sideways first:
+        // the sprites of a band are mostly side by side)
+        uint8_t hh = 2 * h - 2, h1 = h - 1;
         for (uint8_t bb = b ? b - 1 : 0; bb <= b + 1; bb++) {
             for (uint8_t j = head[bb]; j != 0xFF; j = nxt[j]) {
-                uint8_t dy = y - sy[j] + (h - 1);
-                if (dy > 2 * h - 2)
-                    continue;
-                uint8_t dx = x - sat[0x80 + j * 2] + 7;
+                uint8_t dx = x - sx[j] + 7;
+                ST(st_rect++);
                 if (dx > 14)
+                    continue;
+                uint8_t dy = y - sy[j] + h1;
+                if (dy > hh)
                     continue;
                 int8_t oy = (int8_t) (dy - (h - 1)), ox = (int8_t) (dx - 7);
                 uint16_t ti = sat[0x81 + i * 2] | tb, tj = sat[0x81 + j * 2] | tb;
@@ -1570,7 +1586,9 @@ uint8_t gg_platform_sprite_status(void) {
                 // (rows: i's from ri, j's from rj, n of them)
                 uint8_t ri = oy < 0 ? -oy : 0, rj = oy > 0 ? oy : 0;
                 uint8_t n = h - (oy < 0 ? -oy : oy);
+                ST(st_pairs++);
                 for (; n; n--, ri++, rj++) {
+                    ST(st_rows++);
                     uint8_t mi = spr_row_mask((ti + (ri >> 3)) & 0x1FF, ri & 7);
                     uint8_t mj = spr_row_mask((tj + (rj >> 3)) & 0x1FF, rj & 7);
                     if (ox >= 0 ? (mi & (uint8_t) (mj << ox)) : (mj & (uint8_t) (mi << -ox)))
@@ -1579,6 +1597,7 @@ uint8_t gg_platform_sprite_status(void) {
             }
         }
     listed:
+        sx[i] = x;
         sy[i] = y;
         nxt[i] = head[b];
         head[b] = i;
@@ -2353,6 +2372,37 @@ static uint8_t kb_frame(uint16_t k) {
 #if (defined(GGSWAN_SMS) || defined(GGSWAN_SG1000)) && !defined(GGSWAN_HOST)
 static uint8_t step_paused;   // (frame by frame: below)
 #endif
+/*
+ * START + Y4 (Y left): the numbers (FPS, the recompiler's, the profile),
+ * on and off while playing. ggswan shows them in its borders from the
+ * start: off, the borders are empty. smsswan and sgswan have no borders:
+ * the numbers go over the sides of the picture, on screen 2, which in
+ * smsswan is otherwise the background's priority (so: numbers and no
+ * priority, or priority; as Y1 (Y up) held at the start chooses).
+ */
+static uint8_t stats_hide __attribute__((unused));
+static __attribute__((unused)) void stats_toggle(void) {
+#ifndef GGSWAN_HOST
+#if defined(GGSWAN_SG1000)
+    sg_diag ^= 1;
+    drc_st.prio_on = !sg_diag;
+    for (uint16_t i = 0; i < 32 * 32; i++)
+        map2[i] = WS_PRIO_BLANK;
+#ifdef GGSWAN_SF7000
+    if (kb_open)
+        kb_draw();
+#endif
+#elif defined(GGSWAN_SMS)
+    prio_wanted ^= 1;
+    screen2_mode(prio_wanted);
+#else
+    stats_hide ^= 1;
+    if (!drc_st.prio_on)
+        screen2_mode(0);   // (the borders' mask again: nothing written on it)
+#endif
+#endif
+}
+
 GGSWAN_HOST_VISIBLE void read_keys(void) {
     uint16_t k = ws_keypad_scan();
 #if defined(GGSWAN_SG1000) && !defined(GGSWAN_HOST)
@@ -2406,9 +2456,9 @@ GGSWAN_HOST_VISIBLE void read_keys(void) {
     // Y3 (Y down) kept for the whole picture squeezed); the
     // SC-3000's RESET key (GG_KEY_START in the machine) is not there
     {
-        static uint8_t start_held, start_y, start_y3, start_sq;
+        static uint8_t start_held, start_y, start_y3, start_sq, start_st;
         if (k & WS_KEY_START) {
-            if (!start_held) { start_held = 1; start_y = 0; start_y3 = 0; start_sq = 0; }
+            if (!start_held) { start_held = 1; start_y = 0; start_y3 = 0; start_sq = 0; start_st = 0; }
             if (k & WS_KEY_Y1) start_y = 1;
             if (k & WS_KEY_Y3) {
                 if (!start_sq) sg_squeeze ^= 1;
@@ -2416,6 +2466,13 @@ GGSWAN_HOST_VISIBLE void read_keys(void) {
                 start_y = 1;
             } else {
                 start_sq = 0;
+            }
+            if (k & WS_KEY_Y4) {
+                if (!start_st) stats_toggle();
+                start_st = 1;
+                start_y = 1;
+            } else {
+                start_st = 0;
             }
             if (k & WS_KEY_Y2) {
                 if (!start_y3) {
@@ -2441,9 +2498,9 @@ GGSWAN_HOST_VISIBLE void read_keys(void) {
     // (one frame: gg_run_frame takes the edge) unless Y1 (Y up) was held
     // with it: START + Y1 goes back to the menu
     {
-        static uint8_t start_held, start_y1, start_y3;
+        static uint8_t start_held, start_y1, start_y3, start_st;
         if (k & WS_KEY_START) {
-            if (!start_held) { start_held = 1; start_y1 = 0; start_y3 = 0; }
+            if (!start_held) { start_held = 1; start_y1 = 0; start_y3 = 0; start_st = 0; }
             if (k & WS_KEY_Y1) start_y1 = 1;
             // START + Y3 (Y down): the whole picture squeezed, or the view
             if (k & WS_KEY_Y3) {
@@ -2452,6 +2509,14 @@ GGSWAN_HOST_VISIBLE void read_keys(void) {
                 start_y1 = 1;   // (no Pause for the game)
             } else {
                 start_y3 = 0;
+            }
+            // START + Y4 (Y left): the numbers, or the priority
+            if (k & WS_KEY_Y4) {
+                if (!start_st) stats_toggle();
+                start_st = 1;
+                start_y1 = 1;
+            } else {
+                start_st = 0;
             }
         } else {
             if (start_held && !start_y1) g |= GG_KEY_START;
@@ -2462,9 +2527,9 @@ GGSWAN_HOST_VISIBLE void read_keys(void) {
     // START is the Pause button, pressed for the game when it is let go,
     // unless Y1 (Y up) was held with it (the way back to the menu)
     {
-        static uint8_t start_held, start_y1, start_y3, start_sq;
+        static uint8_t start_held, start_y1, start_y3, start_sq, start_st;
         if (k & WS_KEY_START) {
-            if (!start_held) { start_held = 1; start_y1 = 0; start_y3 = 0; start_sq = 0; }
+            if (!start_held) { start_held = 1; start_y1 = 0; start_y3 = 0; start_sq = 0; start_st = 0; }
             if (k & WS_KEY_Y1) start_y1 = 1;
             // START + Y2 (Y right): four sprites to a line as the chip,
             // or all of them (sg_video.inc). (It was START + Y3 (Y down)
@@ -2489,13 +2554,32 @@ GGSWAN_HOST_VISIBLE void read_keys(void) {
             } else {
                 start_sq = 0;
             }
+            // START + Y4 (Y left): the numbers over the sides of the picture
+            if (k & WS_KEY_Y4) {
+                if (!start_st) stats_toggle();
+                start_st = 1;
+                start_y1 = 1;
+            } else {
+                start_st = 0;
+            }
         } else {
             if (start_held && !start_y1) g |= GG_KEY_START;
             start_held = 0;
         }
     }
 #else
-    if (k & WS_KEY_START) g |= GG_KEY_START;
+    // (ggswan: START is the game's Start, as it is held. With Y4 (Y left)
+    // held first it is not sent: START + Y4 hides and shows the numbers)
+    {
+        static uint8_t start_st;
+        if ((k & (WS_KEY_START | WS_KEY_Y4)) == (WS_KEY_START | WS_KEY_Y4)) {
+            if (!start_st) stats_toggle();
+            start_st = 1;
+        } else {
+            start_st = 0;
+            if (k & WS_KEY_START) g |= GG_KEY_START;
+        }
+    }
 #endif
     gg.keys = g;
 }
@@ -3101,7 +3185,7 @@ int main(void) {
 #ifdef GGSWAN_SF7000
             if (!kb_open)   // (the keyboard has the font's tiles)
 #endif
-            {
+            if (!stats_hide) {
             show_fps(frames);
             if (!diag_mode)
                 show_profile();

@@ -390,6 +390,29 @@ int main(int argc, char **argv) {
 #endif
         gg_run_frame();   // (video_present at line 168)
 #ifndef GGSWAN_SG1000
+        if (getenv("GGSWAN_COLLSTAT")) {
+            // how often could the collision flag's result be kept? Frames
+            // (of those the game looks at the flag in) with the sprite
+            // table, registers 1 and 6 and the sprites' tiles as they
+            // were the frame before; and with the table alone the same
+            static uint32_t prev, prev_sat; static unsigned n_used, n_same, n_sat;
+            uint8_t *reg = gg.vdp.reg; uint16_t sat = gg_sat_base(); int h = (reg[1] & 2) ? 16 : 8;
+            uint32_t hh = 2166136261u, hs;
+            for (int i = 0; i < 64; i++) hh = (hh ^ gg_vram[sat + i]) * 16777619u;
+            for (int i = 0; i < 128; i++) hh = (hh ^ gg_vram[sat + 0x80 + i]) * 16777619u;
+            hh = (hh ^ reg[1]) * 16777619u; hh = (hh ^ reg[6]) * 16777619u;
+            hs = hh;
+            for (int i = 0; i < 64; i++) {
+                uint8_t sy = gg_vram[sat + i];
+                if (GG_SPR_END(sy)) break;
+                uint16_t n = gg_vram[sat + 0x81 + i * 2] | ((reg[6] & 4) ? 0x100 : 0);
+                if (h == 16) n &= ~1;
+                for (int b = 0; b < h * 4; b++) hh = (hh ^ gg_vram[(n * 32 + b) & 0x3FFF]) * 16777619u;
+            }
+            if (gg.coll_used) { n_used++; if (hh == prev) n_same++; if (hs == prev_sat) n_sat++; }
+            prev = hh; prev_sat = hs;
+            if (fr == frames - 1) printf("collision flag looked at in %u frames; all it is made from the same as the frame before in %u, the sprite table alone in %u\n", n_used, n_same, n_sat);
+        }
         if (getenv("GGSWAN_COLL")) {
             gg.coll_used = 1;   // (forced for the test)
             // the collision flag against a count of the sprites on each pixel

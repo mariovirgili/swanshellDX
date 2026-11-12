@@ -6,7 +6,7 @@ emulated by a dynamic recompiler (Z80 to V30MZ code), with the original
 interpreter kept for the parts that need it. The Game Gear video memory is
 mapped onto the WonderSwan's own tile and screen hardware.
 
-Status: fairly stable (patch 150). It has been tested mostly in the
+Status: fairly stable (patch 151). It has been tested mostly in the
 nileswan-medem emulator and with the host test tools; tests on real
 hardware are still to come.
 
@@ -65,6 +65,7 @@ of the recompiler is behind a problem.
 | Y2 (Y right) + Y4 (Y left) together | **Pause** (sound off) and resume: frame by frame, like Mednafen's Alt+A. |
 | Y3 (Y down), while paused | Runs **one frame**, then pauses again. While paused, `F` in the left border shows the Game Gear frame number (last 3 digits). |
 | START + Y1 (Y up), held for a second | **Back to the menu** (the cartridge RAM is then saved: see below). |
+| Y4 (Y left) held, then START | **The numbers in the borders**, off and on (patch 151). (Y4 first: START alone is the game's Start button.) |
 
 ## Saves
 
@@ -173,6 +174,7 @@ the picture while playing. The background priority is always on.
 | Y1 (Y up), Y3 (Y down), Y4 (Y left), Y2 (Y right) | **Move the view** over the picture, 2 pixels a frame (X 0-32, Y 0-48; it starts in the middle). Not into the first 8 columns while the game blanks them. |
 | Y2 (Y right) + Y4 (Y left) together | Pause and resume, frame by frame with Y3 (Y down), as on the Game Gear |
 | START + Y1 (Y up), held for a second | Back to the menu |
+| START + Y4 (Y left) | **The numbers** (FPS, the recompiler's, the profile) over the sides of the picture, on and off (patch 151). They use screen 2, as the background's priority does: with the numbers on, no priority (as with Y1 (Y up) held at the start) |
 | START + Y3 (Y down) | **Whole picture**, on and off (an experiment): the 192 lines squeezed into the 144 of the screen, one line in four left out. It takes about a quarter of the CPU, small text loses lines, and sprites keep their height (the pieces of a tall figure overlap). Sideways the view is still 224 columns. |
 | Y1 (Y up) held at the start | **Diagnostics** over the sides of the picture (the same numbers as in the Game Gear's borders) instead of the background priority |
 
@@ -211,6 +213,7 @@ playing, as smsswan's.
 | Y1 (Y up), Y3 (Y down), Y4 (Y left), Y2 (Y right) | **Move the view** over the picture, 2 pixels a frame (X 0-32, Y 0-48; it starts in the middle) |
 | Y2 (Y right) + Y4 (Y left) together | Pause and resume, frame by frame with Y3 (Y down), as on the Game Gear |
 | START + Y1 (Y up), held for a second | Back to the menu |
+| START + Y4 (Y left) | **The numbers** over the sides of the picture, on and off (patch 151; as Y1 (Y up) held at the start) |
 | START + Y3 (Y down) | **Whole picture**, on and off (patch 150), as smsswan's: the 192 lines squeezed into the 144 of the screen, one line in four left out; sprites keep their height (the pieces of a tall figure overlap by a quarter). The view still moves sideways. A screen of more different characters than there are tiles for (558) shows some of them empty |
 | START + Y2 (Y right) | **Four sprites to a line**, on and off (off at the start; it was START + Y3 (Y down) until patch 147). The SG-1000 draws four sprites on a line and leaves the others out, which is the flicker of its games; the WonderSwan can draw them all, and does. On: as the SG-1000 |
 | Y1 (Y up) held at the start | **Diagnostics** over the sides of the picture (FPS and the recompiler's numbers; on the right, with Y4 (Y left) held too: K the tiles drawn in the last second, M the background tiles in use) |
@@ -247,6 +250,7 @@ from it too, and `BOOT` is typed for it.
 | START | **The keyboard** on the screen, on and off (when START is let go). With it: X1-X4 choose a key, A presses it, B is CR; the last row is SHIFT, BREAK, INS/DEL, space, CR and four lines typed for you (`FILES`, `LOAD "`, `RUN`, `BOOT`) |
 | Y1 (Y up), Y3 (Y down), Y4 (Y left), Y2 (Y right) | Move the view over the picture, as sgswan's |
 | START + Y1 (Y up), held for a second | Back to the menu |
+| START + Y4 (Y left) | **The numbers** over the sides of the picture, on and off (patch 151; as Y1 (Y up) held at the start) |
 | START + Y3 (Y down) | The whole picture squeezed, on and off, as sgswan's (not in text mode: Disk BASIC's screen stays a view) |
 | START + Y2 (Y right) | Four sprites to a line, on and off, as sgswan's |
 | B held at the start | Start from the system disk |
@@ -355,7 +359,7 @@ it are listed in order without one.
 - lighter DYN lookup and class routine for deferred tile bytes
 - OUTI runs to CRAM handled in the run routine
 
-### Patches 90-150
+### Patches 90-151
 
 | Patch | Change |
 |---|---|
@@ -420,3 +424,4 @@ it are listed in order without one.
 | 148 | sfswan, the SC-3000 with the SF-7000's disks: `PLUG_SF.BIN` (`SF=1`), `.sf` in the menu. The recompiler with all of the memory RAM (one WonderSwan segment, a map of where code was translated from, code that writes over code run by the interpreter where it is), the disk and a system disk (`/NILESWAN/SF7000.SF`) in PSRAM, the TMS9918A's text mode (in sgswan too), a keyboard on the screen (START), the built-in IPL's long parts done by the machine. Run in the PC tools only, the device build in `wsrun.py` too (to Disk BASIC's prompt and `FILES` through the keyboard on the screen); about half the SF-7000's speed at the prompt. `SF7000.md`. sgswan and sfswan: the four sprites to a line are START + Y2 (Y right) now, START + Y3 (Y down) is kept in every plugin for the whole picture squeezed. ggswan, smsswan, sgswan: the translator writes the same bytes as patch 147 (`drcsys.py --same-code`); `wsrun.py` with the WonderSwan's keys (`WSRUN_WSKEYS`) and a second file (`WSRUN_SYS`) |
 | 149 | ggswan: the sprite collision flag (VDP status bit 5), which only smsswan had: Batman Returns reads it for its hits (`IN A,(BFh)` / `AND 20h`) and walked through everything. As smsswan's: worked out once a frame, only for a game found to test the flag (of seven games tried only Batman Returns), and it costs: Batman Returns in its first level goes from about 70 k to 84-98 k cycles a frame in `wsrun.py`. In both plugins a sprite with no pixel is left out early (a sprite table never written, 64 empty sprites in one place, took 1.4 million cycles a frame); the flag is the same as a count of the sprites on each pixel in every frame tried (`GGSWAN_COLL=1` in `wssim`, now for ggswan too). The menu: the game icon for `.gg`, `.sms`, `.sg` and `.sf` files. `drcsys.py` moved the windows only for ports C0h-CEh: with the bank ports at D0h-D5h since patch 148, games with a mapper ran wrong in it (patch 148's `--same-code` check was repeated with this corrected: the same result). The sgswan and sfswan binaries are not the same from one build to the next (their size changes by a few bytes with the same sources: to be looked at) |
 | 150 | sgswan, sfswan: the whole picture squeezed, START + Y3 (Y down), as smsswan's: the view is all 24 rows and the line interrupt adds 1 to the Y scroll every three lines (`sg_line_entry` in assembly, 47 a WS screen); sprites placed on the squeezed picture, their height kept; not in text mode. `sgirqtest.py` (the interrupt in Unicorn, served late too), `GGSWAN_SQUEEZE=1` in `wssim_sg` with the reference squeezed. Not on a device: `wsrun.py` has no interrupts. sfswan: a disk whose system is not Disk BASIC (Kamikaze, to be started with `BOOT`: by itself its screen is mirrored) is started from the system disk and `BOOT` typed for it |
+| 151 | START + Y4 (Y left) shows and hides the numbers while playing, in the four plugins (ggswan: Y4 first; smsswan: the numbers or the background's priority). The sprite collision flag: the pairs compared sideways first, from a table of the X positions (measured in `wsrun.py`: no gain, the routine is 9-15% of Batman Returns' frame all the same: 100 pairs looked at, 2 compared by rows; the C of the loop is what costs). From the list of smsswan optimizations reviewed with measurements (`GGSWAN_COLLSTAT=1` in `wssim`): keeping the flag's result between frames is not worth it (what it is made from is the same as the frame before in a tenth of Batman Returns' frames in the game, half of Castle of Illusion's with its title); the squeezed picture's Y-only events and the sprite builder's tests would save 3 or 4 instructions each: left as they are |
