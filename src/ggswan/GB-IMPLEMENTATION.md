@@ -44,7 +44,7 @@ background and the window, switched at the right lines by the line
 interrupt, with the scroll the program gave each line; the sprites are
 the WonderSwan's.
 
-## Where it is (patch 163)
+## Where it is (patch 164)
 
 The CPU is a recompiler (`gb/ws/gb_drc.c`, `gb_drc_asm.s`; `GB-ABI.md`),
 there is sound (`gb/ws/gb_sound.c`: what it does and does not, at its
@@ -113,6 +113,13 @@ instruction at a time, and all through pointers into the high RAM;
 Super Mario Land 2 keeps its variables and its stack in the
 cartridge's RAM. Both are still over a frame's time, and Balloon Kid,
 Castlevania II, R-Type and Batman in play have not been measured here.
+
+He also saw Super Mario Land's scroll move in jerks. That was a fault
+in how a frame's list reaches the screen, put right in patch 164
+(`gb_video.c`: gbv_frame, gbv_wait): `GBRUN_SCROLL=1` prints the scroll
+shown at each WonderSwan frame, which now goes up a step at a time,
+one frame in four or five shown twice (that much is the two rates:
+59.7 pictures on a screen of 75.5 a second).
 
 **The table patch 159 came with was not a fair comparison**: its keys
 were at WonderSwan frames, so a faster or slower build was measured at

@@ -91,7 +91,10 @@ st = {'line': 0, 'frame': 0, 'keys': 0, 'gbframes': 0, 'work': 0, 'pend': 0, 'fa
 BANKPORT = {0xC1: 'ram', 0xC2: 'rom0', 0xC3: 'rom1', 0xD0: 'ram', 0xD2: 'rom0', 0xD4: 'rom1'}
 def h_in(uc, port, size, _):
     port &= 0xFF
-    if port == 0x02: return st['line']
+    if port == 0x02:
+        # (the line counter is read to wait for a time: not counting cycles, a line ends here, or the wait would be all that is run)
+        if not CYCLES: uc.emu_stop()
+        return st['line']
     if port == 0xB5:
         k = st['keys']; g = ports[0xB5]
         return (g & 0xF0) | (k & 15 if g & 0x10 else 0) | ((k >> 4) & 15 if g & 0x20 else 0) | ((k >> 8) & 15 if g & 0x40 else 0)
@@ -142,6 +145,7 @@ def h_sd(uc, addr, size, name):
         if not st.get('gbv_armed', True): return
         st['gbv_armed'] = False
         st['gbframes'] += 1
+        if os.environ.get('GBRUN_SCROLL'): print('G %d scx %d ws %d line %d' % (st['gbframes'], iram.raw[0x9F43], st['frame'], st['line']))
         if FHASH:
             # GBRUN_FHASH=file: the Game Boy's memory at each of its frames' ends (to find where two runs part)
             m = bytes(iram.raw)
@@ -374,6 +378,11 @@ while (GBTIME or st['frame'] < FRAMES) and not st['fail'] and not st.get('stop')
     # drawn and what it changes shows from K + 1 (the other plugins set
     # theirs a line early for that, and so does gb_video.c)
     y = st['line']
+    if y == 100 and os.environ.get('GBRUN_SCROLL'):
+        # GBRUN_SCROLL=1: at each WonderSwan frame (its line 100) screen 2's X scroll, the first sprite's X and the Game Boy frames done: how evenly a scrolling game moves
+        t = (ports[4] & 0x3F) << 9
+        print('S %d gb %d scroll %d spr0 %d,%d' % (st['frame'], st['gbframes'], ports[0x12], iram.raw[t + 3], iram.raw[t + 2]))
+    y = st['line']
     if y < 144 and (st['frame'] in SHOTS or END_SHOT):
         line_ports[y] = bytes(ports)
         line_pals[y] = [int.from_bytes(iram.raw[0xFE00 + i * 2:0xFE02 + i * 2], 'little') for i in range(256)]
@@ -508,6 +517,8 @@ if callers:
     print('  calls: %d' % sum(callers.values()))
     for k, v in callers.most_common(12): print('  %6d  %s %s' % (v, k[0], k[1]))
 if CYCLES and st['gbframes']:
+    # (not the wait for the frame's time, nor the wait for a list to be shown: HLT's cycles are not counted anyway)
+    for k in ('gbv_wait', 'gbv_now_lines'): prof.pop(k, None)
     tot = sum(prof.values())
     print('V30MZ cycles a Game Boy frame, from frame %d: %d (a WonderSwan frame has 40704, a Game Boy frame\'s time 51430)' % (PROF_FROM, tot // max(1, st['gbframes'] - prof_gb0[0])))
     for k, v in prof.most_common(14): print('  %5.1f%%  %s' % (100.0 * v / tot, k))

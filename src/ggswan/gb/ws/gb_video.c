@@ -77,7 +77,6 @@ static uint8_t *list_made = list_b;
 static volatile uint8_t list_ready;
 uint8_t *gbv_split_ptr;
 
-static volatile uint16_t frame_credit;
 volatile uint16_t gbv_vblanks;
 
 /* What the plugin is doing, sampled at every vertical blank of the
@@ -87,15 +86,30 @@ static volatile uint16_t phase_n[GB_PHASES];
 static uint8_t stats_on;
 static uint16_t stats_frames;       // Game Boy frames since the figures were last shown
 
-// every WonderSwan frame (75.47 a second) earns 5973, a Game Boy frame
-// (59.73) costs 7547
-#define FRAME_EARN 5973
-#define FRAME_COST 7547
+/* The Game Boy's frames are started 200.91 WonderSwan lines apart (159
+   lines 75.47 times a second; 59.73 Game Boy frames a second), by the
+   line counter. (Until patch 163 the time was counted in whole
+   WonderSwan frames, so every Game Boy frame started at a vertical blank
+   and, being most of a frame long, ended near the next one: a little
+   more work and its picture missed it, shown a frame late and the one
+   after not at all. Evenly spaced they miss only when the two rates
+   drift past each other, which is the one frame in five shown twice.) */
+static volatile uint16_t line_base;     // lines to the last vertical blank interrupt
+static uint16_t next_at, next_frac;     // when the next Game Boy frame may start (lines, 65536ths)
+__attribute__((noinline)) uint16_t gbv_now_lines(void) {
+    uint16_t b;
+    uint8_t l;
+    do {
+        b = line_base;
+        l = inportb(WS_DISPLAY_LINE_PORT);
+    } while (b != line_base);
+    return b + (l >= 144 ? l - 144 : l + 15);
+}
 
 void gb_vblank_irq(void) {
     gbv_vblanks++;
     phase_n[gb_phase]++;
-    if (frame_credit < 3 * FRAME_COST) frame_credit += FRAME_EARN;
+    line_base += 159;
     if (list_ready) {
         uint8_t *t = list_shown;
         list_shown = list_made;
@@ -344,10 +358,35 @@ static void stats_show(void) {
     stat_num(17, GGSWAN_PATCH, 0);
 }
 
+// wait for the next Game Boy frame's time (gbrun.py leaves this function's
+// cycles out of what a frame costs)
+__attribute__((noinline)) void gbv_wait(void) {
+    uint16_t f = next_frac;
+    next_frac += 59775u;
+    next_at += 200 + (next_frac < f);
+    int16_t late = gbv_now_lines() - next_at;
+    if (late > 400) next_at += late;        // (slow: the time lost is not made up)
+    else while ((int16_t) (gbv_now_lines() - next_at) < 0) { }
+}
+
 void gbv_frame(void) {
     uint8_t was = gb_phase;
     gb_phase = GB_PHASE_VIDEO;
+    // The list for the vertical blank interrupt, which shows it and gives
+    // back the other one. Ready as soon as it is made, and not ready while
+    // it is being made: until patch 163 it was marked ready after the wait
+    // below, by when the interrupt (served during the wait) could already
+    // have taken it; the mark then stood for the other list, an old
+    // frame's, which the next interrupt showed: a scrolling picture went
+    // a step back every few frames.
+    // (a list not shown yet is not made again over: its frame would never
+    // be seen, and the scroll would jump two steps. It is shown at the next
+    // vertical blank; this only waits when two frames end inside one
+    // WonderSwan frame)
+    while (list_ready)
+        ia16_halt();
     make_list();
+    list_ready = 1;
     sprites();
     palettes();
     gb_sound_frame();
@@ -357,13 +396,8 @@ void gbv_frame(void) {
     }
     // the frame's time (none to wait for when the plugin is slow)
     gb_phase = GB_PHASE_IDLE;
-    while (frame_credit < FRAME_COST)
-        ia16_halt();
+    gbv_wait();
     gb_phase = GB_PHASE_VIDEO;
-    ia16_disable_irq();
-    frame_credit -= FRAME_COST;
-    list_ready = 1;
-    ia16_enable_irq();
     raw_first();
     gb_frame_keys();
     gb_phase = was;
@@ -400,7 +434,7 @@ void gbv_reset(void) {
     raw_first();
     make_list();
     list_ready = 1;
-    frame_credit = FRAME_COST;
+    next_at = gbv_now_lines();
     ws_int_set_handler(WS_INT_VBLANK, (ia16_int_handler_t) gb_vblank_entry);
     ws_int_set_handler(WS_INT_LINE_MATCH, (ia16_int_handler_t) gb_line_entry);
     outportb(WS_DISPLAY_LINE_IRQ_PORT, 0xFF);
