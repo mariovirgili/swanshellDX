@@ -8,7 +8,7 @@ plugin; the menu starts it for `.gb` files. Its sources are in
   - `gb_cpu.c`: the SM83 as an interpreter, every bus access a machine
     cycle. One source for two machines.
   - `gb_cart.c`: the header and the mappers (none, MBC1, MBC2, MBC3
-    without its clock, MBC5).
+    with its clock, MBC5).
   - `gb_bus.c`, `gb_ppu.c`: **the reference**, for the PC only. The rest
     of the hardware is moved by one machine cycle before each bus
     access; the LCD's timing is the one the test ROMs measure
@@ -44,16 +44,18 @@ background and the window, switched at the right lines by the line
 interrupt, with the scroll the program gave each line; the sprites are
 the WonderSwan's.
 
-## Where it is (patch 160)
+## Where it is (patch 161)
 
 The CPU is a recompiler (`gb/ws/gb_drc.c`, `gb_drc_asm.s`; `GB-ABI.md`),
 there is sound (`gb/ws/gb_sound.c`: what it does and does not, at its
-head) and a cartridge with a battery keeps its RAM in a `.sav` file,
-through the menu, as the Game Gear's games do. Everything below is from
-`gbrun.py` (the plugin in Unicorn, the cycles by Mednafen's table of
-V30MZ costs): **nothing of gbswan since the video test has been run on a
-WonderSwan or in nileswan-medem**, the sound has not been heard by
-anybody, and the menu's part of the saves was only compiled.
+head), a cartridge with a battery keeps its RAM in a `.sav` file,
+through the menu, as the Game Gear's games do, and MBC3 has its clock
+(`GB-ACCURACY.md`: it counts only while the game runs). Everything
+below is from `gbrun.py` (the plugin in Unicorn, the cycles by
+Mednafen's table of V30MZ costs): **nothing of gbswan since the video
+test has been run on a WonderSwan or in nileswan-medem**, the sound has
+not been heard by anybody, and the menu's part of the saves was only
+compiled.
 
 Right, in the plugin:
 - the 11 ROMs of Blargg's `cpu_instrs` say "Passed" (their code is run
@@ -61,44 +63,52 @@ Right, in the plugin:
 - 13 of Mooneye's cartridge tests say "Test OK" (MBC1: bits_bank1,
   bits_bank2, bits_mode, bits_ramg, ram_64kb, ram_256kb, rom_512kb,
   rom_1Mb; MBC2: bits_romb, rom_512kb, ram; MBC5: rom_512kb, rom_1Mb);
-- after 713 Game Boy frames with no keys (`gbcmp.py`) the 160 x 144 is
-  the PC's pixel for pixel in six games; 6 pixels differ in Bubble
-  Ghost (not looked into), Castlevania II's title is moving;
-- with keys, by Game Boy frames on both sides (`GBRUN_GBTIME`), at
-  frame 840: Balloon Kid, Castlevania II and Yoshi the PC's pixel for
-  pixel in play; Super Mario Land 3 pixels, Bubble Ghost 6, Super Mario
-  Land 2 140; Batman in the middle of a fade and R-Type with its stars
-  a frame apart (what the plugin shows is a frame behind for the scroll
-  and the palette and not for the tiles and sprites: looked at, taken
-  for that, not proved).
+- rtc3test's basic tests and range tests pass but "Tick" (1004.6 ms
+  for 1000: the clock counts by frames);
+- with keys, by Game Boy frames on both sides (`GBRUN_GBTIME`), the
+  160 x 144 at frame 860 against the same machine on the PC
+  (`gbftest`, its picture of one or two frames before: the plugin
+  shows a frame late): Balloon Kid, Batman, Castlevania II and Yoshi
+  pixel for pixel (Castlevania II at frames 700, 780 and 840 too); Super Mario
+  Land 3 pixels, Bubble Ghost 6 (not looked into), Super Mario Land 2
+  140; R-Type more than a thousand at every frame tried, as before
+  this patch and the one before (its stars and enemies a frame or more
+  apart: looked at, not explained).
 
 Fast enough? A Game Boy frame's time is 51,430 V30MZ cycles. Cycles a
 Game Boy frame over Game Boy frames 700-860, the same keys at the same
 Game Boy frames for every build, sound included:
 
-| game | patch 159 | patch 160 | |
+| game | patch 159 | patch 160 | patch 161 |
 |---|---|---|---|
-| Super Mario Land 2 (choosing a file) | 17,212 | 18,192 | full speed |
-| Balloon Kid | 30,071 | 26,461 | full speed |
-| Super Mario Land | 32,780 | 32,623 | full speed |
-| Bubble Ghost (title) | 33,117 | 33,250 | full speed |
-| Batman: Return of the Joker | 68,590 | 45,927 | full speed (was 75%) |
-| Yoshi | 54,982 | 53,694 | 96% |
-| R-Type | 69,048 | 58,492 | 88% (was 74%) |
-| Castlevania II (first level) | 72,209 | 64,653 | 80% (was 71%) |
+| Super Mario Land 2 (choosing a file) | 17,212 | 18,192 | 18,341 |
+| Bubble Ghost (title) | 33,117 | 33,228 | 16,602 |
+| Balloon Kid | 30,071 | 26,461 | 25,271 |
+| Super Mario Land | 32,780 | 32,623 | 32,003 |
+| Batman: Return of the Joker | 68,590 | 45,927 | 44,572 |
+| Castlevania II (first level) | 72,209 | 64,653 | 45,478 |
+| Yoshi | 54,982 | 54,034 | 46,035 |
+| R-Type | 69,048 | 58,492 | 50,425 |
+
+All eight are under a frame's time in these scenes, R-Type by 2%:
+other scenes of these games, and other games, will not all be.
 
 **The table patch 159 came with was not a fair comparison**: its keys
 were at WonderSwan frames, so a faster or slower build was measured at
-another place in the game, and one build against another meant
-nothing. The 159 column above is 159 measured again this way; by it
-Batman, R-Type and Castlevania II were slower in play than 159's table
-said.
+another place in the game. The 159 column above is 159 measured again
+with the keys at Game Boy frames. And until patch 161 `gbrun.py` could
+count a Game Boy frame twice (stopped for an interrupt at the first
+instruction of `gbv_frame`, its hook was called again), which moved
+the keys a frame in some runs: the 160 column is 160 measured again
+without that (two of its figures moved by less than 1%); the 159
+column was not measured again.
 
-What is still slow, by the profile: R-Type and Castlevania II wait for
-the horizontal blank before each byte they write to the video memory
-(a tenth to a fifth of their time is that wait, already one routine
-call a wait); Yoshi's time is in the translated code of a loop that
-reads the keys all frame long.
+Two builds can now be told apart by more than the picture: `gbrun.py`
+prints checksums of the Game Boy's memory at the last frame's end.
+Between 160 and 161 they are the same in six games; in Castlevania II
+and R-Type they are not, as expected (their waits for a STAT mode are
+now passed over from the first read, a few cycles' difference in when
+the loop ends).
 
 START + Y4 (Y left) shows figures in the black at the left, once a
 second: FPS (Game Boy frames shown), then hundredths of the time in
@@ -108,5 +118,5 @@ frame's time (IDL); blocks translated (BLK, hex), times the code was
 forgotten (FLS).
 
 Not done: the 10 sprites to a line, the sprites' palettes changed
-inside a frame, MBC3's clock, ROMs over 1 MiB, cartridge RAM over
-32 KiB.
+inside a frame, the clock kept between runs, ROMs over 1 MiB,
+cartridge RAM over 32 KiB.

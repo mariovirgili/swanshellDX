@@ -28,7 +28,7 @@ uint8_t gb_load(const uint8_t *rom, uint32_t size, uint8_t *ram) {
 static uint8_t ram_read(uint16_t a) {
     if (!gb.ram_on && gb.mbc) return 0xFF;
     if (gb.mbc == 2) return gb_cart_ram[a & 0x1FF] | 0xF0;
-    if (gb.mbc == 3 && gb.rtc_sel) return 0;
+    if (gb.mbc == 3 && gb.rtc_sel) return gb_rtc_read();
     if (!gb.ram_banks) return 0xFF;
     return gb_cart_ram[(uint32_t) gb.ram_bank << 13 | (a & 0x1FFF)];
 }
@@ -38,6 +38,7 @@ static void ram_write(uint16_t a, uint8_t v) {
     if (gb.mbc == 2) {
         gb_cart_ram[a & 0x1FF] = v & 15;
     } else if (gb.mbc == 3 && gb.rtc_sel) {
+        gb_rtc_write(v);
         return;
     } else if (gb.ram_banks) {
         gb_cart_ram[(uint32_t) gb.ram_bank << 13 | (a & 0x1FFF)] = v;
@@ -266,11 +267,12 @@ void gb_write(uint16_t a, uint8_t v) {
 
 void gb_reset(void) {
     // (the cartridge's description, set by gb_load, is kept)
-    uint8_t mbc = gb.mbc, battery = gb.has_battery, ram_banks = gb.ram_banks;
+    uint8_t mbc = gb.mbc, battery = gb.has_battery, ram_banks = gb.ram_banks, rtc = gb.has_rtc;
     uint16_t rom_banks = gb.rom_banks;
     memset(&gb, 0, sizeof(gb));
     gb.mbc = mbc;
     gb.has_battery = battery;
+    gb.has_rtc = rtc;
     gb.ram_banks = ram_banks;
     gb.rom_banks = rom_banks;
     gb.bank_lo = 1;

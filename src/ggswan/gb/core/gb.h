@@ -120,6 +120,11 @@ typedef struct {
     uint8_t ram_bank;
     uint8_t has_battery;
     uint8_t ram_dirty;
+    // MBC3's clock: seconds, minutes, hours, days, days' ninth bit +
+    // 40h stopped + 80h days over 511; the copy the program reads
+    uint8_t has_rtc, rtc_latch;
+    uint8_t rtc[5], rtc_lat[5];
+    uint32_t rtc_sub;       // machine cycles into the second
 
 #ifndef GB_WS
     uint8_t ie_;
@@ -156,6 +161,9 @@ extern uint8_t *gb_cart_ram;        // ram_banks * 2000h (MBC2: 200h)
 
 /* gb_cart.c */
 uint8_t gb_cart_header(const uint8_t GB_FAR *rom, uint32_t size);
+void gb_rtc_frame(void);            // a frame's time for MBC3's clock
+uint8_t gb_rtc_read(void);
+void gb_rtc_write(uint8_t v);
 void gb_cart_write(uint16_t a, uint8_t v);  // a write to 0000h-7FFFh
 void gb_cart_map(void);                     // rom0_bank, romx_bank, ram_bank from the registers
 

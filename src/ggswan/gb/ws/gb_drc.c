@@ -213,7 +213,10 @@ static uint8_t in_ram;
 static uint8_t after_ei;    // the instruction after EI: whatever leaves the block goes to the dispatcher
 static uint8_t idle;        // the block is a loop that waits: 1 on memory, 2 on LY, 3 on STAT
 static uint8_t idle_i;      // ... and this instruction is its jump back
+static uint8_t cur_i;       // the instruction being translated
+static uint8_t cur_wait;    // translating a waiting loop's read of STAT: the modes it goes round in
 static uint8_t idle_first;  // translating that loop's first instruction (its read of STAT)
+static uint8_t stat_at[3], stat_mask[3], n_stat;   // such loops inside the block: their STAT reads, the modes
 static uint8_t idle_modes;  // (on STAT) the modes it goes round in, when that is all it depends on (else 0)
 
 static const uint8_t __far R8[8] = { 5, 1, 6, 2, 7, 3, 0xFF, 0 };  // B C D E H L - A: CH CL DH DL BH BL AL
@@ -395,10 +398,10 @@ static void io_read(uint8_t n) {
     }
     clob();
     sub_cyc();
-    if (n == GB_STAT && idle == 3 && idle_modes && idle_first) {
+    if (n == GB_STAT && cur_wait) {
         // (the read of a loop that waits for a mode: the wait is done there)
         call_stub(ST_WAIT_STAT);
-        E(idle_modes);
+        E(cur_wait);
         return;
     }
     if (n == GB_STAT || n == GB_LY) {
@@ -408,6 +411,22 @@ static void io_read(uint8_t n) {
     E(0xBE); EW(0xFF00 | n);                    // mov si, FFnn
     call_stub(ST_RD);
 }
+// A before the instruction being translated, when the block's own code
+// says it: LD A, n and then only instructions that leave A alone (-1: not
+// known)
+static int16_t known_a(void) {
+    for (uint8_t j = cur_i; j-- > 0;) {
+        uint8_t op = gbf_read(i_pc[j]);
+        if (op == 0x3E) return gbf_read(i_pc[j] + 1);
+        if (op == 0xAF) return 0;
+        // LD r, n; LD r, A; LDH (n), A; LD (nn), A; NOP
+        if (op == 0x06 || op == 0x0E || op == 0x16 || op == 0x1E || op == 0x26 || op == 0x2E
+            || op == 0x47 || op == 0x4F || op == 0x57 || op == 0x5F || op == 0x67 || op == 0x6F
+            || op == 0xE0 || op == 0xEA || op == 0x00) continue;
+        break;
+    }
+    return -1;
+}
 // LDH (n), A and LD (FFnn), A; true: the block ends here
 static uint8_t io_write(uint8_t n, uint16_t next) {
     if ((n >= 0x80 && n != 0xFF) || (n >= 0x10 && n < 0x40)) {
@@ -415,6 +434,16 @@ static uint8_t io_write(uint8_t n, uint16_t next) {
         return 0;
     }
     if (n == GB_P1) {
+        // (A a constant, as it mostly is here: the byte P1 then reads,
+        // from the table, with no call)
+        int16_t k = known_a();
+        if (k >= 0) {
+            E(0x89); E(0xC6);                                       // mov si, ax
+            E(0xA0); EW(ADDR(drc_p1_tab) + ((k >> 4) & 3));         // mov al, [..]
+            E(0xA2); EW(0x9F00);                                    // mov [9F00h], al
+            E(0x89); E(0xF0);                                       // mov ax, si
+            return 0;
+        }
         mat();
         call_stub(ST_P1);
         return 0;
@@ -495,6 +524,10 @@ static void translate_block(void) {
         uint8_t x = op >> 6, y = (op >> 3) & 7, z = op & 7, p = (op >> 4) & 3;
         live = i_live[i];
         idle_first = i == 0;
+        cur_i = i;
+        cur_wait = i == 0 && idle == 3 ? idle_modes : 0;
+        for (uint8_t k = 0; k < n_stat; k++)
+            if (stat_at[k] == i) cur_wait = stat_mask[k];
         after_ei = i > 0 && gbf_read(i_pc[i - 1]) == 0xFB;
         if (interp_op(op, b1)) {
             exit_interp(pc);
@@ -825,19 +858,19 @@ static void translate_block(void) {
     if (!ended) exit_to(i_pc[n_ins], 0);
 }
 
-// a loop that waits on STAT (its instructions 0 to n - 1, the last the
+// a loop that waits on STAT (its instructions s to n - 1, the last the
 // jump back): the modes it goes round in, if the mode alone decides (the
 // same whatever STAT's other bits are); 0 if not, or if it is not known
-static uint8_t wait_modes(uint8_t n) {
+static uint8_t wait_modes(uint8_t s, uint8_t n) {
     uint8_t mask = 0;
     for (uint8_t m = 0; m < 4; m++) {
         uint8_t taken[2];
         for (uint8_t v = 0; v < 2; v++) {
             uint8_t a = (v ? 0xFC : 0x80) | m, z = 0, c = 0, cknown = 0, seen = 0;
-            for (uint8_t i = 0; i < n; i++) {
+            for (uint8_t i = s; i < n; i++) {
                 uint8_t op = gbf_read(i_pc[i]), b1 = gbf_read(i_pc[i] + 1);
                 if (op == 0xF0 || op == 0xFA) {
-                    if (b1 != 0x41 || seen || i != 0) return 0;     // (STAT, once, first)
+                    if (b1 != 0x41 || seen || i != s) return 0;     // (STAT, once, first)
                     seen = 1;
                 } else if (op == 0xE6) { a &= b1; z = !a; c = 0; cknown = 1; }
                 else if (op == 0xF6) { a |= b1; z = !a; c = 0; cknown = 1; }
@@ -894,7 +927,7 @@ static void scan_block(uint16_t pc) {
                 if (t == blk_pc && (loaded || (i == 0 && (op == 0x18 || op == 0xC3)))) {
                     idle = kind;
                     idle_i = i;
-                    idle_modes = kind == 3 && op != 0x18 && op != 0xC3 ? wait_modes(i + 1) : 0;
+                    idle_modes = kind == 3 && op != 0x18 && op != 0xC3 ? wait_modes(0, i + 1) : 0;
                 }
                 break;
             } else if (op == 0xF0 || op == 0xFA) {
@@ -909,6 +942,29 @@ static void scan_block(uint16_t pc) {
                 // CP, AND, OR, XOR with a register or a constant, CPL, BIT n, A
                 if (!loaded) break;
             } else {
+                break;
+            }
+        }
+    }
+    // the same wait further on in the block (LDH A, (41h), tests, a
+    // conditional jump back to that read): the read does the waiting too
+    n_stat = 0;
+    if (!in_ram) {
+        for (uint8_t s = 1; s + 1 < n_ins && n_stat < 3; s++) {
+            if (gbf_read(i_pc[s]) != 0xF0 || gbf_read(i_pc[s] + 1) != 0x41) continue;
+            for (uint8_t i = s + 1; i < n_ins && i < s + 6; i++) {
+                uint8_t op = gbf_read(i_pc[i]), b1 = gbf_read(i_pc[i] + 1);
+                if ((op & 0xE7) == 0x20 || (op & 0xE7) == 0xC2) {
+                    uint16_t t = (op & 0xC0) ? b1 | (uint16_t) gbf_read(i_pc[i] + 2) << 8 : i_pc[i] + 2 + (int8_t) b1;
+                    uint8_t m = t == i_pc[s] ? wait_modes(s, i + 1) : 0;
+                    if (m) {
+                        stat_at[n_stat] = s;
+                        stat_mask[n_stat++] = m;
+                    }
+                    break;
+                }
+                if (op == 0xE6 || op == 0xF6 || op == 0xEE || op == 0xFE || op == 0xA7 || op == 0xB7 || op == 0x2F
+                    || op == 0x00 || (op == 0xCB && (b1 >> 6) == 1 && (b1 & 7) == 7)) continue;
                 break;
             }
         }

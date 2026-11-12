@@ -55,7 +55,9 @@ registers as they were written (9F00h), the high RAM (9F80h), IE
 window.
 
 - **The stack**: `[BP - 6000h]`, after one comparison (SP below C000h
-  goes to a routine: some programs point SP at tables in ROM).
+  goes to a routine: some programs point SP at tables in ROM). PUSH AF
+  and POP AF always go through the routines, which do the work RAM and
+  the high RAM themselves.
 - **(HL), (BC), (DE)**: two comparisons, then `[BX - 6000h]` for
   C000h-FDFFh; everything else through a routine (`s_rd`, `s_wrt`):
   ROM through `drc_segtab` (a segment for each ROM area in which the
@@ -85,7 +87,17 @@ cycles), the one known shortcut in the count.
 A loop that only loads A from memory or an I/O register, tests it and
 jumps back is a wait: nothing can change what it reads before the next
 event (memory: only an interrupt writes it) or the next line or mode
-(LY, STAT), so that time is taken off at once.
+(LY, STAT), so that time is taken off at once. A loop on STAT whose
+going round depends on the mode alone (worked out when it is
+translated: `wait_modes`) has its wait done by its read of STAT
+(`s_wait_stat`: the time passed to the first cycle of a mode that ends
+it, from a table for the lines of the picture), and need not be a
+block's start: `LDH A, (41h)`, tests, a conditional jump back to the
+read, anywhere in a block.
+
+A write of a constant to P1 (`LD A, n` before it in the block and A
+left alone since) is the table's byte for those rows of keys, moved
+with no routine.
 
 ## Blocks
 

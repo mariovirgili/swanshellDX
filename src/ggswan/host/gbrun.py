@@ -30,6 +30,8 @@ from unicorn.x86_const import *
 
 ELF, ROM, FRAMES = sys.argv[1], sys.argv[2], int(sys.argv[3])
 OUT = sys.argv[4] if len(sys.argv) > 4 else None
+import zlib
+FHASH = open(os.environ['GBRUN_FHASH'], 'w') if os.environ.get('GBRUN_FHASH') else None
 KEYS = dict((int(k.split(':')[0]), int(k.split(':')[1], 16)) for k in sys.argv[5].split(',')) if len(sys.argv) > 5 and sys.argv[5] else {}
 SHOTS = set(int(x) for x in os.environ.get('GBRUN_SHOTS', str(FRAMES - 1)).split(',') if x)
 LINE_INSNS = int(os.environ.get('GBRUN_LINE', '80'))
@@ -134,7 +136,19 @@ def h_sd(uc, addr, size, name):
         st['fail'] = '%s %04X' % (bytes(uc.mem_read((dx << 4) + ax, 24)).split(b'\0')[0].decode('latin1'), cx)
         uc.emu_stop(); return
     elif name == 'gbv_frame':
+        # (stopped here for an interrupt and started again, this hook is
+        # called twice for the one call: count it once, until the
+        # function's second instruction has been reached)
+        if not st.get('gbv_armed', True): return
+        st['gbv_armed'] = False
         st['gbframes'] += 1
+        if FHASH:
+            # GBRUN_FHASH=file: the Game Boy's memory at each of its frames' ends (to find where two runs part)
+            m = bytes(iram.raw)
+            FHASH.write('%d %08X %08X %08X %08X\n' % (st['gbframes'], zlib.crc32(m[0x2000:0x4000]), zlib.crc32(m[0x6000:0x8000]), zlib.crc32(m[0x9E00:0x9EA0]), zlib.crc32(m[0x9F80:0x9FFF])))
+        if os.environ.get('GBRUN_DUMPAT') and st['gbframes'] == int(os.environ['GBRUN_DUMPAT'].split(':')[0]):
+            # GBRUN_DUMPAT=frame:file: the internal RAM at that Game Boy frame's end
+            open(os.environ['GBRUN_DUMPAT'].split(':')[1], 'wb').write(bytes(iram.raw))
         if GBTIME:
             # (frames, keys and the profile's start by Game Boy frames: the
             # same game whatever the plugin's speed)
@@ -148,6 +162,10 @@ def h_sd(uc, addr, size, name):
     uc.reg_write(UC_X86_REG_AX, 0); retf()
 for n in ('f_mount', 'f_open', 'f_read', 'f_close', 'fail', 'gbv_frame'):
     if n in syms: uc.hook_add(UC_HOOK_CODE, h_sd, n, syms[n], syms[n])
+def h_arm(uc, addr, size, _): st['gbv_armed'] = True
+if 'gbv_frame' in syms:
+    _a = syms['gbv_frame'] + next(_md.disasm(bytes(uc.mem_read(syms['gbv_frame'], 8)), 0)).size
+    uc.hook_add(UC_HOOK_CODE, h_arm, None, _a, _a)
 
 cyc = [0, 0]      # V30MZ cycles run; where the line being run ends
 prof = {}
@@ -423,6 +441,12 @@ if os.environ.get('GBRUN_PEEK'):
     # GBRUN_PEEK=addr,addr,...: bytes of the internal RAM at the end (hex)
     mem = bytes(iram.raw)
     print(' '.join('%s=%02X' % (a, mem[int(a, 16)]) for a in os.environ['GBRUN_PEEK'].split(',')))
+if GBTIME:
+    # (the Game Boy's memory when its last frame ended: the same for two
+    # builds that ran the same game, whatever the picture's frame of delay)
+    import zlib
+    mem = bytes(iram.raw)
+    print('Game Boy memory: video %08X work %08X sprites %08X high %08X' % (zlib.crc32(mem[0x2000:0x4000]), zlib.crc32(mem[0x6000:0x8000]), zlib.crc32(mem[0x9E00:0x9EA0]), zlib.crc32(mem[0x9F80:0x9FFF])))
 if st['fail']: print('fail: ' + st['fail'])
 print('WS frames %d, Game Boy frames %d' % (st['frame'], st['gbframes']))
 if CYCLES and FUNC and fhot:

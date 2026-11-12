@@ -193,6 +193,7 @@ void gb_ppu_tick(void) {
         gb_io[GB_IF] |= GB_INT_VBLANK;
         gb.frame_done = 1;
         gb.frames++;
+        gb_rtc_frame();
     }
     update();
 }

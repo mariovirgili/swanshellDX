@@ -321,6 +321,27 @@ stat_modes:
     .fill 43, 1, 3
     .fill 50, 1, 0
 
+// s_wait_stat: by the modes the loop goes round in (the rows) and the part
+// of the line (cycle 0, 1-20, 21-63, 64-113), the cycle the wait ends at,
+// 114 and more in the next line; FEh here, FFh in no mode of a line
+wait_ends:
+    .byte 0xFE, 0xFE, 0xFE, 0xFE
+    .byte 0x01, 0xFE, 0xFE, 0x73
+    .byte 0xFE, 0xFE, 0xFE, 0xFE
+    .byte 0x01, 0xFE, 0xFE, 0x73
+    .byte 0xFE, 0x15, 0xFE, 0xFE
+    .byte 0x15, 0x15, 0xFE, 0x87
+    .byte 0xFE, 0x15, 0xFE, 0xFE
+    .byte 0x15, 0x15, 0xFE, 0x87
+    .byte 0xFE, 0xFE, 0x40, 0xFE
+    .byte 0x01, 0xFE, 0x73, 0x73
+    .byte 0xFE, 0xFE, 0x40, 0xFE
+    .byte 0x01, 0xFE, 0x73, 0x73
+    .byte 0xFE, 0x40, 0x40, 0xFE
+    .byte 0xFF, 0xFF, 0xFF, 0xFF
+    .byte 0xFE, 0x40, 0x40, 0xFE
+    .byte 0xFF, 0xFF, 0xFF, 0xFF
+
 // AL = STAT, read by a loop that only tests the mode and goes round while
 // it is one of those in the byte after the call (bit n: mode n): the
 // time to the first cycle of another mode is taken off the count first,
@@ -345,6 +366,50 @@ s_wait_stat:
     mov si, ax                  // the frame's cycle
     mov dl, 114
     div dl                      // AL = the line, AH = the cycle in it
+    // In a line of the picture but the last: where the wait ends is in
+    // a table, by the modes and the part of the line this is
+    cmp al, 143
+    jae 0f
+    mov cl, bl
+    xor bh, bh
+    shl bx, 2
+    cmp ah, 1
+    jb 1f
+    inc bx
+    cmp ah, 21
+    jb 1f
+    inc bx
+    cmp ah, 64
+    jb 1f
+    inc bx
+1:
+    mov dh, cs:[bx + wait_ends - drc_stubs]
+    cmp dh, 0xFE
+    jb 1f
+    mov bl, cl
+    jne 0f                      // (FFh: no mode of a line ends it)
+    mov dh, ah                  // (FEh: it ends here)
+1:
+    mov bl, dh
+    sub bl, ah
+    xor bh, bh
+    sub [gbf_cyc], bx
+    cmp dh, 114
+    jb 1f
+    sub dh, 114
+    inc al
+1:
+    mov dl, al
+    mov bl, dh
+    test dh, dh
+    jnz 1f
+    test al, al
+    jz 1f
+    mov dl, 0xFF
+1:
+    mov dh, cs:[bx + stat_modes - drc_stubs]
+    jmp 8f
+0:
     xor cx, cx                  // cycles passed over
     cmp al, 144
     jae 4f
@@ -745,8 +810,24 @@ s_cwrite:
 
 // push SI on the Game Boy's stack (anywhere: the fast case is inline)
 s_push:
-    // (a stack in the cartridge's RAM, when that is plain RAM)
     lea di, [bp - 2]
+    // (a stack in the work RAM or the high RAM: PUSH AF comes here
+    // whatever the stack)
+    cmp di, 0xFF80
+    jae 2f
+    cmp di, 0xC000
+    jb 0f
+    cmp bp, 0xE000
+    ja 0f
+3:
+    mov [di - 0x6000], si
+    mov bp, di
+    ret
+2:
+    cmp bp, di
+    jae 3b
+0:
+    // (a stack in the cartridge's RAM, when that is plain RAM)
     cmp di, 0xA000
     jb 1f
     cmp bp, 0xC000
@@ -787,6 +868,20 @@ s_wr_noexit:
 
 // SI = the word popped
 s_pop:
+    cmp bp, 0xFF80
+    jae 2f
+    cmp bp, 0xC000
+    jb 0f
+    cmp bp, 0xDFFE
+    ja 0f
+3:
+    mov si, [bp - 0x6000]
+    lea bp, [bp + 2]
+    ret
+2:
+    cmp bp, 0xFFFD
+    jbe 3b
+0:
     cmp bp, 0xA000
     jb 1f
     cmp bp, 0xBFFE

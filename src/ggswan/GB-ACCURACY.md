@@ -59,7 +59,13 @@ away from where the tests checked on a DMG put it.
 - While the OAM DMA runs only the reads of the OAM are refused (FFh); the
   rest of the bus is as usual.
 - STOP: the CPU waits for a key; DIV is cleared.
-- MBC3: no clock (its registers read 0). No MBC1 cartridges with several
+- MBC3's clock (`gb_cart.c`, the registers' behaviour as Peanut-GB has
+  it) counts the Game Boy's time a frame at a time, and only while the
+  program runs: nothing keeps it from one run to the next. Of rtc3test
+  (keys by hand, the pictures looked at) the basic tests and the range
+  tests pass but "Tick" (987.8 ms in the reference, 1004.6 ms in the plugin's
+  machine and in the plugin, for 1000: the frame), and none of the
+  sub-second writes do. No MBC1 cartridges with several
   games, no camera, rumble, HuC or MMM01.
 - The serial port has no other end: a transfer with the Game Boy's own
   clock ends after 8 bits with FFh received, one with the other's clock

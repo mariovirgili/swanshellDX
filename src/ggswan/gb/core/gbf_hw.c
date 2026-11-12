@@ -196,6 +196,7 @@ static void event(void) {
         gbv_frame();
         gb.frame_done = 1;
         gb.frames++;
+        gb_rtc_frame();
     }
     if (pos >= FRAME_MC) {
         ev_pos -= FRAME_MC;
@@ -207,6 +208,7 @@ static void event(void) {
             gbv_frame();
             gb.frame_done = 1;
             gb.frames++;
+            gb_rtc_frame();
         }
     }
     schedule();
@@ -408,7 +410,7 @@ void gbf_io_write(uint8_t r, uint8_t v) {
 static uint8_t ram_read(uint16_t a) {
     if (!gb.ram_on && gb.mbc) return 0xFF;
     if (gb.mbc == 2) return GBF_RAM(a & 0x1FF) | 0xF0;
-    if (gb.mbc == 3 && gb.rtc_sel) return 0;
+    if (gb.mbc == 3 && gb.rtc_sel) return gb_rtc_read();
     if (!gb.ram_banks) return 0xFF;
     return GBF_RAM(a & 0x1FFF);
 }
@@ -418,6 +420,7 @@ static void ram_write(uint16_t a, uint8_t v) {
     if (gb.mbc == 2) {
         GBF_RAM(a & 0x1FF) = v & 15;
     } else if (gb.mbc == 3 && gb.rtc_sel) {
+        gb_rtc_write(v);
         return;
     } else if (gb.ram_banks) {
         GBF_RAM(a & 0x1FFF) = v;
@@ -478,11 +481,12 @@ uint8_t gbf_load(const uint8_t GB_FAR *header, uint32_t size) {
 
 // what the DMG's boot ROM leaves when it jumps to 0100h (as gb_reset)
 void gbf_reset(void) {
-    uint8_t mbc = gb.mbc, battery = gb.has_battery, ram_banks = gb.ram_banks;
+    uint8_t mbc = gb.mbc, battery = gb.has_battery, ram_banks = gb.ram_banks, rtc = gb.has_rtc;
     uint16_t rom_banks = gb.rom_banks;
     memset(&gb, 0, sizeof(gb));
     gb.mbc = mbc;
     gb.has_battery = battery;
+    gb.has_rtc = rtc;
     gb.ram_banks = ram_banks;
     gb.rom_banks = rom_banks;
     gb.bank_lo = 1;
