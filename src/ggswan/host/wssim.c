@@ -413,6 +413,18 @@ int main(int argc, char **argv) {
             prev = hh; prev_sat = hs;
             if (fr == frames - 1) printf("collision flag looked at in %u frames; all it is made from the same as the frame before in %u, the sprite table alone in %u\n", n_used, n_same, n_sat);
         }
+        if (getenv("GGSWAN_COLLDUMP") && (fr % 7 == 0 || gg_platform_sprite_status())) {
+            // for colltest.py (the device's routine in Unicorn): registers
+            // 1 and 6, the sprite table's address, the lines, the flag
+            // here, the VRAM
+            static FILE *cd;
+            if (!cd) cd = fopen(getenv("GGSWAN_COLLDUMP"), "wb");
+            uint8_t hd[8] = { gg.vdp.reg[1], gg.vdp.reg[6], gg_sat_base() & 0xFF, gg_sat_base() >> 8,
+                              (uint8_t) GG_ACTIVE, gg_platform_sprite_status(), 0, 0 };
+            fwrite(hd, 1, 8, cd);
+            fwrite(gg_vram, 1, 0x4000, cd);
+            fflush(cd);
+        }
         if (getenv("GGSWAN_COLL")) {
             gg.coll_used = 1;   // (forced for the test)
             // the collision flag against a count of the sprites on each pixel

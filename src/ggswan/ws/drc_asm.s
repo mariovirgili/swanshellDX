@@ -408,6 +408,123 @@ spr_build:
     // SN76489, into psg_st (main.c: latch, noise, dirty, -, vol[4],
     // tone[3]); the same as main.c's psg_apply on each, there ~45 cycles a
     // write (Sailor Moon S: a sample through the volume, hundreds a frame).
+#ifndef GGSWAN_SG1000
+    // uint8_t coll_scan(const uint8_t *sat): the sprite collision flag's
+    // walk of the sprite table (main.c, gg_platform_sprite_status, which
+    // has it in C for the PC tests: the same, step by step). For each
+    // sprite on the lines shown, the earlier ones in its band of 16
+    // lines and the two beside it (coll_head, coll_nxt) are looked at:
+    // overlapping sideways (coll_sx), then in height (coll_sy), then
+    // coll_pair(i, j) in C for their rows. 20h: two pixels overlap.
+    // CL the sprite, DL its X, DH its Y + 1, BX the band, AH bands left,
+    // DI the other sprite, SI the table.
+    .global coll_scan
+coll_scan:
+    push bx
+    push cx
+    push si
+    push di
+    mov si, ax
+    xor cx, cx
+.Lco_loop:
+    mov bx, cx
+    mov al, byte ptr [si + bx]
+    cmp al, 0xD0
+    jne 1f
+    cmp byte ptr [coll_noend], 0
+    je .Lco_none
+1:
+    inc al
+    cmp al, byte ptr [coll_lines]
+    jae .Lco_next
+    mov dh, al
+    shl bx, 1
+    cmp byte ptr [coll_emp_has], 0      // (a tile known to have no pixel)
+    je 1f
+    mov dl, byte ptr [si + bx + 0x81]
+    cmp dl, byte ptr [coll_emp_raw]
+    je .Lco_next
+1:
+    mov dl, byte ptr [si + bx + 0x80]
+    xor bx, bx
+    mov bl, al
+    shr bl, 4
+    push bx                             // (its band, for the lists)
+    mov ah, 3
+    test bl, bl
+    jz 1f
+    dec bx
+    jmp .Lco_band
+1:
+    dec ah
+.Lco_band:
+    mov al, byte ptr [coll_head + bx]
+.Lco_walk:
+    cmp al, 0xFF
+    je .Lco_band_end
+    mov di, ax
+    and di, 0x00FF                      // DI = j (AH: the bands left)
+    mov al, dl
+    sub al, byte ptr [coll_sx + di]
+    add al, 7
+    cmp al, 14
+    ja .Lco_other
+    mov al, dh
+    sub al, byte ptr [coll_sy + di]
+    add al, byte ptr [coll_h1]
+    cmp al, byte ptr [coll_hh]
+    ja .Lco_other
+    push ax
+    push bx
+    push cx
+    push dx
+    push di
+    mov ax, cx
+    mov dx, di
+    IA16_CALL coll_pair
+    pop di
+    pop dx
+    pop cx
+    pop bx
+    cmp al, 1
+    je .Lco_hit
+    cmp al, 2
+    pop ax
+    je .Lco_listed
+.Lco_other:
+    mov al, byte ptr [coll_nxt + di]
+    jmp .Lco_walk
+.Lco_band_end:
+    inc bx
+    dec ah
+    jnz .Lco_band
+.Lco_listed:
+    pop bx
+    mov di, cx
+    mov byte ptr [coll_sx + di], dl
+    mov byte ptr [coll_sy + di], dh
+    mov al, byte ptr [coll_head + bx]
+    mov byte ptr [coll_nxt + di], al
+    mov byte ptr [coll_head + bx], cl
+.Lco_next:
+    inc cx
+    cmp cl, 64
+    jb .Lco_loop
+.Lco_none:
+    xor ax, ax
+    jmp .Lco_ret
+.Lco_hit:
+    pop ax
+    pop bx
+    mov ax, 0x20
+.Lco_ret:
+    pop di
+    pop si
+    pop cx
+    pop bx
+    IA16_RET
+#endif
+
     .global psg_run
 psg_run:
     push bx

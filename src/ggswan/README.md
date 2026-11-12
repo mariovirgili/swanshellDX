@@ -6,7 +6,7 @@ emulated by a dynamic recompiler (Z80 to V30MZ code), with the original
 interpreter kept for the parts that need it. The Game Gear video memory is
 mapped onto the WonderSwan's own tile and screen hardware.
 
-Status: fairly stable (patch 151). It has been tested mostly in the
+Status: fairly stable (patch 152). It has been tested mostly in the
 nileswan-medem emulator and with the host test tools; tests on real
 hardware are still to come.
 
@@ -359,7 +359,7 @@ it are listed in order without one.
 - lighter DYN lookup and class routine for deferred tile bytes
 - OUTI runs to CRAM handled in the run routine
 
-### Patches 90-151
+### Patches 90-152
 
 | Patch | Change |
 |---|---|
@@ -425,3 +425,4 @@ it are listed in order without one.
 | 149 | ggswan: the sprite collision flag (VDP status bit 5), which only smsswan had: Batman Returns reads it for its hits (`IN A,(BFh)` / `AND 20h`) and walked through everything. As smsswan's: worked out once a frame, only for a game found to test the flag (of seven games tried only Batman Returns), and it costs: Batman Returns in its first level goes from about 70 k to 84-98 k cycles a frame in `wsrun.py`. In both plugins a sprite with no pixel is left out early (a sprite table never written, 64 empty sprites in one place, took 1.4 million cycles a frame); the flag is the same as a count of the sprites on each pixel in every frame tried (`GGSWAN_COLL=1` in `wssim`, now for ggswan too). The menu: the game icon for `.gg`, `.sms`, `.sg` and `.sf` files. `drcsys.py` moved the windows only for ports C0h-CEh: with the bank ports at D0h-D5h since patch 148, games with a mapper ran wrong in it (patch 148's `--same-code` check was repeated with this corrected: the same result). The sgswan and sfswan binaries are not the same from one build to the next (their size changes by a few bytes with the same sources: to be looked at) |
 | 150 | sgswan, sfswan: the whole picture squeezed, START + Y3 (Y down), as smsswan's: the view is all 24 rows and the line interrupt adds 1 to the Y scroll every three lines (`sg_line_entry` in assembly, 47 a WS screen); sprites placed on the squeezed picture, their height kept; not in text mode. `sgirqtest.py` (the interrupt in Unicorn, served late too), `GGSWAN_SQUEEZE=1` in `wssim_sg` with the reference squeezed. Not on a device: `wsrun.py` has no interrupts. sfswan: a disk whose system is not Disk BASIC (Kamikaze, to be started with `BOOT`: by itself its screen is mirrored) is started from the system disk and `BOOT` typed for it |
 | 151 | START + Y4 (Y left) shows and hides the numbers while playing, in the four plugins (ggswan: Y4 first; smsswan: the numbers or the background's priority). The sprite collision flag: the pairs compared sideways first, from a table of the X positions (measured in `wsrun.py`: no gain, the routine is 9-15% of Batman Returns' frame all the same: 100 pairs looked at, 2 compared by rows; the C of the loop is what costs). From the list of smsswan optimizations reviewed with measurements (`GGSWAN_COLLSTAT=1` in `wssim`): keeping the flag's result between frames is not worth it (what it is made from is the same as the frame before in a tenth of Batman Returns' frames in the game, half of Castle of Illusion's with its title); the squeezed picture's Y-only events and the sprite builder's tests would save 3 or 4 instructions each: left as they are |
+| 152 | The sprite collision flag's walk of the sprite table in assembly (`coll_scan`, `drc_asm.s`; the rows of a pair that overlaps stay in C, `coll_pair`), and the sprites with a tile found to have no pixel passed over at once. Batman Returns in `wsrun.py`: 96/86/83 k cycles a frame in its first level before, 93/83/79 k now; before the game 94/31/59/30 k, now 87/22/50/22 k (85/20/48/19 k with no flag at all, patch 148). `colltest.py`: the device's routine in Unicorn on 3,102 states saved by `wssim` (`GGSWAN_COLLDUMP`), the same flag as the C in all of them |

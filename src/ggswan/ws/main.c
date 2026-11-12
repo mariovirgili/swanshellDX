@@ -1510,99 +1510,145 @@ static inline uint8_t spr_row_mask(uint16_t tile, uint8_t row) {
     const uint8_t *p = gg_vram + tile * 32u + row * 4u;
     return p[0] | p[1] | p[2] | p[3];
 }
-uint8_t gg_platform_sprite_status(void) {
-    const uint8_t *reg = gg.vdp.reg;
-    if (!(reg[1] & 0x40))
-        return 0;
-    static uint8_t head[16], nxt[64], sy[64], sx[64];
-    // (a sprite with no pixel hits nothing: 1 here once that is found, 2
-    // if it has one. A table never written is 64 empty sprites in one
-    // place, 2016 pairs with all their rows to compare: 1.4 million
-    // cycles a frame in Batman Returns before its first screen)
-    static uint8_t emp[64];
-    const uint8_t *sat = gg_vram + sat_base;
-    uint8_t h = (reg[1] & 0x02) ? 16 : 8;
-    uint16_t tb = (reg[6] & 0x04) ? 0x100 : 0;
-    uint8_t lines = (uint8_t) GG_ACTIVE;
-    memset(head, 0xFF, sizeof(head));
-    memset(emp, 0, sizeof(emp));
+/*
+ * In two parts since patch 152. coll_scan walks the table and looks for
+ * the pairs whose rectangles overlap: that is where the time went (Batman
+ * Returns: 33-42 sprites, about 100 pairs looked at a frame, 2 that
+ * overlap), so on the device it is in assembly (drc_asm.s); the PC tests
+ * have it in C here. coll_pair is called for an overlapping pair and
+ * compares its rows.
+ */
+uint8_t coll_head[16], coll_nxt[64], coll_sy[64], coll_sx[64];
+uint8_t coll_h1, coll_hh, coll_lines, coll_noend;   // h - 1, 2 h - 2, the lines, no D0h end
+// the tile (as the table has it) of the last sprite found with no pixel,
+// if any yet: coll_scan passes over the sprites with that one at once
+uint8_t coll_emp_raw, coll_emp_has;
+// (a sprite with no pixel hits nothing: 1 here once that is found, 2 if
+// it has one. A table never written is 64 empty sprites in one place,
+// 2016 pairs with all their rows to compare: 1.4 million cycles a frame
+// in Batman Returns before its first screen)
+static uint8_t emp[64];
+static const uint8_t *coll_sat;
+static uint16_t coll_tb, emp_tile;
+static uint8_t coll_h, emp_is;
 #ifdef GGSWAN_HOST
-    static unsigned long st_calls, st_spr, st_rect, st_pairs, st_rows, st_hit;
-    #define ST(x) (x)
-    st_calls++;
-    if (getenv("GGSWAN_COLLSTAT") && st_calls % 500 == 0)
-        fprintf(stderr, "COLL after %lu calls: sprites %.1f, rectangle tests %.1f, pairs compared %.2f, rows %.1f a call; hits %lu\n",
-                st_calls, (double) st_spr / st_calls, (double) st_rect / st_calls, (double) st_pairs / st_calls, (double) st_rows / st_calls, st_hit);
+static unsigned long st_calls, st_spr, st_rect, st_pairs, st_rows;
+#define ST(x) (x)
 #else
-    #define ST(x) ((void) 0)
+#define ST(x) ((void) 0)
 #endif
-    uint16_t emp_tile = 0xFFFF;
-    uint8_t emp_is = 0;
+
+// sprites i and j (j earlier in the table) with rectangles that overlap:
+// 1 two of their pixels do, 2 sprite i has no pixel (none of its pairs
+// need looking at), 0 neither
+uint8_t coll_pair(uint8_t i, uint8_t j) {
+    const uint8_t *sat = coll_sat;
+    uint8_t h = coll_h;
+    int8_t oy = (int8_t) ((uint8_t) (sat[i] + 1) - coll_sy[j]);
+    int8_t ox = (int8_t) (sat[0x80 + i * 2] - coll_sx[j]);
+    uint16_t ti = sat[0x81 + i * 2] | coll_tb, tj = sat[0x81 + j * 2] | coll_tb;
+    if (h == 16) {
+        ti &= ~1;
+        tj &= ~1;
+    }
+    if (!emp[i]) {
+        // (the last tile looked at is remembered: the empty sprites of a
+        // table are mostly one tile)
+        if (ti != emp_tile) {
+            uint8_t m = 0;
+            for (uint8_t r = 0; r < h && !m; r++)
+                m = spr_row_mask((ti + (r >> 3)) & 0x1FF, r & 7);
+            emp_tile = ti;
+            emp_is = m ? 2 : 1;
+        }
+        emp[i] = emp_is;
+    }
+    if (emp[i] == 1) {
+        coll_emp_raw = sat[0x81 + i * 2];
+        coll_emp_has = 1;
+        return 2;
+    }
+    if (emp[j] == 1)
+        return 0;
+    // (rows: i's from ri, j's from rj, n of them)
+    uint8_t ri = oy < 0 ? -oy : 0, rj = oy > 0 ? oy : 0;
+    uint8_t n = h - (oy < 0 ? -oy : oy);
+    ST(st_pairs++);
+    for (; n; n--, ri++, rj++) {
+        ST(st_rows++);
+        uint8_t mi = spr_row_mask((ti + (ri >> 3)) & 0x1FF, ri & 7);
+        uint8_t mj = spr_row_mask((tj + (rj >> 3)) & 0x1FF, rj & 7);
+        if (ox >= 0 ? (mi & (uint8_t) (mj << ox)) : (mj & (uint8_t) (mi << -ox)))
+            return 1;
+    }
+    return 0;
+}
+
+#ifdef GGSWAN_HOST
+// (the device's is drc_asm.s: the same, step by step)
+static uint8_t coll_scan(const uint8_t *sat) {
     for (uint8_t i = 0; i < 64; i++) {
         uint8_t y = sat[i];
-        if (GG_SPR_END(y))
+        if (y == 0xD0 && !coll_noend)
             break;
         y++;
-        if (y >= lines)
+        if (y >= coll_lines)
+            continue;
+        if (coll_emp_has && sat[0x81 + i * 2] == coll_emp_raw)
             continue;
         uint8_t x = sat[0x80 + i * 2];
         uint8_t b = y >> 4;
         ST(st_spr++);
-        // (most of the time goes here, not in the rows: Batman Returns has
-        // 100 pairs to look at a frame and 2 that overlap. Sideways first:
-        // the sprites of a band are mostly side by side)
-        uint8_t hh = 2 * h - 2, h1 = h - 1;
         for (uint8_t bb = b ? b - 1 : 0; bb <= b + 1; bb++) {
-            for (uint8_t j = head[bb]; j != 0xFF; j = nxt[j]) {
-                uint8_t dx = x - sx[j] + 7;
+            for (uint8_t j = coll_head[bb]; j != 0xFF; j = coll_nxt[j]) {
+                uint8_t dx = x - coll_sx[j] + 7;
                 ST(st_rect++);
                 if (dx > 14)
                     continue;
-                uint8_t dy = y - sy[j] + h1;
-                if (dy > hh)
+                uint8_t dy = y - coll_sy[j] + coll_h1;
+                if (dy > coll_hh)
                     continue;
-                int8_t oy = (int8_t) (dy - (h - 1)), ox = (int8_t) (dx - 7);
-                uint16_t ti = sat[0x81 + i * 2] | tb, tj = sat[0x81 + j * 2] | tb;
-                if (h == 16) {
-                    ti &= ~1;
-                    tj &= ~1;
-                }
-                if (!emp[i]) {
-                    // (the last tile looked at is remembered: the empty
-                    // sprites of a table are mostly one tile)
-                    if (ti != emp_tile) {
-                        uint8_t m = 0;
-                        for (uint8_t r = 0; r < h && !m; r++)
-                            m = spr_row_mask((ti + (r >> 3)) & 0x1FF, r & 7);
-                        emp_tile = ti;
-                        emp_is = m ? 2 : 1;
-                    }
-                    emp[i] = emp_is;
-                }
-                if (emp[i] == 1)
-                    goto listed;   // (none of its pairs)
-                if (emp[j] == 1)
-                    continue;
-                // (rows: i's from ri, j's from rj, n of them)
-                uint8_t ri = oy < 0 ? -oy : 0, rj = oy > 0 ? oy : 0;
-                uint8_t n = h - (oy < 0 ? -oy : oy);
-                ST(st_pairs++);
-                for (; n; n--, ri++, rj++) {
-                    ST(st_rows++);
-                    uint8_t mi = spr_row_mask((ti + (ri >> 3)) & 0x1FF, ri & 7);
-                    uint8_t mj = spr_row_mask((tj + (rj >> 3)) & 0x1FF, rj & 7);
-                    if (ox >= 0 ? (mi & (uint8_t) (mj << ox)) : (mj & (uint8_t) (mi << -ox)))
-                        return 0x20;
-                }
+                uint8_t r = coll_pair(i, j);
+                if (r == 1)
+                    return 0x20;
+                if (r == 2)
+                    goto listed;
             }
         }
     listed:
-        sx[i] = x;
-        sy[i] = y;
-        nxt[i] = head[b];
-        head[b] = i;
+        coll_sx[i] = x;
+        coll_sy[i] = y;
+        coll_nxt[i] = coll_head[b];
+        coll_head[b] = i;
     }
     return 0;
+}
+#else
+uint8_t coll_scan(const uint8_t *sat);
+#endif
+
+uint8_t gg_platform_sprite_status(void) {
+    const uint8_t *reg = gg.vdp.reg;
+    if (!(reg[1] & 0x40))
+        return 0;
+    coll_sat = gg_vram + sat_base;
+    coll_h = (reg[1] & 0x02) ? 16 : 8;
+    coll_h1 = coll_h - 1;
+    coll_hh = 2 * coll_h - 2;
+    coll_tb = (reg[6] & 0x04) ? 0x100 : 0;
+    coll_lines = (uint8_t) GG_ACTIVE;
+    coll_noend = !GG_SPR_END(0xD0);
+    emp_tile = 0xFFFF;
+    coll_emp_has = 0;
+    memset(coll_head, 0xFF, sizeof(coll_head));
+    memset(emp, 0, sizeof(emp));
+#ifdef GGSWAN_HOST
+    st_calls++;
+    if (getenv("GGSWAN_COLLSTAT") && st_calls % 500 == 0)
+        fprintf(stderr, "COLL after %lu calls: sprites %.1f, rectangle tests %.1f, pairs compared %.2f, rows %.1f a call\n",
+                st_calls, (double) st_spr / st_calls, (double) st_rect / st_calls, (double) st_pairs / st_calls, (double) st_rows / st_calls);
+#endif
+    return coll_scan(coll_sat);
 }
 #endif
 
