@@ -62,6 +62,8 @@ gb_line_entry:
     out 0x12, al
     mov al, ss:[bx + 2]
     out 0x13, al
+    cmp byte ptr ss:[bx + 9], 0xFF      // (a short entry: only the scroll. gb_video.c, make_list)
+    je 1f
     mov al, ss:[bx + 3]
     out 0x07, al
     mov al, ss:[bx + 4]
@@ -80,6 +82,7 @@ gb_line_entry:
     mov ss:[0xFE84], ax
     mov ax, ss:[bx + 14]
     mov ss:[0xFE86], ax
+1:
     add bx, 16
     mov ss:[gbv_split_ptr], bx
     mov al, ss:[bx]
@@ -217,3 +220,52 @@ gbv_sprites_asm:
 spr_attr:
     .byte 0x28, 0x2A, 0x68, 0x6A, 0xA8, 0xAA, 0xE8, 0xEA
     .byte 0x08, 0x0A, 0x48, 0x4A, 0x88, 0x8A, 0xC8, 0xCA
+
+/*
+ * uint8_t gbd_ram_cmp(void): a block of code in RAM against the copy of
+ * its bytes kept before its translation (gb_drc.c, ram_same), leaving out
+ * the bytes that are read as the code runs (a bit each, in the 16 bytes
+ * that end 18 before the copy). 1: the same.
+ */
+    .global gbd_ram_cmp
+gbd_ram_cmp:
+    push si
+    push di
+    push es
+    les di, ss:[drc_cmp_p]
+    mov si, ss:[drc_cmp_ram]
+    mov bx, di
+    xor cx, cx
+    mov cl, ss:[drc_cmp_len]
+    cld
+1:
+    repe cmpsb
+    je 8f
+    mov ax, di
+    dec ax
+    sub ax, bx                  // which byte
+    mov dx, ax
+    shr ax, 3
+    push bx
+    add bx, ax
+    mov al, es:[bx - 18]
+    pop bx
+    push cx
+    mov cl, dl
+    and cl, 7
+    shr al, cl
+    pop cx
+    test al, 1
+    jz 9f
+    jcxz 8f
+    jmp 1b
+8:
+    mov al, 1
+    jmp 7f
+9:
+    xor al, al
+7:
+    pop es
+    pop di
+    pop si
+    IA16_RET

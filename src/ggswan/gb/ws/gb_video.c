@@ -65,7 +65,8 @@ typedef struct {
 // in the internal RAM above the Game Boy's: GB-MEMORY-MAP.md)
 #define RAW_MAX 146
 #define raw ((raw_t*) 0xA000)        // (146 of 8 bytes: to A48Fh)
-static uint8_t raw_n;
+uint8_t gbv_raw_n;      // (gb_drc_asm.s, s_vreg, adds to the list too)
+#define raw_n gbv_raw_n
 
 /* What the interrupts do: 16 bytes a change (gb_asm.s). Two lists: the one
    being shown and the one being made. */
@@ -235,14 +236,34 @@ static void make_list(void) {
     out = list_made;
     uint8_t win_at = 0xFF;      // the line WY was met at
     uint8_t win_y = 0;          // the window's own line counter
+    bool plain = false;         // the entry before: the background alone
     for (uint8_t i = 0; i < raw_n; i++) {
         const raw_t *s = &raw[i];
         uint8_t from = s->line, to = i + 1 < raw_n ? raw[i + 1].line : 144;
         if (win_at == 0xFF && s->wy >= from && s->wy < to) win_at = s->wy;
         bool shown = (s->lcdc & 0x21) == 0x21 && s->wx < 167 && win_at != 0xFF;
         if (!shown) {
+            if (plain && s->lcdc == s[-1].lcdc && s->bgp == s[-1].bgp) {
+                // Only the scroll has changed (a wave: ZAS's logo, a
+                // change at every line): a short entry, the line and
+                // screen 2's scroll, marked by FFh in the first color's
+                // high byte (a color is 0FFFh at most). The interrupt
+                // then sets those two ports and nothing else. (Until
+                // patch 168 every entry was a whole one: 144 of them
+                // made each frame, eleven ports and colors set at each
+                // line of every WonderSwan frame.)
+                uint8_t *o = out;
+                o[0] = from - 1;
+                o[1] = s->scx - GB_X0;
+                o[2] = s->scy;
+                o[9] = 0xFF;
+                out = o + 16;
+                continue;
+            }
             emit(from, s, 0, 0);
+            plain = true;
         } else {
+            plain = false;
             uint8_t w = win_at > from ? win_at : from;
             if (w > from) emit(from, s, 0, 0);
             emit(w, s, s->wx > 7 ? 2 : 1, win_y);

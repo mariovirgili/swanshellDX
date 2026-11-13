@@ -111,6 +111,13 @@ it, from a table for the lines of the picture), and need not be a
 block's start: `LDH A, (41h)`, tests, a conditional jump back to the
 read, anywhere in a block.
 
+A write to SCY, SCX, BGP, WY or WX by `LDH (n), A` is done by a
+routine (`s_vreg`): the register and the frame's list of changes
+(`gb_video.c`, `gbv_reg`), without C. The second ROM area's bank
+register is written without C for MBC1, MBC3, MBC5 and MBC2 (0000h-
+3FFFh with the address's bit 8 set, four bits); "RAM on" (0000h-1FFFh
+of MBC1, 3, 5) costs nothing when it writes what is already so.
+
 No wait is passed over beyond the next event (`SKIP_CYC` in
 `gb_drc_asm.s`; `s_wait_stat` then reads STAT as it is and the loop
 goes round, to the dispatcher), and none of it when an event is
@@ -168,8 +175,20 @@ with no routine.
   when the blocks are forgotten, the first also when the first area's
   bank changes (`gb_main.c`).
 - Code in RAM has a copy of its bytes before it, compared at every
-  entry from the dispatcher; it is joined to nothing but itself. When
-  the bytes are no longer those, the block is not thrown away: the
+  entry from the dispatcher; it is joined to nothing but itself (its
+  jumps to its own start go there at once). Before the copy, a header
+  (`RAM_HEAD`, 34 bytes): the bytes that could be read as the code
+  runs (16 bytes, a bit for each of the block's first 128), those
+  that are, "are there any", the count of forms. When the bytes are
+  no longer those and all that changed are operands of `LD r, n`, `LD
+  rr, nn`, `JP nn`, `JR e` or `CALL nn` in a block wholly in the work
+  RAM or the high RAM, the block is translated once more with those
+  operands read from the RAM as it runs (`mov r, [n's place]`; the
+  jumps through `s_exit_dyn`) and left out of the comparison
+  (`gbd_ram_cmp` in `gb_asm.s`): a routine that writes its own
+  operands before every use (Race Drivin's line filler, the n of an
+  `LD D, n` and the e of a `JR`; Donkey Kong Land's `LD HL, nn /
+  CALL`) is translated twice and then runs as it is. Otherwise the
   form now there is looked up, and translated if new, under a key of
   its own, 8000h + a 15-bit sum of its first bytes (as many as the
   first form has, 12 at most; bit 0 clear, so never FFFFh), and
@@ -192,5 +211,9 @@ with no routine.
 
 They are taken by the dispatcher (`gbd_run_frame`), between blocks:
 when the count runs out and the event raises one, or after a write to
-an I/O register. EI sets `drc_ei`; the block ends after the next
+an I/O register. RETI, with an interrupt enabled and waiting, leaves
+by the dispatcher, which takes it there and then (until patch 168 it
+went on by the table and the interrupt waited for the next event: a
+STAT interrupt raised with the vertical blank's was taken ten lines
+late). EI sets `drc_ei`; the block ends after the next
 instruction, and the dispatcher then enables them.

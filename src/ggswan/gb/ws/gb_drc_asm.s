@@ -105,6 +105,8 @@ drc_stubs:
     .word s_fill0 - . - 2
     .byte 0xE9
     .word s_skip_hl - . - 2
+    .byte 0xE9
+    .word s_vreg - . - 2
 
 // leave for the address in SI. When there are cycles left and the
 // address is in ROM, the block is looked for here: the table's first
@@ -686,6 +688,78 @@ s_wait_mode:
 2:
     ret
 
+// AL to SCY, SCX, BGP, WY or WX (the register's low byte and its place in
+// an entry of the frame's list of changes after the call): what
+// gbf_io_write and gbv_reg (gb_video.c) do, without the way through C. A
+// program that changes the scroll at every line (ZAS's logo, its
+// playfield) spent a quarter of that screen's time there.
+s_vreg:
+    pop di
+    add di, 2
+    push di
+    push bx
+    mov bl, cs:[di - 2]
+    mov bh, 0x9F
+    cmp al, [bx]
+    je 9f
+    mov [bx], al
+    push ax
+    push dx
+    // the line it shows from (gbf_draw_line): the one being drawn until
+    // its 21st cycle, then the next; the first with the LCD off or in
+    // the vertical blank; nothing after the last
+    xor dl, dl
+    cmp byte ptr [gb + GB_LCD_ON], 0
+    je 1f
+    mov ax, [gbf_ev_pos]
+    sub ax, [gbf_cyc]
+    mov dl, 114
+    div dl
+    mov dl, 0
+    cmp al, 144
+    jae 1f
+    mov dl, al
+    cmp ah, 21
+    jb 1f
+    inc dl
+    cmp dl, 144
+    jae 8f
+1:
+    mov bl, [gbv_raw_n]
+    xor bh, bh
+    shl bx, 3
+    add bx, 0xA000 - 8          // the list's last entry
+    cmp [bx], dl
+    je 2f
+    cmp byte ptr [gbv_raw_n], 146
+    jae 2f
+    mov ax, [bx]
+    mov [bx + 8], ax
+    mov ax, [bx + 2]
+    mov [bx + 10], ax
+    mov ax, [bx + 4]
+    mov [bx + 12], ax
+    mov ax, [bx + 6]
+    mov [bx + 14], ax
+    add bx, 8
+    mov [bx], dl
+    inc byte ptr [gbv_raw_n]
+2:
+    mov al, cs:[di - 1]
+    xor ah, ah
+    add bx, ax
+    pop dx
+    pop ax
+    mov [bx], al
+    pop bx
+    ret
+8:
+    pop dx
+    pop ax
+9:
+    pop bx
+    ret
+
 // A loop that only reads LY and tests it: nothing changes before the next
 // line, so the time to it is taken off the count at once (to the line's
 // second cycle, where LY has changed in every line)
@@ -1152,10 +1226,33 @@ s_wrt:
     // to MBC1's and MBC3's 3FFFh or MBC5's 2FFFh; gb_main.c: gbf_plat_map)
     mov di, si
     shr di, 8
+    // (0000h-1FFFh of an MBC1, 3 or 5, "the RAM on or off", with what it
+    // already is: nothing to do. Race Drivin' writes there 68 times a
+    // frame, zeros mostly; a tenth of its time went through C for them)
     cmp di, 0x20
+    jae wrt_bank
+    cmp byte ptr [drc_ramg], 0
+    je wrt_bank
+    push ax
+    mov al, [drc_tmp]
+    and al, 15
+    cmp al, 10
+    mov al, 1
+    jne 1f
+    inc al
+1:
+    cmp al, [drc_ramg]
+    pop ax
+    je 9b
+    jmp 6f
+wrt_bank:
+    cmp di, [drc_mbc_lo]
     jb 6f
     cmp di, [drc_mbc_top]
     jae 6f
+    or di, [drc_mbc_or]         // (MBC2: only with the address' bit 8 set)
+    test di, 1
+    jz 6f
     push ax
     push dx
     mov al, [drc_tmp]
@@ -1448,3 +1545,4 @@ drc_stub_offs:
     .word s_copy4 - drc_stubs
     .word s_fill0 - drc_stubs
     .word s_skip_hl - drc_stubs
+    .word s_vreg - drc_stubs

@@ -344,9 +344,24 @@ if os.environ.get('GBRUN_CALLERS') and CYCLES:
             g = syms['gb']; m = uc.mem_read(g, 12)
             callers['enter', '%04X' % (m[10] | m[11] << 8)] += 1
         else:
-            callers[where((cs << 4) + ip), '%04X' % (uc.reg_read(UC_X86_REG_AX) & 0xFFF0)] += 1
+            if os.environ['GBRUN_CALLERS'] == 'gb_cart_write':
+                # (the register written, by 2000h, and the value)
+                callers['%04X' % (uc.reg_read(UC_X86_REG_AX) & 0xE000), '%02X' % (uc.reg_read(UC_X86_REG_DX) & 0xFF)] += 1
+            else:
+                callers[where((cs << 4) + ip), '%04X' % (uc.reg_read(UC_X86_REG_AX) & 0xFFF0)] += 1
     a0 = syms[os.environ['GBRUN_CALLERS']]
     uc.hook_add(UC_HOOK_CODE, h_call, None, a0, a0)
+if os.environ.get('GBRUN_ENTER'):
+    # GBRUN_ENTER=from-to: in those Game Boy frames, every entry of the
+    # recompiled code from the dispatcher: the address and the frame's cycle
+    e0, e1 = [int(x) for x in os.environ['GBRUN_ENTER'].split('-')]
+    def h_en(uc, addr, size, _):
+        if not e0 <= st['gbframes'] <= e1: return
+        r = lambda n, k=2, sg=False: int.from_bytes(uc.mem_read(syms[n] & 0xFFFF, k), 'little', signed=sg)
+        pos = (r('gbf_ev_pos') - r('gbf_cyc', 2, True)) % 17556
+        m = uc.mem_read(syms['gb'] & 0xFFFF, 12)
+        print('E %d pc=%04X pos=%d line=%d cyc=%d' % (st['gbframes'], m[10] | m[11] << 8, pos, pos // 114, r('gbf_cyc', 2, True)))
+    uc.hook_add(UC_HOOK_CODE, h_en, None, syms['gbd_enter'], syms['gbd_enter'])
 if os.environ.get('GBRUN_TRANS'):
     # GBRUN_TRANS=frame: from that Game Boy frame on, every block translated:
     # its address, is it code in RAM, the ROM banks' keys, flushes so far

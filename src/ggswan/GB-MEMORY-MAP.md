@@ -52,7 +52,7 @@ So gbswan cannot be one more `-D` on those sources.
 | 9F00h-9F7Fh | its I/O registers, as written (FF00h) | P1 as it reads |
 | 9F80h-9FFEh, 9FFFh | its high RAM and IE | |
 | A000h-A48Fh | the frame's changes of scroll, window, LCDC and BGP, by line | 146 of 8 bytes |
-| A500h-B75Fh, B800h-CA5Fh | the two lists the line interrupt works from (shown, being made) | 294 of 16 bytes |
+| A500h-B75Fh, B800h-CA5Fh | the two lists the line interrupt works from (shown, being made) | 294 of 16 bytes; an entry whose byte 9 is FFh is a short one: only the line and screen 2's scroll (bytes 0-2) |
 | CB00h-CB7Fh | the sprites' order (kept from frame to frame) and the keys being sorted | |
 | CB80h-CC2Fh | by a sprite's Y: is it 8 x 16 (LCDC bit 2 at its top line) | |
 | D000h-D7FFh | stack, 2 KiB | `gb_run` (`gb/ws/gb_asm.s`) sets SP to D800h before the game. Before that (the ROM being read: FatFs) the stack is the C library's, down from 4000h |

@@ -44,7 +44,7 @@ background and the window, switched at the right lines by the line
 interrupt, with the scroll the program gave each line; the sprites are
 the WonderSwan's.
 
-## Where it is (patch 168)
+## Where it is (patch 169)
 
 The CPU is a recompiler (`gb/ws/gb_drc.c`, `gb_drc_asm.s`; `GB-ABI.md`),
 there is sound (`gb/ws/gb_sound.c`: what it does and does not, at its
@@ -237,6 +237,73 @@ writes its video memory the same way). Donkey Kong Land's Kong: in
 Kong's box. The game draws Kong into the tiles' memory, which the
 WonderSwan shows as it is being written, at whatever moment its own
 frame falls: probably that, not looked into further.
+
+**Patch 169.** Gio on 168: the bar's top right, its bottom still
+flickering, "all to the side as before"; R-Type II 48 frames a second
+in a heavy scene. And a plan of speed work to try on the slow games
+only (Donkey Kong Land, X, Race Drivin', ZAS).
+
+The bar's second cause was RETI. The game sets LYC = 80h for its bar
+from the STAT interrupt of line 144, which waits behind the vertical
+blank's; the Game Boy takes it right after that one's RETI, at line
+150. RETI went on to its return address by the return cache, with no
+look at what was waiting, and the plugin took it at the next block's
+end that looked: every hundred frames or so, at the next frame's line
+0, after the game had needed it (`GBRUN_ENTER`, and `gbftest` made to
+print its writes of LYC and SCX beside the plugin's). RETI now looks
+(`IE & IF & 1Fh`) and leaves through the dispatcher when something
+waits. Over 1,100 frames with keys the scroll at line 128 is the bar's
+in all but four, which are the two blank screens after a death. First
+tried with RETI always through the dispatcher: Batman 3.9% slower, so
+the look is in the block. A jump of a block in RAM to its own start is
+also no longer linked through the table (it could have run another
+form of the block unverified): not the bar's cause, kept.
+
+Speed, cycles a Game Boy frame, 168 to 169 (same scenes and keys;
+memory and pictures the same as the build before each step, where a
+step does not change the time the game sees):
+
+| scene | 168 | 169 | |
+|---|---|---|---|
+| ZAS, logo (frames 330-385) | 159,543 | 72,387 | -55% |
+| Race Drivin', driving | 143,685 | 109,938 | -23% |
+| X, tunnel | 116,665 | 92,239 | -21% |
+| Donkey Kong Land | 89,045 | 85,404 | -4% |
+| Castlevania II | 58,583 | 57,178 | -2% |
+| R-Type II | 35,596 | 34,777 | -2% |
+| Super Mario Land 2 | 51,693 | 51,181 | -1% |
+| ZAS, play | 68,549 | 68,038 | -1% |
+| Batman | 58,986 | 58,893 | 0 |
+
+- ZAS's logo changes SCX on every line. A line of the list that
+  differs from the one before only by its scroll is now a short entry
+  (byte 9 = FFh: `GB-MEMORY-MAP.md`) for which the line interrupt
+  writes two ports and returns (159,543 to 112,806), and a write of
+  SCY, SCX, BGP, WY or WX is a routine of the recompiler's, `s_vreg`,
+  not a call of the C one (to 72,285).
+- Race Drivin's inner loop is code in RAM that the game changes as it
+  goes (the `n` of an `LD D, n`, the `e` of a `JR` into a row of
+  `LD (HL+), A`): six forms, then the interpreter. A block in RAM whose
+  changed bytes are all operands the translator can read at run time
+  (`LD r, n`, `LD rr, nn`, `JP nn`, `JR e`, `CALL nn`) is now
+  translated once more with those read from RAM, and compared without
+  them (`GB-ABI.md`): 143,670 to 137,487, Donkey Kong Land 89,222 to
+  84,903.
+- X is an MBC2 cartridge and changes its ROM bank 74 times a frame;
+  the quick bank write left MBC2 out, so each went through C: 115,552
+  to 91,918.
+- Race Drivin' writes the "RAM on" register 68 times a frame, nearly
+  always the 0 already there: such a write now returns at once:
+  137,487 to 109,938.
+
+Of the plan, not done: counters in the plugin, the translator's own
+speed (what Donkey Kong Land still translates in the scene measured is
+ROM code met for the first time, some 200 blocks, 11 in RAM), the
+return cache's misses, the OAM. Not measured: Super Mario Land 2's map
+and its Koopa scenes (no run by keys gets there yet). Not looked at
+again: Kong's picture, R-Type's top row (Gio: it seems right in 168).
+All of it only in `gbrun.py`; `gbreg` 24 of 24, the eight older scenes
+the same memory as 168's and the same pictures.
 
 He also saw, in 166, Super Mario Land's whole picture jump sideways
 for an instant now and then. Its status bar is a STAT interrupt at a

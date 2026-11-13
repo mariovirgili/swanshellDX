@@ -33,7 +33,8 @@ extern uint16_t drc_key0, drc_keyx;     // the table's key of the ROM bank at 00
 extern uint16_t drc_hash0, drc_hashx, drc_tseg;     // the keys' part of the table's hash; the table's segment
 extern uint8_t drc_must, drc_ram_ok;
 extern uint8_t drc_mbc_and, drc_mbc_z1, drc_p1_tab[4];
-extern uint16_t drc_mbc_top, drc_mbc_hi, drc_bank_mask;
+extern uint16_t drc_mbc_top, drc_mbc_lo, drc_mbc_or, drc_mbc_hi, drc_bank_mask;
+extern uint8_t drc_ramg;
 void gbd_keys(void);            // the keys changed
 extern uint16_t drc_ram_seg;
 void gbd_write(uint16_t a, uint8_t v);
@@ -76,6 +77,7 @@ extern const uint16_t __far drc_stub_offs[];
 #define ST_COPY4     72
 #define ST_FILL0     75     /* LD (HL+), A / DEC B / JR NZ, as the copying loops */
 #define ST_SKIP_HL   78     /* a loop on the byte at HL: LY, to the next line; RAM, to the next event */
-#define ST_COUNT     27
+#define ST_VREG      81     /* LDH (n), A to SCY, SCX, BGP, WY or WX: the register and the frame's list of changes */
+#define ST_COUNT     28
 
 #endif

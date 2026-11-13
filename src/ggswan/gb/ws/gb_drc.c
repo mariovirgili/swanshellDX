@@ -32,11 +32,16 @@ _Static_assert(offsetof(gb_t, a) == GB_A && offsetof(gb_t, c) == GB_BC && offset
     && offsetof(gb_t, bank_lo) == GB_BANK_LO && offsetof(gb_t, romx_bank) == GB_ROMX, "gb_drc.h");
 
 uint8_t drc_ah, drc_n, drc_tmp, drc_ei, drc_interp;
+const uint8_t __far *drc_cmp_p;     // gbd_ram_cmp's: the block's copy of its bytes,
+uint16_t drc_cmp_ram;               // where they are in the internal RAM,
+uint8_t drc_cmp_len;                // how many
+uint8_t gbd_ram_cmp(void);          // gb_asm.s
 uint16_t drc_link, drc_link_seg, drc_segtab[4];
 uint16_t drc_key0, drc_keyx, drc_hash0, drc_hashx, drc_tseg = DRC_TABLE_SEG;
 uint8_t drc_must, drc_ram_ok;
 uint8_t drc_mbc_and, drc_mbc_z1, drc_p1_tab[4];
-uint16_t drc_mbc_top, drc_mbc_hi, drc_bank_mask;
+uint16_t drc_mbc_top, drc_mbc_lo, drc_mbc_or, drc_mbc_hi, drc_bank_mask;
+uint8_t drc_ramg;
 uint16_t drc_ram_seg;
 uint16_t drc_blocks, drc_flushes;
 
@@ -308,6 +313,32 @@ static void sub_cyc(void) {
     cyc = 0;
 }
 
+// Code in RAM whose operands change (a program that writes the n of an LD
+// r, n or the address of a jump before running it): the operands that
+// have been seen to change are read from the RAM as the code runs, and
+// are not compared when the block is entered. tmpl_req: the bytes of the
+// block (a bit each, 128) to be read so; tmpl_can: those that could be,
+// found as it is translated (the operands of LD r, n; LD rr, nn; JP nn;
+// JR e; CALL nn in a block wholly in the work RAM or the high RAM).
+static uint8_t tmpl_req[16], tmpl_can[16], ram_direct;
+static uint8_t tmpl_bit(uint16_t a) {
+    uint16_t o = a - blk_pc;
+    return o < 128 && (tmpl_req[o >> 3] >> (o & 7) & 1);
+}
+// the n bytes at a are an operand that can be read as the code runs: is it?
+static uint8_t operand(uint16_t a, uint8_t n) {
+    if (!in_ram || !ram_direct) return 0;
+    uint16_t o = a - blk_pc;
+    if (o + n > 128) return 0;
+    uint8_t dyn = 0;
+    for (uint8_t k = 0; k < n; k++) {
+        tmpl_can[(o + k) >> 3] |= 1 << ((o + k) & 7);
+        if (tmpl_req[(o + k) >> 3] >> ((o + k) & 7) & 1) dyn = 1;
+    }
+    if (dyn) for (uint8_t k = 0; k < n; k++) tmpl_req[(o + k) >> 3] |= 1 << ((o + k) & 7);
+    return dyn;
+}
+
 static uint16_t loop_body;  // in a block that starts with a call for a whole loop: where the loop's own code starts (0: no such call)
 // leave for a known address; link: the dispatcher may join the jump to
 // the block there
@@ -545,7 +576,7 @@ static void io_read(uint8_t n) {
 static int16_t known_a(void) {
     for (uint8_t j = cur_i; j-- > 0;) {
         uint8_t op = rb(i_pc[j]);
-        if (op == 0x3E) return rb(i_pc[j] + 1);
+        if (op == 0x3E) return in_ram && tmpl_bit(i_pc[j] + 1) ? -1 : rb(i_pc[j] + 1);
         if (op == 0xAF) return 0;
         // LD r, n; LD r, A; LDH (n), A; LD (nn), A; NOP
         if (op == 0x06 || op == 0x0E || op == 0x16 || op == 0x1E || op == 0x26 || op == 0x2E
@@ -566,6 +597,16 @@ static uint8_t io_write(uint8_t n, uint16_t next) {
             E(0x79); E(0x05);                   // jns +5
             E(0x80); E(0x0E); EW(ADDR(gbf_trig)); E(n == 0x14 ? 1 : n == 0x19 ? 2 : n == 0x1E ? 4 : 8);
         }
+        return 0;
+    }
+    if (n == GB_SCY || n == GB_SCX || n == GB_BGP || n == GB_WY || n == GB_WX) {
+        // (the register and the frame's list of changes: gb_drc_asm.s, s_vreg)
+        mat();
+        nflush();
+        sub_cyc();
+        call_stub(ST_VREG);
+        E(n);
+        E(n == GB_SCX ? 2 : n == GB_SCY ? 3 : n == GB_WY ? 4 : n == GB_WX ? 5 : 6);
         return 0;
     }
     if (n == GB_P1) {
@@ -702,7 +743,12 @@ __attribute__((noinline)) static void translate_block(void) {
     cyc = 0;
     after_ei = 0;
     // (the loops that copy bytes: gb_drc_asm.s, s_copy0-4)
-    loop_body = 0;
+    // (code in RAM: its jumps to its own start go there at once. Joined
+    // by the dispatcher, as until patch 168, a form of the code could be
+    // joined to another form, the one in RAM when the jump was first
+    // taken, and went to it ever after without the bytes being compared:
+    // R-Type II's routine in RAM that sets LYC for its status bar)
+    loop_body = in_ram ? block_start : 0;
     if (!in_ram) {
         static const uint8_t __far copy_loops[5][9] = {
             { 6, 0x2A, 0x12, 0x13, 0x05, 0x20, 0xFA },
@@ -799,6 +845,19 @@ __attribute__((noinline)) static void translate_block(void) {
             case 0:
                 if (y == 0) break;                              // NOP
                 if (y == 3) {                                   // JR e
+                    if (operand(pc + 1, 1)) {
+                        mat();
+                        nflush();
+                        E(0x50);                                // push ax
+                        E(0xA0); EW(pc + 1 - 0x6000);           // mov al, [e]
+                        E(0x98);                                // cbw
+                        E(0x05); EW(next);                      // add ax, next
+                        E(0x89); E(0xC6);                       // mov si, ax
+                        E(0x58);                                // pop ax
+                        exit_dyn(0);
+                        ended = 1;
+                        break;
+                    }
                     if (idle && i == idle_i && (uint16_t) (next + (int8_t) b1) == blk_pc) wait_skip();
                     exit_to(next + (int8_t) b1, 0);
                     ended = 1;
@@ -814,7 +873,8 @@ __attribute__((noinline)) static void translate_block(void) {
                 break;
             case 1:
                 if (!(op & 8)) {                                // LD rr, nn
-                    E(0xB8 | R16[p]); EW(nn);
+                    if (operand(pc + 1, 2)) { E(0x8B); E(0x06 | R16[p] << 3); EW(pc + 1 - 0x6000); }     // mov rr, [nn]
+                    else { E(0xB8 | R16[p]); EW(nn); }
                 } else {                                        // ADD HL, rr: Z kept, H and C the high byte's
                     mat();
                     uint8_t r = R16[p];     // CX, DX or BX: the low byte is register r, the high r + 4
@@ -875,6 +935,7 @@ __attribute__((noinline)) static void translate_block(void) {
                 break;
             case 6:
                 if (y == 6) write_from(0xFF, b1, 1, next);
+                else if (operand(pc + 1, 1)) { E(0x8A); E(0x06 | R8[y] << 3); EW(pc + 1 - 0x6000); }       // mov r, [n]
                 else { E(0xB0 | R8[y]); E(b1); }
                 break;
             default:
@@ -936,7 +997,29 @@ __attribute__((noinline)) static void translate_block(void) {
                 }
             } else if (p == 0 || p == 1) {                      // RET, RETI
                 pop16(6);
-                if (p == 1) { E(0xC6); E(0x06); EW(ADDR(gb.ime)); E(1); }
+                if (p == 1) {
+                    // RETI: by the dispatcher, like what follows EI: an
+                    // interrupt that has been waiting is taken now. (Until
+                    // patch 168 the return went on by the table, and the
+                    // interrupt waited for the next event: R-Type II's
+                    // LYC interrupt at line 144, behind the vertical
+                    // blank's, was taken at the next frame's first line
+                    // instead of line 150, and when that was too late the
+                    // status bar was drawn with the playfield's scroll.)
+                    // (Only then: the other returns go on by the table.)
+                    E(0xC6); E(0x06); EW(ADDR(gb.ime)); E(1);
+                    mat();
+                    nflush();
+                    sub_cyc();
+                    E(0x50);                                    // push ax
+                    E(0xA0); EW(ADDR(gb_ie));                   // mov al, [gb_ie]
+                    E(0x22); E(0x06); EW(0x9F0F);               // and al, [IF]
+                    E(0xA8); E(0x1F);                           // test al, 1Fh
+                    E(0x58);                                    // pop ax
+                    E(0x74); E(0x07);                           // jz +7
+                    E(0x89); E(0x36); EW(ADDR(gb) + GB_PC);     // mov [gb.pc], si
+                    jmp_stub(ST_EXIT);
+                }
                 exit_dyn(0);
                 ended = 1;
             } else if (p == 2) {                                // JP HL
@@ -1011,7 +1094,13 @@ __attribute__((noinline)) static void translate_block(void) {
             }
             break;
         case 3:
-            if (y == 0) {                                       // JP nn
+            if (y == 0 && operand(pc + 1, 2)) {                 // JP nn, nn read as the code runs
+                mat();
+                nflush();
+                E(0x8B); E(0x36); EW(pc + 1 - 0x6000);          // mov si, [nn]
+                exit_dyn(0);
+                ended = 1;
+            } else if (y == 0) {                                // JP nn
                 if (idle && i == idle_i && nn == blk_pc) wait_skip();
                 exit_to(nn, 0);
                 ended = 1;
@@ -1172,7 +1261,14 @@ __attribute__((noinline)) static void translate_block(void) {
                 }
             } else {                                            // CALL nn
                 push16(0xFF, next);
-                exit_to(nn, 0);
+                if (operand(pc + 1, 2)) {
+                    mat();
+                    nflush();
+                    E(0x8B); E(0x36); EW(pc + 1 - 0x6000);      // mov si, [nn]
+                    exit_dyn(0);
+                } else {
+                    exit_to(nn, 0);
+                }
                 ended = 1;
             }
             break;
@@ -1249,8 +1345,8 @@ __attribute__((noinline)) static void scan_block(uint16_t pc) {
         uint8_t f = op_flags(op, cb);
         i_dir[0][n_ins] = i_dir[1][n_ins] = i_dir[2][n_ins] = 0;
         if (op == 0xF0 && cb == 0x41 && n_ins) has41 = 1;
-        if ((op & 0xCF) == 0x01 && op < 0x30) {
-            // LD rr, nn: known from here
+        if ((op & 0xCF) == 0x01 && op < 0x30 && !(in_ram && (tmpl_bit(pc + 1) || tmpl_bit(pc + 2)))) {
+            // LD rr, nn: known from here (unless it is read as the code runs)
             uint8_t rr = op >> 4;
             kn[rr] = 1;
             kv[rr] = cb | (uint16_t) rb(pc + 2) << 8;
@@ -1380,19 +1476,30 @@ static blk_t __far *find(uint16_t pc, uint16_t key) {
     return 0;
 }
 
-// code in RAM: still the bytes that were translated? (a copy of them is
-// before the block's code, and their number)
+// code in RAM: still the bytes that were translated? Before the block's
+// code: the bytes that can be read as the code runs (16, a bit each),
+// those that are (16; not compared), are there any, the forms met
+// since (gbd_run_frame), the bytes translated, their number.
+#define RAM_HEAD 34
 static uint8_t ram_same(blk_t __far *b, uint16_t pc) {
     const uint8_t __far *c = MK_FP(b->seg, b->off - 1);
     uint8_t len = *c;
     c -= len;
-    if ((pc >= 0xC000 && pc <= 0xE000 - len) || (pc >= 0xFF80 && pc <= 0xFFFF - len))
-        return !_fmemcmp(c, MK_FP(0, pc - 0x6000), len);     // (the work RAM, the high RAM: where they are)
+    if ((pc >= 0xC000 && pc <= 0xE000 - len) || (pc >= 0xFF80 && pc <= 0xFFFF - len)) {
+        // (the work RAM, the high RAM: where they are)
+        if (!_fmemcmp(c, MK_FP(0, pc - 0x6000), len)) return 1;
+        if (!c[-2]) return 0;
+        drc_cmp_p = c;
+        drc_cmp_ram = pc - 0x6000;
+        drc_cmp_len = len;
+        return gbd_ram_cmp();
+    }
     for (uint8_t i = 0; i < len; i++)
         if (c[i] != gbf_read(pc + i)) return 0;
     return 1;
 }
 
+static uint8_t tmpl_forms;      // (the count of forms a block of code in RAM starts with)
 __attribute__((noinline)) static blk_t __far *translate(uint16_t pc, uint16_t key) {
     for (;;) {
         if (code_top > CODE_LIMIT) {
@@ -1418,7 +1525,10 @@ __attribute__((noinline)) static blk_t __far *translate(uint16_t pc, uint16_t ke
             // the forms of it met since (gbd_run_frame), the bytes
             // translated, then their number, before the code
             uint8_t len = i_pc[n_ins] - pc;
-            E(0);
+            ram_direct = (pc >= 0xC000 && pc <= 0xE000 - len) || (pc >= 0xFF80 && pc <= 0xFFFF - len);
+            memset(tmpl_can, 0, 16);
+            code_top += RAM_HEAD - 1;
+            E(tmpl_forms);
             for (uint8_t i = 0; i < len; i++) E(rb(pc + i));
             E(len);
         }
@@ -1427,6 +1537,17 @@ __attribute__((noinline)) static blk_t __far *translate(uint16_t pc, uint16_t ke
         b->off = code_top;
         b->seg = code_seg;
         translate_block();
+        if (in_ram) {
+            uint8_t __far *h = MK_FP(b->seg, b->off - 1);
+            h -= *h + RAM_HEAD;
+            uint8_t any = 0;
+            for (uint8_t i = 0; i < 16; i++) {
+                h[i] = tmpl_can[i];
+                h[16 + i] = tmpl_req[i];
+                any |= tmpl_req[i];
+            }
+            h[32] = any;
+        }
         drc_blocks++;
         return b;
     }
@@ -1504,6 +1625,37 @@ void gbd_run_frame(void) {
                 // interpreter from then on, as far as the first form
                 // went, to a jump taken or to an interrupt due.
                 uint8_t __far *cnt = MK_FP(FP_SEG(c), FP_OFF(c) - *c - 1);
+                // First: are the bytes that changed all operands that can
+                // be read as the code runs (ram_same's header)? Then the
+                // block is translated once more, to read them so, and
+                // that is the end of it: Race Drivin's line filler writes
+                // the n of an LD D, n and the e of a JR into itself for
+                // every line it draws, Donkey Kong Land the nn of its LD
+                // HL, nn / CALL.
+                if ((pc >= 0xC000 && pc <= 0xE000 - *c) || (pc >= 0xFF80 && pc <= 0xFFFF - *c)) {
+                    const uint8_t __far *was = cnt + 1;
+                    const uint8_t *now = (const uint8_t*) (pc - 0x6000);
+                    uint8_t n = *c > 128 ? 128 : *c, ok = *c <= 128;
+                    memset(tmpl_req, 0, 16);
+                    for (uint8_t i = 0; i < n; i++)
+                        if (was[i] != now[i]) tmpl_req[i >> 3] |= 1 << (i & 7);
+                    for (uint8_t i = 0; i < 16; i++) {
+                        if (tmpl_req[i] & ~was[(int16_t) i - RAM_HEAD]) ok = 0;
+                        tmpl_req[i] |= was[(int16_t) i - RAM_HEAD + 16];
+                    }
+                    if (ok) {
+                        uint16_t flushes = drc_flushes;
+                        tmpl_forms = *cnt;
+                        gb_phase = GB_PHASE_TRANS;
+                        b = translate(pc, KEY_RAM);
+                        gb_phase = GB_PHASE_DISP;
+                        tmpl_forms = 0;
+                        memset(tmpl_req, 0, 16);
+                        if (drc_flushes != flushes) drc_link = 0;
+                        goto run;
+                    }
+                    memset(tmpl_req, 0, 16);
+                }
                 if (*cnt >= RAM_FORMS) {
                     uint16_t end = pc + *c;
                     drc_link = 0;
@@ -1536,6 +1688,7 @@ void gbd_run_frame(void) {
                 gb_phase = GB_PHASE_DISP;
                 if (drc_flushes != flushes) drc_link = 0;
             }
+        run:
             if (drc_link) {
                 // the exit just taken, joined to this block
                 uint8_t __far *site = MK_FP(drc_link_seg, drc_link);

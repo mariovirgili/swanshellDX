@@ -40,6 +40,8 @@ void gbf_plat_ram(void) {
     // (MBC2's half bytes, MBC3's clock)
     drc_ram_ok = gb.mbc == 2 || (gb.mbc == 3 && gb.rtc_sel) ? 0 : gb.ram_banks && (gb.ram_on || !gb.mbc) ? 1 : 2;
     drc_ram_seg = 0x1000 + (gbf_ram_off >> 4) - 0xA00;
+    // (gb_drc_asm.s, s_wrt: 0 no "RAM on" register at 0000h-1FFFh or not a plain one, 1 off, 2 on)
+    drc_ramg = gb.mbc == 1 || gb.mbc == 3 || gb.mbc == 5 ? 1 + (gb.ram_on != 0) : 0;
 }
 
 void gbf_plat_map(void) {
@@ -62,8 +64,13 @@ void gbf_plat_map(void) {
     // the write that changes the second ROM area's bank (gb_drc_asm.s:
     // s_wrt): 2000h up to drc_mbc_top (its high byte), the bits of the
     // value that count, whether 0 means 1, the other register's bits
-    drc_mbc_top = gb.mbc == 1 || gb.mbc == 3 ? 0x40 : gb.mbc == 5 ? 0x30 : 0;
-    drc_mbc_and = gb.mbc == 1 ? 0x1F : gb.mbc == 3 ? 0x7F : 0xFF;
+    // (MBC2: 0000h-3FFFh with the address' bit 8 set, four bits. X
+    // changes its bank some 75 times a frame; until patch 168 an MBC2's
+    // went through C, a seventh of X's time)
+    drc_mbc_top = gb.mbc == 1 || gb.mbc == 2 || gb.mbc == 3 ? 0x40 : gb.mbc == 5 ? 0x30 : 0;
+    drc_mbc_lo = gb.mbc == 2 ? 0 : 0x20;
+    drc_mbc_or = gb.mbc != 2;
+    drc_mbc_and = gb.mbc == 1 ? 0x1F : gb.mbc == 2 ? 0x0F : gb.mbc == 3 ? 0x7F : 0xFF;
     drc_mbc_z1 = gb.mbc != 5;
     drc_mbc_hi = gb.mbc == 1 ? (uint16_t) gb.bank_hi << 5 : gb.mbc == 5 ? (uint16_t) (gb.mbc1_mode & 1) << 8 : 0;
     drc_bank_mask = gb.rom_banks - 1;
