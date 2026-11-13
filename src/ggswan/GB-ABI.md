@@ -73,6 +73,14 @@ window.
   instruction on it, nothing checked, and cannot leave the block. Into
   the cartridge's RAM: through its segment after the test of
   `drc_ram_ok` (reads, writes, the operations on A).
+- **A pointer whose high byte the block itself sets** (`LD H, n`,
+  `LD D, n`, `LD B, n`, `LD rr, nn`, then INC and DEC of that byte or
+  of the pair: `i_cls`, the range the byte can be in) and that stays
+  within one part of the memory: the tiles' patterns or the work RAM,
+  read and written at `[BX - 6000h]` with nothing checked; the rest of
+  the video memory, read so; one of the ROM areas, read through its
+  segment. A table read by `LD H, n` / `LD L, A` / `LD r, (HL)` is one
+  instruction, not six and 54 bytes.
 - **A constant address** is sorted out when the block is translated; in
   the cartridge's RAM it is an access through the RAM's segment after
   one test that it is plain RAM and enabled (`drc_ram_ok`).
@@ -156,6 +164,13 @@ with no routine.
 
 - A block ends at a jump, call or return, after the instruction that
   follows EI, or after 40 instructions or about 90 cycles.
+- From its sixth instruction on, a block in ROM also ends where
+  another block already starts: it goes on into that one by a joined
+  jump, and the same code is not translated twice (a program that
+  enters a row of instructions at many places, as Race Drivin' does
+  its unrolled loops, had a third of its translated code twice or
+  more). The first five are translated anyway: a boundary costs a
+  dozen cycles.
 - The table (PSRAM, segment 4000h, 8192 places of 8 bytes) is keyed by
   address and ROM bank + 1 (FFFFh for code in RAM). A block is at the
   hash's place or at one of eleven others far from it (`PLACE` in
@@ -175,7 +190,9 @@ with no routine.
   when the blocks are forgotten, the first also when the first area's
   bank changes (`gb_main.c`).
 - Code in RAM has a copy of its bytes before it, compared at every
-  entry from the dispatcher; it is joined to nothing but itself (its
+  entry from the dispatcher (`gbd_ram_cmp`, `gb_asm.s`: one `repe
+  cmpsb`, which goes on past a byte that differs when that byte is one
+  read as the code runs); it is joined to nothing but itself (its
   jumps to its own start go there at once). Before the copy, a header
   (`RAM_HEAD`, 34 bytes): the bytes that could be read as the code
   runs (16 bytes, a bit for each of the block's first 128), those

@@ -347,6 +347,9 @@ if os.environ.get('GBRUN_CALLERS') and CYCLES:
             if os.environ['GBRUN_CALLERS'] == 'gb_cart_write':
                 # (the register written, by 2000h, and the value)
                 callers['%04X' % (uc.reg_read(UC_X86_REG_AX) & 0xE000), '%02X' % (uc.reg_read(UC_X86_REG_DX) & 0xFF)] += 1
+            elif os.environ['GBRUN_CALLERS'] == 'gbf_io_write':
+                # (the register and how many times)
+                callers['FF%02X' % (uc.reg_read(UC_X86_REG_AX) & 0xFF), ''] += 1
             else:
                 callers[where((cs << 4) + ip), '%04X' % (uc.reg_read(UC_X86_REG_AX) & 0xFFF0)] += 1
     a0 = syms[os.environ['GBRUN_CALLERS']]
@@ -388,6 +391,17 @@ if os.environ.get('GBRUN_STUB') and CYCLES:
                 break
     for seg in range(5, 13):
         uc.hook_add(UC_HOOK_CODE, h_stub, None, (seg << 16) + soff, (seg << 16) + soff)
+wrt_hist = None
+if os.environ.get('GBRUN_WRT') and CYCLES:
+    # GBRUN_WRT=1: the addresses written through s_wrt, by 800h
+    import collections as _c
+    wrt_hist = _c.Counter()
+    woff = syms['s_wrt'] - syms['drc_stubs']
+    def h_wrt(uc, addr, size, _):
+        if (st['gbframes'] if GBTIME else st['frame']) < PROF_FROM: return
+        wrt_hist[uc.reg_read(UC_X86_REG_SI) & 0xF800] += 1
+    for seg in range(5, 13):
+        uc.hook_add(UC_HOOK_CODE, h_wrt, None, (seg << 16) + woff, (seg << 16) + woff)
 e = f['e_entry'] & 0xFFFFF
 uc.reg_write(UC_X86_REG_CS, 0xF000); uc.reg_write(UC_X86_REG_IP, e - 0xF0000)
 uc.reg_write(UC_X86_REG_SS, 0); uc.reg_write(UC_X86_REG_SP, 0x4000)
@@ -523,9 +537,23 @@ if CYCLES and HOT and hot:
         if i >= 0 and blocks[i][0] == a >> 16:
             by[blocks[i][2], blocks[i][3]] += n
     tot = sum(hot.values())
+    if os.environ.get('GBRUN_HOTDIS'):
+        # GBRUN_HOTDIS=n: the n hottest blocks' V30MZ code, each instruction's cycles
+        import capstone
+        md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_16)
+        where_b = {(b[2], b[3]): (b[0], b[1]) for b in blocks}
+        for (pc, key), n in by.most_common(int(os.environ['GBRUN_HOTDIS'])):
+            seg, off = where_b[pc, key]
+            i = keys.index((seg, off))
+            end = blocks[i + 1][1] if i + 1 < len(blocks) and blocks[i + 1][0] == seg else off + 0x200
+            print('--- block %04X key %d at %X:%04X, %d bytes' % (pc, key, seg, off, end - off))
+            for ins in md.disasm(bytes(uc.mem_read((seg << 16) + off, min(end - off, 0x300))), off):
+                print('  %7d  %04X  %-20s %s %s' % (hot.get((seg << 16) + ins.address, 0), ins.address, ins.bytes.hex(), ins.mnemonic, ins.op_str))
     for (pc, key), n in by.most_common(8):
         a = pc if pc < 0x4000 else (key - 1) * 0x4000 + (pc - 0x4000)
         print('  %5.1f%% of translated code: block %04X (bank %d): %s' % (100.0 * n / tot, pc, key - 1, rom[a:a + 20].hex() if key < 0x8000 else 'RAM'))
+if wrt_hist:
+    print('s_wrt: ' + ' '.join('%04X:%d' % kv for kv in sorted(wrt_hist.items())))
 if stubcalls:
     tab = bytes(psram[0x14].raw)
     blocks = sorted((int.from_bytes(tab[i + 6:i + 8], 'little') >> 12, int.from_bytes(tab[i + 4:i + 6], 'little'),

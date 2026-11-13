@@ -44,7 +44,7 @@ background and the window, switched at the right lines by the line
 interrupt, with the scroll the program gave each line; the sprites are
 the WonderSwan's.
 
-## Where it is (patch 169)
+## Where it is (patch 170)
 
 The CPU is a recompiler (`gb/ws/gb_drc.c`, `gb_drc_asm.s`; `GB-ABI.md`),
 there is sound (`gb/ws/gb_sound.c`: what it does and does not, at its
@@ -304,6 +304,71 @@ and its Koopa scenes (no run by keys gets there yet). Not looked at
 again: Kong's picture, R-Type's top row (Gio: it seems right in 168).
 All of it only in `gbrun.py`; `gbreg` 24 of 24, the eight older scenes
 the same memory as 168's and the same pictures.
+
+**Patch 170.** More of the same search, on Race Drivin', X and Donkey
+Kong Land only. What was found first is what makes Race Drivin' as
+slow as Gio saw it (11-20 frames a second, "FLS 1", translating up to
+45% of the time): **it has more code than there is room for**. At
+frame 1,254 of the run here its 1,737 blocks, 276 bytes each, had
+filled seven of the eight segments and half the last; a little later
+all is forgotten and the 800 blocks it is using are translated again,
+five seconds at one or two frames a second (the same five seconds as
+at the start of the race, when they are translated the first time: a
+block costs some 12,000 cycles, 880 a Game Boy instruction, spread
+evenly over `scan_block` and `translate_block`). Frames 1,500-1,700,
+with that in them: 163,303 cycles each; without: 95,789.
+
+Kept:
+- **A block ends where another already starts**, from its sixth
+  instruction on (`GB-ABI.md`, "Blocks"). Race Drivin' enters its rows
+  of unrolled instructions at many places, and each entry was a block
+  of everything from there on: 34,779 bytes of Game Boy code
+  translated for 22,102 there are. Its code at frame 1,254: 460,000
+  bytes to 357,000 (from every first instruction: 338,000, but X came
+  out 1% slower; from the sixth, no slower). Donkey Kong Land's scene, where a fifth
+  of the time was translating code met for the first time: 83,148 to
+  78,192.
+- **The compare of code in RAM** was the C library's `_fmemcmp` and
+  then, for a block with operands read as it runs, the plugin's own
+  compare: 7 to 10% of Race Drivin's time while driving. Now only the
+  second, which does both.
+- **`op_flags`** from a table: a tenth of the translator's time.
+- **A pointer whose high byte the block sets** (`GB-ABI.md`,
+  "Memory"): under 1% of anything, 3% of the code's room.
+
+Tried and left out:
+- the tiles' patterns written in line, without `s_wrt`: X 92,239 to
+  88,985, but 16 bytes more at every write, and Race Drivin' ran out
+  of room inside the scene measured (185,966);
+- a "compact" translation once the room has run out (every access to
+  the memory a call of `s_rd` / `s_wrt`, 5 to 11 bytes for 40 to 54):
+  after it Race Drivin' ran 17% slower than with the usual code.
+
+Cycles a Game Boy frame, 169 to 170: Donkey Kong Land 85,404 to
+78,192, Race Drivin' 109,938 to 104,873, X 92,239 to 92,045, Batman
+58,893 to 58,191, Castlevania II 57,178 to 56,998, Super Mario Land 2
+51,181 to 50,250, R-Type II 34,777 to 34,061, ZAS 68,038 to 68,203
+(its logo 72,387 to 72,242). Race Drivin' and X are not the same
+frames as before to the byte: an event is seen at a block's end, and
+the blocks end elsewhere now (their work RAM's sum differs; X's end
+picture is the same, Race Drivin's differs in one tile, 30 pixels).
+The whole runs, in WonderSwan frames: Race Drivin' 2,869 to 2,729,
+Donkey Kong Land 2,210 to 2,113, X 6,351 to 6,319. The other six
+scenes and the eight older ones: the same memory as 169's; `gbreg` 24
+of 24; R-Type II's bar as in 169 (1,100 frames, the four after a
+death apart); ZAS's logo the same picture.
+
+Seen and not done:
+- Race Drivin' still runs out of room, later. The pause at the start
+  of the race and after each forgetting is the translator's speed.
+- X's title, 9 frames a second (343,316 cycles a frame): an LYC
+  interrupt on every line, its routine writing SCX and the next LYC.
+  Some 2,300 cycles a line, no part of it large: the event (`event`,
+  `stat_sig` twice, `schedule`), the interrupt, the write of LYC
+  through three C functions and `stat_sig` and `schedule` again.
+- The dispatcher does not put a block it finds into the two small
+  tables: a return to a block that is not at its first place in the
+  big one goes through C every time.
 
 He also saw, in 166, Super Mario Land's whole picture jump sideways
 for an instant now and then. Its status bar is a STAT interrupt at a
