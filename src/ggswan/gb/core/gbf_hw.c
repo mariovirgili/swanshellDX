@@ -30,11 +30,15 @@ gb_t gb;
 int16_t gbf_cyc;
 uint16_t gbf_ev_pos;            // the frame's cycle the next event is at
 #define ev_pos gbf_ev_pos
-static uint16_t div_off;        // DIV's 16 bits / 4 = div_off + the frame's cycle
+// (not static: gb_asm.s has schedule() in assembly, gb_drc_asm.s writes LYC)
+uint16_t gbf_div_off;           // DIV's 16 bits / 4 = div_off + the frame's cycle
+#define div_off gbf_div_off
 static uint16_t tim_last;       // (DIV / 4) the timer was brought up to
 static uint16_t ser_end;        // (DIV / 4) the serial transfer ends at
-static uint8_t ser_on;
-static uint8_t vbl_done;        // this frame's vertical blank was begun
+uint8_t gbf_ser_on;
+#define ser_on gbf_ser_on
+uint8_t gbf_vbl_done;           // this frame's vertical blank was begun
+#define vbl_done gbf_vbl_done
 
 #define POS() ((uint16_t) (ev_pos - gbf_cyc))
 #define DIV_MC() ((uint16_t) (div_off + POS()))
@@ -124,10 +128,20 @@ static void serial_sync(void) {
 
 /* ---- events ---- */
 
-static uint16_t stat_done;      // the frame's cycle up to which the STAT interrupt's signal has been looked at
+uint16_t gbf_stat_done;         // the frame's cycle up to which the STAT interrupt's signal has been looked at
+#define stat_done gbf_stat_done
+
+#ifdef GB_WS
+// (gb_asm.s: all of schedule() below but the serial port's part; 0, and
+// nothing done, while a transfer is on)
+uint8_t gbf_sched_asm(void);
+#endif
 
 // the next event after now
 static void schedule(void) {
+#ifdef GB_WS
+    if (gbf_sched_asm()) return;
+#endif
     uint16_t pos = POS();
     uint16_t next = FRAME_MC;
     if (gb.lcd_on) {
@@ -233,6 +247,9 @@ static void event(void) {
         ev_pos -= FRAME_MC;
         div_off += FRAME_MC;
         vbl_done = 0;
+#ifdef GBV_PATTERNS_LATE
+        gbv_line0();
+#endif
         // (line 0's first cycle: mode 0 after the vertical blank's mode 1)
         if (gb.lcd_on && (gb_io[GB_STAT] & 0x28) && !(gb_io[GB_STAT] & 0x10)) gb_io[GB_IF] |= GB_INT_STAT;
         if (!gb.lcd_on) {
@@ -521,6 +538,11 @@ void gbf_write(uint16_t a, uint8_t v) {
     } else if (a >= 0xA000) {
         ram_write(a, v);
     } else if (a >= 0x8000) {
+#ifdef GBV_PATTERNS_LATE
+        if (a < 0x9800 && gbv_tq_on) {
+            gbv_tq_put(a, v);
+        } else
+#endif
         if (gb_vram[a - 0x8000] != v) {
             gbv_vram(a - 0x8000, v);
             gb_vram[a - 0x8000] = v;

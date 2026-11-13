@@ -171,6 +171,33 @@ if 'gbv_frame' in syms:
     _a = syms['gbv_frame'] + next(_md.disasm(bytes(uc.mem_read(syms['gbv_frame'], 8)), 0)).size
     uc.hook_add(UC_HOOK_CODE, h_arm, None, _a, _a)
 
+# GBRUN_TRUTH=1: each picture in GBRUN_SHOTS against the same picture with
+# the patterns as the Game Boy had them at line 0 of the frame shown
+# (the tiles, and what gb_video.c keeps to copy to them later): T lines,
+# pixels unlike with all the patterns put back and with the sprites' only.
+# GBRUN_NOTQ=1: gb_video.c never keeps the patterns late
+truth = {'fifo': [], 'cur': None, 'line0': None, 'shown': None}
+def _b(n): return iram.raw[syms[n] & 0xFFFF] if not isinstance(iram.raw[syms[n] & 0xFFFF], bytes) else iram.raw[syms[n] & 0xFFFF][0]
+def h_line0(uc, addr, size, _):
+    m = bytearray(bytes(iram.raw[0x2000:0x3800]))
+    if 'gbv_tq_cur' in syms:
+        cur, pend, n = _b('gbv_tq_cur'), _b('tq_pend'), _b('gbv_tq_n')
+        c = syms['tq_cnt'] & 0xFFFF
+        cnt = bytes(iram.raw[c:c + 3])
+        for g, k in [((cur + 3 - j) % 3, cnt[(cur + 3 - j) % 3]) for j in range(pend, 0, -1)] + [(cur, n)]:
+            for i in range(k):
+                a = int.from_bytes(bytes(iram.raw[0xCDB0 + (g * 32 + i) * 2:0xCDB2 + (g * 32 + i) * 2]), 'little') - 0x2000
+                m[a:a + 16] = bytes(iram.raw[0xF800 + g * 512 + i * 16:0xF810 + g * 512 + i * 16])
+    truth['line0'] = bytes(m)
+def h_truth_frame(uc, addr, size, _):
+    if os.environ.get('GBRUN_NOTQ'): uc.mem_write(syms['gbv_pw_last'] & 0xFFFF, b'\0\0')
+    if truth.get('last') == st['gbframes']: return
+    truth['last'] = st['gbframes']
+    truth['fifo'].append((st['gbframes'], truth['line0']))
+if os.environ.get('GBRUN_TRUTH') and 'gbv_line0' in syms:
+    uc.hook_add(UC_HOOK_CODE, h_line0, None, syms['gbv_line0'], syms['gbv_line0'])
+    uc.hook_add(UC_HOOK_CODE, h_truth_frame, None, syms['gbv_frame'], syms['gbv_frame'])
+
 cyc = [0, 0]      # V30MZ cycles run; where the line being run ends
 prof = {}
 if CYCLES:
@@ -325,10 +352,12 @@ if os.environ.get('GBRUN_VRAMLINES'):
     # tiles a program rewrites while the picture is being drawn
     import collections as _c2
     vlines = _c2.defaultdict(_c2.Counter)
+    vtf = _c2.defaultdict(set)     # the tiles written in each Game Boy frame (144 to 144)
     def h_vw(uc, access, addr, size, value, _):
         if st['gbframes'] < int(os.environ['GBRUN_VRAMLINES']): return
         ev = int.from_bytes(uc.mem_read(syms['gbf_ev_pos'] & 0xFFFF, 2), 'little'); cy = int.from_bytes(uc.mem_read(syms['gbf_cyc'] & 0xFFFF, 2), 'little', signed=True)
         vlines[(addr - 0x2000) >> 4][((ev - cy) % 17556) // 114] += 1
+        vtf[st['gbframes']].add((addr - 0x2000) >> 4)
     uc.hook_add(UC_HOOK_MEM_WRITE, h_vw, None, 0x2000, 0x37FF)
 callers = None
 if os.environ.get('GBRUN_CALLERS') and CYCLES:
@@ -468,12 +497,26 @@ while (GBTIME or st['frame'] < FRAMES) and not st['fail'] and not st.get('stop')
     y = st['line']
     st['line'] = (y + 1) % 159
     y = st['line']
+    if y == 0 and 'list_shown' in syms and os.environ.get('GBRUN_TRUTH'):
+        ls = bytes(iram.raw[syms['list_shown'] & 0xFFFF:(syms['list_shown'] & 0xFFFF) + 2])
+        if ls != truth['shown']:
+            truth['shown'] = ls
+            if truth['fifo']: truth['cur'] = truth['fifo'].pop(0)
     if y == 144:
         if st['frame'] in SHOTS and OUT and line_ports[0] is not None:
             mem = bytes(iram.raw)
             assert line_ports[0][0x60] & 0xE0 == 0x80, 'not the 2 bpp color mode'
             img = b''.join(render_line(mem, line_ports[i], i, line_pals[i]) for i in range(144))
             open('%s-%04d.ppm' % (OUT, st['frame']), 'wb').write(b'P6\n224 144\n255\n' + img)
+            if truth['cur'] and truth['cur'][1]:
+                m2 = mem[:0x2000] + truth['cur'][1] + mem[0x3800:]
+                img2 = b''.join(render_line(m2, line_ports[i], i, line_pals[i]) for i in range(144))
+                m3 = bytearray(mem); t0 = (line_ports[0][4] & 0x3F) << 9
+                for i in range(128):
+                    t = (mem[t0 + i * 4] | mem[t0 + i * 4 + 1] << 8) & 0x1FF
+                    if t < 384: m3[0x2000 + t * 16:0x2010 + t * 16] = truth['cur'][1][t * 16:t * 16 + 16]
+                img3 = b''.join(render_line(bytes(m3), line_ports[i], i, line_pals[i]) for i in range(144))
+                print('T ws %d gb %d all %d spr %d' % (st['frame'], truth['cur'][0], sum(1 for i in range(0, len(img), 3) if img[i] != img2[i]), sum(1 for i in range(0, len(img), 3) if img[i] != img3[i])))
         if os.environ.get('GBRUN_SOUND'):
             snd_frames.append((bytes(ports[0x80:0x92]), bytes(iram.raw[(ports[0x8F] << 6):(ports[0x8F] << 6) + 64])))
         if END_SHOT and line_ports[143] is not None:
@@ -539,6 +582,8 @@ if GBTIME:
     mem = bytes(iram.raw)
     print('Game Boy memory: video %08X work %08X sprites %08X high %08X' % (zlib.crc32(mem[0x2000:0x4000]), zlib.crc32(mem[0x6000:0x8000]), zlib.crc32(mem[0x9E00:0x9EA0]), zlib.crc32(mem[0x9F80:0x9FFF])))
 if vlines is not None:
+    print('tiles written a Game Boy frame: most %d; frames by count: %s' % (max(len(v) for v in vtf.values()), sorted(_c2.Counter(len(v) for v in vtf.values()).items())))
+    print('by frame:', ' '.join('%d:%d' % (f, len(v)) for f, v in sorted(vtf.items())))
     for t in sorted(vlines):
         c = vlines[t]; vis = sum(n for l, n in c.items() if l < 144)
         print('tile %3d: %5d writes, %5d in lines 0-143 (lines %s)' % (t, sum(c.values()), vis, ' '.join(str(l) for l in sorted(c)[:16])))

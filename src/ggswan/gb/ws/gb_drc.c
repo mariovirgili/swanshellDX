@@ -1439,7 +1439,7 @@ __attribute__((noinline)) static void scan_block(uint16_t pc) {
             for (uint8_t k = 0; k < 3; k++)
                 if (ckn[k]) {
                     uint8_t lo = clo[k], hi = chi[k];
-                    i_cls[k][n_ins] = (lo >= 0xC0 && hi <= 0xFD) || (lo >= 0x80 && hi <= 0x97) ? 1
+                    i_cls[k][n_ins] = lo >= 0xC0 && hi <= 0xFD ? 1
                         : lo >= 0x80 && hi <= 0x9F ? 2 : hi <= 0x3F ? 3 : lo >= 0x40 && hi <= 0x7F ? 4 : 0;
                 }
         }

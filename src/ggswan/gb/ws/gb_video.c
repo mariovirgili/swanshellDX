@@ -107,6 +107,142 @@ __attribute__((noinline)) uint16_t gbv_now_lines(void) {
     return b + (l >= 144 ? l - 144 : l + 15);
 }
 
+/* ---- the patterns a frame late ----
+   The WonderSwan shows the patterns as they are at the moment, and the
+   picture of a Game Boy frame only once that frame is over: the sprites
+   as frame N had them are on the screen while frame N + 1 runs. A program
+   that draws a figure's next pose into patterns its sprites no longer use
+   (Donkey Kong Land's Kong: two sets of tiles, written a few tiles a line
+   in the last lines of the picture and in the vertical blank, the sprites
+   moved to the finished set) is writing into the ones still on the
+   WonderSwan's screen. When the program is seen to do that (gbv_frame:
+   the last pattern written since line 0 is one of a sprite shown), the
+   writes to the
+   patterns that go through gb_drc_asm.s's s_wrt or gbf_write (the other
+   ways are closed then) are kept by tile, in sets by the Game Boy frame
+   they were made in (line 0 to line 0), and a set is copied to the
+   patterns by the vertical blank interrupt that first shows the picture
+   of the frame after: what the Game Boy would have shown with it.
+   The program reading a pattern back gets the old one meanwhile. */
+#define TQ_S 32                             // tiles a set
+#define TQ_IDX ((uint8_t*) 0xCC30)          // by tile: its copy in the set being made, + 1 (384; gb_drc_asm.s)
+#define TQ_ADR ((uint16_t*) 0xCDB0)         // 3 sets of TQ_S: where the tile is
+#define TQ_PIDX ((uint8_t*) 0xCE70)         // by tile: its newest copy waiting, 1 + its place among all the copies, or 0 (384)
+#define TQ_DAT ((uint8_t*) 0xF800)          // 3 sets of TQ_S tiles
+uint8_t gbv_tq_on;                          // (gb_drc_asm.s)
+uint16_t gbv_tq_base;                       // the set being made's tiles, less one
+uint16_t gbv_tq_last, gbv_tq_lastp;         // the tile written last (its Game Boy address) and its copy (gb_drc_asm.s)
+typedef struct { uint16_t w[8]; } tq_tile;
+uint16_t gbv_pw_last;                       // the last pattern byte written (its Game Boy address), 0: none
+uint8_t gbv_tq_n;                           // tiles in the set being made (gb_asm.s)
+uint8_t gbv_tq_cur;                         // which set that is
+#define tq_n gbv_tq_n
+#define tq_cur gbv_tq_cur
+static volatile uint8_t tq_pend;            // sets made and not copied yet (the oldest first, before tq_cur)
+static uint8_t tq_cnt[3];
+static volatile uint8_t tq_mark;            // how many of them the list that is ready goes with
+static uint8_t tq_left;                     // frames the patterns are still kept late for
+
+// (gb_asm.s) n tiles of a set to the patterns
+void gbv_tq_copy_asm(const uint16_t *adr, const uint8_t *dat, uint16_t n);
+static void tq_copy(uint8_t g, uint8_t n) {
+    gbv_tq_copy_asm(TQ_ADR + g * TQ_S, TQ_DAT + g * (TQ_S * 16), n);
+}
+static inline uint8_t tq_before(uint8_t g) { return g ? g - 1 : 2; }
+// (with the interrupts off, or in the interrupt)
+static void tq_apply(uint8_t sets) {
+    while (sets-- && tq_pend) {
+        uint8_t g = tq_before(tq_cur);
+        if (tq_pend == 2) g = tq_before(g);
+        tq_copy(g, tq_cnt[g]);
+        tq_pend--;
+    }
+}
+static void tq_set_base(void) {
+    gbv_tq_base = (uint16_t) (TQ_DAT + tq_cur * (TQ_S * 16)) - 16;
+}
+// everything kept, to the patterns now
+static void tq_flush(void) {
+    ia16_disable_irq();
+    tq_apply(3);
+    tq_mark = 0;
+    tq_copy(tq_cur, tq_n);
+    for (uint8_t i = 0; i < tq_n; i++)
+        TQ_IDX[(TQ_ADR[tq_cur * TQ_S + i] - 0x2000) >> 4] = 0;
+    tq_n = 0;
+    gbv_tq_last = 0;
+    ia16_enable_irq();
+}
+// no copy left in the set being made: no more copies, the patterns are
+// written as they come (gb_asm.s, gbv_tq_new)
+void gbv_tq_full(void) {
+    tq_flush();
+    gbv_tq_on = 0;
+    tq_left = 0;
+}
+// (gb_asm.s) a copy for the tile at a (the Game Boy's address) in the set
+// being made: what the tile will be when the set is copied (the newest
+// copy of it waiting, or the tile); none if the set is full
+void gbv_tq_new(uint16_t a);
+// (gbf_write: what is not written by s_wrt)
+void gbv_tq_put(uint16_t a, uint8_t v) {
+    uint8_t k = TQ_IDX[(a - 0x8000) >> 4];
+    if (!k) {
+        gbv_tq_new(a);
+        k = TQ_IDX[(a - 0x8000) >> 4];
+        if (!k) { *(uint8_t*) (a - 0x6000) = v; return; }
+    }
+    *(uint8_t*) (gbv_tq_base + k * 16 + (a & 15)) = v;
+}
+// the Game Boy's line 0: the writes from here on are another frame's
+void gbv_line0(void) {
+    // (only what is written while the picture is drawn counts as "into
+    // the sprites on the screen": gbv_frame looks at line 144. A program
+    // that loads its sprites' patterns in the vertical blank, as most
+    // do, is left alone)
+    gbv_pw_last = 0;
+    if (!gbv_tq_on || !tq_n) return;
+    if (tq_pend == 2) {                     // (not met: the first is copied before the third is begun)
+        tq_flush();
+        return;
+    }
+    for (uint8_t i = 0; i < tq_n; i++) {
+        uint16_t t = (TQ_ADR[tq_cur * TQ_S + i] - 0x2000) >> 4;
+        TQ_IDX[t] = 0;
+        TQ_PIDX[t] = tq_cur * TQ_S + i + 1;
+    }
+    tq_cnt[tq_cur] = tq_n;
+    ia16_disable_irq();
+    tq_cur = tq_cur == 2 ? 0 : tq_cur + 1;
+    tq_pend++;
+    ia16_enable_irq();
+    tq_n = 0;
+    gbv_tq_last = 0;
+    tq_set_base();
+}
+// at a frame's end, before its list is ready and its sprites are set
+static void tq_frame(void) {
+    if (!gb.lcd_on) {
+        if (gbv_tq_on) { tq_flush(); gbv_tq_on = 0; }
+        tq_left = 0;
+        gbv_pw_last = 0;
+        return;
+    }
+    if (gbv_pw_last) {
+        // is it a pattern of a sprite on the screen (the last frame's)?
+        uint16_t t = (gbv_pw_last - 0x8000) >> 4;
+        const uint16_t *s = (const uint16_t*) SPR_TABLE;
+        for (uint8_t n = inportb(WS_SPR_COUNT_PORT); n; n--, s += 2)
+            if ((*s & 0x1FF) == t) { tq_left = 120; break; }
+        gbv_pw_last = 0;
+    }
+    if (tq_left) {
+        if (!gbv_tq_on) { tq_set_base(); gbv_tq_on = 1; }
+        if (!--tq_left) { tq_flush(); gbv_tq_on = 0; }
+    }
+    tq_mark = tq_pend;
+}
+
 void gb_vblank_irq(void) {
     gbv_vblanks++;
     phase_n[gb_phase]++;
@@ -116,6 +252,10 @@ void gb_vblank_irq(void) {
         list_shown = list_made;
         list_made = t;
         list_ready = 0;
+        if (tq_mark) {
+            tq_apply(tq_mark);
+            tq_mark = 0;
+        }
     }
     const uint8_t *l = list_shown;
     outportb(0x12, l[1]);
@@ -406,6 +546,7 @@ void gbv_frame(void) {
     // WonderSwan frame)
     while (list_ready)
         ia16_halt();
+    tq_frame();
     make_list();
     list_ready = 1;
     sprites();
@@ -439,6 +580,9 @@ void gbv_reset(void) {
     }
     rebuild_maps();
     memset(SPR_TABLE, 0, 0x200);
+    memset(TQ_IDX, 0, 384);
+    memset(TQ_PIDX, 0, 384);
+    gbv_tq_on = 0; gbv_tq_last = 0; tq_n = tq_cur = tq_pend = tq_mark = tq_left = 0; gbv_pw_last = 0;
     for (uint8_t i = 0; i < 40; i++)        // (gb_asm.s: the sprites' order, to start with the OAM's)
         ((uint8_t*) 0xCB00)[i] = i * 4;
     outportb(WS_SPR_BASE_PORT, 0x5800 >> 9);

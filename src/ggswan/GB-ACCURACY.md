@@ -92,3 +92,17 @@ The plugin does not draw: it sets the WonderSwan's hardware up
   the background, with nothing to cut it at its edge (what is to its
   left shows where the background has color 0), and a sprite "behind
   the background" is over all of it.
+
+The WonderSwan shows the patterns as they are in the memory at the
+moment, and a frame's picture only when the frame is over. A program
+that writes the next pose of a figure into patterns its sprites have
+just left is, here, writing into what is still on the screen (Donkey
+Kong Land's Kong was broken up in two pictures out of three while he
+moved). Since patch 172, when the last pattern a frame wrote is one of
+a sprite on the screen, the writes to the patterns are kept for 120
+frames more and reach the tiles with the picture of the frame after
+the one they were made in (`gb_video.c`). Meanwhile: the program
+reading such a pattern back gets the old bytes; 32 tiles a frame at
+most are kept (more: all are written at once and it stops, as with
+the LCD off); the background's tiles written the same way come a
+frame late with the rest, as on the Game Boy.

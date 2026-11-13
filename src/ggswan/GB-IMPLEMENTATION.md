@@ -44,7 +44,7 @@ background and the window, switched at the right lines by the line
 interrupt, with the scroll the program gave each line; the sprites are
 the WonderSwan's.
 
-## Where it is (patch 171)
+## Where it is (patch 172)
 
 The CPU is a recompiler (`gb/ws/gb_drc.c`, `gb_drc_asm.s`; `GB-ABI.md`),
 there is sound (`gb/ws/gb_sound.c`: what it does and does not, at its
@@ -466,6 +466,86 @@ two beats can fall well or badly. To be looked at on a WonderSwan.
 Not touched: Kong's sprite; Race Drivin's pauses (the translator's
 speed); Super Mario Land 2's map and ZAS in the game (94% of the
 time in translated code: only better code would help).
+
+**Patch 172.** Gio on 171 (nileswan-medem, "PAT 0171"): Batman still
+slows down when the water rises (29 frames a second, 81% of the time
+in translated code and its routines, the dispatcher 2%), the rest of
+it fine; X's fade still slow (12 frames a second, 92%), the game "not
+satisfying yet" (35); Castlevania II slows down a little over the
+water. The water is at the start of the first level in both.
+
+**Kong.** Donkey Kong Land keeps two sets of tiles for Kong (232-243
+and 244-255, 38-51 and 52-65). It writes his next pose into the set
+the sprites are not using, a tile a line in the horizontal blanks from
+line 130 and the rest in the vertical blank, over a frame or two, and
+then moves the sprites to it: on a Game Boy nothing of this is ever
+seen. Here the picture of frame N (its list and its sprites) is on
+the WonderSwan's screen while frame N + 1 runs, and the tiles are
+shown as they are: the set frame N's sprites use is the one frame
+N + 1 is already writing into. `gbrun.py` can now tell
+(`GBRUN_TRUTH=1`: each picture drawn again with the patterns as the
+Game Boy had them at line 0 of the frame it shows): of 186 pictures
+in a row with Kong walking, rolling and jumping, 121 had him wrong.
+(The reference's pictures are no use for this: the plugin's game is
+not at the same pose at the same frame as `gbftest`'s.)
+
+The WonderSwan has no room for a second copy of the patterns (the
+tiles of its 2 bits a pixel mode are exactly the Game Boy's video
+memory), so the writes are kept back instead (`gb_video.c`, "the
+patterns a frame late"; `GB-ACCURACY.md`): by tile, in sets by the
+frame they were made in (line 0 to line 0), a set copied to the tiles
+by the vertical blank interrupt that first shows the picture of the
+frame after. Three sets of 32 tiles (Kong: 24 a frame at most). It is
+on for 120 frames after a frame in which the last pattern written
+since line 0 was one of a sprite on the screen: with every pattern
+write of any frame counted it was on in Batman, R-Type II, ZAS and
+Race Drivin' too, which load their sprites' patterns in the vertical
+blank and need none of it (Batman 3% slower, Race Drivin' 2%). Now it
+is on in Donkey Kong Land alone of the sixteen scenes. With it: 0 of
+the 186 pictures wrong.
+
+What it costs: the copying loops leave the patterns alone while it is
+on and a pointer whose high byte the block sets no longer writes the
+patterns unchecked (`GB-ABI.md`), so every pattern byte goes through
+`s_wrt`; a copy to make for each tile and to put back. Donkey Kong
+Land's scene: 74,851 cycles a frame to 78,869 (the routines for the
+copies were first in C: 81,637).
+
+**An interrupt at a line.** Batman's water is LYC written again and
+again by the interrupt's routine (lines 128, 132, 136, 140, 143 where
+the run here stands; the part where it rises was not reached: by keys
+alone Batman stops at a pipe), Castlevania II's the same with other
+lines, X's title and fades an interrupt at every line. X's fade
+(frames 590-640 of the run with the keys
+`240:200,256:0,400:200,416:0,560:400,576:0`): 234,546 cycles a frame,
+of them `schedule` 14.5%, the write of LYC through `gbd_write` and
+`gbf_io_write` 8%. Done: `schedule()` in assembly (`gb_asm.s`,
+`gbf_sched_asm`, the same sums in the same order; C calls it, and
+keeps the case of a serial transfer), and LYC written in `s_wrt`
+(`wrt_lyc`) when no interrupt is asked for at a mode. The fade:
+208,785, the same memory; the title (frames 170-200): 232,860 to
+202,664, the same picture. What is left there is a little of
+everything: the routine's own code, `s_wrt` (the fade is a dissolve:
+each pattern byte read, masked and written back after a wait for the
+horizontal blank), the WonderSwan's own line interrupt (a change of
+scroll at every line), `event` in C.
+
+Cycles a Game Boy frame, 171 to 172: Castlevania II 51,351 to 50,913,
+Batman 51,752 to 51,612, R-Type II 32,008 to 31,723, Super Mario Land
+2 48,196 to 48,394, ZAS 65,308 to 65,426, Race Drivin' 102,161 to
+102,821, X 86,054 to 86,824 (the patterns' writes all through `s_wrt`
+now), Donkey Kong Land 74,851 to 78,869. The eight scenes' memory is
+171's to the byte but for Donkey Kong Land's video memory (patterns
+waiting); their end pictures against `gbftest` as before. The whole
+regression (`gbreg` 24 of 24, the eight older scenes the same memory
+and pictures, R-Type II's bar, ZAS's logo the same picture and 71,691
+for 71,599) was run on the build before the last change, the one that
+made the test "since line 0"; after it, the eight scenes and the 186
+pictures again.
+
+Not done: Batman's and Castlevania II's water were not measured (not
+reached); X in the game; Race Drivin's pauses; Super Mario Land 2's
+map; ZAS in the game.
 
 He also saw, in 166, Super Mario Land's whole picture jump sideways
 for an instant now and then. Its status bar is a STAT interrupt at a

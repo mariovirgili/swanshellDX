@@ -1008,7 +1008,12 @@ copy_do:
     cmp di, 0x8000
     jb 8f
     cmp ax, 0x9800              // (the patterns: as they are; the maps
-    jbe 1f                      // have the WonderSwan's to keep too: not here)
+    ja 6f                       // have the WonderSwan's to keep too: not here)
+    mov [gbv_pw_last], di       // (gb_video.c: see wrt_pat; byte by byte
+    cmp byte ptr [gbv_tq_on], 0 // when the patterns are shown a frame late)
+    jne 8f
+    jmp 1f
+6:
     cmp di, 0xC000
     jb 8f
     cmp ax, 0xE000
@@ -1134,7 +1139,12 @@ s_fill0:    // LD (HL+), A / DEC B / JR NZ: into the patterns, the work RAM or t
     cmp bx, 0x8000
     jb 9f
     cmp si, 0x9800
-    jbe 1f
+    ja 6f
+    mov [gbv_pw_last], bx       // (as in copy_do)
+    cmp byte ptr [gbv_tq_on], 0
+    jne 9f
+    jmp 1f
+6:
     cmp bx, 0xC000
     jb 9f
     cmp si, 0xE000
@@ -1289,9 +1299,9 @@ s_wrt:
     // the video memory; from 9800h, the WonderSwan's map entry too
     mov di, ax
     mov al, [drc_tmp]
-    mov [si - 0x6000], al
     cmp si, 0x9800
-    jb 4f
+    jb wrt_pat
+    mov [si - 0x6000], al
     mov ah, 0x08                // palette 4
     sub si, 0x9800
     shl si, 1
@@ -1345,7 +1355,145 @@ wrt_trig:
 wrt_snd_done:
     mov ax, di
     jmp 9b
+// a pattern's byte (8000h-97FFh). gb_video.c is told where (gbv_pw_last:
+// is the program rewriting the patterns of sprites on the screen?), and
+// when it has found so the byte goes to the tile's copy that is shown a
+// frame later (gb_video.c, "the patterns a frame late"), not to the tile
+wrt_pat:
+    cmp byte ptr [gbv_tq_on], 0
+    jne wrt_tq
+    mov [gbv_pw_last], si
+    mov [si - 0x6000], al
+    mov ax, di
+    jmp 9b
+wrt_tq:
+    push si
+    and si, 0xFFF0
+    cmp si, [gbv_tq_last]       // (the tile written last: its copy is known)
+    pop si
+    jne wrt_tq_look
+    and si, 15
+    add si, [gbv_tq_lastp]
+    mov [si], al
+    mov ax, di
+    jmp 9b
+wrt_tq_look:
+    push bx
+    mov bx, si
+    shr bx, 4
+    mov bl, [bx + 0xCC30 - 0x800]   // (TQ_IDX: the tile's copy in this frame's set, + 1)
+    xor bh, bh
+    test bl, bl
+    jz wrt_tq_new
+    shl bx, 4
+    add bx, [gbv_tq_base]
+    mov [gbv_tq_lastp], bx
+    mov bx, si
+    and bx, 0xFFF0
+    mov [gbv_tq_last], bx
+    mov bx, [gbv_tq_lastp]
+    and si, 15
+    mov [bx + si], al
+    pop bx
+    mov ax, di
+    jmp 9b
+wrt_tq_new:
+    pop bx
+    mov ax, di
+    push ax
+    push bx
+    push cx
+    push dx
+    mov ax, si
+    IA16_CALL gbv_tq_new        // (a copy for the tile; or, none left, no more copies)
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    mov di, ax
+    mov al, [drc_tmp]
+    jmp wrt_pat
+// LYC with the LCD on and no interrupt asked for at a mode (its own
+// only, or none), no event due and no serial transfer: gbf_hw.c's
+// gbf_io_write, GB_LYC, here. (A program with an interrupt at every
+// line - X's title and its fades - writes the next line here 144 times
+// a frame.)
+wrt_lyc:
+    cmp byte ptr [gb + GB_LCD_ON], 0
+    je 6f
+    test byte ptr [0x9F41], 0x38
+    jnz 6f
+    cmp byte ptr [gbf_ser_on], 0
+    jne 6f
+    cmp word ptr [gbf_cyc], 0
+    jle 6f
+    push ax
+    push bx
+    push cx
+    push dx
+    mov ax, [gbf_ev_pos]
+    sub ax, [gbf_cyc]           // the frame's cycle now
+    mov [gbf_stat_done], ax
+    mov cl, 114
+    div cl                      // AL the line, AH the cycle in it
+    // what LY is compared as, now (lyc_match)
+    mov bl, al
+    cmp al, 153
+    jne 1f
+    mov bl, 0xFF
+    test ah, ah
+    jz 3f
+    cmp ah, 2
+    je 3f
+    mov bl, 153
+    cmp ah, 1
+    je 3f
+    mov bl, 0
+    jmp 3f
+1:
+    test ah, ah
+    jnz 3f
+    test al, al
+    jz 3f
+    mov bl, 0xFF
+3:
+    mov al, [drc_tmp]
+    mov ah, [0x9F45]
+    mov [0x9F45], al
+    test byte ptr [0x9F41], 0x40
+    jz 4f
+    cmp ah, bl
+    je 4f
+    cmp al, bl
+    jne 4f
+    or byte ptr [0x9F0F], 2     // (the signal rose)
+4:
+    IA16_CALL gbf_sched_asm
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    cmp word ptr [gbf_cyc], 0
+    jle 2f
+    cmp byte ptr [gb + GB_IME], 0
+    je 9b
+    mov di, ax
+    mov al, [0x9FFF]
+    and al, [0x9F0F]
+    test al, 0x1F
+    mov ax, di
+    jz 9b
+2:
+    // (an interrupt to take, or the next event is now)
+    mov di, sp
+    mov di, [di]
+    mov di, cs:[di]
+    add sp, 2
+    mov [gb + GB_PC], di
+    jmp s_exit
 wrt_vsame:
+    cmp si, 0xFF45
+    je wrt_lyc
     cmp si, 0xFF42
     jb 6f
     cmp si, 0xFF4C

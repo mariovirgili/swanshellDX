@@ -269,3 +269,289 @@ gbd_ram_cmp:
     pop di
     pop si
     IA16_RET
+
+/*
+ * The patterns a frame late (gb_video.c).
+ */
+#define TQ_IDX  0xCC30
+#define TQ_ADR  0xCDB0
+#define TQ_PIDX 0xCE70
+#define TQ_DAT  0xF800
+#define TQ_S    32
+// void gbv_tq_new(uint16_t a): a copy for the tile at the Game Boy's
+// address a in the set being made, with what the tile will be then
+    .global gbv_tq_new
+gbv_tq_new:
+    push si
+    push di
+    push es
+    mov si, ax
+    and si, 0xFFF0
+    cmp byte ptr ss:[gbv_tq_on], 0
+    je 9f
+    mov bl, ss:[gbv_tq_n]
+    cmp bl, TQ_S
+    jb 1f
+    IA16_CALL gbv_tq_full
+    jmp 9f
+1:
+    xor bh, bh
+    mov di, bx
+    shl di, 4
+    add di, ss:[gbv_tq_base]
+    add di, 16                  // the copy
+    mov ss:[gbv_tq_lastp], di
+    mov ss:[gbv_tq_last], si
+    mov ss:[gbv_pw_last], si
+    mov al, ss:[gbv_tq_cur]
+    xor ah, ah
+    shl ax, 5
+    add ax, bx
+    shl ax, 1
+    xchg ax, bx                 // (AL: tiles so far)
+    lea cx, [si - 0x6000]       // the tile
+    mov ss:[bx + TQ_ADR], cx
+    inc al
+    mov ss:[gbv_tq_n], al
+    mov bx, si
+    shr bx, 4
+    mov ss:[bx + TQ_IDX - 0x800], al
+    mov bl, ss:[bx + TQ_PIDX - 0x800]
+    mov si, cx
+    test bl, bl
+    jz 2f
+    xor bh, bh
+    dec bx
+    shl bx, 4
+    lea si, [bx + TQ_DAT]
+2:
+    push ss
+    pop es
+    cld
+    mov cx, 8
+    rep movsw
+9:
+    pop es
+    pop di
+    pop si
+    IA16_RET
+
+// void gbv_tq_copy_asm(const uint16_t *adr, const uint8_t *dat, uint16_t n):
+// n copies at dat to the tiles whose addresses are at adr; a tile whose
+// newest copy waiting this is has none waiting any more
+    .global gbv_tq_copy_asm
+gbv_tq_copy_asm:
+    push si
+    push di
+    push es
+    push ss
+    pop es
+    cld
+    mov bx, ax
+    mov si, dx
+    jcxz 9f
+1:
+    mov di, ss:[bx]
+    add bx, 2
+    push bx
+    mov ax, si
+    sub ax, TQ_DAT
+    shr ax, 4
+    inc ax
+    mov bx, di
+    shr bx, 4
+    cmp ss:[bx + TQ_PIDX - 0x200], al
+    jne 2f
+    mov byte ptr ss:[bx + TQ_PIDX - 0x200], 0
+2:
+    pop bx
+    push cx
+    mov cx, 8
+    rep movsw
+    pop cx
+    loop 1b
+9:
+    pop es
+    pop di
+    pop si
+    IA16_RET
+
+/*
+ * uint8_t gbf_sched_asm(void): gbf_hw.c's schedule(), the next event
+ * after now, instruction for instruction (it was a tenth to a sixth of
+ * the time of a program with an interrupt at every line); 0 and nothing
+ * done while a serial transfer is on (C does that).
+ * SI the frame's cycle now, DI the next event's, BX "from".
+ */
+#define LINE_MC 114
+#define FRAME_MC 17556
+#define VBL_MC (144 * 114 + 1)
+    .global gbf_sched_asm
+gbf_sched_asm:
+    xor al, al
+    cmp byte ptr ss:[gbf_ser_on], 0
+    je 1f
+    IA16_RET
+1:
+    push si
+    push di
+    mov si, ss:[gbf_ev_pos]
+    sub si, ss:[gbf_cyc]
+    mov di, FRAME_MC
+    cmp byte ptr ss:[gb + 12], 0        // gb.lcd_on (gb_drc.h: GB_LCD_ON)
+    jne 1f
+    jmp sched_timer
+1:
+    cmp byte ptr ss:[gbf_vbl_done], 0
+    jne 1f
+    mov di, VBL_MC
+1:
+    mov al, ss:[0x9F41]                 // STAT
+    test al, 0x78
+    jnz 1f
+    jmp sched_timer
+1:
+    mov bx, ss:[gbf_stat_done]
+    cmp bx, si
+    jb 1f
+    mov bx, si
+1:
+    test al, 0x28
+    jz sched_m1
+    // the line `from` is in (CL), its first cycle (DX), the cycle in it (CH)
+    push ax
+    mov ax, bx
+    mov cl, LINE_MC
+    div cl
+    mov cx, ax
+    mov ah, LINE_MC
+    mul ah
+    mov dx, ax
+    pop ax
+    test al, 0x08
+    jz sched_m2
+    push ax
+    mov ax, FRAME_MC
+    cmp cl, 144
+    jae 2f
+    cmp ch, 63
+    jae 1f
+    mov ax, dx
+    add ax, 63
+    jmp 2f
+1:
+    cmp cl, 143
+    jae 2f
+    mov ax, dx
+    add ax, LINE_MC + 63
+2:
+    cmp ax, di
+    jae 1f
+    mov di, ax
+1:
+    pop ax
+sched_m2:
+    test al, 0x20
+    jz sched_m1
+    push ax
+    cmp cl, 143
+    jae 1f
+    mov ax, dx
+    add ax, LINE_MC
+    jmp 2f
+1:
+    mov ax, VBL_MC
+    cmp cl, 144
+    jb 2f
+    cmp bx, VBL_MC
+    jb 2f
+    mov ax, FRAME_MC
+2:
+    cmp ax, di
+    jae 1f
+    mov di, ax
+1:
+    pop ax
+sched_m1:
+    test al, 0x30
+    jz 1f
+    cmp bx, VBL_MC
+    jae 1f
+    cmp di, VBL_MC
+    jbe 1f
+    mov di, VBL_MC
+1:
+    test al, 0x40
+    jz 2f
+    mov al, ss:[0x9F45]                 // LYC
+    cmp al, 154
+    jae 2f
+    mov dx, 153 * LINE_MC + 3
+    test al, al
+    jz 1f
+    mov ah, LINE_MC
+    mul ah
+    inc ax
+    mov dx, ax
+1:
+    cmp dx, bx
+    jbe 2f
+    cmp dx, di
+    jae 2f
+    mov di, dx
+2:
+    cmp di, bx
+    ja sched_timer
+    mov di, bx
+    inc di
+sched_timer:
+    cmp di, si
+    ja 1f
+    // (already passed: now)
+    mov ss:[gbf_ev_pos], di
+    sub di, si
+    mov ss:[gbf_cyc], di
+    jmp 9f
+1:
+    sub di, si                          // the cycles left
+    mov al, ss:[0x9F07]                 // TAC
+    test al, 4
+    jz 2f
+    mov cl, al
+    and cl, 3
+    shl cl, 1                           // TAC's rates: 256, 4, 16, 64 cycles
+    jnz 3f
+    mov cl, 8
+3:
+    mov ax, 1
+    shl ax, cl                          // the period
+    mov dx, ss:[gbf_div_off]
+    add dx, si
+    dec ax
+    and dx, ax
+    inc ax
+    sub ax, dx                          // to the first edge
+    mov dl, ss:[0x9F05]                 // TIMA
+    not dl
+    xor dh, dh
+    shl dx, cl                          // the edges after it, to the overflow
+    cmp dx, di
+    jae 2f
+    add ax, dx
+    cmp ax, di
+    jae 2f
+    mov di, ax
+2:
+    test di, di
+    jnz 1f
+    inc di
+1:
+    mov ax, si
+    add ax, di
+    mov ss:[gbf_ev_pos], ax
+    mov ss:[gbf_cyc], di
+9:
+    pop di
+    pop si
+    mov al, 1
+    IA16_RET

@@ -76,9 +76,9 @@ window.
 - **A pointer whose high byte the block itself sets** (`LD H, n`,
   `LD D, n`, `LD B, n`, `LD rr, nn`, then INC and DEC of that byte or
   of the pair: `i_cls`, the range the byte can be in) and that stays
-  within one part of the memory: the tiles' patterns or the work RAM,
-  read and written at `[BX - 6000h]` with nothing checked; the rest of
-  the video memory, read so; one of the ROM areas, read through its
+  within one part of the memory: the work RAM, read and written at
+  `[BX - 6000h]` with nothing checked; the video memory, read so (its
+  writes go through `s_wrt`: see "Time", the patterns); one of the ROM areas, read through its
   segment. A table read by `LD H, n` / `LD L, A` / `LD r, (HL)` is one
   instruction, not six and 54 bytes.
 - **A constant address** is sorted out when the block is translated; in
@@ -152,6 +152,22 @@ change (`s_skip_hl`): with HL = FF44h and the jump taken while LY is
 not A, the time to the line before the one waited for is taken off at
 once and the rest by lines; with HL in RAM the time to the next event
 (only an interrupt can change it).
+
+A write to a pattern (8000h-97FFh) goes through `s_wrt`, whatever
+the block knows of the pointer (until patch 172 a pointer whose high
+byte the block had set wrote there unchecked), and the copying loops
+below leave the patterns alone while `gbv_tq_on` is set: `gb_video.c`
+may be keeping the patterns a frame late ("the patterns a frame late"
+there: the byte then goes to the tile's copy, `wrt_tq`, the last tile's
+copy remembered, a new one made by `gbv_tq_new` in `gb_asm.s`).
+
+LYC written (`LDH (45h), A`) with the LCD on, no interrupt asked for
+at a mode, no event due and no serial transfer is `gbf_io_write`'s
+case in the routine (`wrt_lyc`): the place in the frame, what LY is
+compared as there, the interrupt if the signal rises, the next event
+(`gbf_sched_asm`, `gb_asm.s`: `gbf_hw.c`'s `schedule()` in assembly,
+which C calls too), and the dispatcher only if an interrupt is to be
+taken or the event is now.
 
 A write through a pointer that turns out to be at an I/O register
 (`s_wrt`): FF10h-FF3Fh, the sound's, is the byte stored and, for

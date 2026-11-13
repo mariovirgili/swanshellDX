@@ -22,4 +22,12 @@ void gbv_oam(void);
 // every frame's time): show it, wait for its time, read the keys
 void gbv_frame(void);
 
+#ifdef __ia16__
+// (the WonderSwan only, gb_video.c: the patterns of sprites a frame late)
+#define GBV_PATTERNS_LATE
+extern uint8_t gbv_tq_on;
+void gbv_tq_put(uint16_t a, uint8_t v);
+void gbv_line0(void);
+#endif
+
 #endif
