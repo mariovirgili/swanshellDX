@@ -402,6 +402,29 @@ if os.environ.get('GBRUN_WRT') and CYCLES:
         wrt_hist[uc.reg_read(UC_X86_REG_SI) & 0xF800] += 1
     for seg in range(5, 13):
         uc.hook_add(UC_HOOK_CODE, h_wrt, None, (seg << 16) + woff, (seg << 16) + woff)
+if os.environ.get('GBRUN_SLOW') and 's_exit_slow' in syms:
+    # GBRUN_SLOW=from-to: in those Game Boy frames, why the routine that leaves a block went to the dispatcher
+    import collections as _c
+    slow = _c.Counter()
+    s0, s1 = [int(x) for x in os.environ['GBRUN_SLOW'].split('-')]
+    soff2 = syms['s_exit_slow'] - syms['drc_stubs']
+    def h_slow(uc, addr, size, _):
+        if not s0 <= st['gbframes'] <= s1: return
+        r = lambda n, k=2, sg=False: int.from_bytes(uc.mem_read(syms[n] & 0xFFFF, k), 'little', signed=sg)
+        g = syms['gb'] & 0xFFFF; m = uc.mem_read(g, 52)
+        slow['pc=%04X ei=%d interp=%d halted=%d cyc%s link=%d fdone=%d ime=%d sp=%04X' % (m[10] | m[11] << 8, r('drc_ei', 1), r('drc_interp', 1), m[20], '>0' if r('gbf_cyc', 2, True) > 0 else '<=0', r('drc_link') != 0, m[51], m[18], uc.reg_read(UC_X86_REG_BP))] += 1
+    for seg in range(5, 13):
+        uc.hook_add(UC_HOOK_CODE, h_slow, None, (seg << 16) + soff2, (seg << 16) + soff2)
+    import atexit
+    atexit.register(lambda: [print('  slow %6d  %s' % (v, k)) for k, v in slow.most_common(16)])
+if os.environ.get('GBRUN_PACE'):
+    # GBRUN_PACE=from-to: in those Game Boy frames, at gbv_wait's entry: the WonderSwan's time in lines, next_at, line_base, list_ready
+    p0, p1 = [int(x) for x in os.environ['GBRUN_PACE'].split('-')]
+    def h_pace(uc, addr, size, _):
+        if not p0 <= st['gbframes'] <= p1: return
+        r = lambda n, k=2: int.from_bytes(uc.mem_read(syms[n] & 0xFFFF, k), 'little')
+        print('P %d ws %d line %d next_at %d line_base %d ready %d' % (st['gbframes'], st['frame'], st['line'], r('next_at'), r('line_base'), r('list_ready', 1)))
+    uc.hook_add(UC_HOOK_CODE, h_pace, None, syms['gbv_wait'], syms['gbv_wait'])
 e = f['e_entry'] & 0xFFFFF
 uc.reg_write(UC_X86_REG_CS, 0xF000); uc.reg_write(UC_X86_REG_IP, e - 0xF0000)
 uc.reg_write(UC_X86_REG_SS, 0); uc.reg_write(UC_X86_REG_SP, 0x4000)
@@ -421,7 +444,7 @@ while (GBTIME or st['frame'] < FRAMES) and not st['fail'] and not st.get('stop')
     if y == 100 and os.environ.get('GBRUN_SCROLL'):
         # GBRUN_SCROLL=1: at each WonderSwan frame (its line 100) screen 2's X scroll, the first sprite's X and the Game Boy frames done: how evenly a scrolling game moves
         t = (ports[4] & 0x3F) << 9
-        print('S %d gb %d scroll %d spr0 %d,%d top %d' % (st['frame'], st['gbframes'], ports[0x12], iram.raw[t + 3][0] if isinstance(iram.raw[t + 3], bytes) else iram.raw[t + 3], iram.raw[t + 2][0] if isinstance(iram.raw[t + 2], bytes) else iram.raw[t + 2], st.get('scroll8', -1)) + ((' list %04X lines %d %d %d ready %d raw_n %d' % ((lambda lp: (lp, iram.raw[lp][0] if isinstance(iram.raw[lp], bytes) else iram.raw[lp], iram.raw[lp + 16][0] if isinstance(iram.raw[lp + 16], bytes) else iram.raw[lp + 16], iram.raw[lp + 32][0] if isinstance(iram.raw[lp + 32], bytes) else iram.raw[lp + 32]))(int.from_bytes(iram.raw[syms['list_shown'] & 0xFFFF:(syms['list_shown'] & 0xFFFF) + 2], 'little')) + (iram.raw[syms['list_ready'] & 0xFFFF][0] if isinstance(iram.raw[syms['list_ready'] & 0xFFFF], bytes) else iram.raw[syms['list_ready'] & 0xFFFF], iram.raw[syms['raw_n'] & 0xFFFF][0] if isinstance(iram.raw[syms['raw_n'] & 0xFFFF], bytes) else iram.raw[syms['raw_n'] & 0xFFFF]))) if 'list_shown' in syms else ''))
+        print('S %d gb %d scroll %d spr0 %d,%d top %d' % (st['frame'], st['gbframes'], ports[0x12], iram.raw[t + 3][0] if isinstance(iram.raw[t + 3], bytes) else iram.raw[t + 3], iram.raw[t + 2][0] if isinstance(iram.raw[t + 2], bytes) else iram.raw[t + 2], st.get('scroll8', -1)) + ((' list %04X lines %d %d %d ready %d raw_n %d' % ((lambda lp: (lp, iram.raw[lp][0] if isinstance(iram.raw[lp], bytes) else iram.raw[lp], iram.raw[lp + 16][0] if isinstance(iram.raw[lp + 16], bytes) else iram.raw[lp + 16], iram.raw[lp + 32][0] if isinstance(iram.raw[lp + 32], bytes) else iram.raw[lp + 32]))(int.from_bytes(iram.raw[syms['list_shown'] & 0xFFFF:(syms['list_shown'] & 0xFFFF) + 2], 'little')) + (iram.raw[syms['list_ready'] & 0xFFFF][0] if isinstance(iram.raw[syms['list_ready'] & 0xFFFF], bytes) else iram.raw[syms['list_ready'] & 0xFFFF], iram.raw[syms.get('raw_n', syms.get('gbv_raw_n')) & 0xFFFF][0] if isinstance(iram.raw[syms.get('raw_n', syms.get('gbv_raw_n')) & 0xFFFF], bytes) else iram.raw[syms.get('raw_n', syms.get('gbv_raw_n')) & 0xFFFF]))) if 'list_shown' in syms else ''))
     y = st['line']
     if y < 144 and (st['frame'] in SHOTS or END_SHOT):
         line_ports[y] = bytes(ports)
@@ -572,7 +595,8 @@ if callers:
     for k, v in callers.most_common(12): print('  %6d  %s %s' % (v, k[0], k[1]))
 if CYCLES and st['gbframes']:
     # (not the wait for the frame's time, nor the wait for a list to be shown: HLT's cycles are not counted anyway)
-    for k in ('gbv_wait', 'gbv_now_lines'): prof.pop(k, None)
+    if not os.environ.get('GBRUN_KEEPWAIT'):
+        for k in ('gbv_wait', 'gbv_now_lines'): prof.pop(k, None)
     tot = sum(prof.values())
     print('V30MZ cycles a Game Boy frame, from frame %d: %d (a WonderSwan frame has 40704, a Game Boy frame\'s time 51430)' % (PROF_FROM, tot // max(1, st['gbframes'] - prof_gb0[0])))
     for k, v in prof.most_common(14): print('  %5.1f%%  %s' % (100.0 * v / tot, k))

@@ -21,6 +21,9 @@
 #define GB_KEYS 13
 #define GB_BANK_LO 14
 #define GB_ROMX 16
+#define GB_IME 18
+#define GB_HALTED 20
+#define GB_FRAME_DONE 51
 
 #ifndef __ASSEMBLER__
 #include <stdint.h>

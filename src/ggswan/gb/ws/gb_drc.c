@@ -29,7 +29,8 @@ extern uint16_t gbf_rom0_off, gbf_romx_off, gbf_ram_off;
 _Static_assert(offsetof(gb_t, a) == GB_A && offsetof(gb_t, c) == GB_BC && offsetof(gb_t, e) == GB_DE
     && offsetof(gb_t, l) == GB_HL && offsetof(gb_t, sp) == GB_SP && offsetof(gb_t, pc) == GB_PC
     && offsetof(gb_t, lcd_on) == GB_LCD_ON && offsetof(gb_t, keys) == GB_KEYS
-    && offsetof(gb_t, bank_lo) == GB_BANK_LO && offsetof(gb_t, romx_bank) == GB_ROMX, "gb_drc.h");
+    && offsetof(gb_t, bank_lo) == GB_BANK_LO && offsetof(gb_t, romx_bank) == GB_ROMX
+    && offsetof(gb_t, ime) == GB_IME && offsetof(gb_t, halted) == GB_HALTED && offsetof(gb_t, frame_done) == GB_FRAME_DONE, "gb_drc.h");
 
 uint8_t drc_ah, drc_n, drc_tmp, drc_ei, drc_interp;
 const uint8_t __far *drc_cmp_p;     // gbd_ram_cmp's: the block's copy of its bytes,
@@ -106,7 +107,8 @@ void gbd_write(uint16_t a, uint8_t v) {
         // before it, and its picture was drawn with the status bar's
         // scroll for a frame (patches 160-166).
         if (a >= 0xFF00 && gbf_cyc <= 0) gbf_host_event();
-        gbf_write(a, v);
+        if (a >= 0xFF00 && a < 0xFF80) gbf_io_write(a & 0xFF, v);
+        else gbf_write(a, v);
         drc_must = a >= 0xFF00 && ((gb.ime && (gb_ie & gb_io[GB_IF] & 0x1F)) || gbf_cyc <= 0);
     }
 }
@@ -841,6 +843,30 @@ __attribute__((noinline)) static void translate_block(void) {
         for (uint8_t k = 0; k < n_stat; k++)
             if (stat_at[k] == i) cur_wait = stat_mask[k];
         after_ei = i > 0 && rb(i_pc[i - 1]) == 0xFB;
+        if (op == 0x76 && !after_ei) {
+            // HALT with no interrupt asked for (else the interpreter's: it
+            // may be the one that reads the next byte twice): halted, and
+            // out by the routine that waits (gb_drc_asm.s, s_exit)
+            mat();
+            nflush();
+            sub_cyc();
+            E(0x50);                                            // push ax
+            E(0xA0); EW(0x9FFF);                                // mov al, [IE]
+            E(0x22); E(0x06); EW(0x9F0F);                       // and al, [IF]
+            E(0xA8); E(0x1F);                                   // test al, 1Fh
+            E(0x58);                                            // pop ax
+            E(0x74); E(14);                                     // jz halt
+            E(0xC7); E(0x06); EW(ADDR(gb) + GB_PC); EW(pc);
+            E(0xC6); E(0x06); EW(ADDR(drc_interp)); E(1);
+            jmp_stub(ST_EXIT);
+            E(0x83); E(0x2E); EW(ADDR(gbf_cyc)); E(1);          // halt: sub word [gbf_cyc], 1
+            E(0xC6); E(0x06); EW(ADDR(gb) + GB_HALTED); E(1);
+            E(0xC7); E(0x06); EW(ADDR(gb) + GB_PC); EW(next);
+            E(0xC7); E(0x06); EW(ADDR(drc_link)); EW(0);
+            jmp_stub(ST_EXIT);
+            ended = 1;
+            break;
+        }
         if (interp_op(op, b1)) {
             exit_interp(pc);
             ended = 1;
@@ -1672,7 +1698,10 @@ void gbd_init(void) {
 void gbd_run_frame(void) {
     gb.frame_done = 0;
     while (!gb.frame_done) {
-        while (gbf_cyc > 0) {
+        // (the event that ends the frame may have been done by the routine
+        // that leaves a block, gb_drc_asm.s, s_exit: it comes back here
+        // with the frame done and time left)
+        while (gbf_cyc > 0 && !gb.frame_done) {
             if (drc_ei) {
                 drc_ei = 0;
                 gb.ime = 1;
@@ -1687,7 +1716,22 @@ void gbd_run_frame(void) {
                 gbf_cyc--;
             }
             if (gb.ime && pend) {
-                gb_cpu_interrupt();
+                // (the stack in the work RAM or the high RAM, as it always
+                // is: the address pushed where it goes, not through the
+                // interpreter's two writes by gbf_write; five cycles)
+                uint16_t sp = gb.sp;
+                if ((sp >= 0xC002 && sp <= 0xE000) || sp >= 0xFF82) {
+                    *(uint16_t*) (sp - 0x6002) = gb.pc;
+                    gb.sp = sp - 2;
+                    gb.ime = 0;
+                    uint8_t n = 0;
+                    while (!(pend >> n & 1)) n++;
+                    gb_io[GB_IF] &= ~(1 << n);
+                    gb.pc = 0x40 + n * 8;
+                    gbf_cyc -= 5;
+                } else {
+                    gb_cpu_interrupt();
+                }
                 drc_link = 0;
                 continue;
             }
@@ -1785,6 +1829,17 @@ void gbd_run_frame(void) {
                 if (drc_flushes != flushes) drc_link = 0;
             }
         run:
+            if (pc < 0x8000) {
+                // into the small table by address (gb_drc_asm.s,
+                // s_exit_dyn_f, which fills it only from a block at its
+                // first place in the big one: a return to any other came
+                // through here every time)
+                uint16_t *rc = (uint16_t*) ((pc < 0x4000 ? DRC_RC0 : DRC_RCX) + ((pc << 3) & 0x0FF8));
+                rc[0] = pc;
+                rc[1] = key;
+                rc[2] = b->off;
+                rc[3] = b->seg;
+            }
             if (drc_link) {
                 // the exit just taken, joined to this block
                 uint8_t __far *site = MK_FP(drc_link_seg, drc_link);
@@ -1805,6 +1860,6 @@ void gbd_run_frame(void) {
             gbd_enter(b->off, b->seg);
             gb_phase = GB_PHASE_DISP;
         }
-        gbf_host_event();
+        if (!gb.frame_done) gbf_host_event();
     }
 }

@@ -116,7 +116,8 @@ drc_stubs:
 s_exit_dyn:
     cmp word ptr [gbf_cyc], 0
 s_exit_dyn_f:
-    jle 9f
+    jle s_exit_time
+s_lookup:
     // first the two small tables in the internal RAM (512 places each,
     // by the address' low bits; filled below): the first ROM area's has
     // no bank to compare (it is emptied if that bank ever changes)
@@ -194,7 +195,98 @@ s_exit_dyn_f:
     pop ax
 9:
     mov [gb + GB_PC], si
+    jmp s_exit_slow
+s_exit_time:
+    mov [gb + GB_PC], si
+// leave: gb.pc is set. What most leavings are for is done here, without
+// the dispatcher (gb_drc.c, gbd_run_frame, whose order this follows): the
+// event that is due, an interrupt to take (the address pushed where the
+// stack is, in the work RAM or the high RAM), and on to the block at
+// gb.pc by the tables above; HALT's wait too. Anything else (EI just done, an
+// instruction for the interpreter, a jump to be joined, the frame's end,
+// code in RAM, a block not found) is the dispatcher's.
 s_exit:
+    cmp byte ptr [drc_ei], 0
+    jne s_exit_slow
+    cmp byte ptr [drc_interp], 0
+    jne s_exit_slow
+s_exit_top:
+    cmp word ptr [gbf_cyc], 0
+    jle s_exit_event
+    cmp word ptr [drc_link], 0
+    jne s_exit_slow
+    cmp byte ptr [gb + GB_HALTED], 0
+    je s_exit_irq
+    // halted: nothing until an interrupt is asked for (the time to the
+    // next event passed over), then on, a cycle later
+    mov di, ax
+    mov al, [0x9FFF]
+    and al, [0x9F0F]
+    test al, 0x1F
+    mov ax, di
+    jnz 1f
+    mov word ptr [gbf_cyc], 0
+s_exit_event:
+    push ax
+    push bx
+    push cx
+    push dx
+    IA16_CALL gbf_host_event
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    cmp byte ptr [gb + GB_FRAME_DONE], 0
+    jne s_exit_slow
+    // (a jump that would have been joined, had the time not run out: the
+    // next time)
+    mov word ptr [drc_link], 0
+    jmp s_exit_top
+1:
+    mov byte ptr [gb + GB_HALTED], 0
+    dec word ptr [gbf_cyc]
+s_exit_irq:
+    mov di, ax
+    mov al, [0x9FFF]
+    and al, [0x9F0F]
+    and al, 0x1F
+    jz s_exit_none
+    cmp byte ptr [gb + GB_IME], 0
+    je s_exit_none
+    cmp bp, 0xC002
+    jb s_exit_c
+    cmp bp, 0xE000
+    jbe 1f
+    cmp bp, 0xFF82
+    jb s_exit_c
+1:
+    mov si, [gb + GB_PC]
+    mov [bp - 0x6002], si
+    sub bp, 2
+    mov byte ptr [gb + GB_IME], 0
+    mov si, 0x40
+    mov ah, 1
+2:
+    test al, ah
+    jnz 3f
+    shl ah, 1
+    add si, 8
+    jmp 2b
+3:
+    not ah
+    and [0x9F0F], ah
+    mov [gb + GB_PC], si
+    mov ax, di
+    sub word ptr [gbf_cyc], 5
+    jle s_exit_slow
+    jmp s_lookup
+s_exit_none:
+    mov ax, di
+    mov si, [gb + GB_PC]
+    jmp s_lookup
+s_exit_c:
+    mov ax, di
+s_exit_slow:
     mov [gb + GB_A], al
     mov [drc_ah], ah
     mov [gb + GB_BC], cx
@@ -1221,6 +1313,53 @@ s_wrt:
 8:
     cmp si, 0xFF00
     jb 2b                       // the OAM
+    // an I/O register written through a pointer: the sound's (FF10h-
+    // FF3Fh) are kept as written, with a channel's start remembered
+    // (gbf_hw.c: gbf_trig), and SCY, SCX, BGP, OBP0, OBP1, WY, WX
+    // written with what they have are nothing: none of it for C.
+    // (Batman's sound routine writes nine registers a frame this way,
+    // some 200 cycles each through gbd_write.)
+    cmp si, 0xFF10
+    jb 6f
+    cmp si, 0xFF40
+    jae wrt_vsame
+    mov di, ax
+    mov al, [drc_tmp]
+    mov [si - 0x6000], al
+    test al, 0x80
+    jz wrt_snd_done
+    mov al, 1
+    cmp si, 0xFF14
+    je wrt_trig
+    mov al, 2
+    cmp si, 0xFF19
+    je wrt_trig
+    mov al, 4
+    cmp si, 0xFF1E
+    je wrt_trig
+    mov al, 8
+    cmp si, 0xFF23
+    jne wrt_snd_done
+wrt_trig:
+    or [gbf_trig], al
+wrt_snd_done:
+    mov ax, di
+    jmp 9b
+wrt_vsame:
+    cmp si, 0xFF42
+    jb 6f
+    cmp si, 0xFF4C
+    jae 6f
+    cmp si, 0xFF44
+    jb 1f
+    cmp si, 0xFF47
+    jb 6f
+1:
+    mov di, ax
+    mov al, [drc_tmp]
+    cmp al, [si - 0x6000]
+    mov ax, di
+    je 9b
 6:
     // the write that changes the second ROM area's bank, here (2000h up
     // to MBC1's and MBC3's 3FFFh or MBC5's 2FFFh; gb_main.c: gbf_plat_map)

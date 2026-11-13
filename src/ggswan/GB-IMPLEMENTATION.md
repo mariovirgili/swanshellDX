@@ -44,7 +44,7 @@ background and the window, switched at the right lines by the line
 interrupt, with the scroll the program gave each line; the sprites are
 the WonderSwan's.
 
-## Where it is (patch 170)
+## Where it is (patch 171)
 
 The CPU is a recompiler (`gb/ws/gb_drc.c`, `gb_drc_asm.s`; `GB-ABI.md`),
 there is sound (`gb/ws/gb_sound.c`: what it does and does not, at its
@@ -369,6 +369,103 @@ Seen and not done:
 - The dispatcher does not put a block it finds into the two small
   tables: a return to a block that is not at its first place in the
   big one goes through C every time.
+
+**Patch 171.** Gio ran 170 in nileswan-medem ("PAT 0170" on its
+screen) and wrote: Batman slows down a great deal when the water
+effect is on (39-42 frames a second, the "DSP" figure 18-25%);
+Castlevania II always a little slow (41-48); Donkey Kong Land 42, and
+Kong's sprite still breaks up; R-Type and R-Type II all right; Race
+Drivin' always slow (25-26, DSP 28%, translating 17%); Super Mario
+Land "seems to skip a frame every three" (58 frames a second, idle
+47%); Super Mario Land 2 slow on the map (37) and when new enemies
+come (39-45); X slow in its fades, its title 8 frames a second (DSP
+41%), 31-34 in the game; ZAS's logo much faster, the game slow.
+
+Batman's water, X's title and fades and (less) Castlevania II are one
+thing: **leaving a block for the dispatcher**. A game that has an
+interrupt on every line or two leaves that way hundreds of times a
+frame, and each leaving was all registers stored, a far return to C,
+`gbd_run_frame`'s loop, the event, the interrupt by `gb_cpu_interrupt`
+(two calls of `gbf_write`), the big table searched from C, all
+registers loaded. Done:
+
+- **`s_exit`** (`gb_drc_asm.s`; `GB-ABI.md`, "Interrupts"): the event
+  that is due (C, called with four registers saved), the interrupt
+  (the address pushed where the stack is), HALT's wait and the jump to
+  the next block by the tables, in the code segment. The dispatcher
+  is left what is rare.
+- **HALT translated**, so that its wait is `s_exit`'s too.
+- **A write to a sound register through a pointer** (`LD (HL), A`
+  with HL at FF10h-FF3Fh: Batman's and Castlevania II's music
+  routines, 9 to 16 a frame) is a byte moved and a bit set in
+  `gbf_trig`, as `LDH (n), A` already was; SCY, SCX, BGP, OBP0, OBP1,
+  WY, WX written that way with the value they have: nothing. The
+  other I/O registers go to `gbf_io_write` at once, not by `gbf_write`.
+- **The dispatcher fills the two small tables** with the block it
+  goes to (see "Seen and not done" above).
+- **`gbf_hw.c`, STAT on LYC alone** (no mode interrupt enabled: X's
+  title, most status bars): `stat_sig` answers from the line and LYC
+  without working out the mode; `schedule` divides only when a mode's
+  interrupt is enabled; the event at LYC's line raises the interrupt
+  by where it is, not by two calls of `stat_sig`; a write to LYC works
+  out the position once. The PC model (`gbftest`) is the same code:
+  its pictures of the sixteen scenes are the same as before.
+
+A fault of my own on the way, never in a patch: the event called
+from `s_exit` could end the frame, and the dispatcher's loop, which
+only looked at the count, went on with the frame marked done: every
+leaving then went to C and the pictures came late (found with
+`GBRUN_SLOW=from-to`, which prints why a block left for the
+dispatcher). The loop now stops at the frame's end.
+
+X's title (frames 170-200 with no key): 343,316 cycles a Game Boy
+frame in 170; 312,673 with `s_exit` and the trims of `stat_sig` and
+`schedule`; 268,497 with HALT translated and the fault above put
+right; 232,860 with the event and the write of LYC by position. The
+same picture. What is left there is mostly `schedule` (18%, twice a
+line).
+
+Cycles a Game Boy frame, 170 to 171 (full speed is 51,430):
+
+| scene | 170 | 171 | |
+|---|---|---|---|
+| Batman | 58,191 | 51,752 | -11.1% |
+| Castlevania II | 56,998 | 51,351 | -9.9% |
+| X, the tunnel | 92,045 | 86,054 | -6.5% |
+| R-Type II | 34,061 | 32,008 | -6.0% |
+| ZAS | 68,203 | 65,308 | -4.2% |
+| Donkey Kong Land | 78,192 | 74,851 | -4.3% |
+| Super Mario Land 2 | 50,250 | 48,196 | -4.1% |
+| Race Drivin' | 104,873 | 102,161 | -2.6% |
+| X, the title | 343,316 | 232,860 | -32.2% |
+| ZAS, the logo | 72,242 | 71,599 | -0.9% |
+
+The eight older scenes (cycles a WonderSwan frame, lower is less
+work): Balloon Kid 22,401 to 20,848, Batman 36,377 to 33,611, Bubble
+Ghost 16,028 to 15,125, Castlevania II 38,362 to 36,316, R-Type
+44,050 to 42,622, Super Mario Land 27,083 to 24,228, Super Mario Land
+2 12,260 to 11,515, Yoshi 40,462 to 40,625; all the same memory as
+170's and the same pictures against `gbftest`. `gbreg` 24 of 24. Of
+the eight newer scenes seven have the same memory as 170's to the
+byte; Batman's differs (HALT's wait ends at the event now, not a
+block later) and its picture is the reference's a frame apart, as
+before (901 pixels at one frame, the scroll). R-Type II's bar as in
+170 (the four frames after a death apart); ZAS's logo the same
+picture. Batman's water scene itself was not measured: no run by
+keys gets there.
+
+Super Mario Land "skipping a frame every three": not found as a
+fault. With `GBRUN_CYCLES=1` (without it `gbrun.py` runs 80
+instructions a line and the pace is not the console's) the scroll
+goes up one a Game Boy frame and the frames reach the screen four in
+every five WonderSwan frames, evenly (`GBRUN_PACE=from-to` prints
+it): that is 59.7 on 75.5, and it will be so on the console. In
+nileswan-medem the 75.5 are then shown on a monitor at 60, and the
+two beats can fall well or badly. To be looked at on a WonderSwan.
+
+Not touched: Kong's sprite; Race Drivin's pauses (the translator's
+speed); Super Mario Land 2's map and ZAS in the game (94% of the
+time in translated code: only better code would help).
 
 He also saw, in 166, Super Mario Land's whole picture jump sideways
 for an instant now and then. Its status bar is a STAT interrupt at a

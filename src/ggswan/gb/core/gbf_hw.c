@@ -70,7 +70,10 @@ static uint8_t lyc_match(uint8_t line, uint8_t d) {
 // the STAT interrupt's signal at a cycle of the frame (the LCD on)
 static uint8_t stat_sig(uint16_t pos) {
     uint8_t stat = gb_io[GB_STAT];
-    uint8_t line = pos / LINE_MC, d = pos % LINE_MC;
+    uint8_t line = pos / LINE_MC, d = pos - (uint16_t) line * LINE_MC;
+    // (LYC's alone, as a program that counts lines by it has it: X's
+    // title asks this four times a line)
+    if (!(stat & 0x38)) return (stat & 0x40) && lyc_match(line, d);
     uint8_t mode = ppu_mode(line, d);
     // (mode 2's is asked at the line's first cycle, and at the vertical
     // blank's; mode 0's a cycle before the mode shows)
@@ -142,8 +145,13 @@ static void schedule(void) {
             // Mario Land's LYC interrupt was lost that way on the frames
             // its timer's interrupt came a few cycles before it.)
             uint16_t from = stat_done < pos ? stat_done : pos;
-            uint8_t line = from / LINE_MC, d = from - (uint16_t) line * LINE_MC;
-            uint16_t start = (uint16_t) line * LINE_MC, t;
+            uint8_t line = 0, d = 0;
+            uint16_t start = 0, t;
+            if (stat & 0x28) {
+                line = from / LINE_MC;
+                start = (uint16_t) line * LINE_MC;
+                d = from - start;
+            }
             if (stat & 0x08) {
                 t = line < 144 ? (d < 63 ? start + 63 : line < 143 ? start + LINE_MC + 63 : FRAME_MC) : FRAME_MC;
                 if (t < next) next = t;
@@ -202,9 +210,17 @@ static void event(void) {
     uint16_t pos = POS();
     // the STAT interrupt: did its signal rise at the cycle this event was
     // set for? (the CPU may be a cycle or two past it)
-    if (gb.lcd_on && (gb_io[GB_STAT] & 0x78) && ev_pos && ev_pos < FRAME_MC
-        && stat_sig(ev_pos) && !stat_sig(ev_pos - 1))
-        gb_io[GB_IF] |= GB_INT_STAT;
+    if (gb.lcd_on && (gb_io[GB_STAT] & 0x78) && ev_pos && ev_pos < FRAME_MC) {
+        uint8_t stat = gb_io[GB_STAT];
+        if (!(stat & 0x38)) {
+            // (LYC's alone: its signal rises at one cycle of the frame,
+            // the one schedule sets the event for)
+            uint8_t lyc = gb_io[GB_LYC];
+            if (lyc < 154 && ev_pos == (lyc ? (uint16_t) lyc * LINE_MC + 1 : 153 * LINE_MC + 3)) gb_io[GB_IF] |= GB_INT_STAT;
+        } else if (stat_sig(ev_pos) && !stat_sig(ev_pos - 1)) {
+            gb_io[GB_IF] |= GB_INT_STAT;
+        }
+    }
     if (gb.lcd_on && !vbl_done && pos >= VBL_MC) {
         vbl_done = 1;
         gb_io[GB_IF] |= GB_INT_VBLANK;
@@ -391,7 +407,17 @@ void gbf_io_write(uint8_t r, uint8_t v) {
     case GB_LY:
         break;
     case GB_LYC:
-        if (gb.lcd_on) {
+        if (gb.lcd_on && !(gb_io[GB_STAT] & 0x38)) {
+            // (LYC's signal alone, or none: the place in the frame worked
+            // out once for before and after)
+            uint16_t pos = POS();
+            uint8_t line = pos / LINE_MC, d = pos - (uint16_t) line * LINE_MC;
+            uint8_t was = lyc_match(line, d);
+            gb_io[r] = v;
+            if ((gb_io[GB_STAT] & 0x40) && !was && lyc_match(line, d)) gb_io[GB_IF] |= GB_INT_STAT;
+            stat_done = pos;
+            schedule();
+        } else if (gb.lcd_on) {
             uint8_t was = stat_now();
             gb_io[r] = v;
             stat_rise(was);

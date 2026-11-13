@@ -153,6 +153,12 @@ not A, the time to the line before the one waited for is taken off at
 once and the rest by lines; with HL in RAM the time to the next event
 (only an interrupt can change it).
 
+A write through a pointer that turns out to be at an I/O register
+(`s_wrt`): FF10h-FF3Fh, the sound's, is the byte stored and, for
+NR14, NR24, NR34, NR44 with bit 7 set, the channel's bit in
+`gbf_trig`; SCY, SCX, BGP, OBP0, OBP1, WY, WX written with the value
+they have is nothing; the rest is `gbf_io_write`.
+
 A read through HL, BC or DE from below 8000h is in line: the ROM's
 segment for that area and the byte, no routine.
 
@@ -186,7 +192,8 @@ with no routine.
   of 8 bytes, the address's low 9 bits; the address, the block's
   offset and segment and, in the second, the bank's key): a hit is a
   near compare or two and a far jump, with no segment register loaded.
-  A miss that the big table answers fills the place. Both are emptied
+  A miss that the big table answers fills the place, and so does the
+  dispatcher with the block in ROM it goes to (patch 171). Both are emptied
   when the blocks are forgotten, the first also when the first area's
   bank changes (`gb_main.c`).
 - Code in RAM has a copy of its bytes before it, compared at every
@@ -218,17 +225,35 @@ with no routine.
   Donkey Kong Land, R-Type II and Race Drivin' filled the table and
   the code's room over and over.)
 - What the translator does not do is run by the interpreter, one
-  instruction, and the next block starts after it: HALT, STOP,
+  instruction, and the next block starts after it: STOP,
   LD (nn), SP, ADD HL, SP, ADD SP, e, LD HL, SP + e. (Until patch 163
   DAA and the CB operations on (HL) other than BIT too: a program that
   does its sums with them, as Yoshi does, went through the dispatcher
   hundreds of times a frame.)
+- HALT ends its block (patch 171). With an interrupt already asked
+  for (IE and IF) it is left to the interpreter, as is a HALT just
+  after EI; otherwise a cycle, `gb.halted` set, and `s_exit`
+  ("Interrupts"), which passes the time to each event until one asks
+  for an interrupt.
 
 ## Interrupts
 
-They are taken by the dispatcher (`gbd_run_frame`), between blocks:
-when the count runs out and the event raises one, or after a write to
-an I/O register. RETI, with an interrupt enabled and waiting, leaves
+They are taken between blocks: when the count runs out and the event
+raises one, or after a write to an I/O register. Since patch 171 a
+block that leaves (its time has run out, or the block to go to is not
+in the small tables) goes to `s_exit`, in its own code segment, which
+does what `gbd_run_frame` does, in its order: `drc_ei` or an
+instruction for the interpreter: the dispatcher; the count at zero or
+below: `gbf_host_event` (C; AX, BX, CX, DX saved around it), and the
+dispatcher if that ended the frame; a jump to be joined: the
+dispatcher; halted: the event at once if no interrupt is asked for,
+otherwise on, a cycle later; an interrupt asked for, enabled, and IME
+set: PC written at `[BP - 6002h]`, SP down two, IME cleared, the bit
+cleared in IF, 5 cycles, PC = 40h + 8n (SP outside C002h-E000h and
+below FF82h: the dispatcher, whose `gb_cpu_interrupt` writes
+anywhere); then the block at PC by the small tables and the big one's
+first place, and the dispatcher when it is not there or is in RAM.
+The dispatcher does the same things for what reaches it. RETI, with an interrupt enabled and waiting, leaves
 by the dispatcher, which takes it there and then (until patch 168 it
 went on by the table and the interrupt waited for the next event: a
 STAT interrupt raised with the vertical blank's was taken ten lines

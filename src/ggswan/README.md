@@ -6,7 +6,7 @@ emulated by a dynamic recompiler (Z80 to V30MZ code), with the original
 interpreter kept for the parts that need it. The Game Gear video memory is
 mapped onto the WonderSwan's own tile and screen hardware.
 
-Status: fairly stable (patch 170). It has been tested mostly in the
+Status: fairly stable (patch 171). It has been tested mostly in the
 nileswan-medem emulator and with the host test tools; tests on real
 hardware are still to come.
 
@@ -365,7 +365,7 @@ it are listed in order without one.
 - lighter DYN lookup and class routine for deferred tile bytes
 - OUTI runs to CRAM handled in the run routine
 
-### Patches 90-170
+### Patches 90-171
 
 | Patch | Change |
 |---|---|
@@ -450,3 +450,4 @@ it are listed in order without one.
 | 168 | gbswan: R-Type II's status bar jumping sideways (Gio, patch 167 in nileswan-medem; not the fault 167 guessed): a wait for the horizontal blank begun in the vertical blank was passed over in one step, to the next frame's first line, and the vertical blank's interrupt taken only there; every dozen frames the game had not set its line interrupt in time. No wait is now passed over beyond the next event (`GB-ABI.md`, "Time"): the bar is right in 60 frames of 60 in `gbrun.py`. Code in RAM that is made anew for every use goes straight to the interpreter (Donkey Kong Land 90,561 cycles a frame to 89,045). The others cost up to 2% more (X 116,665, Race Drivin' 143,685, ZAS 68,549, Castlevania II 58,583, Batman 58,986). Not found: R-Type's top row of tiles wrong at a point of its first level, Donkey Kong Land's Kong broken at times (`GB-IMPLEMENTATION.md`). Not run on a WonderSwan |
 | 169 | gbswan: R-Type II's status bar, the rest of it (Gio, patch 168: the bottom still flickering): RETI went on by the return cache without a look at the interrupts waiting, so the STAT interrupt behind the vertical blank's, where the game sets its line interrupt, was at times taken a frame late. RETI now leaves through the dispatcher when one waits. And speed for the slow games, cycles a Game Boy frame in `gbrun.py`: ZAS's logo 159,543 to 72,387 (a line that changes only the scroll is a short list entry; SCY, SCX, BGP, WY and WX written by a routine of the recompiler's), Race Drivin' 143,685 to 109,938 (operands of code in RAM that the game changes read at run time, not a new form each time; "RAM on" written again with the same value returns at once), X 116,665 to 92,239 (the quick ROM bank write also for MBC2), Donkey Kong Land 89,045 to 85,404. Not run on a WonderSwan or in nileswan-medem |
 | 170 | gbswan, the slow games again. Race Drivin' has more code than the recompiler has room for (1,737 blocks, 460,000 bytes, in its first twenty seconds; then everything is forgotten and translated again, five seconds at a frame or two a second): a block now ends where another already starts (from its sixth instruction), not with a second translation of the same code: 357,000 bytes at the same point. Code in RAM compared in one pass of the plugin's own routine, not by the C library first; `op_flags` from a table; a pointer whose high byte the block sets (`LD H, n`) read and written with nothing checked. Cycles a Game Boy frame in `gbrun.py`: Donkey Kong Land 85,404 to 78,192, Race Drivin' 109,938 to 104,873, the rest 0 to 2% less. Tried and left out: the tiles written in line, a compact translation after the room runs out (17% slower). Not run on a WonderSwan or in nileswan-medem |
+| 171 | gbswan: leaving a block without the dispatcher. What most leavings are for (the event that is due, an interrupt to take, HALT's wait, on to the next block) is done by a routine in each code segment (`s_exit`), not in C; HALT is translated; a write to a sound register through a pointer is a byte moved; the dispatcher fills the two small tables; `gbf_hw.c` works out less for a STAT interrupt on LYC alone (asked for in patch 170's report: Batman's water, X's title at 8 frames a second, Castlevania II). Cycles a Game Boy frame in `gbrun.py`: X's title 343,316 to 232,860; Batman 58,191 to 51,752, Castlevania II 56,998 to 51,351, X 92,045 to 86,054, Donkey Kong Land 78,192 to 74,851, the other four 3 to 6% less. Not run on a WonderSwan or in nileswan-medem |
