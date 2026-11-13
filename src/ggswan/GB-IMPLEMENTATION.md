@@ -44,7 +44,7 @@ background and the window, switched at the right lines by the line
 interrupt, with the scroll the program gave each line; the sprites are
 the WonderSwan's.
 
-## Where it is (patch 167)
+## Where it is (patch 168)
 
 The CPU is a recompiler (`gb/ws/gb_drc.c`, `gb_drc_asm.s`; `GB-ABI.md`),
 there is sound (`gb/ws/gb_sound.c`: what it does and does not, at its
@@ -198,6 +198,45 @@ the keys or the time can come to be a frame apart. The end pictures
 were looked at beside `gbftest`'s (R-Type II's, Race Drivin's and X's
 are one of its frames to the pixel; the others show the same scene a
 little further on or back).
+
+**Patch 168.** Gio ran 167 in nileswan-medem: Super Mario Land's
+scroll is right; Batman 48-59 frames a second, Castlevania II 46-49,
+R-Type II 58-59, Donkey Kong Land 32-42 (it was 8-11) but slow in
+Kong's roll and with Kong's picture broken at times, Super Mario Land
+2 50 in the level, 39-41 with a Koopa or its shell about and 37 on
+the map, ZAS 45-55 in play and 14 at its waving logo (a scroll change
+every line: the video's part, 29% there), X 25-28 as before, Race
+Drivin' 11-20 with half its time between blocks and translating. And
+two pictures wrong: **R-Type II's status bar still jumping** (so it
+was not Super Mario Land's fault, as guessed below), and R-Type's top
+row of tiles wrong at one point of its first level.
+
+R-Type II's bar was the waits. It waits for the horizontal blank
+before every byte it writes to the video memory (`PUSH AF / LDH A,
+(41h) / AND 3 / JR Z / LDH A, (41h) / AND 3 / JR NZ`); in the vertical
+blank the second loop lasts to the next frame's first line. The plugin
+took that wait in one step and only then the vertical blank's
+interrupt, ten lines late and with its routine still to run, so every
+dozen frames the game had not set LYC for its bar in time. Found with
+`GBRUN_WATCH=9F43` (now with the frame's cycle and line of each
+write): the write of SCX at line 128 was missing in frames 1523 and
+1535; with the STAT waits off it was there in all 60; `gbftest`'s bar
+never moves. No wait is now passed over beyond the next event
+(`GB-ABI.md`, "Time"): 60 of 60. That costs a little everywhere
+(more turns through the dispatcher): Castlevania II 58,256 to 58,583,
+Batman 58,734 to 58,986, ZAS 67,813 to 68,549, X 114,516 to 116,665,
+Race Drivin' 142,393 to 143,685; R-Type II 35,596, Super Mario Land 2
+51,693. Donkey Kong Land 90,561 to 89,045: its ever-changing code in
+RAM now goes straight to the interpreter once it is known for that.
+
+Not found: R-Type's top row (the run by keys here dies long before
+that place; a build without the copy loops gives the same memory over
+5,000 frames, so it is not those; it may be the waits too, R-Type
+writes its video memory the same way). Donkey Kong Land's Kong: in
+`gbrun.py`'s end picture the only pixels unlike `gbftest`'s are in
+Kong's box. The game draws Kong into the tiles' memory, which the
+WonderSwan shows as it is being written, at whatever moment its own
+frame falls: probably that, not looked into further.
 
 He also saw, in 166, Super Mario Land's whole picture jump sideways
 for an instant now and then. Its status bar is a STAT interrupt at a

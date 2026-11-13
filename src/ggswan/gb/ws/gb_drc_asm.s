@@ -384,6 +384,27 @@ stat_modes:
     .fill 43, 1, 3
     .fill 50, 1, 0
 
+// The time a waiting loop is passed over is taken off the count, but not
+// past the next event (and none of it when an event is already due): the
+// loop goes round again after the event. (Until patch 167 the whole wait
+// was taken at once. R-Type II waits for the horizontal blank before
+// every byte it writes to the video memory; in the vertical blank that
+// wait lasts to the next frame's first line, the plugin went there in
+// one step and only then took the vertical blank's interrupt, ten lines
+// late, with the interrupt's routine still to run: every dozen frames
+// the game had not set its line interrupt in time, and the status bar
+// was drawn with the playfield's scroll.)
+.macro SKIP_CYC r
+    sub [gbf_cyc], \r
+    jg 77f
+    add \r, [gbf_cyc]           // (what it was)
+    jle 76f
+    xor \r, \r
+76:
+    mov [gbf_cyc], \r
+77:
+.endm
+
 // s_wait_stat: by the modes the loop goes round in (the rows) and the part
 // of the line (cycle 0, 1-20, 21-63, 64-113), the cycle the wait ends at,
 // 114 and more in the next line; FEh here, FFh in no mode of a line
@@ -456,6 +477,13 @@ s_wait_stat:
     mov bl, dh
     sub bl, ah
     xor bh, bh
+    cmp word ptr [gbf_cyc], 0
+    jle wst_plain
+    cmp bx, [gbf_cyc]
+    jl 1f
+    mov word ptr [gbf_cyc], 0
+    jmp wst_plain
+1:
     sub [gbf_cyc], bx
     cmp dh, 114
     jb 1f
@@ -540,6 +568,20 @@ s_wait_stat:
     xor ax, ax
     jmp 2b
 5:
+    // (not past the next event: see SKIP_CYC. The loop then reads STAT
+    // as it is and goes round, to the dispatcher)
+    cmp word ptr [gbf_cyc], 0
+    jle wst_plain
+    cmp cx, [gbf_cyc]
+    jl wst_skip
+    mov word ptr [gbf_cyc], 0
+wst_plain:
+    mov ax, di
+    pop dx
+    pop cx
+    pop bx
+    jmp s_stat
+wst_skip:
     sub [gbf_cyc], cx
     // DL = what LYC is compared with there
     mov dl, al
@@ -638,7 +680,7 @@ s_wait_mode:
     jnz 2f
     sub dl, ah
     xor dh, dh
-    sub [gbf_cyc], dx
+    SKIP_CYC dx
     pop dx                      // (out of the list: not back to it)
     jmp 8b
 2:
@@ -722,7 +764,7 @@ s_skip_line:
     mov al, 115
     sub al, ah                  // 115 - the cycle in the line
     xor ah, ah
-    sub [gbf_cyc], ax
+    SKIP_CYC ax
     pop dx
     pop ax
 1:
@@ -751,7 +793,7 @@ s_skip_mode:
 2:
     sub al, ah
     xor ah, ah
-    sub [gbf_cyc], ax
+    SKIP_CYC ax
     pop dx
     pop ax
 1:

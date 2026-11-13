@@ -310,12 +310,14 @@ def render_line(mem, p, y, pal):
 if os.environ.get('GBRUN_WATCH'):
     # GBRUN_WATCH=addr: every write to that byte of the internal RAM, with the
     # Game Boy's PC as the plugin has it (gb.pc: the last block's exit) and A
-    wa = int(os.environ['GBRUN_WATCH'], 16)
+    was = [int(x, 16) for x in os.environ['GBRUN_WATCH'].split(',')]
     def h_w(uc, access, addr, size, value, _):
         g = syms['gb']
         m = uc.mem_read(g, 12)
-        print('W %04X=%02X pc=%04X gbframe=%d a=%02X' % (addr, value & 0xFF, m[10] | m[11] << 8, st['gbframes'], uc.reg_read(UC_X86_REG_AX) & 0xFF))
-    uc.hook_add(UC_HOOK_MEM_WRITE, h_w, None, wa, wa)
+        if st['gbframes'] < int(os.environ.get('GBRUN_WATCH_FROM', '0')): return
+        ev = int.from_bytes(uc.mem_read(syms['gbf_ev_pos'] & 0xFFFF, 2), 'little'); cy = int.from_bytes(uc.mem_read(syms['gbf_cyc'] & 0xFFFF, 2), 'little', signed=True)
+        print('W %04X=%02X pc=%04X gbframe=%d a=%02X pos=%d line=%d cyc=%d' % (addr, value & 0xFF, m[10] | m[11] << 8, st['gbframes'], uc.reg_read(UC_X86_REG_AX) & 0xFF, (ev - cy) % 17556, ((ev - cy) % 17556) // 114, cy))
+    for wa in was: uc.hook_add(UC_HOOK_MEM_WRITE, h_w, None, wa, wa)
 vlines = None
 if os.environ.get('GBRUN_VRAMLINES'):
     # GBRUN_VRAMLINES=frame: from that Game Boy frame on, the writes to the

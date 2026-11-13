@@ -1495,38 +1495,39 @@ void gbd_run_frame(void) {
                 // (key FFFFh), under a key made of its first bytes, as
                 // many as the first form has (12 at most).
                 const uint8_t __far *c = MK_FP(b->seg, b->off - 1);
+                // The first form counts the others met (the byte before
+                // its copy of the bytes): after RAM_FORMS the code there
+                // is taken for one made anew every time (Donkey Kong
+                // Land's LD HL, nn / CALL and LD SP, nn / JP in RAM, their
+                // operands written before every use: seven blocks a frame
+                // translated, never used twice) and is run by the
+                // interpreter from then on, as far as the first form
+                // went, to a jump taken or to an interrupt due.
+                uint8_t __far *cnt = MK_FP(FP_SEG(c), FP_OFF(c) - *c - 1);
+                if (*cnt >= RAM_FORMS) {
+                    uint16_t end = pc + *c;
+                    drc_link = 0;
+                    to_gbf();
+                    do {
+                        gb_step();
+                    } while (gbf_cyc > 0 && gb.pc > pc && gb.pc < end && !gb.halted && !gb.stopped
+                             && !(gb.ime && (gb_ie & gb_io[GB_IF] & 0x1F)));
+                    from_gbf();
+                    continue;
+                }
                 uint8_t len = *c;
                 if (len > 12) len = 12;
                 uint16_t h = 0;
-                for (uint8_t i = 0; i < len; i++) {
-                    h = (h << 3 | h >> 13) ^ gbf_read(pc + i);
+                if ((pc >= 0xC000 && pc <= 0xE000 - len) || (pc >= 0xFF80 && pc <= 0xFFFF - len)) {
+                    const uint8_t *m = (const uint8_t*) (pc - 0x6000);
+                    for (uint8_t i = 0; i < len; i++) h = (h << 3 | h >> 13) ^ m[i];
+                } else {
+                    for (uint8_t i = 0; i < len; i++) h = (h << 3 | h >> 13) ^ gbf_read(pc + i);
                 }
                 key = 0x8000 | (h & 0x7FFE);
                 b = find(pc, key);
                 if (b && !ram_same(b, pc)) b = 0;
-                if (!b) {
-                    // A new form. The first form counts them (the byte
-                    // before its copy of the bytes): after RAM_FORMS the
-                    // code there is taken for one made anew every time
-                    // (Donkey Kong Land's LD HL, nn / CALL and LD SP, nn /
-                    // JP in RAM, their operands written before every use:
-                    // seven blocks a frame translated, never used twice)
-                    // and is run by the interpreter, as far as the first
-                    // form went, to a jump taken or to an interrupt due.
-                    uint8_t __far *cnt = MK_FP(FP_SEG(c), FP_OFF(c) - *c - 1);
-                    if (*cnt >= RAM_FORMS) {
-                        uint16_t end = pc + *c;
-                        drc_link = 0;
-                        to_gbf();
-                        do {
-                            gb_step();
-                        } while (gbf_cyc > 0 && gb.pc > pc && gb.pc < end && !gb.halted && !gb.stopped
-                                 && !(gb.ime && (gb_ie & gb_io[GB_IF] & 0x1F)));
-                        from_gbf();
-                        continue;
-                    }
-                    (*cnt)++;
-                }
+                if (!b) (*cnt)++;
             }
             if (!b) {
                 uint16_t flushes = drc_flushes;

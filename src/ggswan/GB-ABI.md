@@ -111,6 +111,15 @@ it, from a table for the lines of the picture), and need not be a
 block's start: `LDH A, (41h)`, tests, a conditional jump back to the
 read, anywhere in a block.
 
+No wait is passed over beyond the next event (`SKIP_CYC` in
+`gb_drc_asm.s`; `s_wait_stat` then reads STAT as it is and the loop
+goes round, to the dispatcher), and none of it when an event is
+already due: an interrupt must be taken where it falls, not at the
+wait's end. (Until patch 167 the whole wait was taken first: a wait
+for the horizontal blank begun in the vertical blank went to the next
+frame's first line, and the vertical blank's interrupt was taken
+there, ten lines late.)
+
 A loop that only copies or fills is done at once when a block starts
 with it (`s_copy0`-`s_copy4`, `s_fill0`): `LD A, (HL+) / LD (DE), A /
 INC DE / DEC B / JR NZ`, the same with BC counted by `LD A, B / OR C`,
@@ -164,7 +173,10 @@ with no routine.
   form now there is looked up, and translated if new, under a key of
   its own, 8000h + a 15-bit sum of its first bytes (as many as the
   first form has, 12 at most; bit 0 clear, so never FFFFh), and
-  compared in full as well. A program that keeps changing a routine in
+  compared in full as well. The first form counts the others met
+  (a byte before its copy of the bytes); from the seventh on the code
+  there is run by the interpreter and no longer looked up: as far as
+  the first form went, to a jump taken or to an interrupt due. A program that keeps changing a routine in
   RAM (an operand, a jump's target) has each form translated once.
   (Until patch 167 the changed block was translated again every time:
   Donkey Kong Land, R-Type II and Race Drivin' filled the table and
