@@ -61,8 +61,10 @@ So gbswan cannot be one more `-D` on those sources.
 | F800h-FDFFh | the copies of those tiles: 3 sets of 32, 16 bytes each | |
 | FE00h-FFFFh | the WS's palettes | 0: the backdrop, color 0's shade; 1: black (and the figures' white); 4: the background; 12, 13: the sprites |
 
-The rest (8000h-9DFFh, where the echo of the work RAM would fall, and
-CFF0h-CFFFh) is free.
+8000h-9DFFh, where the echo of the work RAM would fall, is where the
+translator puts a block together before copying it to its code segment
+(patch 174; `gb_drc.c`, `DRC_EBUF`): used only while a block is being
+translated, 4 KiB of it at most. CFF0h-CFFFh is free.
 
 ## The cartridge
 

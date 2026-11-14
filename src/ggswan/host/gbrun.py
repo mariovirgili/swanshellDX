@@ -585,6 +585,9 @@ if GBTIME:
     import zlib
     mem = bytes(iram.raw)
     print('Game Boy memory: video %08X work %08X sprites %08X high %08X' % (zlib.crc32(mem[0x2000:0x4000]), zlib.crc32(mem[0x6000:0x8000]), zlib.crc32(mem[0x9E00:0x9EA0]), zlib.crc32(mem[0x9F80:0x9FFF])))
+    # (the translator's work: the same blocks, byte for byte, from two builds?)
+    if os.environ.get('GBRUN_CODEDUMP'): open(os.environ['GBRUN_CODEDUMP'], 'wb').write(b''.join(bytes(psram[i].raw) for i in range(0x14, 0x1D)))
+    print('translated: table %08X code %08X' % (zlib.crc32(bytes(psram[0x14].raw)), zlib.crc32(b''.join(bytes(psram[i].raw) for i in range(0x15, 0x1D)))))
 if vlines is not None:
     print('tiles written a Game Boy frame: most %d; frames by count: %s' % (max(len(v) for v in vtf.values()), sorted(_c2.Counter(len(v) for v in vtf.values()).items())))
     print('by frame:', ' '.join('%d:%d' % (f, len(v)) for f, v in sorted(vtf.items())))
@@ -595,6 +598,8 @@ if st['fail']: print('fail: ' + st['fail'])
 print('WS frames %d, Game Boy frames %d' % (st['frame'], st['gbframes']))
 if CYCLES and FUNC and fhot:
     tot = sum(fhot.values())
+    if os.environ.get('GBRUN_FUNCDUMP'):
+        open(os.environ['GBRUN_FUNCDUMP'], 'w').write(''.join('%d %d %d\n' % (a - min(fhot), c, fcnt[a]) for a, c in sorted(fhot.items())))
     for a, n in sorted(fhot.most_common(40)):
         ins = next(_md.disasm(bytes(uc.mem_read(a, 8)), a))
         print('  %5.1f%%  x%-6d %05X  %s %s' % (100.0 * n / tot, fcnt[a], a, ins.mnemonic, ins.op_str))

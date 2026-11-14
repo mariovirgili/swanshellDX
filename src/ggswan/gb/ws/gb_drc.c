@@ -59,13 +59,22 @@ typedef struct {
 #define KEY_RAM 0xFFFF
 #define CODE_LIMIT 0xF000
 
+// A block is put together in the console's own RAM and copied to the
+// code segment when it is whole (translate): until patch 174 every byte
+// went straight there through a far pointer, a segment register loaded
+// each time, and that was most of what translate_block did - eighteen
+// bytes or so for a Game Boy instruction. `code` is where the segment's
+// offset 0 would be were the block in place, so code[code_top] and the
+// places patched afterwards are written as before. The room is the 7.5 KiB
+// the echo of the work RAM would have (GB-MEMORY-MAP.md); a block is
+// under 4 KiB (CODE_LIMIT).
+#define DRC_EBUF 0x8000u
 static uint16_t code_seg, code_top;
-static uint8_t __far *code;
+static uint8_t *code;
 
 static void code_bank(uint16_t seg) {
     code_seg = seg;
-    code = MK_FP(seg, 0);
-    _fmemcpy(code, drc_stubs, drc_stubs_size);
+    _fmemcpy(MK_FP(seg, 0), drc_stubs, drc_stubs_size);
     code_top = drc_stubs_size;
 }
 
@@ -83,9 +92,9 @@ static uint16_t hash(uint16_t pc, uint16_t key) {
 }
 
 #define E(b) (code[code_top++] = (uint8_t) (b))
-static void EW(uint16_t w) {
-    code[code_top++] = w & 0xFF;
-    code[code_top++] = w >> 8;
+static inline void EW(uint16_t w) {
+    *(uint16_t*) (code + code_top) = w;
+    code_top += 2;
 }
 #define ADDR(x) ((uint16_t) (uintptr_t) &(x))
 
@@ -127,6 +136,7 @@ void gbd_keys(void) {
 
 /* ---- the translator ---- */
 
+#if 0   // (in op_inf since patch 174)
 static const uint8_t __far op_len[256] = {
     1,3,1,1,1,1,2,1, 3,1,1,1,1,1,2,1, 2,3,1,1,1,1,2,1, 2,1,1,1,1,1,2,1,
     2,3,1,1,1,1,2,1, 2,1,1,1,1,1,2,1, 2,3,1,1,1,1,2,1, 2,1,1,1,1,1,2,1,
@@ -136,7 +146,9 @@ static const uint8_t __far op_len[256] = {
     1,1,1,1,1,1,1,1, 1,1,1,1,1,1,1,1, 1,1,1,1,1,1,1,1, 1,1,1,1,1,1,1,1,
     1,1,3,3,3,1,2,1, 1,1,3,2,3,3,2,1, 1,1,3,1,3,1,2,1, 1,1,3,1,3,1,2,1,
     2,1,1,1,1,1,2,1, 2,1,3,1,1,1,2,1, 2,1,1,1,1,1,2,1, 2,1,3,1,1,1,2,1 };
+#endif
 // machine cycles (a conditional one not taken)
+#if 0   // (in op_inf since patch 174)
 static const uint8_t __far op_cyc[256] = {
     1,3,2,2,1,1,2,1, 5,2,2,2,1,1,2,1, 1,3,2,2,1,1,2,1, 3,2,2,2,1,1,2,1,
     2,3,2,2,1,1,2,1, 2,2,2,2,1,1,2,1, 2,3,2,2,3,3,3,1, 2,2,2,2,1,1,2,1,
@@ -146,6 +158,7 @@ static const uint8_t __far op_cyc[256] = {
     1,1,1,1,1,1,2,1, 1,1,1,1,1,1,2,1, 1,1,1,1,1,1,2,1, 1,1,1,1,1,1,2,1,
     2,3,3,4,3,4,2,4, 2,4,3,1,3,6,2,4, 2,3,3,1,3,4,2,4, 2,4,3,1,3,1,2,4,
     3,3,2,1,1,4,2,4, 4,1,4,1,1,1,2,4, 3,3,2,1,1,4,2,4, 3,2,4,1,1,1,2,4 };
+#endif
 
 // the flags an instruction writes (bits 0-2: Z, H, C) and needs (bits
 // 3-5); 40h: it ends the block; 80h: it may leave the block (all the
@@ -179,14 +192,17 @@ static void tfill(uint16_t pc) {
     else memcpy(tbuf, (const uint8_t*) (pc - 0x6000), n);
 }
 
-static uint8_t interp_op(uint8_t op, uint8_t cb) {
-    switch (op) {
-    case 0x08: case 0x10: case 0x39: case 0x76: case 0xE8: case 0xF8:
-    case 0xD3: case 0xDB: case 0xDD: case 0xE3: case 0xE4: case 0xEB: case 0xEC: case 0xED: case 0xF4: case 0xFC: case 0xFD:
-        return 1;
-    default:
-        return 0;
-    }
+// the instructions left to the interpreter: 08h, 10h, 39h, 76h, E8h, F8h
+// and the eleven that are none (D3h, DBh, DDh, E3h, E4h, EBh, ECh, EDh,
+// F4h, FCh, FDh), a bit each. (A switch until patch 174: seventeen
+// compares for every instruction translated.)
+static const uint8_t interp_bits[32] = {
+    0x00, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x28, 0x18, 0x39, 0x10, 0x31
+};
+static inline uint8_t interp_op(uint8_t op, uint8_t cb) {
+    (void) cb;
+    return interp_bits[op >> 3] >> (op & 7) & 1;
 }
 
 // what an instruction does with the flags and whether it can leave the
@@ -296,6 +312,45 @@ static uint16_t cyc;        // cycles not yet taken off gbf_cyc
 static uint8_t live;        // the flags needed before the instruction being translated
 static uint16_t blk_pc;
 static uint8_t in_ram;
+// by opcode, in one place for the two passes (three tables until patch
+// 174, a far read each): what it does with the flags (op_flags_tab), then
+// its length (bits 0-1), its cycles (bits 2-4) and whether it is left to
+// the interpreter (bit 7: interp_op)
+static const uint8_t op_inf[256][2] = {
+    { 0x00, 0x05 }, { 0x00, 0x0F }, { 0x80, 0x09 }, { 0x00, 0x09 }, { 0x03, 0x05 }, { 0x03, 0x05 }, { 0x00, 0x0A }, { 0x07, 0x05 },
+    { 0xC0, 0x97 }, { 0x06, 0x09 }, { 0x00, 0x09 }, { 0x00, 0x09 }, { 0x03, 0x05 }, { 0x03, 0x05 }, { 0x00, 0x0A }, { 0x07, 0x05 },
+    { 0xC0, 0x86 }, { 0x00, 0x0F }, { 0x80, 0x09 }, { 0x00, 0x09 }, { 0x03, 0x05 }, { 0x03, 0x05 }, { 0x00, 0x0A }, { 0x27, 0x05 },
+    { 0xC0, 0x0E }, { 0x06, 0x09 }, { 0x00, 0x09 }, { 0x00, 0x09 }, { 0x03, 0x05 }, { 0x03, 0x05 }, { 0x00, 0x0A }, { 0x27, 0x05 },
+    { 0x80, 0x0A }, { 0x00, 0x0F }, { 0x80, 0x09 }, { 0x00, 0x09 }, { 0x03, 0x05 }, { 0x03, 0x05 }, { 0x00, 0x0A }, { 0x37, 0x05 },
+    { 0x80, 0x0A }, { 0x06, 0x09 }, { 0x00, 0x09 }, { 0x00, 0x09 }, { 0x03, 0x05 }, { 0x03, 0x05 }, { 0x00, 0x0A }, { 0x02, 0x05 },
+    { 0x80, 0x0A }, { 0x00, 0x0F }, { 0x80, 0x09 }, { 0x00, 0x09 }, { 0x83, 0x0D }, { 0x83, 0x0D }, { 0x80, 0x0E }, { 0x06, 0x05 },
+    { 0x80, 0x0A }, { 0xC0, 0x89 }, { 0x00, 0x09 }, { 0x00, 0x09 }, { 0x03, 0x05 }, { 0x03, 0x05 }, { 0x00, 0x0A }, { 0x26, 0x05 },
+    { 0x00, 0x05 }, { 0x00, 0x05 }, { 0x00, 0x05 }, { 0x00, 0x05 }, { 0x00, 0x05 }, { 0x00, 0x05 }, { 0x00, 0x09 }, { 0x00, 0x05 },
+    { 0x00, 0x05 }, { 0x00, 0x05 }, { 0x00, 0x05 }, { 0x00, 0x05 }, { 0x00, 0x05 }, { 0x00, 0x05 }, { 0x00, 0x09 }, { 0x00, 0x05 },
+    { 0x00, 0x05 }, { 0x00, 0x05 }, { 0x00, 0x05 }, { 0x00, 0x05 }, { 0x00, 0x05 }, { 0x00, 0x05 }, { 0x00, 0x09 }, { 0x00, 0x05 },
+    { 0x00, 0x05 }, { 0x00, 0x05 }, { 0x00, 0x05 }, { 0x00, 0x05 }, { 0x00, 0x05 }, { 0x00, 0x05 }, { 0x00, 0x09 }, { 0x00, 0x05 },
+    { 0x00, 0x05 }, { 0x00, 0x05 }, { 0x00, 0x05 }, { 0x00, 0x05 }, { 0x00, 0x05 }, { 0x00, 0x05 }, { 0x00, 0x09 }, { 0x00, 0x05 },
+    { 0x00, 0x05 }, { 0x00, 0x05 }, { 0x00, 0x05 }, { 0x00, 0x05 }, { 0x00, 0x05 }, { 0x00, 0x05 }, { 0x00, 0x09 }, { 0x00, 0x05 },
+    { 0x80, 0x09 }, { 0x80, 0x09 }, { 0x80, 0x09 }, { 0x80, 0x09 }, { 0x80, 0x09 }, { 0x80, 0x09 }, { 0xC0, 0x85 }, { 0x80, 0x09 },
+    { 0x00, 0x05 }, { 0x00, 0x05 }, { 0x00, 0x05 }, { 0x00, 0x05 }, { 0x00, 0x05 }, { 0x00, 0x05 }, { 0x00, 0x09 }, { 0x00, 0x05 },
+    { 0x07, 0x05 }, { 0x07, 0x05 }, { 0x07, 0x05 }, { 0x07, 0x05 }, { 0x07, 0x05 }, { 0x07, 0x05 }, { 0x07, 0x09 }, { 0x07, 0x05 },
+    { 0x27, 0x05 }, { 0x27, 0x05 }, { 0x27, 0x05 }, { 0x27, 0x05 }, { 0x27, 0x05 }, { 0x27, 0x05 }, { 0x27, 0x09 }, { 0x27, 0x05 },
+    { 0x07, 0x05 }, { 0x07, 0x05 }, { 0x07, 0x05 }, { 0x07, 0x05 }, { 0x07, 0x05 }, { 0x07, 0x05 }, { 0x07, 0x09 }, { 0x07, 0x05 },
+    { 0x27, 0x05 }, { 0x27, 0x05 }, { 0x27, 0x05 }, { 0x27, 0x05 }, { 0x27, 0x05 }, { 0x27, 0x05 }, { 0x27, 0x09 }, { 0x27, 0x05 },
+    { 0x07, 0x05 }, { 0x07, 0x05 }, { 0x07, 0x05 }, { 0x07, 0x05 }, { 0x07, 0x05 }, { 0x07, 0x05 }, { 0x07, 0x09 }, { 0x07, 0x05 },
+    { 0x07, 0x05 }, { 0x07, 0x05 }, { 0x07, 0x05 }, { 0x07, 0x05 }, { 0x07, 0x05 }, { 0x07, 0x05 }, { 0x07, 0x09 }, { 0x07, 0x05 },
+    { 0x07, 0x05 }, { 0x07, 0x05 }, { 0x07, 0x05 }, { 0x07, 0x05 }, { 0x07, 0x05 }, { 0x07, 0x05 }, { 0x07, 0x09 }, { 0x07, 0x05 },
+    { 0x07, 0x05 }, { 0x07, 0x05 }, { 0x07, 0x05 }, { 0x07, 0x05 }, { 0x07, 0x05 }, { 0x07, 0x05 }, { 0x07, 0x09 }, { 0x07, 0x05 },
+    { 0x80, 0x09 }, { 0x00, 0x0D }, { 0x80, 0x0F }, { 0xC0, 0x13 }, { 0x80, 0x0F }, { 0x00, 0x11 }, { 0x07, 0x0A }, { 0xC0, 0x11 },
+    { 0x80, 0x09 }, { 0xC0, 0x11 }, { 0x80, 0x0F }, { 0x07, 0x06 }, { 0x80, 0x0F }, { 0xC0, 0x1B }, { 0x27, 0x0A }, { 0xC0, 0x11 },
+    { 0x80, 0x09 }, { 0x00, 0x0D }, { 0x80, 0x0F }, { 0xC0, 0x85 }, { 0x80, 0x0F }, { 0x00, 0x11 }, { 0x07, 0x0A }, { 0xC0, 0x11 },
+    { 0x80, 0x09 }, { 0xC0, 0x11 }, { 0x80, 0x0F }, { 0xC0, 0x85 }, { 0x80, 0x0F }, { 0xC0, 0x85 }, { 0x27, 0x0A }, { 0xC0, 0x11 },
+    { 0x80, 0x0E }, { 0x00, 0x0D }, { 0x80, 0x09 }, { 0xC0, 0x85 }, { 0xC0, 0x85 }, { 0x00, 0x11 }, { 0x07, 0x0A }, { 0xC0, 0x11 },
+    { 0xC0, 0x92 }, { 0xC0, 0x05 }, { 0x80, 0x13 }, { 0xC0, 0x85 }, { 0xC0, 0x85 }, { 0xC0, 0x85 }, { 0x07, 0x0A }, { 0xC0, 0x11 },
+    { 0x00, 0x0E }, { 0x07, 0x0D }, { 0x00, 0x09 }, { 0x00, 0x05 }, { 0xC0, 0x85 }, { 0x38, 0x11 }, { 0x07, 0x0A }, { 0xC0, 0x11 },
+    { 0xC0, 0x8E }, { 0x00, 0x09 }, { 0x00, 0x13 }, { 0x00, 0x05 }, { 0xC0, 0x85 }, { 0xC0, 0x85 }, { 0x07, 0x0A }, { 0xC0, 0x11 },
+};
+static uint8_t i_inf[MAXI];     // (scan_block: each instruction's second byte of op_inf)
 static uint8_t after_ei;    // the instruction after EI: whatever leaves the block goes to the dispatcher
 static uint8_t idle;        // the block is a loop that waits: 1 on memory, 2 on LY, 3 on STAT
 static uint8_t idle_i;      // ... and this instruction is its jump back
@@ -816,6 +871,9 @@ __attribute__((noinline)) static void translate_block(void) {
             { 8, 0x1A, 0x22, 0x13, 0x0B, 0x78, 0xB1, 0x20, 0xF8 },
             { 6, 0x0A, 0x03, 0x22, 0x15, 0x20, 0xFA },
         };
+        // (they start with LD A, (HL+), LD A, (DE) or LD A, (BC))
+        uint8_t first = rb(blk_pc);
+        if (first == 0x2A || first == 0x1A || first == 0x0A)
         for (uint8_t k = 0; k < 5; k++) {
             uint8_t len = copy_loops[k][0], j = 0;
             while (j < len && rb(blk_pc + j) == copy_loops[k][1 + j]) j++;
@@ -832,6 +890,7 @@ __attribute__((noinline)) static void translate_block(void) {
         && rb(blk_pc + 3) == 0x20 && rb(blk_pc + 4) == 0xFB)
         call_stub(ST_DELAY_BC);
     if (code_top != block_start) loop_body = code_top;
+    uint8_t prev_ei = 0;
     for (uint8_t i = 0; i < n_ins && !ended; i++) {
         uint16_t pc = i_pc[i], next = i_pc[i + 1];
         uint8_t op = rb(pc), b1 = rb(pc + 1), b2 = rb(pc + 2);
@@ -840,11 +899,16 @@ __attribute__((noinline)) static void translate_block(void) {
         live = i_live[i];
         idle_first = i == 0;
         cur_i = i;
-        cur_wait = i == 0 && idle == 3 ? idle_modes : 0;
-        for (uint8_t k = 0; k < n_stat; k++)
-            if (stat_at[k] == i) cur_wait = stat_mask[k];
-        after_ei = i > 0 && rb(i_pc[i - 1]) == 0xFB;
-        if (op == 0x76 && !after_ei) {
+        cur_wait = 0;
+        if (idle | n_stat) {
+            if (i == 0 && idle == 3) cur_wait = idle_modes;
+            for (uint8_t k = 0; k < n_stat; k++)
+                if (stat_at[k] == i) cur_wait = stat_mask[k];
+        }
+        after_ei = prev_ei;         // (the instruction before was EI)
+        prev_ei = op == 0xFB;
+        uint8_t inf = i_inf[i];
+        if ((inf & 0x80) && op == 0x76 && !after_ei) {
             // HALT with no interrupt asked for (else the interpreter's: it
             // may be the one that reads the next byte twice): halted, and
             // out by the routine that waits (gb_drc_asm.s, s_exit)
@@ -868,18 +932,23 @@ __attribute__((noinline)) static void translate_block(void) {
             ended = 1;
             break;
         }
-        if (interp_op(op, b1)) {
+        if (inf & 0x80) {
             exit_interp(pc);
             ended = 1;
             break;
         }
         // (the instruction's cycles are counted before it: an exit inside
         // it has them)
-        cyc += op_cyc[op];
-        cur_dir = (x == 0 && z == 2 && y < 4) ? i_dir[y >> 1][i] : i_dir[2][i];
+        cyc += (inf >> 2) & 7;
+        if (x == 0 && z == 2 && y < 4) {        // (through BC or DE)
+            cur_dir = i_dir[y >> 1][i];
+            cur_cls = i_cls[y >> 1][i];
+        } else {
+            cur_dir = i_dir[2][i];
+            cur_cls = i_cls[2][i];
+        }
         cur_cart = 0;
         if (cur_dir >= 0xA000) { cur_cart = cur_dir; cur_dir = 0; }
-        cur_cls = (x == 0 && z == 2 && y < 4) ? i_cls[y >> 1][i] : i_cls[2][i];
         if (x == 1) {
             if (z == 6) read_to(R8[y], 1);
             else if (y == 6) write_from(R8[z], 0, 1, next);
@@ -1431,9 +1500,11 @@ __attribute__((noinline)) static void scan_block(uint16_t pc) {
     uint8_t clo[3], chi[3], ckn[3] = { 0, 0, 0 }, anyc = 0;
     while (n_ins < MAXI && total < 90) {
         uint8_t op = rb(pc);
-        total += op_cyc[op] + 2;
+        const uint8_t *inf = op_inf[op];
+        uint8_t m = inf[1];
+        total += ((m >> 2) & 7) + 2;
         uint8_t cb = rb(pc + 1);
-        uint8_t f = op_flags(op, cb);
+        uint8_t f = op != 0xCB ? inf[0] : op_flags(op, cb);
         i_dir[0][n_ins] = i_dir[1][n_ins] = i_dir[2][n_ins] = 0;
         i_cls[0][n_ins] = i_cls[1][n_ins] = i_cls[2][n_ins] = 0;
         if (anyc) {
@@ -1496,8 +1567,9 @@ __attribute__((noinline)) static void scan_block(uint16_t pc) {
             else if (op == 0xF8) kn[2] = 0;
         }
         i_pc[n_ins] = pc;
+        i_inf[n_ins] = m;
         fa[n_ins++] = f;
-        pc += op_len[op];
+        pc += m & 3;
         if ((f & F_END) || after_ei) break;
         if (op == 0xFB) after_ei = 1;
         if (in_ram && pc - blk_pc > 48) break;
@@ -1644,6 +1716,8 @@ __attribute__((noinline)) static blk_t __far *translate(uint16_t pc, uint16_t ke
         sp_cart = gb.sp >= 0xA000 && gb.sp < 0xC000;
         tfill(pc);
         scan_block(pc);
+        uint16_t first = code_top;
+        code = (uint8_t*) (uint16_t) (DRC_EBUF - first);
         if (in_ram) {
             // the forms of it met since (gbd_run_frame), the bytes
             // translated, then their number, before the code
@@ -1661,7 +1735,7 @@ __attribute__((noinline)) static blk_t __far *translate(uint16_t pc, uint16_t ke
         b->seg = code_seg;
         translate_block();
         if (in_ram) {
-            uint8_t __far *h = MK_FP(b->seg, b->off - 1);
+            uint8_t *h = code + b->off - 1;
             h -= *h + RAM_HEAD;
             uint8_t any = 0;
             for (uint8_t i = 0; i < 16; i++) {
@@ -1671,6 +1745,7 @@ __attribute__((noinline)) static blk_t __far *translate(uint16_t pc, uint16_t ke
             }
             h[32] = any;
         }
+        _fmemcpy(MK_FP(code_seg, first), (const uint8_t*) DRC_EBUF, code_top - first);
         drc_blocks++;
         return b;
     }

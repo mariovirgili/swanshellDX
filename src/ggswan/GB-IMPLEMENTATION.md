@@ -44,7 +44,7 @@ background and the window, switched at the right lines by the line
 interrupt, with the scroll the program gave each line; the sprites are
 the WonderSwan's.
 
-## Where it is (patch 173)
+## Where it is (patch 174)
 
 The CPU is a recompiler (`gb/ws/gb_drc.c`, `gb_drc_asm.s`; `GB-ABI.md`),
 there is sound (`gb/ws/gb_sound.c`: what it does and does not, at its
@@ -617,6 +617,71 @@ tenth of the translator's time perhaps. More than that is another
 translator (tables by opcode, assembly). Not done here. X's and
 Batman's figures were not taken: the frames chosen for X translated
 nothing, and Batman's run was the one the fault above stopped.
+
+**Patch 174.** Gio: the small things in the translator first, the
+rewrite after. Four windows (Batman's
+first level loading, frames 885-925; Race Drivin's start, 754-772;
+Donkey Kong Land 900-1100; X 240-600), each with `GBRUN_CALLS=1`.
+
+What I had guessed from 173's profile was wrong: that most of
+`translate_block` was the bytes going out one at a time through a far
+pointer (`E()`: the segment register loaded for every byte). Putting
+the block together in the console's own RAM (`DRC_EBUF`, 8000h, the
+room the work RAM's echo would have) and copying it to the code
+segment once took 8% off the function, not half (and 4 KiB off the
+plugin). So, lines and not guesses: `GBRUN_FUNCDUMP=file` writes a
+function's cycles by instruction, and `addr2line` on the plugin linked
+with `gb_drc.c`'s object compiled with `-g` (the same code) gives the
+source line of each. Three fifths of `translate_block`'s own time was
+the dozen lines before each instruction's `switch`: the three bytes
+read (13%), which of BC, DE, HL the access is through (9%), the
+opcode's fields (6%), `interp_op` (a switch of seventeen compares),
+the cycles from a far table, the wait's masks.
+
+Done, all of it leaving the code made as it was:
+- `op_inf`: by opcode, the flags, the length, the cycles and "the
+  interpreter's" in two bytes, near (the three tables were far: a
+  segment register each time). `scan_block` reads it once for an
+  instruction and keeps the second byte (`i_inf`) for
+  `translate_block`, which then reads no table.
+- the instruction after EI known from the instruction before, not by
+  reading its byte again; the wait's masks looked for only in a block
+  that has a wait; the five copying loops compared only when the block
+  starts with one of their three first opcodes.
+- `E()` and `EW()` into the near buffer, one `_fmemcpy` a block.
+
+Tried and taken out: leaving the tests on what is known of BC, DE, HL
+aside for the opcodes they cannot be about (40h-BFh with nothing
+known): nothing at Race Drivin's start, where something is nearly
+always known.
+
+Cycles a block, their own (173 to 174), and a Game Boy frame of the
+window:
+
+| window | `scan_block` | `translate_block` | cycles a frame |
+|---|---|---|---|
+| Race Drivin's start | 5,517 to 5,121 | 5,682 to 4,548 | 696,375 to 628,159 (-9.8%) |
+| Batman, level loading | 5,378 to 5,005 | 4,784 to 3,771 | 139,728 to 130,696 (-6.5%) |
+| Donkey Kong Land | 4,351 to 4,034 | 4,530 to 3,622 | 80,644 to 78,184 (-3.1%) |
+| X | 3,924 to 3,590 | 4,193 to 3,286 | 83,549 to 82,161 (-1.7%) |
+
+The same code? The table of blocks is the same to the byte in all
+four (every block at the same place with the same length) and so is
+the Game Boy's memory; the code segments differ only where a C
+variable's address is written into the code (the variables moved:
+checked on X, every differing run one or two bytes long). The scenes
+(173 to 174; the translator is 5 to 12% of them): Donkey Kong Land
+73,897 to 72,329, Race Drivin' 100,014 to 99,125, R-Type II 29,652 to
+29,257, Batman 49,933 to 49,528, Castlevania II 50,110 to 49,804, ZAS
+64,713 to 64,404, Super Mario Land 2 47,817 to 47,606, X 86,123 to
+86,072; the same memory in each. `gbreg` 24 of 24, the eight older
+scenes the same memory and pictures, R-Type II's bar, ZAS's logo the
+same picture.
+
+What is left in it: `scan_block` is now the larger half (its test for
+a block already at the next instruction, the tables it clears for
+each instruction, the chains of tests on what is known of BC, DE,
+HL); `find`, eleven calls a block, 4%.
 
 He also saw, in 166, Super Mario Land's whole picture jump sideways
 for an instant now and then. Its status bar is a STAT interrupt at a
