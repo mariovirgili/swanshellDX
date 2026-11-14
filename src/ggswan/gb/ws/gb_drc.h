@@ -81,6 +81,8 @@ extern const uint16_t __far drc_stub_offs[];
 #define ST_FILL0     75     /* LD (HL+), A / DEC B / JR NZ, as the copying loops */
 #define ST_SKIP_HL   78     /* a loop on the byte at HL: LY, to the next line; RAM, to the next event */
 #define ST_VREG      81     /* LDH (n), A to SCY, SCX, BGP, WY or WX: the register and the frame's list of changes */
-#define ST_COUNT     28
+#define ST_BANKX     84     /* LD (nn), A to the second ROM area's bank register */
+#define ST_BANK0     87     /* the same, from a block in the first ROM area */
+#define ST_COUNT     30
 
 #endif

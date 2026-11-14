@@ -1355,8 +1355,37 @@ s_rdt:
 // next instruction (a word), where the run goes on through the dispatcher
 // when the write was to the cartridge's registers or to an I/O register
 s_wrt:
+    // (the patterns first: what comes here most, from a program that
+    // draws - the work RAM is written by the block itself)
+    cmp si, 0x9800
+    jae wrt_rest
+    cmp si, 0x8000
+    jb wrt_rest
+    cmp byte ptr [gbv_tq_on], 0
+    jne wrt_pat_late
+    mov [gbv_pw_last], si
+    mov di, ax
+    mov al, [drc_tmp]
+    mov [si - 0x6000], al
+    mov ax, di
+    pop di
+    add di, 2
+    jmp di
+wrt_pat_late:
+    mov di, ax
+    mov al, [drc_tmp]
+    jmp wrt_tq
+wrt_rest:
     cmp si, 0xC000
+    jae wrt_high
+    cmp si, 0xA000
+    jae wrt_cart                // (a program with its variables in the cartridge's RAM)
+    cmp si, 0x8000
     jb 1f
+    mov di, ax                  // (9800h-9FFFh: the maps)
+    mov al, [drc_tmp]
+    jmp wrt_map
+wrt_high:
     cmp si, 0xFE00
     jae 3f
     cmp si, 0xE000
@@ -1381,6 +1410,7 @@ s_wrt:
     mov al, [drc_tmp]
     cmp si, 0x9800
     jb wrt_pat
+wrt_map:
     mov [si - 0x6000], al
     mov ah, 0x08                // palette 4
     sub si, 0x9800
@@ -1623,6 +1653,7 @@ wrt_bank:
     push ax
     push dx
     mov al, [drc_tmp]
+wrt_bank_al:
     and al, [drc_mbc_and]
     mov [gb + GB_BANK_LO], al
     jnz 1f
@@ -1686,6 +1717,7 @@ wrt_bank:
     mov [gb + GB_PC], di
     jmp s_exit
 5:
+wrt_cart:
     // the cartridge's RAM
     cmp byte ptr [drc_ram_ok], 1
     jb 8f
@@ -1699,6 +1731,54 @@ wrt_bank:
 8:
     call s_cwrite
     jmp 9b
+
+// LD (nn), A where nn is the register of the second ROM area's bank
+// (the translator knows: gb_drc.c), A in AL: wrt_bank without the looking
+// at the address. After the call the next instruction's address, as for
+// s_wrt. (Super Mario Land 2's map reads its data through a routine that
+// sets the bank and sets it back: 160 times a frame, a fifth of the
+// frame's time in s_wrt.)
+s_bankx:
+    push ax
+    push dx
+    jmp wrt_bank_al
+
+// the same from a block in the first ROM area, which goes on whatever the
+// second holds: no address after the call, back at once
+s_bank0:
+    push ax
+    push dx
+    and al, [drc_mbc_and]
+    mov [gb + GB_BANK_LO], al
+    jnz bank0_set
+    cmp byte ptr [drc_mbc_z1], 0
+    je bank0_set
+    mov al, 1
+bank0_set:
+    xor ah, ah
+    or ax, [drc_mbc_hi]
+    and ax, [drc_bank_mask]
+    cmp ax, [gb + GB_ROMX]
+    je bank0_done
+    mov [gb + GB_ROMX], ax
+    mov dx, ax
+    inc dx
+    mov [drc_keyx], dx
+    shl dx, 5
+    mov [drc_hashx], dx
+    mov dx, ax
+    and dx, 3
+    shl dx, 14
+    mov [gbf_romx_off], dx
+    shr dx, 4
+    add dx, 0x2C00
+    mov [drc_segtab + 2], dx
+    shr ax, 2
+    out 0xD4, ax                // the ROM1 window's bank
+bank0_done:
+    pop dx
+    pop ax
+    ret
 
 // gbf_write(SI, drc_tmp), the registers kept
 s_cwrite:
@@ -1913,3 +1993,5 @@ drc_stub_offs:
     .word s_fill0 - drc_stubs
     .word s_skip_hl - drc_stubs
     .word s_vreg - drc_stubs
+    .word s_bankx - drc_stubs
+    .word s_bank0 - drc_stubs

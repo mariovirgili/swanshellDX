@@ -153,6 +153,18 @@ not A, the time to the line before the one waited for is taken off at
 once and the rest by lines; with HL in RAM the time to the next event
 (only an interrupt can change it).
 
+`LD (nn), A` where nn is the register of the second ROM area's bank
+(the cartridge's kind says which addresses: the translator knows)
+calls `s_bankx`, A in AL and the next instruction's address after the
+call as for `s_wrt`, or, from a block in the first ROM area, `s_bank0`,
+which comes straight back (patch 175): `wrt_bank` without its looking
+at the address.
+
+`ADD HL, rr` whose H and C are set again before anything reads them is
+`add bx, rr` and nothing else (patch 175; by `i_live`, the flags needed
+before each instruction, which until then only decided whether the
+V30MZ's flags had to be saved).
+
 A write to a pattern (8000h-97FFh) goes through `s_wrt`, whatever
 the block knows of the pointer (until patch 172 a pointer whose high
 byte the block had set wrote there unchecked), and the copying loops

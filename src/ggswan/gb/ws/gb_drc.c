@@ -78,7 +78,17 @@ static void code_bank(uint16_t seg) {
     code_top = drc_stubs_size;
 }
 
+// a bit for each first place in the table: is there a block in ROM whose
+// first place it is? scan_block asks, at every instruction from the
+// sixth, whether a block already starts there, and nearly always none
+// does: the bit says so without the table being searched (find was 4% of
+// the time at Race Drivin's start, and the asking twice that). In the
+// room after DRC_EBUF's 4 KiB.
+#define DRC_HAS ((uint8_t*) 0x9800)
+static const uint8_t bit_of[8] = { 1, 2, 4, 8, 16, 32, 64, 128 };
+
 static void flush(void) {
+    memset(DRC_HAS, 0, TABLE_N / 8);
     memset((uint8_t*) DRC_RC0, 0xFF, 0x2000);       // (no address is FFFFh: both small tables empty)
     _fmemset(TABLE, 0, 0x8000);
     _fmemset(TABLE + TABLE_N / 2, 0, 0x8000);
@@ -1034,8 +1044,17 @@ __attribute__((noinline)) static void translate_block(void) {
                     if (operand(pc + 1, 2)) { E(0x8B); E(0x06 | R16[p] << 3); EW(pc + 1 - 0x6000); }     // mov rr, [nn]
                     else { E(0xB8 | R16[p]); EW(nn); }
                 } else {                                        // ADD HL, rr: Z kept, H and C the high byte's
-                    mat();
                     uint8_t r = R16[p];     // CX, DX or BX: the low byte is register r, the high r + 4
+                    // (H and C not looked at before they are next set -
+                    // an address worked out by ADD HL, HL five times over,
+                    // ZAS's - : the sum and no more; Z is in AH or will be)
+                    if (!((i + 1 < n_ins ? i_live[i + 1] : FALL) & (FH | FC))) {
+                        clob();
+                        E(0x01); E(0xC0 | r << 3 | 3);          // add bx, rr
+                        nst = 0;
+                        break;
+                    }
+                    mat();
                     E(0x89); E(0xC7);                           // mov di, ax
                     E(0x00); E(0xC0 | r << 3 | 3);              // add bl, r.low
                     E(0x10); E(0xC0 | (r + 4) << 3 | 7);        // adc bh, r.high
@@ -1237,6 +1256,13 @@ __attribute__((noinline)) static void translate_block(void) {
                     call_stub(ST_RD);
                 }
                 SLOW_ENDS(done);
+            } else if (y == 5 && nn < 0x8000 && (nn >> 8) >= drc_mbc_lo && (nn >> 8) < drc_mbc_top
+                       && (((nn >> 8) | drc_mbc_or) & 1)) {
+                // the second ROM area's bank (gb_drc_asm.s: wrt_bank's own tests)
+                mat();
+                nflush();
+                if (next <= 0x4000 && !in_ram) call_stub(ST_BANK0);
+                else { call_stub(ST_BANKX); EW(next); }
             } else {
                 E(0xBE); EW(nn);                                // mov si, nn
                 if (y == 5) {
@@ -1578,7 +1604,10 @@ __attribute__((noinline)) static void scan_block(uint16_t pc) {
         // through a second translation of the same code. Race Drivin'
         // jumps into the middle of its rows of unrolled instructions at
         // every place: 34,779 bytes of it translated for 22,102 there are.
-        if (!in_ram && !after_ei && n_ins >= 6 && pc < 0x8000 && find(pc, pc < 0x4000 ? drc_key0 : drc_keyx)) break;
+        if (n_ins >= 6 && !in_ram && !after_ei && pc < 0x8000) {
+            uint16_t key = pc < 0x4000 ? drc_key0 : drc_keyx, h = hash(pc, key);
+            if ((DRC_HAS[h >> 3] & bit_of[h & 7]) && find(pc, key)) break;
+        }
     }
     i_pc[n_ins] = pc;
     // a loop that waits: A loaded from memory or an I/O register, tested,
@@ -1731,6 +1760,7 @@ __attribute__((noinline)) static blk_t __far *translate(uint16_t pc, uint16_t ke
         }
         b->pc = pc;
         b->key = key;
+        if (pc < 0x8000) DRC_HAS[h >> 3] |= bit_of[h & 7];
         b->off = code_top;
         b->seg = code_seg;
         translate_block();

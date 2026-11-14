@@ -44,7 +44,7 @@ background and the window, switched at the right lines by the line
 interrupt, with the scroll the program gave each line; the sprites are
 the WonderSwan's.
 
-## Where it is (patch 174)
+## Where it is (patch 175)
 
 The CPU is a recompiler (`gb/ws/gb_drc.c`, `gb_drc_asm.s`; `GB-ABI.md`),
 there is sound (`gb/ws/gb_sound.c`: what it does and does not, at its
@@ -682,6 +682,102 @@ What is left in it: `scan_block` is now the larger half (its test for
 a block already at the next instruction, the tables it clears for
 each instruction, the chains of tests on what is known of BC, DE,
 HL); `find`, eleven calls a block, 4%.
+
+**Patch 175.** Gio: go on by yourself, `scan_block` first, then the
+routine that writes and the code made for Super Mario Land 2's map
+and for ZAS.
+
+*The translator.* `scan_block` by line again (`fprof.sh` here: the
+tree's function by source line at Race Drivin's start): its test for
+a block already at the next instruction, and `find` behind it, were a
+fifth of it. `DRC_HAS` (9800h, 1 KiB): a bit for each first place in
+the table, set when a block in ROM is made, cleared with the table;
+`find` is called only where the bit is set: 7,692 calls to 1,508 in
+the window, 628,159 cycles a frame to 609,648, the same blocks. The
+rest of `scan_block` is fifteen to twenty-five cycles a line for each
+instruction, on every line: nothing more to take there without
+writing it again.
+
+*Super Mario Land 2's map* (frames 540-700 with the keys
+`240:200,256:0,400:40,460:0`: 84,014 cycles a frame, the 37 frames a
+second of Gio's screen). A third of it was `s_wrt`. `GBRUN_WRT=1`:
+160 writes a frame to 3000h, the ROM bank, and 266 to the cartridge's
+RAM through a pointer. The block at 3E34h is a routine that copies a
+byte from one bank to the cartridge's RAM: bank set, byte read, byte
+written, bank set back, eighty times a frame. Done: `LD (nn), A` with
+nn the bank's register (the translator knows by the cartridge's kind)
+calls `s_bankx`, which is `wrt_bank` from where the address has been
+looked at, and from a block in the first ROM area `s_bank0`, which
+has no address after the call and returns at once; the cartridge's
+RAM is the second thing `s_wrt` looks for above 9800h. 74,163, the
+same memory. What is left of it: the bank's change itself (some forty
+instructions and the port, 8,500 cycles a frame), the writes to the
+cartridge's RAM through a pointer (the block cannot know where HL
+points).
+
+*ZAS in the game* (63,895 with the profile on): its three hottest
+blocks work an address out with `ADD HL, HL` five times and `ADD HL,
+BC`. Each was seven V30MZ instructions - A and the flags aside, the
+low bytes added, the high with carry, the flags taken, H and C kept,
+Z put back - for an H and a C that the next `ADD HL` sets again.
+`i_live` (the flags needed before each instruction) was there and
+used only to decide whether the V30MZ's flags needed saving: an `ADD
+HL, rr` whose H and C are not needed before they are next set is now
+`add bx, rr`. 64,404 to 60,174, the same memory.
+
+*`s_wrt`.* A pattern is the first thing looked for (two compares),
+then the work RAM and above, the cartridge's RAM, the maps. With the
+patterns first and the maps left where they were, Yoshi, which writes
+maps, was 2.8% slower (40,208 cycles a WonderSwan frame to 41,343):
+the maps now go straight to their code (40,384).
+
+Cycles a Game Boy frame, 174 to 175, the same memory in every scene:
+
+| scene | 174 | 175 | |
+|---|---|---|---|
+| Super Mario Land 2, the map | 84,014 | 74,163 | -11.7% |
+| ZAS | 64,404 | 60,174 | -6.6% |
+| Race Drivin' | 99,125 | 93,065 | -6.1% |
+| X, the tunnel | 86,072 | 82,479 | -4.2% |
+| Race Drivin's start (translating) | 628,159 | 603,032 | -4.0% |
+| Donkey Kong Land | 72,329 | 69,631 | -3.7% |
+| Batman | 49,528 | 48,029 | -3.0% |
+| Castlevania II | 49,804 | 48,841 | -1.9% |
+| Super Mario Land 2, the level | 47,606 | 46,761 | -1.8% |
+| R-Type II | 29,257 | 28,855 | -1.4% |
+
+The whole regression (`gbreg` 24 of 24, the sixteen scenes the same
+memory, pictures, R-Type II's bar, ZAS's logo) on the build before
+the maps' change in `s_wrt`; after it `gbreg`, the eight older scenes
+and four of the newer again. The map's and the start's figures, ZAS's
+and three more of the table are of that earlier build.
+
+Looked at and left: PUSH AF and POP AF (6.5% of ZAS between them: F
+built from AH and back, then the general push): a table would save a
+dozen cycles of sixty.
+
+**A second opinion.** Gio had the sources read by another model
+(GPT-6). What it found: the code made treats C000h-FDFFh as one piece
+of memory at `[address - 6000h]`, so the echo of the work RAM,
+E000h-FDFFh, is not the work RAM but 8000h-9DFFh of the console's -
+where since 174 and 175 the translator has its buffer and `DRC_HAS`.
+Known as a thing not done, now also a way for a
+program to write into the translator's own memory; to be put right by
+making the block's own range end at DFFFh (the routines do the echo).
+What it proposes, in its order: a routine of its own for a write the
+block knows is to the video memory (`i_cls` 2), with no address after
+the call and the flags saved only if needed; INC and DEC of BC, DE,
+HL as the V30MZ's own when the flags are in AH or dead (BC and DE are
+five bytes now), and `ADD HL, rr` with only C needed; the translator
+by tables - each instruction decoded once and kept, fifteen to
+twenty-five families of opcodes, the place written to in a register -
+for under 200 cycles an instruction; code met for the first time
+interpreted, translated the second time (Race Drivin'); INC and DEC
+(HL) in place where the part of the memory is known; a guess of the
+target at the RETs that have one. Against: a table by page at every
+access, a second stack of return addresses, longer blocks, the
+patterns written in line (tried for 170: Race Drivin's code no longer
+fitted).
 
 He also saw, in 166, Super Mario Land's whole picture jump sideways
 for an instant now and then. Its status bar is a STAT interrupt at a
