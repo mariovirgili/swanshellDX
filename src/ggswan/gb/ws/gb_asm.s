@@ -222,6 +222,163 @@ spr_attr:
     .byte 0x08, 0x0A, 0x48, 0x4A, 0x88, 0x8A, 0xC8, 0xCA
 
 /*
+ * uint8_t gbd_scan_fast(void): scan_block's loop (gb_drc.c) for the
+ * instructions it has nothing of its own to do for - op_inf's second
+ * byte without bit 5, and without bit 6 once something is known of BC,
+ * DE, HL (scan_anyk; what i_dir and i_cls then are for each is in
+ * scan_cdir and scan_ccls). From scan_pc, n_ins, scan_total; back with
+ * them: 0, the next instruction is scan_block's (or the block is full, or
+ * its bytes are not in tbuf); 1, the block ends with the last one; 2, a
+ * block may already start at scan_pc (DRC_HAS: scan_block looks).
+ */
+    .global gbd_scan_fast
+gbd_scan_fast:
+    push si
+    push di
+    mov si, [scan_pc]
+    xor ax, ax
+    mov al, [n_ins]
+    mov di, ax
+    mov cl, [scan_total]
+    mov ch, [scan_anyk]
+scf_loop:
+    cmp di, 40
+    jae scf_slow
+    cmp cl, 90
+    jae scf_slow
+    mov bx, si
+    sub bx, [tbase]
+    cmp bx, [scan_tl1]
+    jae scf_slow
+    mov bl, [tbuf + bx]
+    xor bh, bh
+    shl bx, 1
+    mov ax, [op_inf + bx]       // AL: the flags (F_END, F_OUT), AH: length, cycles, bits 5-7
+    test ah, 0x60
+    jz scf_plain
+    test ah, 0x20
+    jnz scf_slow
+    test ch, ch
+    jnz scf_slow
+scf_plain:
+    mov bx, di
+    shl bx, 1
+    test ch, ch
+    jz scf_put
+    cmp byte ptr [scan_cok], 0
+    je scf_want
+    mov dx, [scan_cdir]
+    mov [i_dir + bx], dx
+    mov dx, [scan_cdir + 2]
+    mov [i_dir + 80 + bx], dx
+    mov dx, [scan_cdir + 4]
+    mov [i_dir + 160 + bx], dx
+    mov dl, [scan_ccls]
+    mov [i_cls + di], dl
+    mov dl, [scan_ccls + 1]
+    mov [i_cls + 40 + di], dl
+    mov dl, [scan_ccls + 2]
+    mov [i_cls + 80 + di], dl
+scf_put:
+    mov dl, ah
+    shr dl, 2
+    and dl, 7
+    add dl, 2
+    add cl, dl
+    mov [i_pc + bx], si
+    mov [i_inf + di], ah
+    mov [i_fa + di], al
+    inc di
+    mov bl, ah
+    and bx, 3
+    add si, bx
+    test al, 0x40               // F_END
+    jnz scf_end
+    cmp byte ptr [in_ram], 0
+    jne scf_ram
+    cmp di, 6
+    jb scf_loop
+    cmp si, 0x8000
+    jae scf_loop
+    mov bx, si
+    shr bx, 6
+    xor bx, si
+    cmp si, 0x4000
+    jb scf_h0
+    xor bx, [drc_hashx]
+    jmp scf_hd
+scf_h0:
+    xor bx, [drc_hash0]
+scf_hd:
+    and bx, 8191
+    mov dx, bx
+    shr bx, 3
+    mov al, [0x9800 + bx]       // DRC_HAS
+    mov dh, cl
+    mov cl, dl
+    and cl, 7
+    shr al, cl
+    mov cl, dh
+    test al, 1
+    jz scf_loop
+    mov al, 2
+    jmp scf_out
+scf_ram:
+    mov bx, si
+    sub bx, [blk_pc]
+    cmp bx, 48
+    jbe scf_loop
+scf_end:
+    mov al, 1
+    jmp scf_out
+scf_want:
+    mov al, 3
+    jmp scf_out
+scf_slow:
+    xor al, al
+scf_out:
+    mov [scan_pc], si
+    mov bx, di
+    mov [n_ins], bl
+    mov [scan_total], cl
+    pop di
+    pop si
+    IA16_RET
+
+/*
+ * void gbd_scan_live(void): the flags needed before each instruction of
+ * the block (i_live), from what each does with them (i_fa: bits 0-2 the
+ * flags it sets, 3-5 those it reads, bit 7 it may leave the block), last
+ * instruction first; after the block all three are needed.
+ */
+    .global gbd_scan_live
+gbd_scan_live:
+    xor bx, bx
+    mov bl, [n_ins]
+    mov al, 7
+scl_loop:
+    dec bx
+    js scl_done
+    mov ah, [i_fa + bx]
+    test ah, 0x80
+    jnz scl_all
+    mov dl, ah
+    and dl, 7
+    not dl
+    and al, dl
+    shr ah, 3
+    and ah, 7
+    or al, ah
+    mov [i_live + bx], al
+    jmp scl_loop
+scl_all:
+    mov al, 7
+    mov [i_live + bx], al
+    jmp scl_loop
+scl_done:
+    IA16_RET
+
+/*
  * uint8_t gbd_ram_cmp(void): a block of code in RAM against the copy of
  * its bytes kept before its translation (gb_drc.c, ram_same), leaving out
  * the bytes that are read as the code runs (a bit each, in the 16 bytes

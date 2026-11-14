@@ -6,7 +6,7 @@ emulated by a dynamic recompiler (Z80 to V30MZ code), with the original
 interpreter kept for the parts that need it. The Game Gear video memory is
 mapped onto the WonderSwan's own tile and screen hardware.
 
-Status: fairly stable (patch 179). It has been tested mostly in the
+Status: fairly stable (patch 180). It has been tested mostly in the
 nileswan-medem emulator and with the host test tools; tests on real
 hardware are still to come.
 
@@ -365,7 +365,7 @@ it are listed in order without one.
 - lighter DYN lookup and class routine for deferred tile bytes
 - OUTI runs to CRAM handled in the run routine
 
-### Patches 90-179
+### Patches 90-180
 
 | Patch | Change |
 |---|---|
@@ -459,3 +459,4 @@ it are listed in order without one.
 | 177 | gbswan: Donkey Kong Land's Kong still broken up in some frames, most when he jumps (Gio, on patch 176). The game keeps two sets of tiles for him: it draws the next picture in the set that is not shown and then points his sprites at it. The patterns were kept a frame late (patch 172) only when the last one written was a tile of a sprite of the last frame's picture, which with two sets happens only now and then, and the keeping ended after 120 frames. Now the tile is also looked for among the sprites the program has just set (the OAM), and once on, the patterns stay late until the screen is turned off or a frame writes more tiles than can be kept. In a longer walk with jumps: 27 wrong pictures of 756 to 3 of 760 (the first picture drawn after the level's start, one Game Boy frame). The lines of the text shown at the start have a row between them (they touched). The other scenes within 0.3%. Not run on a WonderSwan or in nileswan-medem. |
 | 178 | gbswan: the translator again, by its source lines' cycles. In the pass that writes the code, three fifths of the time were what is made ready for every instruction before anything is written: its three bytes read through a function, what is known of BC, DE, HL fetched, the EI before it looked for. In the pass that looks the block over, a quarter were compares for a few rare instructions made for all of them. Now: the bytes straight from the buffer; the rare ones marked in the opcodes' table and passed over with one test; what is known of the pointers neither cleared nor fetched before the block's first `LD rr, nn`; the hash for "a block already starts here" with the key's part ready. Race Drivin's start 605,626 cycles a frame to 522,307 (-13.8%), Batman's level 127,900 to 118,142, the same blocks and the same memory. In the game: Donkey Kong Land -2.7%, Race Drivin' -1.1%. Also measured, and not done: code interpreted the first time it is met (the numbers are in `GB-IMPLEMENTATION.md`, patch 177). Not run on a WonderSwan or in nileswan-medem. |
 | 179 | gbswan: sprites in pieces for a frame when their picture changes - the coin that turns in Donkey Kong Land's "Select Game", its enemies (Gio, on patch 178 in nileswan-medem). Two things, neither seen by `gbrun.py`, which drew the sprites from the table as it was at the picture's end: the WonderSwan takes the table at line 142, for the next frame (`GBRUN_SPRLATCH=1` now does the same). The game copies its sprites to the OAM at line 128 of every frame, and the frame's sprites were set from the OAM at the frame's end: the next frame's sprites on this frame's patterns. What the OAM was before a copy made while the picture is drawn is now kept and used. And a frame that ended just before line 142 had its table half taken, or taken a frame after its list: such a frame now waits for the vertical blank. The coin against the reference's poses: 25 pictures of 131 wrong, then none of 172. Donkey Kong Land 0.9% slower in the game, the others the same. Not run on a WonderSwan or in nileswan-medem. |
+| 180 | gbswan: the translator's first pass in assembly. `scan_block`'s loop, for the instructions it has nothing of its own to do for (most), is `gbd_scan_fast` in `gb_asm.s`; the rare ones, and those that change what is known of BC, DE, HL, are still the C's, one at a time; the flags needed before each instruction are `gbd_scan_live`. The code made is the same. Race Drivin's start 522,307 cycles a frame to 489,794 (-6.2%; 605,626 in 177), Batman's level 118,142 to 112,967. Tried and taken out: the same for the second pass's simplest instructions (LD r, r, the ALU with a register, LD r, n) - right, and slower (499,003): going from the C to the assembly and back for each run of them cost more than they saved. Not run on a WonderSwan or in nileswan-medem. |

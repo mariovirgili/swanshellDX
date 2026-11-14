@@ -44,7 +44,7 @@ background and the window, switched at the right lines by the line
 interrupt, with the scroll the program gave each line; the sprites are
 the WonderSwan's.
 
-## Where it is (patch 179)
+## Where it is (patch 180)
 
 The CPU is a recompiler (`gb/ws/gb_drc.c`, `gb_drc_asm.s`; `GB-ABI.md`),
 there is sound (`gb/ws/gb_sound.c`: what it does and does not, at its
@@ -1008,6 +1008,68 @@ enemies were not looked at (no check of them: what is changed is what
 the coin showed, for every sprite); the other scenes and the pictures
 against the reference; nothing on a WonderSwan, and nileswan-medem is
 where it was seen, not where the change was tried.
+
+**Patch 180.** The scan in assembly. After 178 (`fprof.sh` again) a
+line of `scan_block` that tests a bit and a byte was ten to seventeen
+cycles: the compiler keeps the loop's variables in memory, bytes, and
+fetches them for every test. 278 cycles an instruction in the scan,
+221 in the other pass.
+
+`gbd_scan_fast` (`gb_asm.s`) is the loop for an instruction with
+nothing of the scan's own to do: `op_inf`'s second byte without bit 5
+(now also CB, whose flags are by its second byte), and without bit 6
+(new: it changes or uses what is known of BC, DE, HL) once something
+is known. It writes `i_pc`, `i_inf`, the flags (`i_fa`, no longer a
+local of `scan_block`'s), and `i_dir` and `i_cls` from what
+`scan_block` says they are (`scan_cdir`, `scan_ccls`: asked for with a
+return of 3 the first time they are needed after they change), and
+looks at `DRC_HAS` for a block that starts at the next instruction
+(return 2: `scan_block` calls `find`). At anything else it returns and
+`scan_block` does that one instruction as before. `gbd_scan_live` is
+the pass from the last instruction to the first that makes `i_live`.
+For the assembly to see them, `tbuf`, `tbase`, `i_pc`, `i_dir`,
+`i_cls`, `i_inf`, `i_live`, `n_ins`, `blk_pc`, `in_ram` and `op_inf`
+are no longer `static`.
+
+A block in Race Drivin's start: `scan_block` 4,313 cycles to 1,937,
+and some 950 in the assembly. Cycles a Game Boy frame while
+translating, 178 to 180, the same table of blocks and the same
+memory:
+
+| scene | 178 | 180 | |
+|---|---|---|---|
+| Race Drivin's start | 522,307 | 489,794 | -6.2% |
+| Batman, a level loaded | 118,142 | 112,967 | -4.4% |
+| Donkey Kong Land | 73,272 | 72,400 | -1.2% |
+| X | 77,306 | 76,839 | -0.6% |
+
+Less than the lines' cycles promised: the assembly's loop is itself
+some sixty instructions for each of the Game Boy's (a third of them
+the hash for `DRC_HAS`), and what is left in C - the instructions that
+are not plain, the looking for loops that wait, the function's own
+coming and going - is two fifths of what it was, not a tenth.
+
+*Tried and taken out.* The second pass's simplest instructions in
+assembly (`gbd_tr_fast`: LD r, r', the ALU with a register, LD r, n -
+28% of the instructions translated). Called at every instruction, it
+came straight back from 72% of them at some 55 cycles each, and
+`code`, `code_top`, `fl`, `cyc` made global for it cost `exit_to` 114
+cycles a call: 527,368. Called only for an instruction of the kind
+(a table looked at in C), the state passed in variables of its own:
+right (the same blocks, after one wrong build - two of its tables had
+the names of two of the C's variables, and the flags after an ALU
+were lost: the blocks' table differed at once, and the first block
+unlike showed it), and 499,003: slower than without. A run of such
+instructions is one or two long; getting to the assembly and back
+costs what it saves. The second pass would have to be in assembly as
+a whole, its state in registers: not a patch.
+
+In the game, 179 to 180 (the same memory): Donkey Kong Land 68,367 to
+67,448, Race Drivin' 91,847 to 91,376, X 82,678 to 82,661, ZAS 59,508 to 59,385.
+
+Tests: the 24 of `gbreg`; the four slowest scenes; the four that
+translate, with the blocks' table of 178. Not covered: the other
+scenes and the pictures; nothing on a WonderSwan or in nileswan-medem.
 
 He also saw, in 166, Super Mario Land's whole picture jump sideways
 for an instant now and then. Its status bar is a STAT interrupt at a
