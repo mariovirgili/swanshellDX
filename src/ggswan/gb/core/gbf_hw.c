@@ -458,6 +458,11 @@ void gbf_io_write(uint8_t r, uint8_t v) {
     case GB_DMA: {
         gb_io[r] = v;
         gbv_oam();
+#ifdef GBV_PATTERNS_LATE
+        // (while the picture is drawn: what the OAM was is this frame's
+        // sprites - gb_video.c)
+        if (POS() < 144 * 114) gbv_oam_mid();
+#endif
         uint16_t src = (uint16_t) v << 8;
         if (src >= 0xE000) src -= 0x2000;
         if (src >= 0xC000) {

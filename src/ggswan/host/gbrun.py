@@ -198,7 +198,7 @@ def h_truth_frame(uc, addr, size, _):
         pw = int.from_bytes(bytes(iram.raw[syms['gbv_pw_last'] & 0xFFFF:(syms['gbv_pw_last'] & 0xFFFF) + 2]), 'little')
         sp = bytes(iram.raw[0x5800:0x5A00])
         tl = sorted(set((sp[i] | sp[i + 1] << 8) & 0x1FF for i in range(0, 160, 4) if sp[i + 2] < 144))
-        print('Q gb %d pw %04X tile %d on %d left %d spr %s' % (st['gbframes'], pw, (pw - 0x8000) >> 4 if pw else -1, _b('gbv_tq_on'), _b('tq_left'), tl))
+        print('Q ws %d line %d gb %d pw %04X tile %d on %d left %d spr %s' % (st['frame'], st['line'], st['gbframes'], pw, (pw - 0x8000) >> 4 if pw else -1, _b('gbv_tq_on'), _b('tq_left'), tl))
 if os.environ.get('GBRUN_TRUTH') and 'gbv_line0' in syms:
     uc.hook_add(UC_HOOK_CODE, h_line0, None, syms['gbv_line0'], syms['gbv_line0'])
     uc.hook_add(UC_HOOK_CODE, h_truth_frame, None, syms['gbv_frame'], syms['gbv_frame'])
@@ -483,6 +483,7 @@ uc.reg_write(UC_X86_REG_CS, 0xF000); uc.reg_write(UC_X86_REG_IP, e - 0xF0000)
 uc.reg_write(UC_X86_REG_SS, 0); uc.reg_write(UC_X86_REG_SP, 0x4000)
 line_ports = [None] * 144
 line_pals = [None] * 144
+SPRLATCH = [None, None] if os.environ.get('GBRUN_SPRLATCH') else None     # GBRUN_SPRLATCH=1: the pictures with the sprites as the WonderSwan takes them, at line 142 of the frame before
 END_SHOT = GBTIME and OUT    # (by Game Boy frames: the picture at the end, PREFIX-end.ppm)
 last_pic = [None]
 snd_frames = []
@@ -526,9 +527,18 @@ while (GBTIME or st['frame'] < FRAMES) and not st['fail'] and not st.get('stop')
         if ls != truth['shown']:
             truth['shown'] = ls
             if truth['fifo']: truth['cur'] = truth['fifo'].pop(0)
+    if y == 142 and SPRLATCH is not None:
+        # (the WonderSwan copies the sprites' table, and takes their first and count, at line 142: the next frame's sprites)
+        b = (ports[4] & 0x3F) << 9
+        SPRLATCH[0] = SPRLATCH[1]; SPRLATCH[1] = (b, bytes(iram.raw[b:b + 512]), ports[5], ports[6])
     if y == 144:
         if st['frame'] in SHOTS and OUT and line_ports[0] is not None:
             mem = bytes(iram.raw)
+            if SPRLATCH is not None and SPRLATCH[0]:
+                b, tb, f5, f6 = SPRLATCH[0]
+                mem = mem[:b] + tb + mem[b + 512:]
+                for i in range(144):
+                    lp = bytearray(line_ports[i]); lp[4] = b >> 9; lp[5] = f5; lp[6] = f6; line_ports[i] = bytes(lp)
             assert line_ports[0][0x60] & 0xE0 == 0x80, 'not the 2 bpp color mode'
             img = b''.join(render_line(mem, line_ports[i], i, line_pals[i]) for i in range(144))
             open('%s-%04d.ppm' % (OUT, st['frame']), 'wb').write(b'P6\n224 144\n255\n' + img)

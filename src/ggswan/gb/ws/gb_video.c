@@ -302,6 +302,21 @@ static void rebuild_maps(void) {
 
 void gbv_oam(void) {
 }
+// The OAM copied over (DMA) while the picture is being drawn. The frame's
+// sprites are set from the OAM at the frame's end: a program that copies
+// its sprites there at line 128 of every frame (Donkey Kong Land) had the
+// sprites of the frame to come on a picture whose patterns are this
+// frame's - the coin of its "Select Game", turning, was in pieces for a
+// frame at every step. What the OAM was before the frame's first such
+// copy is kept (9D00h) and is what the sprites are set from.
+#define OAM_KEPT ((uint8_t*) 0x9D00)
+uint8_t gbv_oam_hi;             // (gb_asm.s, gbv_sprites_asm: FFh, the OAM kept; 0, the OAM)
+static uint8_t oam_kept;
+void gbv_oam_mid(void) {
+    if (oam_kept) return;
+    memcpy(OAM_KEPT, gb_oam, 0xA0);
+    oam_kept = 1;
+}
 
 static void raw_first(void) {
     raw[0].line = 0;
@@ -463,6 +478,8 @@ static void sprites(void) {
         }
         tall_made = 0xFE;
     }
+    gbv_oam_hi = oam_kept ? 0xFF : 0;
+    oam_kept = 0;
     outportb(WS_SPR_COUNT_PORT, gbv_sprites_asm());
 }
 
@@ -561,8 +578,28 @@ void gbv_frame(void) {
         ia16_halt();
     tq_frame();
     make_list();
-    list_ready = 1;
-    sprites();
+    // The WonderSwan takes the sprites' table for the next frame at line
+    // 142; the list is taken by the interrupt at line 144. A table still
+    // being written at line 142 was half taken, and one written after it
+    // was a frame behind its list (a figure whose patterns change, in
+    // pieces for a frame now and then). So: the table is not begun when
+    // it would not be done by line 142 (spr_lines: the most lines it has
+    // taken, and two) - the frame then waits for the interrupt and is
+    // shown a frame later, whole - and the list is ready after it.
+    {
+        static uint8_t spr_lines = 12;
+        uint8_t l = inportb(0x02);
+        if (l < 144 && (uint8_t) (l + spr_lines) >= 142) {
+            uint16_t v = gbv_vblanks;
+            while (gbv_vblanks == v)
+                ia16_halt();
+            l = inportb(0x02);
+        }
+        sprites();
+        list_ready = 1;
+        uint8_t e = inportb(0x02);
+        if (e > l && (uint8_t) (e - l) < 60 && (uint8_t) (e - l + 2) > spr_lines) spr_lines = e - l + 2;
+    }
     palettes();
     gb_sound_frame();
     if (stats_on) {

@@ -28,6 +28,7 @@ void gbv_frame(void);
 extern uint8_t gbv_tq_on;
 void gbv_tq_put(uint16_t a, uint8_t v);
 void gbv_line0(void);
+void gbv_oam_mid(void);
 #endif
 
 #endif

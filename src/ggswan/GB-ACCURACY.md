@@ -72,6 +72,11 @@ away from where the tests checked on a DMG put it.
   174 the code made took it for memory of the translator's). A stack
   there is not supported: PUSH, POP, CALL and RET with SP in
   E000h-FDFFh do not reach the work RAM. No program known to do it.
+- The sprites are one table a frame. It is the OAM at the frame's end,
+  or, when the program copied the OAM over (DMA) while the picture was
+  being drawn, the OAM as it was before that (patch 179): sprites
+  changed in the middle of a picture are not seen changed below that
+  line in the same picture.
 - The serial port has no other end: a transfer with the Game Boy's own
   clock ends after 8 bits with FFh received, one with the other's clock
   never does.

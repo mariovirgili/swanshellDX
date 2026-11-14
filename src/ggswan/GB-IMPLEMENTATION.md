@@ -44,7 +44,7 @@ background and the window, switched at the right lines by the line
 interrupt, with the scroll the program gave each line; the sprites are
 the WonderSwan's.
 
-## Where it is (patch 178)
+## Where it is (patch 179)
 
 The CPU is a recompiler (`gb/ws/gb_drc.c`, `gb_drc_asm.s`; `GB-ABI.md`),
 there is sound (`gb/ws/gb_sound.c`: what it does and does not, at its
@@ -957,6 +957,57 @@ scenes, the pictures; nothing on a WonderSwan or in nileswan-medem.
 What is left of the translator: some 280 cycles an instruction in the
 scan and 220 in the other pass, of 640. The scan is the next thing to
 write in assembly: it reads and writes tables and makes no code.
+
+**Patch 179.** Gio, on 178 in nileswan-medem: the coin that turns in
+Donkey Kong Land's "Select Game" is in pieces much of the time, and so
+are the enemies' sprites.
+
+`gbrun.py` showed the coin whole. It drew a picture's sprites from the
+table as it was at the picture's end; the WonderSwan takes the table,
+its first sprite and its count at line 142, and they are the next
+frame's. `GBRUN_SPRLATCH=1` does that. `coinchk.py` (here): the corner
+of each picture against the coin's poses in the reference (`gbftest`,
+the same keys): with the table taken at line 142, 25 pictures of 131
+were not a pose of the reference's - one at each step of the turn.
+(`GBRUN_TRUTH` said nothing: it compares the patterns, and they were
+right.)
+
+1. The game copies its sprites to the OAM (the DMA, FF46h) at line
+   128 of every frame, not in the vertical blank; the patterns it
+   writes at lines 11-26. `gbv_frame`, at line 144, set the frame's
+   sprites from the OAM as it then was: the sprites the Game Boy shows
+   from line 128 on and in the *next* frame, on a picture whose
+   patterns (kept a frame late: 172, 177) and whose lines above 128
+   are this frame's. Now `gbf_io_write`, at a DMA made while the
+   picture is drawn (before line 144), has `gbv_oam_mid` keep the OAM
+   as it was (9D00h, once a frame), and the sprites are set from that
+   (`gbv_sprites_asm`: BH is FFh, and 9E00h + BX is 9D00h). A program
+   that copies in the vertical blank, as most do, never comes here.
+   What is lost: sprites changed in the middle of a frame to be seen
+   below that line in the same frame - they were not seen as such
+   before either (one table a frame).
+2. With that, 3 pictures of 117 were still wrong: frames that ended
+   a few lines before line 142. The table was being written when the
+   WonderSwan took it, or was written after, and the list was shown
+   at line 144 with the sprites of the frame before. `gbv_frame` now
+   makes the list first, then looks at the line: if the table would
+   not be done by line 142 (`spr_lines`: the most lines `sprites()`
+   has taken, and two; 12 to start with) it waits for the interrupt,
+   and the frame is shown one WonderSwan frame later, whole. The list
+   is marked ready after the table is written, not before.
+
+The coin: none of 172 pictures wrong. Kong's check of 172: none wrong.
+
+Cycles a Game Boy frame, 178 to 179 (the same memory): Donkey Kong
+Land 67,765 to 68,367 (the copy of the OAM every frame, the waits),
+ZAS 59,602 to 59,508, Race Drivin' 91,721 to 91,847, X 82,552 to
+82,678.
+
+Tests: the 24 of `gbreg`, the four slowest scenes. Not covered: the
+enemies were not looked at (no check of them: what is changed is what
+the coin showed, for every sprite); the other scenes and the pictures
+against the reference; nothing on a WonderSwan, and nileswan-medem is
+where it was seen, not where the change was tried.
 
 He also saw, in 166, Super Mario Land's whole picture jump sideways
 for an instant now and then. Its status bar is a STAT interrupt at a

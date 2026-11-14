@@ -120,7 +120,7 @@ gbv_sprites_asm:
     // on the screen last
     xor si, si
 1:
-    xor bx, bx
+    mov bh, ss:[gbv_oam_hi]     // (FFh: 9D00h, the OAM as it was before a copy made in the middle of the frame)
     mov bl, ss:[SPR_ORDER + si]
     mov ax, ss:[0x9E00 + bx]    // AL = Y, AH = X
     test al, al
@@ -168,7 +168,7 @@ gbv_sprites_asm:
     shl si, 1
     cmp bh, 0xFF
     je 8f
-    xor bh, bh
+    mov bh, ss:[gbv_oam_hi]
     mov ax, ss:[0x9E02 + bx]    // AL = tile, AH = flags
     push si
     mov si, ax
