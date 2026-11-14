@@ -1351,6 +1351,26 @@ s_rdt:
     pop ax
     ret
 
+// the byte at SI = drc_tmp, SI in the video memory (the translator knows:
+// gb_drc.c, write_from). Nothing after the call. A pattern with nothing
+// kept late is written here; the rest is s_wrt's, made to come back to
+// the same place
+s_wrv:
+    cmp si, 0x9800
+    jae wrv_other
+    cmp byte ptr [gbv_tq_on], 0
+    jne wrv_other
+    mov [gbv_pw_last], si
+    mov di, ax
+    mov al, [drc_tmp]
+    mov [si - 0x6000], al
+    mov ax, di
+    ret
+wrv_other:
+    mov di, sp
+    sub word ptr [di], 2        // (s_wrt returns two bytes on)
+    // (falls into s_wrt)
+
 // the byte at SI = drc_tmp. After the call: the Game Boy address of the
 // next instruction (a word), where the run goes on through the dispatcher
 // when the write was to the cartridge's registers or to an I/O register
@@ -1995,3 +2015,4 @@ drc_stub_offs:
     .word s_vreg - drc_stubs
     .word s_bankx - drc_stubs
     .word s_bank0 - drc_stubs
+    .word s_wrv - drc_stubs

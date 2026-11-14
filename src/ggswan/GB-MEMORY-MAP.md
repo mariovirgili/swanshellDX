@@ -66,7 +66,8 @@ translator puts a block together before copying it to its code segment
 (patch 174; `gb_drc.c`, `DRC_EBUF`): used only while a block is being
 translated, 4 KiB of it at most. 9800h-9BFFh: a bit for each first place
 in the blocks' table, set when a block in ROM has it (patch 175;
-`gb_drc.c`, `DRC_HAS`). 9000h-97FFh, 9C00h-9DFFh and CFF0h-CFFFh are
+`gb_drc.c`, `DRC_HAS`). Since patch 176 the code made does not reach
+them through the echo's addresses (only a stack put in the echo would). 9000h-97FFh, 9C00h-9DFFh and CFF0h-CFFFh are
 free.
 
 ## The cartridge

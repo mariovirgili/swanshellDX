@@ -518,7 +518,10 @@ static uint16_t range_check(uint8_t hl) {
     if (hl) { E(0x80); E(0xFF); E(0xC0); } else { E(0x81); E(0xFE); EW(0xC000); }
     E(0x72); E(0);
     uint16_t j = code_top;
-    if (hl) { E(0x80); E(0xFF); E(0xFE); } else { E(0x81); E(0xFE); EW(0xFE00); }
+    // (to DFFFh: the echo above it, E000h-FDFFh, is the routines'. Until
+    // patch 176 the block took it for its own, at [address - 6000h]: not
+    // the work RAM but 8000h-9DFFh, where the translator now keeps things)
+    if (hl) { E(0x80); E(0xFF); E(0xE0); } else { E(0x81); E(0xFE); EW(0xE000); }
     E(0x73); E(0);
     return j;
 }
@@ -633,6 +636,16 @@ static void write_from(uint8_t r, uint8_t imm, uint8_t hl, uint16_t next) {
     if (cur_cls == 1 && !cur_cart) {
         if (r != 0xFF) { E(0x88); E(0x80 | r << 3 | (hl ? 7 : 4)); EW(0xA000); }
         else { E(0xC6); E(0x80 | (hl ? 7 : 4)); EW(0xA000); E(imm); }
+        return;
+    }
+    if (cur_cls == 2 && !cur_cart) {
+        // the video memory for sure: its routine, which comes back here
+        // (nothing it does can need the dispatcher)
+        clob();
+        if (r != 0xFF) { E(0x88); E(0x06 | r << 3); EW(ADDR(drc_tmp)); }
+        else { E(0xC6); E(0x06); EW(ADDR(drc_tmp)); E(imm); }
+        if (hl) { E(0x89); E(0xDE); }
+        call_stub(ST_WRV);
         return;
     }
     mat();
@@ -1054,6 +1067,15 @@ __attribute__((noinline)) static void translate_block(void) {
                         nst = 0;
                         break;
                     }
+                    // (C needed, H and Z not: the sum's carry is it)
+                    if (((i + 1 < n_ins ? i_live[i + 1] : FALL) & FALL) == FC) {
+                        fl = 0;
+                        E(0x01); E(0xC0 | r << 3 | 3);          // add bx, rr
+                        E(0x9F);                                // lahf
+                        E(0x80); E(0xE4); E(0x01);              // and ah, 1
+                        nst = 0;
+                        break;
+                    }
                     mat();
                     E(0x89); E(0xC7);                           // mov di, ax
                     E(0x00); E(0xC0 | r << 3 | 3);              // add bl, r.low
@@ -1083,6 +1105,13 @@ __attribute__((noinline)) static void translate_block(void) {
                 break;
             case 3: {                                           // INC rr, DEC rr: no flags
                 uint8_t d = (op & 8) ? 0xFF : 0x01;
+                // (the V30MZ's own INC and DEC change its flags: only
+                // when the Game Boy's are in AH already, or not needed)
+                if (!fl || !live) {
+                    fl = 0;
+                    E(((op & 8) ? 0x48 : 0x40) | R16[p]);       // inc / dec rr
+                    break;
+                }
                 if (p == 2) { E(0x8D); E(0x5F); E(d); }
                 else if (p == 3) { E(0x8D); E(0x6E); E(d); }
                 else {
@@ -1095,6 +1124,11 @@ __attribute__((noinline)) static void translate_block(void) {
                 if (y == 6 && cur_dir) {
                     carry_in();
                     E(0xFE); E(z == 4 ? 0x06 : 0x0E); EW(cur_dir);     // inc / dec byte [..]
+                    fl = 1;
+                    hfix = 0;
+                } else if (y == 6 && cur_cls == 1 && !cur_cart) {
+                    carry_in();
+                    E(0xFE); E(z == 4 ? 0x87 : 0x8F); EW(0xA000);       // inc / dec byte [bx - 6000h]
                     fl = 1;
                     hfix = 0;
                 } else if (y == 6) {
@@ -1537,7 +1571,7 @@ __attribute__((noinline)) static void scan_block(uint16_t pc) {
             for (uint8_t k = 0; k < 3; k++)
                 if (ckn[k]) {
                     uint8_t lo = clo[k], hi = chi[k];
-                    i_cls[k][n_ins] = lo >= 0xC0 && hi <= 0xFD ? 1
+                    i_cls[k][n_ins] = lo >= 0xC0 && hi <= 0xDF ? 1
                         : lo >= 0x80 && hi <= 0x9F ? 2 : hi <= 0x3F ? 3 : lo >= 0x40 && hi <= 0x7F ? 4 : 0;
                 }
         }

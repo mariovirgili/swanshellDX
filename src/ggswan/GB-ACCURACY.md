@@ -67,6 +67,11 @@ away from where the tests checked on a DMG put it.
   machine and in the plugin, for 1000: the frame), and none of the
   sub-second writes do. No MBC1 cartridges with several
   games, no camera, rumble, HuC or MMM01.
+- The echo of the work RAM (E000h-FDFFh) is the work RAM for every
+  read and write through a pointer or an address (since patch 176: from
+  174 the code made took it for memory of the translator's). A stack
+  there is not supported: PUSH, POP, CALL and RET with SP in
+  E000h-FDFFh do not reach the work RAM. No program known to do it.
 - The serial port has no other end: a transfer with the Game Boy's own
   clock ends after 8 bits with FFh received, one with the other's clock
   never does.

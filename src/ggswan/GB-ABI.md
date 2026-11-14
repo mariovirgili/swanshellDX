@@ -59,7 +59,8 @@ window.
   and POP AF always go through the routines, which do the work RAM and
   the high RAM themselves.
 - **(HL), (BC), (DE)**: two comparisons, then `[BX - 6000h]` for
-  C000h-FDFFh; everything else through a routine (`s_rd`, `s_wrt`):
+  C000h-DFFFh (to FDFFh until patch 176, which made the echo the
+  console's 8000h-9DFFh); everything else through a routine (`s_rd`, `s_wrt`):
   ROM through `drc_segtab` (a segment for each ROM area in which the
   Game Boy's address is the offset), the video memory with the
   WonderSwan map entry kept next to a map byte, the echo, the OAM, the
@@ -164,6 +165,18 @@ at the address.
 `add bx, rr` and nothing else (patch 175; by `i_live`, the flags needed
 before each instruction, which until then only decided whether the
 V30MZ's flags had to be saved).
+
+A write through a pointer the block loaded itself and that is in
+the video memory (`i_cls` 2) calls `s_wrv` (patch 176): the byte in
+`drc_tmp`, the address in SI, nothing after the call, the registers
+where they are. A pattern, with the late patterns off, is written and
+`s_wrv` returns; for anything else it becomes `s_wrt`.
+
+INC and DEC of BC, DE, HL are `inc`/`dec` of the register when the
+Game Boy's flags are in AH or are not read before they are next set
+(patch 176); `lea` otherwise. INC and DEC (HL) with HL known to be in
+the work RAM are done on `[bx - 6000h]`. `ADD HL, rr` with only C
+read after it is `add bx, rr / lahf / and ah, 1`.
 
 A write to a pattern (8000h-97FFh) goes through `s_wrt`, whatever
 the block knows of the pointer (until patch 172 a pointer whose high

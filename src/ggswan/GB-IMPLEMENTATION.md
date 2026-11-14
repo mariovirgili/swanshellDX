@@ -44,7 +44,7 @@ background and the window, switched at the right lines by the line
 interrupt, with the scroll the program gave each line; the sprites are
 the WonderSwan's.
 
-## Where it is (patch 175)
+## Where it is (patch 176)
 
 The CPU is a recompiler (`gb/ws/gb_drc.c`, `gb_drc_asm.s`; `GB-ABI.md`),
 there is sound (`gb/ws/gb_sound.c`: what it does and does not, at its
@@ -778,6 +778,75 @@ target at the RETs that have one. Against: a table by page at every
 access, a second stack of return addresses, longer blocks, the
 patterns written in line (tried for 170: Race Drivin's code no longer
 fitted).
+
+**Patch 176.** The echo, and the small ones of the second opinion.
+
+*The echo.* `range_check` ends the range in line at DFFFh (`cmp bh,
+0E0h`; `cmp si, 0E000h`), and a pointer the block loads is "in the
+work RAM" (`i_cls` 1) only with its high byte up to DFh. E000h-FDFFh
+goes to `s_rd` and `s_wrt`, which have always done the echo. It costs
+nothing: the compare was there with another number. The stack's own
+path (PUSH, POP, CALL, RET in line) is left as it was: a limit above
+would send to the routines every game whose stack is in the high RAM,
+and they are many; a stack in the echo is not supported
+(`GB-ACCURACY.md`).
+
+*Writes known to be to the video memory* (`i_cls` 2: the block loaded
+the pointer and it is in 8000h-9FFFh). They called `s_wrt` with the
+flags saved, the registers put back in their places and the next
+instruction's address after the call. `s_wrv` (`ST_WRV`): the value
+in `drc_tmp`, the address in SI, nothing after the call; a pattern
+with the late patterns off is written there and it returns; anything
+else (a map, a late pattern) takes two off its return address and
+falls into `s_wrt`, which returns two bytes on, where the address of
+the next instruction would have ended: that address is used only for
+a write to the cartridge's registers or to an I/O register, which
+this is not. Eleven bytes
+a write for thirty-seven.
+
+*INC and DEC of BC, DE, HL* change no flag on the Game Boy and all
+but C on the V30MZ. They were `lea` for HL and `mov si, cx / lea /
+mov cx, si` for the others. When the flags are in AH already, or
+nothing reads them before they are set again, they are `inc cx`, one
+byte.
+
+*INC and DEC (HL)* with HL known to be in the work RAM: `inc byte ptr
+[bx - 6000h]` (with the carry kept as the general one keeps it), not
+read, changed, written.
+
+*`ADD HL, rr` with only C read after it*: `add bx, rr / lahf / and
+ah, 1`.
+
+Cycles a Game Boy frame, 175 to 176, the same memory in every scene:
+
+| scene | 175 | 176 | |
+|---|---|---|---|
+| Batman | 48,029 | 47,670 | -0.7% |
+| ZAS | 60,174 | 59,780 | -0.7% |
+| Super Mario Land 2, the map | 74,163 | 73,857 | -0.4% |
+| Race Drivin' | 93,065 | 92,759 | -0.3% |
+| X, the tunnel | 82,479 | 82,360 | -0.1% |
+| Castlevania II | 48,841 | 48,813 | -0.1% |
+| Super Mario Land 2 | 46,761 | 46,725 | -0.1% |
+| R-Type II | 28,855 | 28,834 | -0.1% |
+| Donkey Kong Land | 69,631 | 69,641 | 0.0% |
+| Race Drivin's start (translating) | 603,032 | 605,626 | +0.4% |
+
+X's title 175,675 and its fade 180,657 (178,085 and 188,889 in 173;
+not measured for 174 and 175). The eight older scenes: Super Mario
+Land -1.2%, Balloon Kid -0.5%, R-Type -0.4%, Castlevania II -0.3%,
+the rest the same. Much less than the 3 to 9% the second opinion
+gave for these together: the writes to the video memory that a block
+knows of are few beside those through a pointer it does not know,
+and the 16-bit INC and DEC were mostly of HL, which was one `lea`
+already. Right for what they are, and the code is shorter; the time
+is elsewhere (the translator, the events).
+
+Tests: the 24 of `gbreg`, the eight scenes and the eight older ones
+with the same memory as 175, the pictures as before, R-Type II's bar,
+ZAS's logo. Not covered: no test ROM reads or writes the echo - the
+change is two constants and was read, not run on a program that uses
+it; nothing on a WonderSwan or in nileswan-medem.
 
 He also saw, in 166, Super Mario Land's whole picture jump sideways
 for an instant now and then. Its status bar is a STAT interrupt at a

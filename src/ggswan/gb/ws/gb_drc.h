@@ -83,6 +83,7 @@ extern const uint16_t __far drc_stub_offs[];
 #define ST_VREG      81     /* LDH (n), A to SCY, SCX, BGP, WY or WX: the register and the frame's list of changes */
 #define ST_BANKX     84     /* LD (nn), A to the second ROM area's bank register */
 #define ST_BANK0     87     /* the same, from a block in the first ROM area */
-#define ST_COUNT     30
+#define ST_WRV       90     /* a write the block knows is to the video memory */
+#define ST_COUNT     31
 
 #endif

@@ -6,7 +6,7 @@ emulated by a dynamic recompiler (Z80 to V30MZ code), with the original
 interpreter kept for the parts that need it. The Game Gear video memory is
 mapped onto the WonderSwan's own tile and screen hardware.
 
-Status: fairly stable (patch 175). It has been tested mostly in the
+Status: fairly stable (patch 176). It has been tested mostly in the
 nileswan-medem emulator and with the host test tools; tests on real
 hardware are still to come.
 
@@ -365,7 +365,7 @@ it are listed in order without one.
 - lighter DYN lookup and class routine for deferred tile bytes
 - OUTI runs to CRAM handled in the run routine
 
-### Patches 90-175
+### Patches 90-176
 
 | Patch | Change |
 |---|---|
@@ -455,3 +455,4 @@ it are listed in order without one.
 | 173 | gbswan: two more things out of C. The event in the middle of a frame (the timer's and LYC's: `gbf_event_asm`), with a short way through `schedule()` for LYC's interrupt alone; and code in the work RAM or the high RAM entered from the routine that looks blocks up (`s_lookup_ram`: its bytes compared there), not through the dispatcher. Cycles a Game Boy frame in `gbrun.py`: X's title 202,664 to 178,085, its fade 208,785 to 188,889; Donkey Kong Land 78,869 to 73,897, R-Type II 31,723 to 29,652, Batman 51,612 to 49,933, Race Drivin' 102,821 to 100,014, the other four 1 to 1.6% less; the same memory everywhere. The translator profiled by function and by instruction: no routine in it to convert, its time is spread evenly over the two long functions. Not run on a WonderSwan or in nileswan-medem |
 | 174 | gbswan: the translator itself, a tenth to a fifth faster, the code it makes unchanged (the same blocks at the same places, the same memory in every scene). Profiled line by line (`gbrun.py` `GBRUN_FUNCDUMP`, the object linked with `-g`): three fifths of `translate_block`'s own time was what it does before each instruction. One table by opcode (flags, length, cycles, "the interpreter's") read once in the first pass and kept for the second, for three far tables and a switch of seventeen compares; a block put together in the console's RAM and copied to its segment once; tests and reads done once. Cycles a block: `translate_block` 5,682 to 4,548 at Race Drivin's start, 4,784 to 3,771 in Batman, 4,530 to 3,622 in Donkey Kong Land, 4,193 to 3,286 in X; `scan_block` 5,517 to 5,121, 5,378 to 5,005, 4,351 to 4,034, 3,924 to 3,590. Race Drivin's start, cycles a frame: 696,375 to 628,159. Not run on a WonderSwan or in nileswan-medem |
 | 175 | gbswan: what the hottest blocks of the slow scenes showed. Super Mario Land 2's map (37 frames a second on Gio's screen) reads its data through a routine that sets the ROM bank and sets it back, 160 times a frame, each through the general write routine: `LD (nn), A` to the bank register now calls a routine of its own (`s_bankx`, `s_bank0`), and writes to the cartridge's RAM are looked for sooner: 84,014 cycles a frame to 74,163. ZAS: `ADD HL, rr` was seven instructions to keep flags nothing read; `add bx, rr` when H and C are set again first: 64,404 to 60,174. `s_wrt` tries the patterns first, then the maps. The translator asks the table whether a block starts at the next instruction only when a bit says one may (`DRC_HAS`): Race Drivin's start 628,159 to 603,032. Race Drivin' 99,125 to 93,065, X 86,072 to 82,479, Donkey Kong Land 72,329 to 69,631, Batman 49,528 to 48,029. Not run on a WonderSwan or in nileswan-medem |
+| 176 | gbswan: the work RAM's echo put right, and four of the second opinion's small proposals. The code made took C000h-FDFFh as one piece at `[address - 6000h]`: E000h-FDFFh, the echo, was the console's 8000h-9DFFh, where the translator has had its buffer and its bitmap since 174 and 175; the range in line now ends at DFFFh and the routines do the echo (a stack in the echo is still not supported: the stack's own path is left as it was for the games whose stack is in the high RAM). A write the block knows is to the video memory calls `s_wrv`, with nothing after the call (11 bytes for 37); INC and DEC of BC, DE, HL are the V30MZ's one-byte ones when the flags are in AH or dead; INC and DEC (HL) work in place when HL is known to be in the work RAM; `ADD HL, rr` with only C needed is three instructions. Under 1% in the scenes (Batman and ZAS -0.7%, Race Drivin' -0.3%), the same memory everywhere; 24 tests pass. Not run on a WonderSwan or in nileswan-medem; no test ROM for the echo. |
