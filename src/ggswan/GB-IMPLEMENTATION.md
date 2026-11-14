@@ -44,7 +44,7 @@ background and the window, switched at the right lines by the line
 interrupt, with the scroll the program gave each line; the sprites are
 the WonderSwan's.
 
-## Where it is (patch 172)
+## Where it is (patch 173)
 
 The CPU is a recompiler (`gb/ws/gb_drc.c`, `gb_drc_asm.s`; `GB-ABI.md`),
 there is sound (`gb/ws/gb_sound.c`: what it does and does not, at its
@@ -546,6 +546,77 @@ pictures again.
 Not done: Batman's and Castlevania II's water were not measured (not
 reached); X in the game; Race Drivin's pauses; Super Mario Land 2's
 map; ZAS in the game.
+
+**Patch 173.** Asked by Gio after 172: which hot code is still C and
+could be assembly; then to do the first two and to profile the
+translator by its commonest calls (Batman, Race Drivin', X, Donkey
+Kong Land).
+
+- **The event** (`gbf_hw.c`, `event()`; 8.5% of X's title, with
+  `timer_sync`). In the middle of a frame it is the timer and LYC's
+  interrupt and nothing else: that much is `gbf_event_asm`
+  (`gb_asm.s`), which ends in `gbf_sched_asm`; the vertical blank, the
+  frame's end, an interrupt at a mode and a serial transfer stay in C
+  (the routine answers 0 and has done nothing). `s_exit` calls it
+  before `gbf_host_event`. `gbf_sched_asm` has a short way of its own
+  for the LCD on, LYC's interrupt the only one of STAT's, the timer
+  off.
+- **Code in RAM** (`gbd_run_frame`, `find`, `gbd_ram_cmp`: a tenth of
+  Donkey Kong Land's scene). `s_lookup` sent every address from 8000h
+  up to the dispatcher. `s_lookup_ram` (`GB-ABI.md`, "Interrupts")
+  now finds the first form of a block in the work RAM or the high RAM
+  and compares its bytes itself; the other forms, a block not at its
+  first place, a change in the bytes: the dispatcher, as before.
+
+A fault of my own on the way, never in a patch: the label I put in
+`s_exit_event` for "the event is done" was a `1:`, and the `jnz 1f` of
+the halted case just above, which meant the `1:` further down, went to
+mine: four words popped that were never pushed. The regression caught
+it (Blargg's 02-interrupts failed, Batman's run stopped). A name now;
+and no more numbers for labels put into a routine that has its own.
+
+Cycles a Game Boy frame, 172 to 173 (full speed is 51,430), the same
+memory in every one:
+
+| scene | 172 | 173 | |
+|---|---|---|---|
+| X, the title | 202,664 | 178,085 | -12.1% |
+| X, the fade | 208,785 | 188,889 | -9.5% |
+| R-Type II | 31,723 | 29,652 | -6.5% |
+| Donkey Kong Land | 78,869 | 73,897 | -6.3% |
+| Batman | 51,612 | 49,933 | -3.3% |
+| Race Drivin' | 102,821 | 100,014 | -2.7% |
+| Castlevania II | 50,913 | 50,110 | -1.6% |
+| Super Mario Land 2 | 48,394 | 47,817 | -1.2% |
+| ZAS | 65,426 | 64,713 | -1.1% |
+| X, the tunnel | 86,824 | 86,123 | -0.8% |
+
+`gbreg` 24 of 24; the eight older scenes the same memory and the same
+pictures against `gbftest` (cycles a WonderSwan frame: Batman 33,745
+to 33,211, Castlevania II 36,217 to 35,762, R-Type 42,785 to 42,088,
+Super Mario Land 2 11,618 to 11,128, Bubble Ghost 15,208 to 15,318);
+R-Type II's bar and ZAS's logo as before. The title's end picture is
+one dot of its dissolve away from 172's: the picture is taken at a
+WonderSwan frame, and the program is further on by then.
+
+**The translator, profiled** (`GBRUN_CALLS=1`, new: every function by
+its own cycles and the times it is entered; `GBRUN_FUNC` for the
+instructions of one). Race Drivin's start (frames 754-772: 684 blocks,
+10,550 Game Boy instructions, 696,375 cycles a frame): `translate_block`
+30.9% (5,682 cycles a block, its own), `scan_block` 30.1% (5,517),
+`find` 4.0% (7,693 calls of 65), `exit_to` 2.0%, `_fmemcpy` 2.2%,
+nothing else over 1.6%. Donkey Kong Land (frames 900-1100, 326
+blocks): 9.2% and 8.8%, `find` 2.0%. Inside the two functions no
+instruction is over 1.8% of its function and the forty heaviest are
+30% of it: some 130 V30MZ instructions for each Game Boy instruction
+in each of the two passes (360 cycles), all of them run once. There is
+no call to convert; what can be seen to be saved is small (the
+seventeen compares `interp_op` is compiled to, a byte read again for
+"after EI", the chains of tests on the opcode in `scan_block`): a
+tenth of the translator's time perhaps. More than that is another
+translator (tables by opcode, assembly). Not done here. X's and
+Batman's figures were not taken: the frames chosen for X translated
+nothing, and Batman's run was the one the fault above stopped.
 
 He also saw, in 166, Super Mario Land's whole picture jump sideways
 for an instant now and then. Its status bar is a STAT interrupt at a

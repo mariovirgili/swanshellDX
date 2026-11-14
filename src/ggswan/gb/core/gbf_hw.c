@@ -33,7 +33,8 @@ uint16_t gbf_ev_pos;            // the frame's cycle the next event is at
 // (not static: gb_asm.s has schedule() in assembly, gb_drc_asm.s writes LYC)
 uint16_t gbf_div_off;           // DIV's 16 bits / 4 = div_off + the frame's cycle
 #define div_off gbf_div_off
-static uint16_t tim_last;       // (DIV / 4) the timer was brought up to
+uint16_t gbf_tim_last;          // (DIV / 4) the timer was brought up to
+#define tim_last gbf_tim_last
 static uint16_t ser_end;        // (DIV / 4) the serial transfer ends at
 uint8_t gbf_ser_on;
 #define ser_on gbf_ser_on
@@ -218,7 +219,17 @@ static void sync(void) {
     schedule();
 }
 
+#ifdef GB_WS
+// (gb_asm.s: event() below when it is the timer's or LYC's alone; 0, and
+// nothing done, when it is anything more: the vertical blank, the frame's
+// end, an interrupt asked for at a mode, a serial transfer)
+uint8_t gbf_event_asm(void);
+#endif
+
 static void event(void) {
+#ifdef GB_WS
+    if (gbf_event_asm()) return;
+#endif
     timer_sync();
     serial_sync();
     uint16_t pos = POS();

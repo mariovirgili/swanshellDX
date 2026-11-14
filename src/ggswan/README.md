@@ -6,7 +6,7 @@ emulated by a dynamic recompiler (Z80 to V30MZ code), with the original
 interpreter kept for the parts that need it. The Game Gear video memory is
 mapped onto the WonderSwan's own tile and screen hardware.
 
-Status: fairly stable (patch 172). It has been tested mostly in the
+Status: fairly stable (patch 173). It has been tested mostly in the
 nileswan-medem emulator and with the host test tools; tests on real
 hardware are still to come.
 
@@ -365,7 +365,7 @@ it are listed in order without one.
 - lighter DYN lookup and class routine for deferred tile bytes
 - OUTI runs to CRAM handled in the run routine
 
-### Patches 90-172
+### Patches 90-173
 
 | Patch | Change |
 |---|---|
@@ -452,3 +452,4 @@ it are listed in order without one.
 | 170 | gbswan, the slow games again. Race Drivin' has more code than the recompiler has room for (1,737 blocks, 460,000 bytes, in its first twenty seconds; then everything is forgotten and translated again, five seconds at a frame or two a second): a block now ends where another already starts (from its sixth instruction), not with a second translation of the same code: 357,000 bytes at the same point. Code in RAM compared in one pass of the plugin's own routine, not by the C library first; `op_flags` from a table; a pointer whose high byte the block sets (`LD H, n`) read and written with nothing checked. Cycles a Game Boy frame in `gbrun.py`: Donkey Kong Land 85,404 to 78,192, Race Drivin' 109,938 to 104,873, the rest 0 to 2% less. Tried and left out: the tiles written in line, a compact translation after the room runs out (17% slower). Not run on a WonderSwan or in nileswan-medem |
 | 171 | gbswan: leaving a block without the dispatcher. What most leavings are for (the event that is due, an interrupt to take, HALT's wait, on to the next block) is done by a routine in each code segment (`s_exit`), not in C; HALT is translated; a write to a sound register through a pointer is a byte moved; the dispatcher fills the two small tables; `gbf_hw.c` works out less for a STAT interrupt on LYC alone (asked for in patch 170's report: Batman's water, X's title at 8 frames a second, Castlevania II). Cycles a Game Boy frame in `gbrun.py`: X's title 343,316 to 232,860; Batman 58,191 to 51,752, Castlevania II 56,998 to 51,351, X 92,045 to 86,054, Donkey Kong Land 78,192 to 74,851, the other four 3 to 6% less. Not run on a WonderSwan or in nileswan-medem |
 | 172 | gbswan: Donkey Kong Land's Kong no longer broken up. The game draws his next pose into a second set of tiles while the first is still on the WonderSwan's screen (which shows the patterns as they are, a frame behind the program); when a program is seen to write patterns of sprites on the screen while the picture is drawn, those writes now reach the tiles with the picture of the frame after (`gb_video.c`, "the patterns a frame late"): of 186 pictures in a row with Kong moving, 121 wrong before, none now; that scene 5% slower. `schedule()` in assembly and LYC written without C, for programs with an interrupt at a line or at every line (asked for in patch 171's report: Batman's and Castlevania II's water, X's fades): X's title 232,860 cycles a frame to 202,664, its fade 234,546 to 208,785. Not run on a WonderSwan or in nileswan-medem |
+| 173 | gbswan: two more things out of C. The event in the middle of a frame (the timer's and LYC's: `gbf_event_asm`), with a short way through `schedule()` for LYC's interrupt alone; and code in the work RAM or the high RAM entered from the routine that looks blocks up (`s_lookup_ram`: its bytes compared there), not through the dispatcher. Cycles a Game Boy frame in `gbrun.py`: X's title 202,664 to 178,085, its fade 208,785 to 188,889; Donkey Kong Land 78,869 to 73,897, R-Type II 31,723 to 29,652, Batman 51,612 to 49,933, Race Drivin' 102,821 to 100,014, the other four 1 to 1.6% less; the same memory everywhere. The translator profiled by function and by instruction: no routine in it to convert, its time is spread evenly over the two long functions. Not run on a WonderSwan or in nileswan-medem |

@@ -39,6 +39,7 @@ uint8_t drc_cmp_len;                // how many
 uint8_t gbd_ram_cmp(void);          // gb_asm.s
 uint16_t drc_link, drc_link_seg, drc_segtab[4];
 uint16_t drc_key0, drc_keyx, drc_hash0, drc_hashx, drc_tseg = DRC_TABLE_SEG;
+uint16_t drc_ram_jmp[2];        // (gb_drc_asm.s, s_lookup_ram: the block to go to)
 uint8_t drc_must, drc_ram_ok;
 uint8_t drc_mbc_and, drc_mbc_z1, drc_p1_tab[4];
 uint16_t drc_mbc_top, drc_mbc_lo, drc_mbc_or, drc_mbc_hi, drc_bank_mask;

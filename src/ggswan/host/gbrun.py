@@ -159,7 +159,7 @@ def h_sd(uc, addr, size, name):
             g = st['gbframes']
             if g in KEYS: st['keys'] = KEYS[g]
             if CYCLES and g == PROF_FROM:
-                prof.clear(); hot.clear(); fhot.clear(); fcnt.clear(); prof_gb0[0] = g
+                prof.clear(); hot.clear(); (CALLS.clear() if CALLS is not None else None); fhot.clear(); fcnt.clear(); prof_gb0[0] = g
                 if callers is not None: callers.clear()
             if g >= FRAMES: st['stop'] = True; uc.emu_stop()
         return
@@ -231,6 +231,9 @@ if CYCLES:
     HOT = bool(os.environ.get('GBRUN_HOT'))     # GBRUN_HOT=1: the blocks most cycles are spent in
     hot = collections.Counter()
     FUNC = os.environ.get('GBRUN_FUNC')     # GBRUN_FUNC=name: that function's instructions by cycles
+    # GBRUN_CALLS=1: every function of the plugin by its cycles (its own, not its callees') and the times it is entered, from GBRUN_PROF_FROM
+    CALLS = collections.Counter() if os.environ.get('GBRUN_CALLS') else None
+    fstart = set(starts)
     fhot = collections.Counter(); fcnt = collections.Counter()
     jst = [0, 0, 0]
     ccache = {}
@@ -253,6 +256,7 @@ if CYCLES:
         prof[w] += c
         if w == 'translated code' and HOT: hot[addr] += c
         if w == FUNC: fhot[addr] += c; fcnt[addr] += 1
+        if CALLS is not None and addr in fstart: CALLS[w] += 1
         if cyc[0] >= cyc[1]: uc.emu_stop()
     uc.hook_add(UC_HOOK_CODE, h_cyc)
 
@@ -644,5 +648,5 @@ if CYCLES and st['gbframes']:
         for k in ('gbv_wait', 'gbv_now_lines'): prof.pop(k, None)
     tot = sum(prof.values())
     print('V30MZ cycles a Game Boy frame, from frame %d: %d (a WonderSwan frame has 40704, a Game Boy frame\'s time 51430)' % (PROF_FROM, tot // max(1, st['gbframes'] - prof_gb0[0])))
-    for k, v in prof.most_common(14): print('  %5.1f%%  %s' % (100.0 * v / tot, k))
+    for k, v in prof.most_common(40 if CALLS is not None else 14): print('  %5.1f%%  %s' % (100.0 * v / tot, k) + ('  %d calls, %d cycles each' % (CALLS[k], v // CALLS[k]) if CALLS is not None and CALLS[k] else ''))
 

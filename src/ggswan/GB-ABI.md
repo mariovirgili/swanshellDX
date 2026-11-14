@@ -260,7 +260,9 @@ block that leaves (its time has run out, or the block to go to is not
 in the small tables) goes to `s_exit`, in its own code segment, which
 does what `gbd_run_frame` does, in its order: `drc_ei` or an
 instruction for the interpreter: the dispatcher; the count at zero or
-below: `gbf_host_event` (C; AX, BX, CX, DX saved around it), and the
+below: the event (`gbf_event_asm` in `gb_asm.s` when it is the
+timer's and LYC's alone, as in the middle of a frame it mostly is;
+else `gbf_host_event`, C; AX, BX, CX, DX saved around it), and the
 dispatcher if that ended the frame; a jump to be joined: the
 dispatcher; halted: the event at once if no interrupt is asked for,
 otherwise on, a cycle later; an interrupt asked for, enabled, and IME
@@ -268,7 +270,11 @@ set: PC written at `[BP - 6002h]`, SP down two, IME cleared, the bit
 cleared in IF, 5 cycles, PC = 40h + 8n (SP outside C002h-E000h and
 below FF82h: the dispatcher, whose `gb_cpu_interrupt` writes
 anywhere); then the block at PC by the small tables and the big one's
-first place, and the dispatcher when it is not there or is in RAM.
+first place, and the dispatcher when it is not there. Code in the
+work RAM or the high RAM (patch 173, `s_lookup_ram`): its first form,
+if it is at its first place in the table and the bytes there are
+still the ones translated (compared in the routine as `gbd_ram_cmp`
+does, the bytes read as the code runs left out); else the dispatcher.
 The dispatcher does the same things for what reaches it. RETI, with an interrupt enabled and waiting, leaves
 by the dispatcher, which takes it there and then (until patch 168 it
 went on by the table and the interrupt waited for the next event: a

@@ -393,6 +393,58 @@ gbf_sched_asm:
     je 1f
     IA16_RET
 1:
+    // the commonest case by itself: the LCD on, LYC's interrupt the only
+    // one of STAT's asked for, the timer off
+    mov al, ss:[0x9F41]
+    and al, 0x78
+    cmp al, 0x40
+    jne sched_any
+    test byte ptr ss:[0x9F07], 4
+    jnz sched_any
+    cmp byte ptr ss:[gb + 12], 0
+    je sched_any
+    push si
+    mov si, ss:[gbf_ev_pos]
+    sub si, ss:[gbf_cyc]
+    mov dx, FRAME_MC
+    cmp byte ptr ss:[gbf_vbl_done], 0
+    jne 1f
+    mov dx, VBL_MC
+1:
+    mov bx, ss:[gbf_stat_done]
+    cmp bx, si
+    jb 1f
+    mov bx, si
+1:
+    mov al, ss:[0x9F45]
+    cmp al, 154
+    jae 2f
+    mov cx, 153 * LINE_MC + 3
+    test al, al
+    jz 1f
+    mov ah, LINE_MC
+    mul ah
+    inc ax
+    mov cx, ax
+1:
+    cmp cx, bx
+    jbe 2f
+    cmp cx, dx
+    jae 2f
+    mov dx, cx
+2:
+    cmp dx, bx
+    ja 1f
+    mov dx, bx
+    inc dx
+1:
+    mov ss:[gbf_ev_pos], dx
+    sub dx, si                          // (zero or less: the event is now)
+    mov ss:[gbf_cyc], dx
+    pop si
+    mov al, 1
+    IA16_RET
+sched_any:
     push si
     push di
     mov si, ss:[gbf_ev_pos]
@@ -555,3 +607,92 @@ sched_timer:
     pop si
     mov al, 1
     IA16_RET
+
+/*
+ * uint8_t gbf_event_asm(void): gbf_hw.c's event() when there is nothing
+ * in it but the timer and LYC's interrupt, which is what an event is in
+ * the middle of a frame for most programs; then schedule(), above.
+ * 0 and nothing done otherwise.
+ */
+    .global gbf_event_asm
+gbf_event_asm:
+    xor al, al
+    cmp byte ptr ss:[gbf_ser_on], 0
+    jne 9f
+    mov dx, ss:[gbf_ev_pos]
+    sub dx, ss:[gbf_cyc]                // the frame's cycle now
+    cmp dx, FRAME_MC
+    jae 9f
+    cmp byte ptr ss:[gb + 12], 0        // gb.lcd_on
+    je 1f
+    test byte ptr ss:[0x9F41], 0x38
+    jnz 9f
+    cmp byte ptr ss:[gbf_vbl_done], 0
+    jne 1f
+    cmp dx, VBL_MC
+    jb 1f
+9:
+    IA16_RET
+1:
+    // timer_sync
+    add dx, ss:[gbf_div_off]            // DIV / 4 now
+    mov al, ss:[0x9F07]                 // TAC
+    test al, 4
+    jz 4f
+    mov cl, al
+    and cl, 3
+    shl cl, 1
+    jnz 2f
+    mov cl, 8
+2:
+    mov ax, dx
+    shr ax, cl
+    mov bx, ss:[gbf_tim_last]
+    shr bx, cl
+    sub ax, bx
+    mov bx, 0xFFFF
+    shr bx, cl
+    and ax, bx                          // the timer's steps since
+    jz 4f
+    xor bh, bh
+    mov bl, ss:[0x9F05]                 // TIMA
+    add ax, bx
+2:
+    cmp ax, 0xFF
+    jbe 3f
+    sub ax, 0x100
+    mov bl, ss:[0x9F06]                 // TMA
+    add ax, bx
+    or byte ptr ss:[0x9F0F], 4
+    jmp 2b
+3:
+    mov ss:[0x9F05], al
+4:
+    mov ss:[gbf_tim_last], dx
+    // LYC's interrupt: at the one cycle its signal rises
+    mov bx, ss:[gbf_ev_pos]
+    cmp byte ptr ss:[gb + 12], 0
+    je 5f
+    test byte ptr ss:[0x9F41], 0x40
+    jz 5f
+    test bx, bx
+    jz 5f
+    cmp bx, FRAME_MC
+    jae 5f
+    mov al, ss:[0x9F45]
+    cmp al, 154
+    jae 5f
+    mov cx, 153 * LINE_MC + 3
+    test al, al
+    jz 2f
+    mov ah, LINE_MC
+    mul ah
+    inc ax
+    mov cx, ax
+2:
+    cmp bx, cx
+    jne 5f
+    or byte ptr ss:[0x9F0F], 2
+5:
+    mov ss:[gbf_stat_done], bx
+    jmp gbf_sched_asm

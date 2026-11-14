@@ -131,7 +131,7 @@ s_lookup:
     jmp far ptr [di + DRC_RC0 + 4]
 4:
     test si, si
-    js 9f
+    js s_lookup_ram
     mov di, si
     shl di, 3
     and di, 0x0FF8
@@ -196,6 +196,82 @@ s_lookup:
 9:
     mov [gb + GB_PC], si
     jmp s_exit_slow
+// Code in the work RAM or the high RAM: its first form, when that is at
+// its first place in the table and the bytes there are still the ones
+// translated (gb_drc.c, ram_same; gb_asm.s, gbd_ram_cmp: the bytes read
+// as the code runs are left out). Anything else is the dispatcher's.
+// (Donkey Kong Land, R-Type II and Race Drivin' go through code in RAM
+// tens of times a frame; each was a round through C.)
+s_lookup_ram:
+    cmp si, 0xC000
+    jb 9b
+    mov di, si
+    shr di, 6
+    xor di, si
+    xor di, 0xFFE0              // (the key FFFFh << 5)
+    and di, 8191
+    shl di, 3
+    mov es, [drc_tseg]
+    cmp es:[di], si
+    jne 9b
+    cmp word ptr es:[di + 2], 0xFFFF
+    jne 9b
+    push ax
+    push bx
+    push cx
+    push si
+    les bx, es:[di + 4]         // the block
+    mov [drc_ram_jmp], bx
+    mov [drc_ram_jmp + 2], es
+    xor cx, cx
+    mov cl, es:[bx - 1]         // how many bytes
+    mov ax, si
+    add ax, cx
+    jc 7f
+    cmp si, 0xFF80
+    jae 1f
+    cmp ax, 0xE000
+    ja 7f
+1:
+    mov di, bx
+    dec di
+    sub di, cx                  // the copy of the bytes translated
+    mov bx, di
+    sub si, 0x6000
+    cld
+2:
+    repe cmpsb
+    je 3f
+    mov ax, di
+    dec ax
+    sub ax, bx                  // which byte differs: one read as the code runs?
+    push cx
+    mov cl, al
+    and cl, 7
+    shr ax, 3
+    push bx
+    add bx, ax
+    mov al, es:[bx - 18]
+    pop bx
+    shr al, cl
+    pop cx
+    test al, 1
+    jz 7f
+    jcxz 3f
+    jmp 2b
+3:
+    pop si
+    pop cx
+    pop bx
+    pop ax
+    .byte 0xFF, 0x2E            // jmp far [drc_ram_jmp]
+    .word drc_ram_jmp
+7:
+    pop si
+    pop cx
+    pop bx
+    pop ax
+    jmp 9b
 s_exit_time:
     mov [gb + GB_PC], si
 // leave: gb.pc is set. What most leavings are for is done here, without
@@ -231,7 +307,11 @@ s_exit_event:
     push bx
     push cx
     push dx
-    IA16_CALL gbf_host_event
+    IA16_CALL gbf_event_asm     // (gb_asm.s: the timer's and LYC's)
+    test al, al
+    jnz s_exit_evdone
+    IA16_CALL gbf_host_event    // (the rest: C)
+s_exit_evdone:
     pop dx
     pop cx
     pop bx
