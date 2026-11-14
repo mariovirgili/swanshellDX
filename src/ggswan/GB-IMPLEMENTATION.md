@@ -44,7 +44,7 @@ background and the window, switched at the right lines by the line
 interrupt, with the scroll the program gave each line; the sprites are
 the WonderSwan's.
 
-## Where it is (patch 177)
+## Where it is (patch 178)
 
 The CPU is a recompiler (`gb/ws/gb_drc.c`, `gb_drc_asm.s`; `GB-ABI.md`),
 there is sound (`gb/ws/gb_sound.c`: what it does and does not, at its
@@ -901,6 +901,62 @@ translator about 640. Blocks entered once: Race Drivin' 194 of 1,603,
 X 139 of 640, Batman 131 of 635. A saving of some 280 cycles an
 instruction on an eighth to a fifth of the code, 358 more on the
 rest: not done.
+
+**Patch 178.** The translator by tables, begun from what it costs.
+`GBRUN_OPMIX=1`: the instructions translated in Race Drivin' up to the
+race (12,774): LD r, r 17%, LD through BC, DE, HL 13%, INC and DEC r
+9%, LDH 8%, the ALU with a register 8%, JR 5%, LD with an address 5%,
+the ALU with a constant 4%; those that touch registers only are 47%
+of them. The two functions by line again (`fprof.sh`, on 177):
+
+- `translate_block`: three fifths of it before the instruction's own
+  code - `rb()` three times for its bytes (14%), which of `i_dir` and
+  `i_cls` is its own (10%), x, y, z, p (6.5%), the test for the
+  interpreter's (6%), `i_pc` twice (5.5%), "was the last one EI" (5.5%).
+- `scan_block`: the compares for LD rr, nn and LD B / D / H, n (7.6%),
+  for LDH A, (41h) (5.6%), for LD rr, nn again (5.1%), for EI (3.4%),
+  on every instruction; `i_dir` and `i_cls` cleared (5.6%); the hash
+  for "a block starts at the next instruction" (9% with `DRC_HAS`).
+
+Done, the code made left as it was (the same table of blocks, the
+same memory, in the four scenes that translate):
+
+- `op_inf`'s second byte, bit 5: the instruction is one `scan_block`
+  has something of its own for (LD rr, nn, LD B / D / H, n, LDH A,
+  (n), EI). One test passes the others by.
+- `i_known`: the first instruction `i_dir` and `i_cls` are written
+  for - the one after the block's first LD rr, nn or LD B / D / H, n.
+  Before it `scan_block` clears nothing and `translate_block` fetches
+  nothing (most blocks: never).
+- the bytes from `tbuf` by a pointer while three (two, in the scan)
+  are there; `rb()` at the buffer's end.
+- "the instruction before was EI" is set by EI.
+- the hash with `drc_hash0` and `drc_hashx`, which the bank's change
+  keeps for the dispatcher.
+
+Cycles a block in Race Drivin's start: `scan_block` 5,214 to 4,313,
+`translate_block` 4,728 to 3,409. Cycles a Game Boy frame while
+translating, 177 to 178:
+
+| scene | 177 | 178 | |
+|---|---|---|---|
+| Race Drivin's start | 605,626 | 522,307 | -13.8% |
+| Batman, a level loaded | 127,900 | 118,142 | -7.6% |
+| Donkey Kong Land | 76,201 | 73,272 | -3.8% |
+| X | 78,927 | 77,306 | -2.1% |
+
+In the game (the four slowest; the same memory): Donkey Kong Land
+69,667 to 67,765, Race Drivin' 92,776 to 91,721, ZAS 59,930 to 59,602,
+X 82,609 to 82,552.
+
+Tests: the 24 of `gbreg`; the four slowest scenes and the four that
+translate, the same memory and the same table of blocks as 177 (the
+shorter check Gio asked for: the slow ROMs only). Not run: the other
+scenes, the pictures; nothing on a WonderSwan or in nileswan-medem.
+
+What is left of the translator: some 280 cycles an instruction in the
+scan and 220 in the other pass, of 640. The scan is the next thing to
+write in assembly: it reads and writes tables and makes no code.
 
 He also saw, in 166, Super Mario Land's whole picture jump sideways
 for an instant now and then. Its status bar is a STAT interrupt at a

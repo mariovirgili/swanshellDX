@@ -324,14 +324,16 @@ static uint16_t blk_pc;
 static uint8_t in_ram;
 // by opcode, in one place for the two passes (three tables until patch
 // 174, a far read each): what it does with the flags (op_flags_tab), then
-// its length (bits 0-1), its cycles (bits 2-4) and whether it is left to
-// the interpreter (bit 7: interp_op)
+// its length (bits 0-1), its cycles (bits 2-4), whether scan_block has
+// something of its own to do for it (bit 5: LD rr, nn, LD B / D / H, n,
+// LDH A, (n), EI) and whether it is left to the interpreter (bit 7:
+// interp_op)
 static const uint8_t op_inf[256][2] = {
-    { 0x00, 0x05 }, { 0x00, 0x0F }, { 0x80, 0x09 }, { 0x00, 0x09 }, { 0x03, 0x05 }, { 0x03, 0x05 }, { 0x00, 0x0A }, { 0x07, 0x05 },
+    { 0x00, 0x05 }, { 0x00, 0x2F }, { 0x80, 0x09 }, { 0x00, 0x09 }, { 0x03, 0x05 }, { 0x03, 0x05 }, { 0x00, 0x2A }, { 0x07, 0x05 },
     { 0xC0, 0x97 }, { 0x06, 0x09 }, { 0x00, 0x09 }, { 0x00, 0x09 }, { 0x03, 0x05 }, { 0x03, 0x05 }, { 0x00, 0x0A }, { 0x07, 0x05 },
-    { 0xC0, 0x86 }, { 0x00, 0x0F }, { 0x80, 0x09 }, { 0x00, 0x09 }, { 0x03, 0x05 }, { 0x03, 0x05 }, { 0x00, 0x0A }, { 0x27, 0x05 },
+    { 0xC0, 0x86 }, { 0x00, 0x2F }, { 0x80, 0x09 }, { 0x00, 0x09 }, { 0x03, 0x05 }, { 0x03, 0x05 }, { 0x00, 0x2A }, { 0x27, 0x05 },
     { 0xC0, 0x0E }, { 0x06, 0x09 }, { 0x00, 0x09 }, { 0x00, 0x09 }, { 0x03, 0x05 }, { 0x03, 0x05 }, { 0x00, 0x0A }, { 0x27, 0x05 },
-    { 0x80, 0x0A }, { 0x00, 0x0F }, { 0x80, 0x09 }, { 0x00, 0x09 }, { 0x03, 0x05 }, { 0x03, 0x05 }, { 0x00, 0x0A }, { 0x37, 0x05 },
+    { 0x80, 0x0A }, { 0x00, 0x2F }, { 0x80, 0x09 }, { 0x00, 0x09 }, { 0x03, 0x05 }, { 0x03, 0x05 }, { 0x00, 0x2A }, { 0x37, 0x05 },
     { 0x80, 0x0A }, { 0x06, 0x09 }, { 0x00, 0x09 }, { 0x00, 0x09 }, { 0x03, 0x05 }, { 0x03, 0x05 }, { 0x00, 0x0A }, { 0x02, 0x05 },
     { 0x80, 0x0A }, { 0x00, 0x0F }, { 0x80, 0x09 }, { 0x00, 0x09 }, { 0x83, 0x0D }, { 0x83, 0x0D }, { 0x80, 0x0E }, { 0x06, 0x05 },
     { 0x80, 0x0A }, { 0xC0, 0x89 }, { 0x00, 0x09 }, { 0x00, 0x09 }, { 0x03, 0x05 }, { 0x03, 0x05 }, { 0x00, 0x0A }, { 0x26, 0x05 },
@@ -357,9 +359,10 @@ static const uint8_t op_inf[256][2] = {
     { 0x80, 0x09 }, { 0xC0, 0x11 }, { 0x80, 0x0F }, { 0xC0, 0x85 }, { 0x80, 0x0F }, { 0xC0, 0x85 }, { 0x27, 0x0A }, { 0xC0, 0x11 },
     { 0x80, 0x0E }, { 0x00, 0x0D }, { 0x80, 0x09 }, { 0xC0, 0x85 }, { 0xC0, 0x85 }, { 0x00, 0x11 }, { 0x07, 0x0A }, { 0xC0, 0x11 },
     { 0xC0, 0x92 }, { 0xC0, 0x05 }, { 0x80, 0x13 }, { 0xC0, 0x85 }, { 0xC0, 0x85 }, { 0xC0, 0x85 }, { 0x07, 0x0A }, { 0xC0, 0x11 },
-    { 0x00, 0x0E }, { 0x07, 0x0D }, { 0x00, 0x09 }, { 0x00, 0x05 }, { 0xC0, 0x85 }, { 0x38, 0x11 }, { 0x07, 0x0A }, { 0xC0, 0x11 },
-    { 0xC0, 0x8E }, { 0x00, 0x09 }, { 0x00, 0x13 }, { 0x00, 0x05 }, { 0xC0, 0x85 }, { 0xC0, 0x85 }, { 0x07, 0x0A }, { 0xC0, 0x11 },
+    { 0x00, 0x2E }, { 0x07, 0x0D }, { 0x00, 0x09 }, { 0x00, 0x05 }, { 0xC0, 0x85 }, { 0x38, 0x11 }, { 0x07, 0x0A }, { 0xC0, 0x11 },
+    { 0xC0, 0x8E }, { 0x00, 0x09 }, { 0x00, 0x13 }, { 0x00, 0x25 }, { 0xC0, 0x85 }, { 0xC0, 0x85 }, { 0x07, 0x0A }, { 0xC0, 0x11 },
 };
+static uint8_t i_known;         // (scan_block: the first instruction i_dir and i_cls are written for; FFh: none)
 static uint8_t i_inf[MAXI];     // (scan_block: each instruction's second byte of op_inf)
 static uint8_t after_ei;    // the instruction after EI: whatever leaves the block goes to the dispatcher
 static uint8_t idle;        // the block is a loop that waits: 1 on memory, 2 on LY, 3 on STAT
@@ -914,9 +917,18 @@ __attribute__((noinline)) static void translate_block(void) {
         call_stub(ST_DELAY_BC);
     if (code_top != block_start) loop_body = code_top;
     uint8_t prev_ei = 0;
+    // (the instruction's bytes straight from tbuf while three are there)
+    uint16_t tl2 = tlen > 2 ? tlen - 2 : 0;
+    cur_dir = cur_cart = 0;
+    cur_cls = 0;
     for (uint8_t i = 0; i < n_ins && !ended; i++) {
         uint16_t pc = i_pc[i], next = i_pc[i + 1];
-        uint8_t op = rb(pc), b1 = rb(pc + 1), b2 = rb(pc + 2);
+        uint8_t op, b1, b2;
+        {
+            uint16_t o = pc - tbase;
+            if (o < tl2) { const uint8_t *t = tbuf + o; op = t[0]; b1 = t[1]; b2 = t[2]; }
+            else { op = rb(pc); b1 = rb(pc + 1); b2 = rb(pc + 2); }
+        }
         uint16_t nn = b1 | (uint16_t) b2 << 8;
         uint8_t x = op >> 6, y = (op >> 3) & 7, z = op & 7, p = (op >> 4) & 3;
         live = i_live[i];
@@ -929,9 +941,10 @@ __attribute__((noinline)) static void translate_block(void) {
                 if (stat_at[k] == i) cur_wait = stat_mask[k];
         }
         after_ei = prev_ei;         // (the instruction before was EI)
-        prev_ei = op == 0xFB;
+        prev_ei = 0;                // (set by EI, below)
         uint8_t inf = i_inf[i];
-        if ((inf & 0x80) && op == 0x76 && !after_ei) {
+        if (inf & 0x80) {
+        if (op == 0x76 && !after_ei) {
             // HALT with no interrupt asked for (else the interpreter's: it
             // may be the one that reads the next byte twice): halted, and
             // out by the routine that waits (gb_drc_asm.s, s_exit)
@@ -955,7 +968,6 @@ __attribute__((noinline)) static void translate_block(void) {
             ended = 1;
             break;
         }
-        if (inf & 0x80) {
             exit_interp(pc);
             ended = 1;
             break;
@@ -963,15 +975,17 @@ __attribute__((noinline)) static void translate_block(void) {
         // (the instruction's cycles are counted before it: an exit inside
         // it has them)
         cyc += (inf >> 2) & 7;
-        if (x == 0 && z == 2 && y < 4) {        // (through BC or DE)
-            cur_dir = i_dir[y >> 1][i];
-            cur_cls = i_cls[y >> 1][i];
-        } else {
-            cur_dir = i_dir[2][i];
-            cur_cls = i_cls[2][i];
+        if (i >= i_known) {
+            if (x == 0 && z == 2 && y < 4) {        // (through BC or DE)
+                cur_dir = i_dir[y >> 1][i];
+                cur_cls = i_cls[y >> 1][i];
+            } else {
+                cur_dir = i_dir[2][i];
+                cur_cls = i_cls[2][i];
+            }
+            cur_cart = 0;
+            if (cur_dir >= 0xA000) { cur_cart = cur_dir; cur_dir = 0; }
         }
-        cur_cart = 0;
-        if (cur_dir >= 0xA000) { cur_cart = cur_dir; cur_dir = 0; }
         if (x == 1) {
             if (z == 6) read_to(R8[y], 1);
             else if (y == 6) write_from(R8[z], 0, 1, next);
@@ -1327,6 +1341,7 @@ __attribute__((noinline)) static void translate_block(void) {
                 E(0xC6); E(0x06); EW(ADDR(drc_ei)); E(0);
             } else if (y == 7) {                                // EI: after the next instruction
                 E(0xC6); E(0x06); EW(ADDR(drc_ei)); E(1);
+                prev_ei = 1;
             } else {                                            // CB
                 cyc++;
                 uint8_t cx = b1 >> 6, cy = (b1 >> 3) & 7, r = R8[b1 & 7];
@@ -1503,7 +1518,7 @@ __attribute__((noinline)) static void translate_block(void) {
         }
         // (EI: the instruction after it, then the dispatcher, which
         // enables the interrupts)
-        if (!ended && i > 0 && rb(i_pc[i - 1]) == 0xFB) {
+        if (!ended && after_ei) {
             exit_to(next, 0);
             ended = 1;
         }
@@ -1554,19 +1569,29 @@ static blk_t __far *find(uint16_t pc, uint16_t key);
 __attribute__((noinline)) static void scan_block(uint16_t pc) {
     uint8_t fa[MAXI];
     n_ins = 0;
+    i_known = 0xFF;
     uint8_t after_ei = 0, total = 0;
     uint16_t kv[3] = { 0, 0, 0 };
     uint8_t kn[3] = { 0, 0, 0 }, any = 0, has41 = 0;
     uint8_t clo[3], chi[3], ckn[3] = { 0, 0, 0 }, anyc = 0;
+    uint16_t tl1 = tlen > 1 ? tlen - 1 : 0;
     while (n_ins < MAXI && total < 90) {
-        uint8_t op = rb(pc);
+        uint8_t op, cb;
+        {
+            uint16_t o = pc - tbase;
+            if (o < tl1) { op = tbuf[o]; cb = tbuf[o + 1]; }
+            else { op = rb(pc); cb = rb(pc + 1); }
+        }
         const uint8_t *inf = op_inf[op];
         uint8_t m = inf[1];
         total += ((m >> 2) & 7) + 2;
-        uint8_t cb = rb(pc + 1);
         uint8_t f = op != 0xCB ? inf[0] : op_flags(op, cb);
-        i_dir[0][n_ins] = i_dir[1][n_ins] = i_dir[2][n_ins] = 0;
-        i_cls[0][n_ins] = i_cls[1][n_ins] = i_cls[2][n_ins] = 0;
+        // (what is known of BC, DE, HL: nothing, and nothing kept, until
+        // the block's first LD rr, nn or LD B / D / H, n - i_known)
+        if (any | anyc) {
+            i_dir[0][n_ins] = i_dir[1][n_ins] = i_dir[2][n_ins] = 0;
+            i_cls[0][n_ins] = i_cls[1][n_ins] = i_cls[2][n_ins] = 0;
+        }
         if (anyc) {
             for (uint8_t k = 0; k < 3; k++)
                 if (ckn[k]) {
@@ -1575,12 +1600,12 @@ __attribute__((noinline)) static void scan_block(uint16_t pc) {
                         : lo >= 0x80 && hi <= 0x9F ? 2 : hi <= 0x3F ? 3 : lo >= 0x40 && hi <= 0x7F ? 4 : 0;
                 }
         }
-        if (op < 0x30 && ((op & 0x0F) == 0x01 || (op & 0x0F) == 0x06)) {
+        if ((m & 0x20) && op < 0x30) {
             // LD rr, nn; LD B / D / H, n (unless read as the code runs)
             uint8_t k = op >> 4;
             uint16_t at = pc + ((op & 0x0F) == 0x01 ? 2 : 1);
             if (in_ram && tmpl_bit(at)) ckn[k] = 0;
-            else { clo[k] = chi[k] = rb(at); ckn[k] = 1; anyc = 1; }
+            else { clo[k] = chi[k] = rb(at); ckn[k] = 1; anyc = 1; if (i_known == 0xFF) i_known = n_ins + 1; }
         } else if (anyc) {
             uint8_t k = (op >> 4) & 3, lowop = op & 0x0F;
             if (op < 0x30 && lowop == 0x04) { if (chi[k] == 0xFF) ckn[k] = 0; else { clo[k]++; chi[k]++; } }
@@ -1593,13 +1618,14 @@ __attribute__((noinline)) static void scan_block(uint16_t pc) {
             else if ((op & 0xCF) == 0xC1 && op < 0xF0) ckn[k] = 0;                              // POP rr
             else if (op == 0xCB && (cb >> 6) != 1 && (cb & 7) < 6 && !(cb & 1)) ckn[(cb & 7) >> 1] = 0;
         }
-        if (op == 0xF0 && cb == 0x41 && n_ins) has41 = 1;
-        if ((op & 0xCF) == 0x01 && op < 0x30 && !(in_ram && (tmpl_bit(pc + 1) || tmpl_bit(pc + 2)))) {
+        if ((m & 0x20) && op == 0xF0 && cb == 0x41 && n_ins) has41 = 1;
+        if ((m & 0x20) && (op & 0xCF) == 0x01 && !(in_ram && (tmpl_bit(pc + 1) || tmpl_bit(pc + 2)))) {
             // LD rr, nn: known from here (unless it is read as the code runs)
             uint8_t rr = op >> 4;
             kn[rr] = 1;
             kv[rr] = cb | (uint16_t) rb(pc + 2) << 8;
             any = 1;
+            if (i_known == 0xFF) i_known = n_ins + 1;
         } else if (any) {
             // (only once one of them is known: most blocks never come here)
             for (uint8_t k = 0; k < 3; k++)
@@ -1631,7 +1657,7 @@ __attribute__((noinline)) static void scan_block(uint16_t pc) {
         fa[n_ins++] = f;
         pc += m & 3;
         if ((f & F_END) || after_ei) break;
-        if (op == 0xFB) after_ei = 1;
+        if ((m & 0x20) && op == 0xFB) after_ei = 1;
         if (in_ram && pc - blk_pc > 48) break;
         // a block already starts at the next instruction: this one ends
         // there and goes on into it (a jump the dispatcher joins), not
@@ -1639,8 +1665,9 @@ __attribute__((noinline)) static void scan_block(uint16_t pc) {
         // jumps into the middle of its rows of unrolled instructions at
         // every place: 34,779 bytes of it translated for 22,102 there are.
         if (n_ins >= 6 && !in_ram && !after_ei && pc < 0x8000) {
-            uint16_t key = pc < 0x4000 ? drc_key0 : drc_keyx, h = hash(pc, key);
-            if ((DRC_HAS[h >> 3] & bit_of[h & 7]) && find(pc, key)) break;
+            // (drc_hash0, drc_hashx: the key's part of hash(), kept by the bank's change)
+            uint16_t h = (pc ^ (pc >> 6) ^ (pc < 0x4000 ? drc_hash0 : drc_hashx)) & (TABLE_N - 1);
+            if ((DRC_HAS[h >> 3] & bit_of[h & 7]) && find(pc, pc < 0x4000 ? drc_key0 : drc_keyx)) break;
         }
     }
     i_pc[n_ins] = pc;

@@ -368,6 +368,21 @@ if os.environ.get('GBRUN_VRAMLINES'):
         vlines[(addr - 0x2000) >> 4][((ev - cy) % 17556) // 114] += 1
         vtf[st['gbframes']].add((addr - 0x2000) >> 4)
     uc.hook_add(UC_HOOK_MEM_WRITE, h_vw, None, 0x2000, 0x37FF)
+opmix = None
+if os.environ.get('GBRUN_OPMIX') and 'translate_block' in syms:
+    # GBRUN_OPMIX=1: the Game Boy instructions translated since GBRUN_PROF_FROM, by opcode
+    import collections as _c3
+    opmix = _c3.Counter()
+    def h_opmix(uc, addr, size, _):
+        if (st['gbframes'] if GBTIME else st['frame']) < PROF_FROM: return
+        r = lambda n, k: bytes(iram.raw[(syms[n] & 0xFFFF):(syms[n] & 0xFFFF) + k])
+        n = r('n_ins', 1)[0]; tb = int.from_bytes(r('tbase', 2), 'little'); tl = r('tlen', 1)[0]; buf = r('tbuf', 128)
+        pcs = r('i_pc', 2 * n)
+        for i in range(n):
+            o = (int.from_bytes(pcs[2 * i:2 * i + 2], 'little') - tb) & 0xFFFF
+            if o < tl: opmix[buf[o] if buf[o] != 0xCB or o + 1 >= tl else 0x100 | buf[o + 1]] += 1
+            else: opmix[-1] += 1
+    uc.hook_add(UC_HOOK_CODE, h_opmix, None, syms['translate_block'], syms['translate_block'])
 callers = None
 if os.environ.get('GBRUN_CALLERS') and CYCLES:
     # GBRUN_CALLERS=function: who calls it (far calls), and its first argument (AX)
@@ -667,4 +682,7 @@ if CYCLES and st['gbframes']:
     tot = sum(prof.values())
     print('V30MZ cycles a Game Boy frame, from frame %d: %d (a WonderSwan frame has 40704, a Game Boy frame\'s time 51430)' % (PROF_FROM, tot // max(1, st['gbframes'] - prof_gb0[0])))
     for k, v in prof.most_common(40 if CALLS is not None else 14): print('  %5.1f%%  %s' % (100.0 * v / tot, k) + ('  %d calls, %d cycles each' % (CALLS[k], v // CALLS[k]) if CALLS is not None and CALLS[k] else ''))
-
+if opmix:
+    tot = sum(opmix.values())
+    print('translated instructions: %d' % tot)
+    print(' '.join('%s:%d' % ('??' if k < 0 else '%02X' % k if k < 256 else 'CB%02X' % (k & 255), v) for k, v in opmix.most_common()))
