@@ -194,6 +194,11 @@ def h_truth_frame(uc, addr, size, _):
     if truth.get('last') == st['gbframes']: return
     truth['last'] = st['gbframes']
     truth['fifo'].append((st['gbframes'], truth['line0']))
+    if os.environ.get('GBRUN_TRUTHQ'):
+        pw = int.from_bytes(bytes(iram.raw[syms['gbv_pw_last'] & 0xFFFF:(syms['gbv_pw_last'] & 0xFFFF) + 2]), 'little')
+        sp = bytes(iram.raw[0x5800:0x5A00])
+        tl = sorted(set((sp[i] | sp[i + 1] << 8) & 0x1FF for i in range(0, 160, 4) if sp[i + 2] < 144))
+        print('Q gb %d pw %04X tile %d on %d left %d spr %s' % (st['gbframes'], pw, (pw - 0x8000) >> 4 if pw else -1, _b('gbv_tq_on'), _b('tq_left'), tl))
 if os.environ.get('GBRUN_TRUTH') and 'gbv_line0' in syms:
     uc.hook_add(UC_HOOK_CODE, h_line0, None, syms['gbv_line0'], syms['gbv_line0'])
     uc.hook_add(UC_HOOK_CODE, h_truth_frame, None, syms['gbv_frame'], syms['gbv_frame'])
@@ -229,7 +234,7 @@ if CYCLES:
         return lab_names[j] if j >= 0 and addr - lab_at[j] < 0x200 else '?%05X' % (addr & 0xFFF00)
     prof = collections.Counter()
     HOT = bool(os.environ.get('GBRUN_HOT'))     # GBRUN_HOT=1: the blocks most cycles are spent in
-    hot = collections.Counter()
+    hot = collections.Counter(); hcnt = collections.Counter()
     FUNC = os.environ.get('GBRUN_FUNC')     # GBRUN_FUNC=name: that function's instructions by cycles
     # GBRUN_CALLS=1: every function of the plugin by its cycles (its own, not its callees') and the times it is entered, from GBRUN_PROF_FROM
     CALLS = collections.Counter() if os.environ.get('GBRUN_CALLS') else None
@@ -254,7 +259,7 @@ if CYCLES:
         cyc[0] += c
         w = where(addr)
         prof[w] += c
-        if w == 'translated code' and HOT: hot[addr] += c
+        if w == 'translated code' and HOT: hot[addr] += c; hcnt[addr] += 1
         if w == FUNC: fhot[addr] += c; fcnt[addr] += 1
         if CALLS is not None and addr in fstart: CALLS[w] += 1
         if cyc[0] >= cyc[1]: uc.emu_stop()
@@ -520,7 +525,7 @@ while (GBTIME or st['frame'] < FRAMES) and not st['fail'] and not st.get('stop')
                     t = (mem[t0 + i * 4] | mem[t0 + i * 4 + 1] << 8) & 0x1FF
                     if t < 384: m3[0x2000 + t * 16:0x2010 + t * 16] = truth['cur'][1][t * 16:t * 16 + 16]
                 img3 = b''.join(render_line(bytes(m3), line_ports[i], i, line_pals[i]) for i in range(144))
-                print('T ws %d gb %d all %d spr %d' % (st['frame'], truth['cur'][0], sum(1 for i in range(0, len(img), 3) if img[i] != img2[i]), sum(1 for i in range(0, len(img), 3) if img[i] != img3[i])))
+                print('T ws %d gb %d all %d spr %d on %d left %d' % (st['frame'], truth['cur'][0], sum(1 for i in range(0, len(img), 3) if img[i] != img2[i]), sum(1 for i in range(0, len(img), 3) if img[i] != img3[i]), _b('gbv_tq_on'), _b('tq_left')))
         if os.environ.get('GBRUN_SOUND'):
             snd_frames.append((bytes(ports[0x80:0x92]), bytes(iram.raw[(ports[0x8F] << 6):(ports[0x8F] << 6) + 64])))
         if END_SHOT and line_ports[143] is not None:
@@ -613,6 +618,14 @@ if CYCLES and HOT and hot:
         i = bisect.bisect_right(keys, (a >> 16, a & 0xFFFF)) - 1
         if i >= 0 and blocks[i][0] == a >> 16:
             by[blocks[i][2], blocks[i][3]] += n
+    if os.environ.get('GBRUN_ONCE'):
+        # GBRUN_ONCE=1: how many times each block was entered at its start (since GBRUN_PROF_FROM)
+        h = collections.Counter(); cy = collections.Counter()
+        for i, b in enumerate(blocks):
+            n = hcnt.get((b[0] << 16) + b[1], 0)
+            k = '0' if n == 0 else '1' if n == 1 else '2-3' if n < 4 else '4-9' if n < 10 else '10-99' if n < 100 else '100+'
+            h[k] += 1
+        print('blocks by times entered at their start: ' + ' '.join('%s:%d' % (k, h[k]) for k in ('0', '1', '2-3', '4-9', '10-99', '100+')) + ' of %d' % len(blocks))
     tot = sum(hot.values())
     if os.environ.get('GBRUN_HOTDIS'):
         # GBRUN_HOTDIS=n: the n hottest blocks' V30MZ code, each instruction's cycles

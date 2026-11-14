@@ -141,6 +141,7 @@ uint8_t gbv_tq_cur;                         // which set that is
 static volatile uint8_t tq_pend;            // sets made and not copied yet (the oldest first, before tq_cur)
 static uint8_t tq_cnt[3];
 static volatile uint8_t tq_mark;            // how many of them the list that is ready goes with
+#define TQ_FRAMES 1
 static uint8_t tq_left;                     // frames the patterns are still kept late for
 
 // (gb_asm.s) n tiles of a set to the patterns
@@ -233,12 +234,24 @@ static void tq_frame(void) {
         uint16_t t = (gbv_pw_last - 0x8000) >> 4;
         const uint16_t *s = (const uint16_t*) SPR_TABLE;
         for (uint8_t n = inportb(WS_SPR_COUNT_PORT); n; n--, s += 2)
-            if ((*s & 0x1FF) == t) { tq_left = 120; break; }
+            if ((*s & 0x1FF) == t) { tq_left = TQ_FRAMES; break; }
+        // or of one the program has just put there? (Donkey Kong Land
+        // draws Kong's next picture in the tiles that are not shown and
+        // then points his sprites at them: by the last frame's sprites
+        // alone the patterns were kept late only when a picture happened
+        // to be drawn over the one shown - patch 177. Two tiles at a
+        // time: a sprite of 16 lines is two.)
+        if (t < 256) {
+            const uint8_t *o = gb_oam;
+            for (uint8_t n = 40; n; n--, o += 4)
+                if (!((o[2] ^ (uint8_t) t) & 0xFE) && (uint8_t) (o[0] - 1) < 159) { tq_left = TQ_FRAMES; break; }
+        }
         gbv_pw_last = 0;
     }
     if (tq_left) {
         if (!gbv_tq_on) { tq_set_base(); gbv_tq_on = 1; }
-        if (!--tq_left) { tq_flush(); gbv_tq_on = 0; }
+        // (and they stay late until the screen is turned off: with an end
+        // after some frames, the first picture drawn after it was broken)
     }
     tq_mark = tq_pend;
 }

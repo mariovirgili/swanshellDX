@@ -44,7 +44,7 @@ background and the window, switched at the right lines by the line
 interrupt, with the scroll the program gave each line; the sprites are
 the WonderSwan's.
 
-## Where it is (patch 176)
+## Where it is (patch 177)
 
 The CPU is a recompiler (`gb/ws/gb_drc.c`, `gb_drc_asm.s`; `GB-ABI.md`),
 there is sound (`gb/ws/gb_sound.c`: what it does and does not, at its
@@ -847,6 +847,60 @@ with the same memory as 175, the pictures as before, R-Type II's bar,
 ZAS's logo. Not covered: no test ROM reads or writes the echo - the
 change is two constants and was read, not run on a program that uses
 it; nothing on a WonderSwan or in nileswan-medem.
+
+**Patch 177.** Gio, on 176 in nileswan-medem: Donkey Kong Land "still
+looks broken in some frames, most of all Kong when he jumps"; and the
+lines of the text at the start touch each other.
+
+The check of 172 (`GBRUN_TRUTH`: each picture against itself with the
+patterns as the Game Boy had them at line 0 of the frame shown) had
+found nothing wrong in its 186 pictures: a short stretch, Kong walking.
+On 815 WonderSwan frames more, with jumps and a level's start: 27
+pictures of 756 wrong, all in the half second after the level's
+fade-in. `GBRUN_TRUTHQ=1` (the last pattern written, the sprites'
+tiles, whether the patterns are late, at every frame's end): Kong has
+two sets of twelve tiles (232-243 and 244-255, and others); the game
+draws the next picture in the set not shown and then moves his
+sprites to it. So the last pattern written is a tile of a sprite *to
+be* shown, not of one shown, and 172's rule (a tile of a sprite of
+the last frame's list) held only when a picture happened to be drawn
+over the set on the screen: the patterns went late 25 frames after
+the first broken picture, and 120 frames after the last such chance
+they stopped being late.
+
+Changed (`gb_video.c`, `tq_frame`): the tile is also looked for among
+the sprites the program has set by the end of the frame (the Game
+Boy's OAM: the tile and the one beside it, for a sprite of 16 lines;
+a sprite off the screen's lines does not count); and once the
+patterns are late they stay so until the screen is turned off or a
+frame writes more tiles than there are copies for (`gbv_tq_full`), no
+longer for a count of frames - with a count, the first picture drawn
+after its end was broken. The same walk: 3 pictures of 760 wrong, one
+Game Boy frame, the first picture of Kong drawn after the level's
+start (the frame in which the patterns are found to need it). The
+186 of 172: none wrong.
+
+The text at the start (`gb_main.c`): a row left empty after each
+line; the font's letters fill their eight lines.
+
+Tests: the 24 of `gbreg`; seven of the eight scenes with the same
+memory as 176 (X was not waited for: Gio asked for a shorter check on
+small changes - the tests and a few scenes - and the full one only
+for changes to the code made). Cycles a Game Boy frame, 176 to 177:
+R-Type II 28,834 to 28,904 and ZAS 59,780 to 59,930 (their patterns
+are now late at times), Donkey Kong Land 69,641 to 69,667, the others
+the same. Not run: the pictures against the reference, the eight
+older scenes; nothing on a WonderSwan or in nileswan-medem.
+
+`GBRUN_ONCE=1` (`gbrun.py`): how many blocks were entered once,
+twice... Made to decide on "interpret a piece of code the first time,
+translate it the second" (the second opinion's fourth): the
+interpreter is 358 V30MZ cycles a Game Boy instruction all told (159
+`gb_step` itself, 112 the loop around it, the rest its reads), the
+translator about 640. Blocks entered once: Race Drivin' 194 of 1,603,
+X 139 of 640, Batman 131 of 635. A saving of some 280 cycles an
+instruction on an eighth to a fifth of the code, 358 more on the
+rest: not done.
 
 He also saw, in 166, Super Mario Land's whole picture jump sideways
 for an instant now and then. Its status bar is a STAT interrupt at a

@@ -117,7 +117,7 @@ static void text_put(uint8_t row, uint8_t col, const char __far *s) {
     }
 }
 static void text_print(const char __far *s) {
-    if (text_row < 17) text_put(text_row++, 1, s);
+    if (text_row < 17) { text_put(text_row, 1, s); text_row += 2; }
 }
 static void text_hex(const char __far *label, uint32_t v) {
     static const char __far digits[] = "0123456789ABCDEF";
@@ -127,7 +127,8 @@ static void text_hex(const char __far *label, uint32_t v) {
     buf[8] = 0;
     if (text_row < 17) {
         text_put(text_row, 1, label);
-        text_put(text_row++, 16, buf);
+        text_put(text_row, 16, buf);
+        text_row += 2;     // (a row left empty between the lines: the letters fill their eight)
     }
 }
 
