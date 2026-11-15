@@ -217,10 +217,76 @@ static void load_rom(void) {
 
 static uint8_t exit_held;
 
+/* ---- the state kept and brought back ----
+ * START + A held half a second keeps the machine as it is, START + B
+ * brings it back. What is kept: the whole internal RAM but the vectors
+ * (the Game Boy's registers, memory, video memory and what the plugin
+ * keeps of them: GB-MEMORY-MAP.md), in the PSRAM bank behind segment
+ * D000h, and the cartridge's RAM (32 KiB) in the one behind E000h - two
+ * banks of the linear area the recompiler does not use. Not the SRAM:
+ * that is the cartridge's RAM, which the menu writes to the .sav file.
+ * Kept and brought back between two frames, in gb_emulate, where
+ * nothing translated is being run; what was translated is then
+ * forgotten (it is made again as the game goes on). */
+#define ST_SEG  0xD000u
+#define ST_SEG2 0xE000u
+#define ST_MARK ((uint32_t __far*) MK_FP(ST_SEG2, 0x8000))
+#define ST_MAGIC 0x54534247ul           // "GBST"
+#define ST_KEEP ((uint8_t __far*) MK_FP(ST_SEG2, 0x9000))
+static uint8_t st_req;                  // asked for: 1 keep, 2 bring back
+static uint8_t st_wait;                 // nothing to the game until the keys are let go
+static uint8_t st_held;
+static uint16_t st_t0;
+static uint8_t start_n, start_tap, start_used;
+
+static void state_save(void) {
+    ia16_disable_irq();
+    _fmemcpy(MK_FP(ST_SEG, 0x0040), MK_FP(0x0000, 0x0040), 0xFFC0);
+    outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_DISABLE);
+    outportw(WS_CART_EXTBANK_RAM_PORT, 0);
+    _fmemcpy(MK_FP(ST_SEG2, 0), MK_FP(0x1000, 0), 0x8000);
+    gbf_plat_ram();
+    *ST_MARK = ST_MAGIC;
+    ia16_enable_irq();
+    gbv_note("SAVE");
+}
+
+static void state_load(void) {
+    if (*ST_MARK != ST_MAGIC) {
+        gbv_note("NONE");
+        return;
+    }
+    ia16_disable_irq();
+    // (FatFs's volume is the card's as it is now, not as it was)
+    _fmemcpy(ST_KEEP, &fs, sizeof(fs));
+    // (the stack, D000h-D7FFh, is this function's)
+    _fmemcpy(MK_FP(0x0000, 0x0040), MK_FP(ST_SEG, 0x0040), 0xD000 - 0x0040);
+    _fmemcpy(MK_FP(0x0000, 0xD800), MK_FP(ST_SEG, 0xD800), 0x2800);
+    _fmemcpy(&fs, ST_KEEP, sizeof(fs));
+    outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_DISABLE);
+    outportw(WS_CART_EXTBANK_RAM_PORT, 0);
+    _fmemcpy(MK_FP(0x1000, 0), MK_FP(ST_SEG2, 0), 0x8000);
+    gbf_plat_map();
+    gbd_flush();
+    st_req = 0;
+    st_held = 2;
+    st_wait = 1;
+    start_n = start_tap = 0;
+    start_used = 1;
+    exit_held = 0;
+    ia16_enable_irq();
+    gbv_note("LOAD");
+}
+
 void gb_frame_keys(void) {
     uint16_t k = ws_keypad_scan();
+    if (st_wait) {
+        if (k & (WS_KEY_START | WS_KEY_A | WS_KEY_B)) k &= ~(WS_KEY_START | WS_KEY_A | WS_KEY_B);
+        else st_wait = 0;
+    }
     if ((k & (WS_KEY_START | WS_KEY_Y1)) == (WS_KEY_START | WS_KEY_Y1)) {
         if (++exit_held >= 60) leave();
+        start_used = 1;
         return;
     }
     exit_held = 0;
@@ -229,10 +295,43 @@ void gb_frame_keys(void) {
     if ((k & (WS_KEY_START | WS_KEY_Y4)) == (WS_KEY_START | WS_KEY_Y4)) {
         if (!stats_held) gbv_stats_toggle();
         stats_held = 1;
+        start_used = 1;
         return;
     }
     if (!(k & WS_KEY_Y4)) stats_held = 0;
     else if (stats_held) return;       // (START let go first: not the game's)
+    // START + A, START + B, held half a second (5,960 WonderSwan lines):
+    // the state kept, brought back. Neither key is the game's meanwhile
+    if ((k & WS_KEY_START) && (k & (WS_KEY_A | WS_KEY_B))) {
+        if (!st_held) {
+            st_held = 1;
+            st_t0 = gbv_now_lines();
+        } else if (st_held == 1 && (uint16_t) (gbv_now_lines() - st_t0) >= 5960) {
+            st_req = (k & WS_KEY_A) ? 1 : 2;
+            st_held = 2;
+            st_wait = 1;
+        }
+        start_used = 1;
+        k &= ~(WS_KEY_START | WS_KEY_A | WS_KEY_B);
+    } else {
+        st_held = 0;
+    }
+    // START reaches the game after 8 frames of it alone (pressed with A
+    // or B a moment later it would have paused the game first); let go
+    // sooner, it is pressed for the game for 6 frames then
+    if (k & WS_KEY_START) {
+        if (start_n < 8) {
+            start_n++;
+            k &= ~WS_KEY_START;
+        }
+    } else {
+        if (start_n && start_n < 8 && !start_used) start_tap = 6;
+        if (!(ws_keypad_scan() & WS_KEY_START)) { start_n = 0; start_used = 0; }
+        if (start_tap) {
+            start_tap--;
+            k |= WS_KEY_START;
+        }
+    }
     uint8_t g = 0;
     if (k & WS_KEY_X2) g |= GB_KEY_RIGHT;
     if (k & WS_KEY_X4) g |= GB_KEY_LEFT;
@@ -256,8 +355,15 @@ void gb_emulate(void) {
     gbd_init();
     gb_sound_init();
     gb_phase = GB_PHASE_DISP;
-    for (;;)
+    for (;;) {
         gbd_run_frame();
+        if (st_req) {
+            uint8_t r = st_req;
+            st_req = 0;
+            if (r == 1) state_save();
+            else state_load();
+        }
+    }
 }
 
 int main(void) {

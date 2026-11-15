@@ -99,6 +99,14 @@ WS's own maps and sprite table, which have to be below 8000h (their base
 addresses are 4 and 6 bits). The Game Boy's address and the internal
 RAM's differ by 6000h in 8000h-9FFFh and from C000h up (the echo apart).
 
+## A state kept (patch 181)
+
+The PSRAM banks behind segments D000h and E000h of the linear area
+(1Dh, 1Eh). D000h: the internal RAM from 0040h, at the same offsets.
+E000h: the cartridge's RAM at 0000h-7FFFh, `GBST` at 8000h when a
+state has been kept, FatFs's volume at 9000h while a state is brought
+back. `gb_main.c`.
+
 ## The recompiler's memory
 
 PSRAM through the linear area (segment n000h is the PSRAM bank 10h + n

@@ -1800,6 +1800,131 @@ bank0_done:
     pop ax
     ret
 
+// A byte fetched from another ROM bank: LD (nn), A / LD (bank), A / LD A,
+// (HL) or LD A, (HL+) / LD (DE), A or LD (BC), A / LD A, n / LD (nn), A /
+// LD (bank), A - nn in the cartridge's RAM, where the program keeps the
+// bank's number - in a block of the first ROM area (Super Mario Land 2
+// reads its levels and its map a byte at a time through three routines
+// that are this and a RET: 190 times a frame where a level scrolls, each
+// the general write twice, the bank's change twice, a read and a write
+// through pointers). After the call: which of the three (0: (HL) to (DE),
+// 1: (HL+) to (BC), 2: (HL) to (BC)), nn, n, the seven instructions'
+// cycles. Back after those with the carry clear when it was done; set,
+// and nothing done, when it is not the plain case (the cartridge's RAM
+// not plain RAM switched on, HL in the echo, the OAM or the I/O
+// registers, the place written not in the cartridge's RAM, the work RAM
+// or the high RAM): the block then does the seven instructions.
+s_far:
+    pop si
+    cmp byte ptr [drc_ram_ok], 1
+    jne far_no
+    cmp bh, 0xE0                // (read: anything below the echo, and the high RAM)
+    jb far_src
+    cmp bx, 0xFF80
+    jb far_no
+far_src:
+    mov di, dx
+    cmp byte ptr cs:[si], 0
+    je far_dest
+    mov di, cx
+far_dest:
+    cmp di, 0xA000
+    jb far_no
+    cmp di, 0xE000
+    jb far_go
+    cmp di, 0xFF80              // (written: the cartridge's RAM, the work RAM, the high RAM)
+    jb far_no
+    cmp di, 0xFFFF
+    je far_no
+far_go:
+    push di
+    mov es, [drc_ram_seg]
+    mov di, cs:[si + 1]
+    mov es:[di], al             // (the bank's number, where the program keeps it)
+    // the byte. Only a read from the second ROM area sees the bank the
+    // program asks for, and nothing else can see it before it is set
+    // back (this is one piece: no interrupt between): the ROM1 window
+    // alone is moved for the read, not the machine's bank
+    cmp bh, 0x80
+    jae far_mem
+    cmp bh, 0x40
+    jae far_romx
+    mov es, [drc_segtab]
+    mov al, es:[bx]
+    jmp far_got
+far_romx:
+    push dx
+    push ax
+    and al, [drc_mbc_and]       // (the bank, as s_bank0 makes it)
+    jnz far_bank
+    cmp byte ptr [drc_mbc_z1], 0
+    je far_bank
+    mov al, 1
+far_bank:
+    xor ah, ah
+    or ax, [drc_mbc_hi]
+    and ax, [drc_bank_mask]
+    mov dx, ax
+    shr ax, 2
+    out 0xD4, ax                // the ROM1 window's bank
+    and dx, 3
+    shl dx, 10
+    add dx, 0x2C00
+    mov es, dx
+    mov dl, es:[bx]
+    mov ax, [gb + GB_ROMX]
+    shr ax, 2
+    out 0xD4, ax
+    pop ax                      // (AH: the flags)
+    mov al, dl
+    pop dx
+    jmp far_got
+far_mem:
+    cmp bh, 0xA0
+    jb far_plain
+    cmp bh, 0xC0
+    jae far_plain
+    mov al, es:[bx]             // (the cartridge's RAM)
+    jmp far_got
+far_plain:
+    mov al, [bx - 0x6000]       // (the video memory, the work RAM)
+far_got:
+    cmp byte ptr cs:[si], 1
+    jne far_put
+    inc bx
+far_put:
+    pop di
+    cmp di, 0xC000
+    jae far_work
+    mov es, [drc_ram_seg]
+    mov es:[di], al
+    jmp far_back
+far_work:
+    mov [di - 0x6000], al
+far_back:
+    // A, the bank's number kept, the bank: n (the machine's bank moves
+    // only if n is not what it was last set to)
+    mov al, cs:[si + 3]
+    mov es, [drc_ram_seg]
+    mov di, cs:[si + 1]
+    mov es:[di], al
+    cmp al, [gb + GB_BANK_LO]
+    je far_same
+    call s_bank0
+far_same:
+    mov di, ax
+    xor ax, ax
+    mov al, cs:[si + 4]
+    sub [gbf_cyc], ax
+    mov ax, di
+    add si, 5
+    clc
+    jmp si
+far_no:
+    add si, 5
+    stc
+    jmp si
+
 // gbf_write(SI, drc_tmp), the registers kept
 s_cwrite:
     push ax
@@ -2016,3 +2141,4 @@ drc_stub_offs:
     .word s_bankx - drc_stubs
     .word s_bank0 - drc_stubs
     .word s_wrv - drc_stubs
+    .word s_far - drc_stubs

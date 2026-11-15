@@ -178,6 +178,19 @@ Game Boy's flags are in AH or are not read before they are next set
 the work RAM are done on `[bx - 6000h]`. `ADD HL, rr` with only C
 read after it is `add bx, rr / lahf / and ah, 1`.
 
+INC and DEC of an 8-bit register are `inc`/`dec` alone, the flags'
+state left as it is, when Z and H are set again before they are read
+(patch 181).
+
+`LD (nn), A / LD (bank), A / LD A, (HL) or (HL+) / LD (DE) or (BC), A /
+LD A, n / LD (nn), A / LD (bank), A` in a block of the first ROM area,
+nn in the cartridge's RAM: `s_far` is called before them (patch 181),
+followed by a byte for which of the three, nn, n and the seven
+instructions' cycles, then `jc` over a `jmp` to the instruction after
+the seventh. The carry clear: done (AL = n, HL moved for (HL+), the
+cycles taken off `gbf_cyc`). Set: nothing done, the seven instructions
+follow.
+
 A write to a pattern (8000h-97FFh) goes through `s_wrt`, whatever
 the block knows of the pointer (until patch 172 a pointer whose high
 byte the block had set wrote there unchecked), and the copying loops

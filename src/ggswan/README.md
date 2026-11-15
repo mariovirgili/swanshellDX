@@ -6,7 +6,7 @@ emulated by a dynamic recompiler (Z80 to V30MZ code), with the original
 interpreter kept for the parts that need it. The Game Gear video memory is
 mapped onto the WonderSwan's own tile and screen hardware.
 
-Status: fairly stable (patch 180). It has been tested mostly in the
+Status: fairly stable (patch 181). It has been tested mostly in the
 nileswan-medem emulator and with the host test tools; tests on real
 hardware are still to come.
 
@@ -160,6 +160,28 @@ interrupts a second).
   it passes
 - `GB-IMPLEMENTATION.md`: how gbswan is made and where it is
 - `GB-ABI.md`: the code gbswan's recompiler writes
+
+## gbswan: the Game Boy plugin
+
+`PLUG_GB.BIN` (`make -f Makefile.ggswan GB=1`), `.gb` files, sources of
+its own in `gb/`. The documents above say how it is made; here, what
+the keys do.
+
+| Keys | Function |
+|---|---|
+| X1-X4, A, B | The Game Boy's pad, A and B |
+| START | START. It reaches the game a tenth of a second after it is pressed (pressed and let go sooner, it is pressed for the game then): pressed with another key within that time it is not the game's |
+| Y3 (Y down), Y2 (Y right) | SELECT |
+| START + A, held half a second | **The state kept**: the game as it is at that moment (`SAVE` at the top of the left border) |
+| START + B, held half a second | **The state brought back** (`LOAD`; `NONE` when none has been kept). A pause of a moment follows, and others as the game goes on: what was translated is translated again |
+| START + Y1 (Y up), held for a second | Back to the menu |
+| START + Y4 (Y left) | The numbers in the left border, on and off |
+
+The state is kept in the cartridge's PSRAM, not in the `.sav` file and
+not in the SRAM the menu writes to it: the game's own saves are as they
+were. It is lost when the game is left or the console turned off
+(a file on the card is the next step). It holds the cartridge's RAM as
+it was: bringing a state back undoes a save the game made after it.
 
 ## smsswan: the Master System plugin
 
@@ -365,7 +387,7 @@ it are listed in order without one.
 - lighter DYN lookup and class routine for deferred tile bytes
 - OUTI runs to CRAM handled in the run routine
 
-### Patches 90-180
+### Patches 90-181
 
 | Patch | Change |
 |---|---|
@@ -460,3 +482,4 @@ it are listed in order without one.
 | 178 | gbswan: the translator again, by its source lines' cycles. In the pass that writes the code, three fifths of the time were what is made ready for every instruction before anything is written: its three bytes read through a function, what is known of BC, DE, HL fetched, the EI before it looked for. In the pass that looks the block over, a quarter were compares for a few rare instructions made for all of them. Now: the bytes straight from the buffer; the rare ones marked in the opcodes' table and passed over with one test; what is known of the pointers neither cleared nor fetched before the block's first `LD rr, nn`; the hash for "a block already starts here" with the key's part ready. Race Drivin's start 605,626 cycles a frame to 522,307 (-13.8%), Batman's level 127,900 to 118,142, the same blocks and the same memory. In the game: Donkey Kong Land -2.7%, Race Drivin' -1.1%. Also measured, and not done: code interpreted the first time it is met (the numbers are in `GB-IMPLEMENTATION.md`, patch 177). Not run on a WonderSwan or in nileswan-medem. |
 | 179 | gbswan: sprites in pieces for a frame when their picture changes - the coin that turns in Donkey Kong Land's "Select Game", its enemies (Gio, on patch 178 in nileswan-medem). Two things, neither seen by `gbrun.py`, which drew the sprites from the table as it was at the picture's end: the WonderSwan takes the table at line 142, for the next frame (`GBRUN_SPRLATCH=1` now does the same). The game copies its sprites to the OAM at line 128 of every frame, and the frame's sprites were set from the OAM at the frame's end: the next frame's sprites on this frame's patterns. What the OAM was before a copy made while the picture is drawn is now kept and used. And a frame that ended just before line 142 had its table half taken, or taken a frame after its list: such a frame now waits for the vertical blank. The coin against the reference's poses: 25 pictures of 131 wrong, then none of 172. Donkey Kong Land 0.9% slower in the game, the others the same. Not run on a WonderSwan or in nileswan-medem. |
 | 180 | gbswan: the translator's first pass in assembly. `scan_block`'s loop, for the instructions it has nothing of its own to do for (most), is `gbd_scan_fast` in `gb_asm.s`; the rare ones, and those that change what is known of BC, DE, HL, are still the C's, one at a time; the flags needed before each instruction are `gbd_scan_live`. The code made is the same. Race Drivin's start 522,307 cycles a frame to 489,794 (-6.2%; 605,626 in 177), Batman's level 118,142 to 112,967. Tried and taken out: the same for the second pass's simplest instructions (LD r, r, the ALU with a register, LD r, n) - right, and slower (499,003): going from the C to the assembly and back for each run of them cost more than they saved. Not run on a WonderSwan or in nileswan-medem. |
+| 181 | gbswan: a state kept and brought back, START + A and START + B held half a second (Gio's request): the whole internal RAM and the cartridge's RAM copied to two PSRAM banks the recompiler does not use, between two frames; on the way back the ROM's banks are set again and everything translated is forgotten. In memory only for now (lost on leaving the game); the `.sav` file is not touched. START reaches the game a tenth of a second late, so that a key pressed with it does not pause the game first. Super Mario Land 2 slow at times (Gio, on 180: 41 frames a second): its levels and its map are read a byte at a time through three routines that set the ROM bank, copy a byte and set the bank back, some 190 times a frame where a level scrolls; the seven instructions are now one routine (`s_far`) that moves no bank unless the byte is in the other bank, and then only the ROM window for the read: the slow stretch 70,387 cycles a frame to 63,279, the map 73,857 to 64,143. INC and DEC of an 8-bit register whose Z and H are set again before they are read are the V30MZ's and nothing else. Not run on a WonderSwan or in nileswan-medem. |

@@ -16,6 +16,8 @@ uint8_t gbv_sprites_asm(void);           // gb_asm.s: the WS sprite table from t
 void gb_frame_keys(void);       // gb_main.c: the keys, once a frame (and the way out)
 extern volatile uint16_t gbv_vblanks;
 void gbv_stats_toggle(void);
+void gbv_note(const char __far *t);
+uint16_t gbv_now_lines(void);
 void gb_sound_init(void);       // gb_sound.c
 void gb_sound_frame(void);
 // what the plugin is doing (the figures on the screen)

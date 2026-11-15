@@ -28,6 +28,7 @@
 #ifndef __ASSEMBLER__
 #include <stdint.h>
 void gbd_init(void);
+void gbd_flush(void);           // everything translated forgotten
 void gbd_run_frame(void);
 void gbd_enter(uint16_t off, uint16_t seg);     // gb_drc_asm.s: runs translated code until it leaves
 extern uint8_t drc_ah, drc_n, drc_tmp, drc_ei, drc_interp;
@@ -84,6 +85,7 @@ extern const uint16_t __far drc_stub_offs[];
 #define ST_BANKX     84     /* LD (nn), A to the second ROM area's bank register */
 #define ST_BANK0     87     /* the same, from a block in the first ROM area */
 #define ST_WRV       90     /* a write the block knows is to the video memory */
-#define ST_COUNT     31
+#define ST_FAR       93     /* a byte copied from another ROM bank and the bank set back (gb_drc_asm.s, s_far) */
+#define ST_COUNT     32
 
 #endif

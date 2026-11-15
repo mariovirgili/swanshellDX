@@ -97,6 +97,11 @@ static void flush(void) {
     drc_flushes++;
 }
 
+// (gb_main.c: a state brought back - nothing translated is its)
+void gbd_flush(void) {
+    flush();
+}
+
 static uint16_t hash(uint16_t pc, uint16_t key) {
     return (pc ^ (pc >> 6) ^ (key << 5)) & (TABLE_N - 1);
 }
@@ -919,7 +924,8 @@ __attribute__((noinline)) static void translate_block(void) {
         && rb(blk_pc + 3) == 0x20 && rb(blk_pc + 4) == 0xFB)
         call_stub(ST_DELAY_BC);
     if (code_top != block_start) loop_body = code_top;
-    uint8_t prev_ei = 0;
+    uint8_t prev_ei = 0, far_end = 0;
+    uint16_t far_patch = 0;
     // (the instruction's bytes straight from tbuf while three are there)
     uint16_t tl2 = tlen > 2 ? tlen - 2 : 0;
     cur_dir = cur_cart = 0;
@@ -934,6 +940,38 @@ __attribute__((noinline)) static void translate_block(void) {
                 op = t[0];
                 b1 = t[1]; b2 = t[2];
             } else { op = rb(pc); b1 = rb(pc + 1); b2 = rb(pc + 2); }
+        }
+        if (far_end) {
+            if (i == far_end) {
+                // (the seven instructions done here: their cycles, and
+                // where s_far's own doing of them comes back to)
+                sub_cyc();
+                uint16_t d = code_top - far_patch;
+                code[far_patch - 2] = d;
+                code[far_patch - 1] = d >> 8;
+                far_end = 0;
+            }
+        } else if (op == 0xEA && !in_ram && !prev_ei && i + 7 < n_ins && i_pc[i + 7] == pc + 16 && pc + 16 <= 0x4000) {
+            // a byte fetched from another bank (gb_drc_asm.s, s_far)
+            uint16_t sh = b1 | (uint16_t) b2 << 8, bk = rb(pc + 4) | (uint16_t) rb(pc + 5) << 8;
+            uint8_t o1 = rb(pc + 6), o2 = rb(pc + 7);
+            uint8_t v = o1 == 0x7E && o2 == 0x12 ? 0 : o1 == 0x2A && o2 == 0x02 ? 1 : o1 == 0x7E && o2 == 0x02 ? 2 : 0xFF;
+            if (v != 0xFF && sh >= 0xA000 && sh < 0xC000 && rb(pc + 3) == 0xEA && rb(pc + 8) == 0x3E
+                && rb(pc + 10) == 0xEA && rb(pc + 11) == b1 && rb(pc + 12) == b2
+                && rb(pc + 13) == 0xEA && rb(pc + 14) == (uint8_t) bk && rb(pc + 15) == (uint8_t) (bk >> 8)
+                && (bk >> 8) >= drc_mbc_lo && (bk >> 8) < drc_mbc_top && (((bk >> 8) | drc_mbc_or) & 1)) {
+                uint8_t c = 0;
+                for (uint8_t k = 0; k < 7; k++) c += (i_inf[i + k] >> 2) & 7;
+                mat();
+                nflush();
+                sub_cyc();
+                call_stub(ST_FAR);
+                E(v); EW(sh); E(rb(pc + 9)); E(c);
+                E(0x72); E(0x03);                   // jc: the instructions themselves
+                E(0xE9); EW(0);                     // jmp done
+                far_patch = code_top;
+                far_end = i + 7;
+            }
         }
         uint16_t nn = b1 | (uint16_t) b2 << 8;
         uint8_t x = op >> 6, y = (op >> 3) & 7, z = op & 7, p = (op >> 4) & 3;
@@ -1156,6 +1194,11 @@ __attribute__((noinline)) static void translate_block(void) {
                     nflush();
                     call_stub(z == 4 ? ST_INC_HL : ST_DEC_HL);
                     EW(next);
+                } else if (!((i + 1 < n_ins ? i_live[i + 1] : FALL) & (FZ | FH))) {
+                    // Z and H set again before anything reads them: the
+                    // V30MZ's inc / dec and nothing else - it leaves CF
+                    // alone, and AH (C, when the flags are there)
+                    E(0xFE); E((z == 4 ? 0xC0 : 0xC8) | R8[y]);
                 } else {
                     carry_in();
                     E(0xFE); E((z == 4 ? 0xC0 : 0xC8) | R8[y]);

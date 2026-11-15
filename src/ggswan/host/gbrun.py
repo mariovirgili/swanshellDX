@@ -383,6 +383,12 @@ if os.environ.get('GBRUN_OPMIX') and 'translate_block' in syms:
             if o < tl: opmix[buf[o] if buf[o] != 0xCB or o + 1 >= tl else 0x100 | buf[o + 1]] += 1
             else: opmix[-1] += 1
     uc.hook_add(UC_HOOK_CODE, h_opmix, None, syms['translate_block'], syms['translate_block'])
+if 'gbv_note' in syms:
+    # a state kept or brought back (gb_main.c): the Game Boy's memory then
+    def h_note(uc, addr, size, _):
+        mem = bytes(iram.raw)
+        print('NOTE gb %d: video %08X work %08X sprites %08X high %08X io %08X' % (st['gbframes'], zlib.crc32(mem[0x2000:0x4000]), zlib.crc32(mem[0x6000:0x8000]), zlib.crc32(mem[0x9E00:0x9EA0]), zlib.crc32(mem[0x9F80:0x9FFF]), zlib.crc32(mem[0x9F00:0x9F80])))
+    uc.hook_add(UC_HOOK_CODE, h_note, None, syms['gbv_note'], syms['gbv_note'])
 callers = None
 if os.environ.get('GBRUN_CALLERS') and CYCLES:
     # GBRUN_CALLERS=function: who calls it (far calls), and its first argument (AX)

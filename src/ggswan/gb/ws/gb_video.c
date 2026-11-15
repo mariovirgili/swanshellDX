@@ -514,6 +514,13 @@ static void stat_num(uint8_t row, uint16_t v, uint8_t hex) {
     stat_put(row, b);
 }
 
+// a word at the top of the left border, for a second or so (gb_main.c:
+// a state kept or brought back)
+static uint8_t note_left;
+void gbv_note(const char __far *t) {
+    stat_put(0, t);
+    note_left = 60;
+}
 void gbv_stats_toggle(void) {
     stats_on ^= 1;
     for (uint8_t r = 0; r < 18; r++)
@@ -602,6 +609,7 @@ void gbv_frame(void) {
     }
     palettes();
     gb_sound_frame();
+    if (note_left && !--note_left && !stats_on) stat_put(0, "");
     if (stats_on) {
         stats_frames++;
         if (gbv_vblanks >= 75) stats_show();

@@ -44,7 +44,7 @@ background and the window, switched at the right lines by the line
 interrupt, with the scroll the program gave each line; the sprites are
 the WonderSwan's.
 
-## Where it is (patch 180)
+## Where it is (patch 181)
 
 The CPU is a recompiler (`gb/ws/gb_drc.c`, `gb_drc_asm.s`; `GB-ABI.md`),
 there is sound (`gb/ws/gb_sound.c`: what it does and does not, at its
@@ -1070,6 +1070,94 @@ In the game, 179 to 180 (the same memory): Donkey Kong Land 68,367 to
 Tests: the 24 of `gbreg`; the four slowest scenes; the four that
 translate, with the blocks' table of 178. Not covered: the other
 scenes and the pictures; nothing on a WonderSwan or in nileswan-medem.
+
+**Patch 181.** Three things.
+
+*A state kept and brought back* (Gio: "START + A to save, START + B to
+load", held half a second; in memory and on the card; "does it not
+get in the way of the save at the cartridge's restart?"). It does not:
+the cartridge's RAM is the nileswan's SRAM, which the menu writes to
+the `.sav` file; the state goes to the PSRAM, in the banks behind
+segments D000h and E000h of the linear area (the recompiler has
+4000h-C000h, the plugin itself F000h).
+
+What a state is: the internal RAM from 0040h to FFFFh as it is - the
+Game Boy's registers and memory, its video memory, and everything the
+plugin keeps of them (the WonderSwan's maps and sprite table, the
+lists, the palettes, the sound's state, the C variables) - and the
+cartridge's 32 KiB. Nothing is listed, so nothing can be left out.
+What is not in it: what was translated. `gb_frame_keys` only asks
+(`st_req`); `gb_emulate` does it after `gbd_run_frame` has come back,
+where no translated code is on the stack. Kept: two far copies with
+the interrupts off. Brought back: the internal RAM copied over but for
+the stack (D000h-D7FFh: the function's own) and FatFs's volume (the
+card's as it is now), the cartridge's RAM, `gbf_plat_map` (the ROM's
+windows and the keys of the blocks' table from the bank registers now
+in `gb`), `gbd_flush`. The WonderSwan's ports are set from the lists
+at the next vertical blank, as at every frame.
+
+The keys. START with A or B would have paused the game before the
+half second was over, so START alone is kept from the game for eight
+frames; let go sooner, it is then pressed for the game for six. Once
+START and A or B are down together neither reaches the game, and
+nothing does after a state until all three are let go (a state is
+brought back with the keys the game had when it was kept: none).
+
+In `gbrun.py` (Super Mario Land 2, paused, kept, played on, brought
+back): the checksums of the video memory, the work RAM, the OAM, the
+high RAM and the I/O registers taken when `SAVE` is shown and when
+`LOAD` is shown are the same, the picture is the one kept, and the
+game goes on. (`gbrun.py`'s keys are START 200h, A 400h, B 800h: a
+first run with other numbers kept nothing, and passed for nothing.)
+Not in `gbrun.py`: the card. The file is the next patch, and can only
+be tried in nileswan-medem or on the console.
+
+*Super Mario Land 2 slow at times* (Gio, 180: 41 frames a second, 92%
+of the time in the game's code). A longer run (right, a jump every 90
+frames, to frame 3,200): full speed but for three stretches of 63 to
+82 thousand cycles a frame. The profile of one (frames 1995-2070,
+70,387): the three routines of 175's map - DI, the bank's number
+written to the cartridge's RAM, the bank set, a byte read through HL,
+written through DE or BC, and the same back to bank 0Fh, RET - some
+190 times a frame, 40% of it: `s_bank0` twice (45 cycles each), the
+general write twice, a read and a write through pointers.
+
+`s_far` (`ST_FAR`) does the seven instructions between DI and RET.
+The translator puts its call before them (the flags in AH, the cycles
+taken off) with which of the three it is, the address, n and the
+cycles; it comes back with the carry clear past them, or with the
+carry set and nothing done when it is not the plain case, and the
+seven instructions follow as they were. Two first tries were right
+and no faster: one read only from the other bank (most of these reads
+are from the cartridge's RAM, where the level is unpacked: it gave up
+nearly always), the next still set the bank twice (71,005). The bank
+is what costs. As it is: a byte not in the second ROM area needs no
+bank at all - nothing can see the bank between its being set and set
+back - and one that is there has the ROM1 window alone moved for the
+read; the machine's bank is set at the end only if n is not what it
+was last set to. The stretch 70,387 to 63,279 (-10.1%), the map of 175 73,857 to
+64,143 (-13.2%), the same memory. Still given up on: a byte written to the video memory (the
+map's entry to keep, the patterns kept late), a third of the calls.
+
+*INC and DEC r* when Z and H are set again before anything reads them
+(`i_live` of the next instruction): the V30MZ's `inc`/`dec` alone; it
+leaves CF, and AH, where C is. X's hottest block is five `INC E`
+between reads, each with `shr ah, 1` before and `lahf` after.
+
+Cycles a Game Boy frame, 180 to 181: Race Drivin' 91,376 to 91,303, X
+82,661 to 82,490, ZAS 59,385 to 59,552, Donkey Kong Land 67,448 to
+67,831, Super Mario Land 2's first scene 46,725 to 46,715. The same
+memory in all five - with START reaching the game at once: with its
+tenth of a second the scenes, which press START in the menus, are a
+few frames on and their memory is another (ZAS, Donkey Kong Land, Race
+Drivin'), so the comparison was made with a build without it.
+
+Tests: the 24 of `gbreg`; the four slowest scenes and Super Mario
+Land 2's three. Not covered: the other scenes and the pictures; the
+state with other games, with sound playing, with code in RAM (Donkey
+Kong Land, R-Type II) - the blocks are forgotten, so it should not
+matter, and it was not run; nothing on a WonderSwan or in
+nileswan-medem.
 
 He also saw, in 166, Super Mario Land's whole picture jump sideways
 for an instant now and then. Its status bar is a STAT interrupt at a
