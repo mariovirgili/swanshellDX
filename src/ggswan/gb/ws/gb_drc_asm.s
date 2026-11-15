@@ -1204,9 +1204,13 @@ s_copy3:    // LD A, (DE) / LD (HL+), A / INC DE / DEC BC / LD A, B / OR C / JR 
 s_copy4:    // LD A, (BC) / INC BC / LD (HL+), A / DEC D / JR NZ
     COPY_LOOP cx, bx, dh, 0, 10
 
-s_fill0:    // LD (HL+), A / DEC B / JR NZ: into the patterns, the work RAM or the high RAM
+// LD (HL+), A / DEC B (or DEC D) / JR NZ: into the patterns, the work RAM,
+// the high RAM or the cartridge's RAM when that is plain RAM (Super Mario
+// Land 2 clears a row of its level there with D for the count, a general
+// write a byte)
+.macro FILL_LOOP cnt
     push ax
-    mov al, ch
+    mov al, \cnt
     xor ah, ah
     dec al
     mov si, ax
@@ -1225,8 +1229,18 @@ s_fill0:    // LD (HL+), A / DEC B / JR NZ: into the patterns, the work RAM or t
     jne 9f
     jmp 1f
 6:
-    cmp bx, 0xC000
+    cmp bx, 0xA000
     jb 9f
+    cmp bx, 0xC000
+    jae 5f
+    cmp si, 0xC000
+    ja 9f
+    cmp byte ptr [drc_ram_ok], 1
+    jne 9f
+    mov di, bx
+    mov es, [drc_ram_seg]
+    jmp 2f
+5:
     cmp si, 0xE000
     jbe 1f
     cmp bx, 0xFF80
@@ -1234,13 +1248,14 @@ s_fill0:    // LD (HL+), A / DEC B / JR NZ: into the patterns, the work RAM or t
     cmp si, 0xFFFF
     ja 9f
 1:
-    push cx
-    push ax
-    mov cx, ax
     mov di, bx
     sub di, 0x6000
     push ss
     pop es
+2:
+    push cx
+    push ax
+    mov cx, ax
     mov si, sp
     mov al, ss:[si + 4]         // (A, as it was pushed)
     cld
@@ -1248,7 +1263,7 @@ s_fill0:    // LD (HL+), A / DEC B / JR NZ: into the patterns, the work RAM or t
     pop ax
     pop cx
     add bx, ax
-    sub ch, al
+    sub \cnt, al
     mov si, ax
     shl ax, 1
     add ax, si
@@ -1257,6 +1272,11 @@ s_fill0:    // LD (HL+), A / DEC B / JR NZ: into the patterns, the work RAM or t
 9:
     pop ax
     ret
+.endm
+s_fill0:
+    FILL_LOOP ch
+s_fill1:
+    FILL_LOOP dh
 
 // A loop that only counts BC down (DEC BC / LD A, B / OR C / JR NZ, 7
 // cycles a turn: a program's way of waiting). At its start: as many turns
@@ -2142,3 +2162,4 @@ drc_stub_offs:
     .word s_bank0 - drc_stubs
     .word s_wrv - drc_stubs
     .word s_far - drc_stubs
+    .word s_fill1 - drc_stubs

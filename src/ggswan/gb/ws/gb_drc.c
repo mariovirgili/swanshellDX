@@ -916,8 +916,8 @@ __attribute__((noinline)) static void translate_block(void) {
                 break;
             }
         }
-        if (rb(blk_pc) == 0x22 && rb(blk_pc + 1) == 0x05 && rb(blk_pc + 2) == 0x20 && rb(blk_pc + 3) == 0xFC)
-            call_stub(ST_FILL0);
+        if (rb(blk_pc) == 0x22 && (rb(blk_pc + 1) == 0x05 || rb(blk_pc + 1) == 0x15) && rb(blk_pc + 2) == 0x20 && rb(blk_pc + 3) == 0xFC)
+            call_stub(rb(blk_pc + 1) == 0x05 ? ST_FILL0 : ST_FILL1);
     }
     // (a countdown of BC, a program's delay: gb_drc_asm.s, s_delay_bc)
     if (!in_ram && n_ins >= 4 && rb(blk_pc) == 0x0B && rb(blk_pc + 1) == 0x78 && rb(blk_pc + 2) == 0xB1

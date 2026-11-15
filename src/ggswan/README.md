@@ -6,7 +6,7 @@ emulated by a dynamic recompiler (Z80 to V30MZ code), with the original
 interpreter kept for the parts that need it. The Game Gear video memory is
 mapped onto the WonderSwan's own tile and screen hardware.
 
-Status: fairly stable (patch 182). It has been tested mostly in the
+Status: fairly stable (patch 183). It has been tested mostly in the
 nileswan-medem emulator and with the host test tools; tests on real
 hardware are still to come.
 
@@ -393,7 +393,7 @@ it are listed in order without one.
 - lighter DYN lookup and class routine for deferred tile bytes
 - OUTI runs to CRAM handled in the run routine
 
-### Patches 90-182
+### Patches 90-183
 
 | Patch | Change |
 |---|---|
@@ -490,3 +490,4 @@ it are listed in order without one.
 | 180 | gbswan: the translator's first pass in assembly. `scan_block`'s loop, for the instructions it has nothing of its own to do for (most), is `gbd_scan_fast` in `gb_asm.s`; the rare ones, and those that change what is known of BC, DE, HL, are still the C's, one at a time; the flags needed before each instruction are `gbd_scan_live`. The code made is the same. Race Drivin's start 522,307 cycles a frame to 489,794 (-6.2%; 605,626 in 177), Batman's level 118,142 to 112,967. Tried and taken out: the same for the second pass's simplest instructions (LD r, r, the ALU with a register, LD r, n) - right, and slower (499,003): going from the C to the assembly and back for each run of them cost more than they saved. Not run on a WonderSwan or in nileswan-medem. |
 | 181 | gbswan: a state kept and brought back, START + A and START + B held half a second (Gio's request): the whole internal RAM and the cartridge's RAM copied to two PSRAM banks the recompiler does not use, between two frames; on the way back the ROM's banks are set again and everything translated is forgotten. In memory only for now (lost on leaving the game); the `.sav` file is not touched. START reaches the game a tenth of a second late, so that a key pressed with it does not pause the game first. Super Mario Land 2 slow at times (Gio, on 180: 41 frames a second): its levels and its map are read a byte at a time through three routines that set the ROM bank, copy a byte and set the bank back, some 190 times a frame where a level scrolls; the seven instructions are now one routine (`s_far`) that moves no bank unless the byte is in the other bank, and then only the ROM window for the read: the slow stretch 70,387 cycles a frame to 63,279, the map 73,857 to 64,143. INC and DEC of an 8-bit register whose Z and H are set again before they are read are the V30MZ's and nothing else. Not run on a WonderSwan or in nileswan-medem. |
 | 182 | gbswan: the state as a file on the card. START + A also writes it next to the ROM, `.st0` for the extension (16 bytes of header, the internal RAM from 0040h, the cartridge's 32 KiB: 98,256 bytes), and the game's start reads it if it is there and is this build's: a state survives the console being turned off. A fault of 181: a state kept in one game was still in the PSRAM when another was started, and START + B there brought the first game's memory back; the mark is now cleared at the start. In `gbrun.py`, which stands in for the card: kept in one run, brought back from the title screen of a fresh one with the same checksums, and the game goes on. Not tried with a card: nileswan-medem or the console. |
+| 183 | gbswan: Super Mario Land 2's slow stretches again. After 181 the next thing in them was a loop that clears a row of the level in the cartridge's RAM, `LD (HL+), A / DEC D / JR NZ`, each byte the general write. The routine there was for that loop with B (`s_fill0`) is also for D (`s_fill1`), and both also fill the cartridge's RAM when it is plain RAM. The slow stretch 63,279 cycles a frame to 59,021 (70,387 in 180: 73% of full speed to 87%), the map 64,143 to 57,760 (73,857 in 180), the same memory; the four slowest games as they were. Not run on a WonderSwan or in nileswan-medem. |

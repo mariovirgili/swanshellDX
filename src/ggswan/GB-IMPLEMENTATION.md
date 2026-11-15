@@ -44,7 +44,7 @@ background and the window, switched at the right lines by the line
 interrupt, with the scroll the program gave each line; the sprites are
 the WonderSwan's.
 
-## Where it is (patch 182)
+## Where it is (patch 183)
 
 The CPU is a recompiler (`gb/ws/gb_drc.c`, `gb_drc_asm.s`; `GB-ABI.md`),
 there is sound (`gb/ws/gb_sound.c`: what it does and does not, at its
@@ -1193,6 +1193,30 @@ the game - with the stack at D000h-D7FFh (2 KiB), the RAM window on
 the cartridge's RAM, the nileswan as the game leaves it - has only
 been compiled; the ROM is read the same way before the game, on
 another stack.
+
+**Patch 183.** Super Mario Land 2's slow stretch after 181 (63,279):
+`s_far` 13.6%, the general write 10.6%, and among the blocks 4FD1h of
+bank 15, which starts `22 15 20 FC`: LD (HL+), A / DEC D / JR NZ, a
+row of the level cleared in the cartridge's RAM (A000h up, where the
+level is unpacked), 53 bytes a frame, each through `s_wrt`. It is
+`s_fill0`'s loop with D for B, and into memory `s_fill0` gave up on.
+`s_fill0` is now a macro (`FILL_LOOP`) used twice - `s_fill0` with CH,
+`s_fill1` (`ST_FILL1`) with DH - and both fill the cartridge's RAM too
+when `drc_ram_ok` is 1.
+
+The stretch 63,279 to 59,021 (-6.7%; 70,387 in 180), the map 64,143
+to 57,760 (-10.0%; 73,857 in 180), the same memory. What is left in
+the stretch: `s_far` itself 14.7% (some hundred calls a frame of
+about 85 cycles; a third of the calls still do the seven
+instructions, for a byte written to the video memory), the returns
+7.3%.
+
+Tests: the 24 of `gbreg`; Super Mario Land 2's three scenes and the
+four slowest, the same memory as 182 (cycles: ZAS 58,754, Donkey Kong
+Land 67,858, Race Drivin' 90,912, X 82,485: as they were). Not
+covered: a game that uses the fill with B into the cartridge's RAM
+(none of the scenes does); nothing on a WonderSwan or in
+nileswan-medem.
 
 He also saw, in 166, Super Mario Land's whole picture jump sideways
 for an instant now and then. Its status bar is a STAT interrupt at a

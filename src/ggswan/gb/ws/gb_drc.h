@@ -86,6 +86,7 @@ extern const uint16_t __far drc_stub_offs[];
 #define ST_BANK0     87     /* the same, from a block in the first ROM area */
 #define ST_WRV       90     /* a write the block knows is to the video memory */
 #define ST_FAR       93     /* a byte copied from another ROM bank and the bank set back (gb_drc_asm.s, s_far) */
-#define ST_COUNT     32
+#define ST_FILL1     96     /* s_fill0 with D for the count */
+#define ST_COUNT     33
 
 #endif
