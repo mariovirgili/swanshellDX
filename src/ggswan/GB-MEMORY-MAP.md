@@ -105,7 +105,8 @@ The PSRAM banks behind segments D000h and E000h of the linear area
 (1Dh, 1Eh). D000h: the internal RAM from 0040h, at the same offsets.
 E000h: the cartridge's RAM at 0000h-7FFFh, `GBST` at 8000h when a
 state has been kept, FatFs's volume at 9000h while a state is brought
-back. `gb_main.c`.
+back. `gb_main.c`. Internal RAM 9000h-97FFh: the buffer the state's
+file is written through (patch 182), only while it is written.
 
 ## The recompiler's memory
 

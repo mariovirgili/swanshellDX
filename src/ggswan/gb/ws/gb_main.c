@@ -239,6 +239,83 @@ static uint8_t st_held;
 static uint16_t st_t0;
 static uint8_t start_n, start_tap, start_used;
 
+// The state as a file on the card, next to the ROM, with .st0 for its
+// extension (rom_path, once the ROM has been read): 16 bytes - "GBST",
+// the patch, and the build's date and time, since the state is the
+// plugin's own memory and another build's is not this one's - then the
+// internal RAM from 0040h and the cartridge's RAM as they are kept.
+// Written when a state is kept, read when the game starts.
+#define ST_BUF ((uint8_t*) 0x9000)      // 2 KiB of internal RAM nothing uses while the game runs
+static const char st_build[] = __DATE__ __TIME__;
+static void state_head(uint8_t *h) {
+    h[0] = 'G'; h[1] = 'B'; h[2] = 'S'; h[3] = 'T';
+    h[4] = (uint8_t) GGSWAN_PATCH; h[5] = (uint8_t) (GGSWAN_PATCH >> 8);
+    uint8_t x = 0, y = 0;
+    for (uint8_t i = 0; st_build[i]; i++) { x += st_build[i]; y += x; }
+    h[6] = x; h[7] = y;
+    for (uint8_t i = 8; i < 16; i++) h[i] = st_build[i + 3];
+}
+static uint8_t state_file_write(void) {
+    unsigned int bw;
+    if (f_open(&fp, rom_path, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) return 1;
+    uint8_t bad = 0;
+    state_head(ST_BUF);
+    if (f_write(&fp, ST_BUF, 16, &bw) != FR_OK || bw != 16) bad = 1;
+    for (uint8_t part = 0; part < 2 && !bad; part++) {
+        uint16_t off = part ? 0 : 0x0040;
+        uint16_t seg = part ? ST_SEG2 : ST_SEG;
+        uint32_t left = part ? 0x8000ul : 0xFFC0ul;
+        while (left && !bad) {
+            uint16_t n = left > 0x800 ? 0x800 : (uint16_t) left;
+            _fmemcpy(ST_BUF, MK_FP(seg, off), n);
+            if (f_write(&fp, ST_BUF, n, &bw) != FR_OK || bw != n) bad = 1;
+            off += n;
+            left -= n;
+        }
+    }
+    if (f_close(&fp) != FR_OK) bad = 1;
+    return bad;
+}
+// (before the game: the internal RAM at 6000h is free, as for the ROM)
+static void state_file_read(void) {
+    unsigned int br;
+    uint8_t *buf = (uint8_t*) 0x6000;
+    uint8_t h[16];
+    *ST_MARK = 0;                       // (the PSRAM may still hold another game's)
+    if (f_open(&fp, rom_path, FA_READ | FA_OPEN_EXISTING) != FR_OK) return;
+    state_head(h);
+    uint8_t bad = f_read(&fp, buf, 16, &br) != FR_OK || br != 16;
+    for (uint8_t i = 0; i < 16 && !bad; i++)
+        if (buf[i] != h[i]) bad = 1;
+    for (uint8_t part = 0; part < 2 && !bad; part++) {
+        uint16_t off = part ? 0 : 0x0040;
+        uint16_t seg = part ? ST_SEG2 : ST_SEG;
+        uint32_t left = part ? 0x8000ul : 0xFFC0ul;
+        while (left && !bad) {
+            uint16_t n = left > 0x2000 ? 0x2000 : (uint16_t) left;
+            if (f_read(&fp, buf, n, &br) != FR_OK || br != n) bad = 1;
+            _fmemcpy(MK_FP(seg, off), buf, n);
+            off += n;
+            left -= n;
+        }
+    }
+    f_close(&fp);
+    if (!bad) *ST_MARK = ST_MAGIC;
+}
+// rom_path's extension made .st0
+static void state_path(void) {
+    uint16_t n = 0, dot = 0;
+    while (rom_path[n]) {
+        if (rom_path[n] == '.') dot = n;
+        else if (rom_path[n] == '/') dot = 0;
+        n++;
+    }
+    if (!dot) dot = n;
+    if (dot + 5 > PATH_SIZE) dot = PATH_SIZE - 5;
+    rom_path[dot] = '.'; rom_path[dot + 1] = 's'; rom_path[dot + 2] = 't'; rom_path[dot + 3] = '0';
+    rom_path[dot + 4] = 0;
+}
+
 static void state_save(void) {
     ia16_disable_irq();
     _fmemcpy(MK_FP(ST_SEG, 0x0040), MK_FP(0x0000, 0x0040), 0xFFC0);
@@ -249,6 +326,11 @@ static void state_save(void) {
     *ST_MARK = ST_MAGIC;
     ia16_enable_irq();
     gbv_note("SAVE");
+    // the file (a second or so: the WonderSwan's sound off meanwhile)
+    uint8_t snd = inportb(WS_SOUND_CH_CTRL_PORT);
+    outportb(WS_SOUND_CH_CTRL_PORT, 0);
+    if (state_file_write()) gbv_note("FILE");       // (kept in memory, not on the card)
+    outportb(WS_SOUND_CH_CTRL_PORT, snd);
 }
 
 static void state_load(void) {
@@ -396,6 +478,8 @@ int main(void) {
     int16_t result = f_mount(&fs, "", 1);
     if (result != FR_OK) fail("MOUNT", result);
     load_rom();
+    state_path();
+    state_file_read();
 
     gb_run();
     return 0;

@@ -44,7 +44,7 @@ background and the window, switched at the right lines by the line
 interrupt, with the scroll the program gave each line; the sprites are
 the WonderSwan's.
 
-## Where it is (patch 181)
+## Where it is (patch 182)
 
 The CPU is a recompiler (`gb/ws/gb_drc.c`, `gb_drc_asm.s`; `GB-ABI.md`),
 there is sound (`gb/ws/gb_sound.c`: what it does and does not, at its
@@ -1158,6 +1158,41 @@ state with other games, with sound playing, with code in RAM (Donkey
 Kong Land, R-Type II) - the blocks are forgotten, so it should not
 matter, and it was not run; nothing on a WonderSwan or in
 nileswan-medem.
+
+**Patch 182.** The state on the card. `rom_path`, once the ROM is
+read, has its extension made `.st0` (`state_path`). `state_save`,
+after the copies to the PSRAM, writes the file from them
+(`state_file_write`: a header of 16 bytes - `GBST`, the patch, a sum
+and the time of the build's `__DATE__ __TIME__` - then the two
+pieces, 2 KiB at a time through 9000h-97FFh of the internal RAM,
+which nothing uses while the game runs; FatFs wants its buffer
+there, not in the PSRAM). The interrupts stay on, so the picture
+stays; the WonderSwan's sound is turned off for the time it takes.
+`state_file_read`, before the game, clears the mark, and if the file
+is there with this build's header reads it into the PSRAM: START + B
+then works at once.
+
+The header is the build's because the state is the plugin's own
+memory: its C variables are where this build put them. A state file
+does not outlive a new `PLUG_GB.BIN`. One that does - the Game Boy's
+state alone, the rest made again from it - is another piece of work.
+
+A fault of 181, found writing this: the PSRAM keeps what it has while
+the console is on, so after one game was left with a state kept,
+START + B in the next brought back the first game's memory under the
+second's ROM. The mark is cleared at every start.
+
+`gbrun.py` answers `f_open` by the path (`.st0`: `GBRUN_STFILE`),
+`f_write` and `f_close`. Super Mario Land 2: a state kept at frame
+1430 of one run (98,256 bytes written); a second run started from
+nothing, START + B at the title screen: `LOAD` with the checksums of
+the first run's `SAVE` (video memory, work RAM, OAM, high RAM, I/O
+registers), the level's picture, and START and right play on from
+there. What this does not show: the card. FatFs's writing from inside
+the game - with the stack at D000h-D7FFh (2 KiB), the RAM window on
+the cartridge's RAM, the nileswan as the game leaves it - has only
+been compiled; the ROM is read the same way before the game, on
+another stack.
 
 He also saw, in 166, Super Mario Land's whole picture jump sideways
 for an instant now and then. Its status bar is a STAT interrupt at a

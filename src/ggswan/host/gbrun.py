@@ -122,18 +122,45 @@ def retf(pop=0):
     uc.reg_write(UC_X86_REG_SP, sp + 4 + pop)
     uc.reg_write(UC_X86_REG_CS, cs); uc.reg_write(UC_X86_REG_IP, ip)
 rom_pos = [0]
+cur_file = [None, None]
 def h_sd(uc, addr, size, name):
     ax = uc.reg_read(UC_X86_REG_AX)
     if name == 'f_open':
-        uc.mem_write(ax + 0xA, len(rom).to_bytes(4, 'little')); rom_pos[0] = 0
+        # (the ROM, or the state's file: GBRUN_STFILE=file is the card's .st0, read if it is there and written)
+        path = bytes(uc.mem_read(uc.reg_read(UC_X86_REG_DX), 260)).split(b'\0')[0]
+        mode = uc.reg_read(UC_X86_REG_CX) & 0xFF
+        if path.lower().endswith(b'.st0'):
+            stf = os.environ.get('GBRUN_STFILE')
+            if mode & 0x02:
+                cur_file[0] = bytearray(); cur_file[1] = stf
+            elif stf and os.path.exists(stf):
+                cur_file[0] = bytearray(open(stf, 'rb').read()); cur_file[1] = None
+            else:
+                uc.reg_write(UC_X86_REG_AX, 4); retf(); return      # FR_NO_FILE
+            print('SD: %s opened, mode %02X' % (path.decode('latin1'), mode))
+        else:
+            cur_file[0] = rom; cur_file[1] = None
+        uc.mem_write(ax + 0xA, len(cur_file[0]).to_bytes(4, 'little')); rom_pos[0] = 0
     elif name == 'f_read':
         buf = uc.reg_read(UC_X86_REG_DX)
         sp = uc.reg_read(UC_X86_REG_SP)
         n = int.from_bytes(uc.mem_read(sp + 4, 2), 'little')
         brp = int.from_bytes(uc.mem_read(sp + 6, 2), 'little')
-        d = rom[rom_pos[0]:rom_pos[0] + n]; rom_pos[0] += len(d)
+        d = bytes(cur_file[0][rom_pos[0]:rom_pos[0] + n]); rom_pos[0] += len(d)
         uc.mem_write(buf, d); uc.mem_write(brp, len(d).to_bytes(2, 'little'))
         uc.reg_write(UC_X86_REG_AX, 0); retf(4); return
+    elif name == 'f_write':
+        buf = uc.reg_read(UC_X86_REG_DX)
+        sp = uc.reg_read(UC_X86_REG_SP)
+        n = int.from_bytes(uc.mem_read(sp + 4, 2), 'little')
+        bwp = int.from_bytes(uc.mem_read(sp + 6, 2), 'little')
+        cur_file[0] += bytes(uc.mem_read(buf, n))
+        uc.mem_write(bwp, n.to_bytes(2, 'little'))
+        uc.reg_write(UC_X86_REG_AX, 0); retf(4); return
+    elif name == 'f_close':
+        if cur_file[1]:
+            open(cur_file[1], 'wb').write(bytes(cur_file[0])); print('SD: %d bytes written to %s' % (len(cur_file[0]), cur_file[1]))
+        cur_file[1] = None
     elif name == 'fail':
         dx, cx = uc.reg_read(UC_X86_REG_DX), uc.reg_read(UC_X86_REG_CX)
         st['fail'] = '%s %04X' % (bytes(uc.mem_read((dx << 4) + ax, 24)).split(b'\0')[0].decode('latin1'), cx)
@@ -164,7 +191,7 @@ def h_sd(uc, addr, size, name):
             if g >= FRAMES: st['stop'] = True; uc.emu_stop()
         return
     uc.reg_write(UC_X86_REG_AX, 0); retf()
-for n in ('f_mount', 'f_open', 'f_read', 'f_close', 'fail', 'gbv_frame'):
+for n in ('f_mount', 'f_open', 'f_read', 'f_write', 'f_close', 'fail', 'gbv_frame'):
     if n in syms: uc.hook_add(UC_HOOK_CODE, h_sd, n, syms[n], syms[n])
 def h_arm(uc, addr, size, _): st['gbv_armed'] = True
 if 'gbv_frame' in syms:

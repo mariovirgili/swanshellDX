@@ -6,7 +6,7 @@ emulated by a dynamic recompiler (Z80 to V30MZ code), with the original
 interpreter kept for the parts that need it. The Game Gear video memory is
 mapped onto the WonderSwan's own tile and screen hardware.
 
-Status: fairly stable (patch 181). It has been tested mostly in the
+Status: fairly stable (patch 182). It has been tested mostly in the
 nileswan-medem emulator and with the host test tools; tests on real
 hardware are still to come.
 
@@ -177,11 +177,17 @@ the keys do.
 | START + Y1 (Y up), held for a second | Back to the menu |
 | START + Y4 (Y left) | The numbers in the left border, on and off |
 
-The state is kept in the cartridge's PSRAM, not in the `.sav` file and
-not in the SRAM the menu writes to it: the game's own saves are as they
-were. It is lost when the game is left or the console turned off
-(a file on the card is the next step). It holds the cartridge's RAM as
-it was: bringing a state back undoes a save the game made after it.
+The state is kept in the cartridge's PSRAM and, since patch 182, in a
+file next to the ROM with `.st0` for its extension, written when the
+state is kept (a second or so, without sound; `FILE` in the border if
+it could not be written - the state is then in memory only) and read
+when the game is started: START + B works after the console has been
+off. Neither is the `.sav` file or the SRAM the menu writes to it: the
+game's own saves are as they were. A state holds the cartridge's RAM as
+it was: bringing one back undoes a save the game made after it.
+
+A `.st0` file is the plugin's own memory, so it is that build's of the
+plugin: with another `PLUG_GB.BIN` it is passed over (`NONE`).
 
 ## smsswan: the Master System plugin
 
@@ -387,7 +393,7 @@ it are listed in order without one.
 - lighter DYN lookup and class routine for deferred tile bytes
 - OUTI runs to CRAM handled in the run routine
 
-### Patches 90-181
+### Patches 90-182
 
 | Patch | Change |
 |---|---|
@@ -483,3 +489,4 @@ it are listed in order without one.
 | 179 | gbswan: sprites in pieces for a frame when their picture changes - the coin that turns in Donkey Kong Land's "Select Game", its enemies (Gio, on patch 178 in nileswan-medem). Two things, neither seen by `gbrun.py`, which drew the sprites from the table as it was at the picture's end: the WonderSwan takes the table at line 142, for the next frame (`GBRUN_SPRLATCH=1` now does the same). The game copies its sprites to the OAM at line 128 of every frame, and the frame's sprites were set from the OAM at the frame's end: the next frame's sprites on this frame's patterns. What the OAM was before a copy made while the picture is drawn is now kept and used. And a frame that ended just before line 142 had its table half taken, or taken a frame after its list: such a frame now waits for the vertical blank. The coin against the reference's poses: 25 pictures of 131 wrong, then none of 172. Donkey Kong Land 0.9% slower in the game, the others the same. Not run on a WonderSwan or in nileswan-medem. |
 | 180 | gbswan: the translator's first pass in assembly. `scan_block`'s loop, for the instructions it has nothing of its own to do for (most), is `gbd_scan_fast` in `gb_asm.s`; the rare ones, and those that change what is known of BC, DE, HL, are still the C's, one at a time; the flags needed before each instruction are `gbd_scan_live`. The code made is the same. Race Drivin's start 522,307 cycles a frame to 489,794 (-6.2%; 605,626 in 177), Batman's level 118,142 to 112,967. Tried and taken out: the same for the second pass's simplest instructions (LD r, r, the ALU with a register, LD r, n) - right, and slower (499,003): going from the C to the assembly and back for each run of them cost more than they saved. Not run on a WonderSwan or in nileswan-medem. |
 | 181 | gbswan: a state kept and brought back, START + A and START + B held half a second (Gio's request): the whole internal RAM and the cartridge's RAM copied to two PSRAM banks the recompiler does not use, between two frames; on the way back the ROM's banks are set again and everything translated is forgotten. In memory only for now (lost on leaving the game); the `.sav` file is not touched. START reaches the game a tenth of a second late, so that a key pressed with it does not pause the game first. Super Mario Land 2 slow at times (Gio, on 180: 41 frames a second): its levels and its map are read a byte at a time through three routines that set the ROM bank, copy a byte and set the bank back, some 190 times a frame where a level scrolls; the seven instructions are now one routine (`s_far`) that moves no bank unless the byte is in the other bank, and then only the ROM window for the read: the slow stretch 70,387 cycles a frame to 63,279, the map 73,857 to 64,143. INC and DEC of an 8-bit register whose Z and H are set again before they are read are the V30MZ's and nothing else. Not run on a WonderSwan or in nileswan-medem. |
+| 182 | gbswan: the state as a file on the card. START + A also writes it next to the ROM, `.st0` for the extension (16 bytes of header, the internal RAM from 0040h, the cartridge's 32 KiB: 98,256 bytes), and the game's start reads it if it is there and is this build's: a state survives the console being turned off. A fault of 181: a state kept in one game was still in the PSRAM when another was started, and START + B there brought the first game's memory back; the mark is now cleared at the start. In `gbrun.py`, which stands in for the card: kept in one run, brought back from the title screen of a fresh one with the same checksums, and the game goes on. Not tried with a card: nileswan-medem or the console. |
