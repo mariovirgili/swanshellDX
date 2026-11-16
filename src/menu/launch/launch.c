@@ -557,11 +557,6 @@ int16_t launch_backup_save_data(void) {
                     goto launch_backup_save_data_return_result;
                 }
 
-                // keep a copy of the old save first (Settings > System >
-                // Save backups; not for flash saves, as big as the ROM)
-                if (file_type != SAVE_ID_FOR_FLASH)
-                    save_backup_create(value);
-
                 result = f_open(&save_fp, value, FA_OPEN_EXISTING | FA_READ | FA_WRITE);
                 if (result != FR_OK) {
                     // TODO: Handle FR_NO_FILE by preallocating a new file?
@@ -644,6 +639,21 @@ int16_t launch_restore_save_data(char *path, const launch_rom_metadata_t *meta) 
             if (!launch_set_save_id(meta->id, save_target) && save_target) {
                 result = ERR_MCU_COMM_FAILED;
                 goto launch_restore_save_data_return_result;
+            }
+
+            // Keep a copy of the save as it is before this session (Settings
+            // > System > Save backups; not for flash saves, as big as the
+            // ROM). Done here, at launch, and not when the save is written
+            // back at the next start: there it made the menu fail to open
+            // the save file ("Error 6", on the cartridge and in the
+            // emulator), and the save was lost.
+            if (meta->eeprom_size != 0) {
+                strcpy(ext_loc, s_file_ext_eeprom);
+                save_backup_create(dst_path);
+            }
+            if (meta->sram_size != 0) {
+                strcpy(ext_loc, s_file_ext_sram);
+                save_backup_create(dst_path);
             }
 
             // restore or create data
