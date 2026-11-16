@@ -1489,6 +1489,11 @@ handle_a:
                 goto rescan_directory;
             } else {
                 ui_selector_clear_selection(&config);
+                // With a wallpaper the row has just been drawn again, and a
+                // custom icon set is read from PSRAM through the RAM window:
+                // the entry must be mapped again before its name is read
+                // (else the name was other data: "Error 6" at launch).
+                fno = ui_file_selector_open_fno(config.offset);
                 const char *ext = ui_file_selector_prepare_entry(strbuf, fno);
                 if (!ui_file_selector_choose_save(strbuf, ext)) {
                     reinit_ui = true;
