@@ -53,6 +53,11 @@ static uint8_t menu_music_get_area(void) {
 static bool menu_music_is_default = false;
 static volatile bool menu_music_playing = false;
 
+// The interrupt enters at menu_music_irq_entry (menu_music_irq.s), which
+// jumps here through this pointer unless a storage card read is going on.
+extern void menu_music_irq_entry(void);
+void __far (*menu_music_irq_player)(void);
+
 void __attribute__((interrupt, assume_ss_data)) menu_music_interrupt_handler(void) {
     // vgm_play() restores ROM0, but leaves ROM1 pointing at the music data;
     // the menu may be using ROM1 when this interrupt fires.
@@ -388,7 +393,8 @@ void menu_music_start(void) {
     outportb(WS_SOUND_OUT_CTRL_PORT, WS_SOUND_OUT_CTRL_SPEAKER_ENABLE | WS_SOUND_OUT_CTRL_HEADPHONE_ENABLE | WS_SOUND_OUT_CTRL_SPEAKER_VOLUME_100);
 
     ia16_disable_irq();
-    ws_int_set_handler(WS_INT_HBL_TIMER, (ia16_int_handler_t) menu_music_interrupt_handler);
+    menu_music_irq_player = (void __far (*)(void)) menu_music_interrupt_handler;
+    ws_int_set_handler(WS_INT_HBL_TIMER, (ia16_int_handler_t) menu_music_irq_entry);
     outportw(WS_TIMER_HBL_RELOAD_PORT, 2);
     outportb(WS_TIMER_CTRL_PORT, WS_TIMER_CTRL_HBL_REPEAT);
     ws_int_enable(WS_INT_ENABLE_HBL_TIMER);
