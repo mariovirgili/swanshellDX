@@ -110,7 +110,15 @@ file is written through (patch 182), only while it is written.
 
 ## The recompiler's memory
 
-PSRAM through the linear area (segment n000h is the PSRAM bank 10h + n
-here, above the ROM's banks 0-15): the blocks' table in segment 4000h
-(4096 places of 8 bytes), translated code in segments 5000h-C000h, each
-starting with a copy of the routines the code calls. `GB-ABI.md`.
+PSRAM read and run through the linear area (segment n000h is the PSRAM
+bank 10h + n here, above the ROM's banks 0-15): the blocks' table in
+segment 4000h (8192 places of 8 bytes), translated code in segments
+5000h-C000h, each starting with a copy of the routines the code calls.
+`GB-ABI.md`. Written through the RAM window (segment 1000h) with the
+PSRAM mapped there (port CEh), at the bank ((port C0h << 4) | n) & the
+ROM banks' mask: a write to the linear area itself does nothing on the
+cartridge (patch 184; `gbd_lin_put` in `gb_drc.c`). While that is done
+the cartridge's RAM is not at 1000h. Internal RAM 9000h-97FFh is also
+where a slow way kept for later is put together while a block is
+translated (`COLD_SCR`), and 9100h on where the hardware test builds its
+code.

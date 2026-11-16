@@ -290,6 +290,20 @@ with no routine.
   ("Interrupts"), which passes the time to each event until one asks
   for an interrupt.
 
+### Where a block is written, and its slow ways (patch 184)
+
+A block is put together in the internal RAM (`DRC_EBUF`) and copied to
+its code segment through the RAM window (`gbd_lin_put`): the linear area
+cannot be written on the cartridge. So are the table's entry (made in a
+local, written whole), the link the dispatcher writes into an exit, and
+the count before a RAM block's copy of its bytes. Translated code never
+writes to its own segment.
+
+PUSH and POP keep their slow way (the stack not in the work RAM) out of
+line: the test's jump goes forward to code placed after the block's next
+instructions, which jumps back. A block where that jump would not reach
+is translated again with the slow way in line (`cold_off`).
+
 ## Interrupts
 
 They are taken between blocks: when the count runs out and the event

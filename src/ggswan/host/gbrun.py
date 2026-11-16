@@ -49,7 +49,9 @@ iram = ctypes.create_string_buffer(0x10000)
 uc.mem_map_ptr(0, 0x10000, 7, ctypes.addressof(iram))
 uc.mem_map_ptr(0x100000, 0x10000, 7, ctypes.addressof(iram))
 for seg in range(4, 16):
-    uc.mem_map_ptr(seg << 16, 0x10000, 7, ctypes.addressof(psram[(0x10 | seg) & 31]))
+    # read and run only: on the cartridge a write to the linear area does nothing
+    # (hw_test on a WonderSwan, 2026-11-16); here it stops the run, to be found
+    uc.mem_map_ptr(seg << 16, 0x10000, 7 if os.environ.get('GBRUN_LINW') else 5, ctypes.addressof(psram[(0x10 | seg) & 31]))
 for s in f.iter_sections():
     if s['sh_flags'] & 2 and s['sh_size'] and s['sh_type'] == 'SHT_PROGBITS':
         uc.mem_write(s['sh_addr'] & 0xFFFFF, s.data())
@@ -99,7 +101,8 @@ def h_in(uc, port, size, _):
         k = st['keys']; g = ports[0xB5]
         return (g & 0xF0) | (k & 15 if g & 0x10 else 0) | ((k >> 4) & 15 if g & 0x20 else 0) | ((k >> 8) & 15 if g & 0x40 else 0)
     if port == 0xB4: return st['pend']
-    if port == 0xE4: return 0xFFFF
+    if port == 0xE4: return 0x7E1F          # (as read on the cartridge)
+    if port == 0xC0 and size == 1: return 0x3F
     v = ports[port]
     return v | ports[(port + 1) & 0xFF] << 8 if size == 2 else v
 def h_out(uc, port, size, value, _):
@@ -667,6 +670,14 @@ if CYCLES and FUNC and fhot:
         ins = next(_md.disasm(bytes(uc.mem_read(a, 8)), a))
         print('  %5.1f%%  x%-6d %05X  %s %s' % (100.0 * n / tot, fcnt[a], a, ins.mnemonic, ins.op_str))
 if CYCLES and HOT and hot:
+    if os.environ.get('GBRUN_JMPS'):
+        # GBRUN_JMPS=1: the translated code's cycles by first opcode byte (EB: the short jumps over the slow ways)
+        byop = collections.Counter(); nop = collections.Counter()
+        for a_, n_ in hot.items():
+            b_ = uc.mem_read(a_, 1)[0]
+            byop[b_] += n_; nop[b_] += hcnt.get(a_, 0)
+        t_ = sum(hot.values())
+        print('translated code by opcode: ' + ' '.join('%02X:%.1f%%(x%d)' % (k, 100.0 * v / t_, nop[k]) for k, v in byop.most_common(14)))
     tab = bytes(psram[0x14].raw)
     blocks = sorted((int.from_bytes(tab[i + 6:i + 8], 'little') >> 12, int.from_bytes(tab[i + 4:i + 6], 'little'),
         int.from_bytes(tab[i:i + 2], 'little'), int.from_bytes(tab[i + 2:i + 4], 'little')) for i in range(0, 8192 * 8, 8) if tab[i + 2] | tab[i + 3])

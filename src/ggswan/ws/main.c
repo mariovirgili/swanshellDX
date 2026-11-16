@@ -3134,6 +3134,11 @@ int main(void) {
         if (ws_keypad_scan() & WS_KEY_X3) {
             uint16_t r[6];
             drc_rt_bench(r);
+            // (on a screen of its own: after the lines already shown the
+            // six values did not fit and were all written on the last
+            // row - first run on a WonderSwan, 2026-11-16)
+            memset(map2, 0, MAP_SIZE);
+            text_y = 1;
             text_print("BENCH IRAM/PSRAM LINES");
             text_hex("MIX IRAM", r[0]); text_hex("MIX PSRAM", r[1]);
             text_hex("JMP8 IRAM", r[2]); text_hex("JMP8 PSRAM", r[3]);

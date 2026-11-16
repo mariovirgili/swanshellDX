@@ -44,7 +44,7 @@ background and the window, switched at the right lines by the line
 interrupt, with the scroll the program gave each line; the sprites are
 the WonderSwan's.
 
-## Where it is (patch 183)
+## Where it is (patch 184)
 
 The CPU is a recompiler (`gb/ws/gb_drc.c`, `gb_drc_asm.s`; `GB-ABI.md`),
 there is sound (`gb/ws/gb_sound.c`: what it does and does not, at its
@@ -1217,6 +1217,78 @@ Land 67,858, Race Drivin' 90,912, X 82,485: as they were). Not
 covered: a game that uses the fill with B into the cartridge's RAM
 (none of the scenes does); nothing on a WonderSwan or in
 nileswan-medem.
+
+**Patch 184.** The first run on a WonderSwan (Gio's SwanCrystal and
+nileswan, 2026-11-16; until then nileswan-medem and `gbrun.py`). ggswan,
+smsswan, sgswan and sfswan ran. gbswan showed a screen filled with one
+wrong tile where "GBSWAN / PATCH / SIZE" should be, then a white screen,
+and answered to nothing, with every ROM.
+
+Found with a test put in the plugin (`hw_test`, `hw_bench` in
+`gb_main.c`, built with `GBX=-DGB_HWTEST`; its pages wait for START):
+
+- *The white screen.* A byte written through the linear area (segment
+  4000h) read back unchanged; written through the RAM window with the
+  PSRAM mapped there (port CEh), at the bank the segment is, it read back
+  changed. gbswan wrote the blocks' table, the translated code, the links
+  between blocks, the count of a RAM block's forms and a kept state
+  straight to their segments (ggswan has written its code through the RAM
+  window since its first version). nileswan-medem and `gbrun.py` let the
+  writes through. Now `gbd_lin_open`/`gbd_lin_close`/`gbd_lin_put`
+  (`gb_drc.c`) do all of them: the bank from port C0h and the mask
+  (`drc_lin_hi`, `drc_lin_mask`, set in `main`), the RAM window's bank put
+  back after. A table entry is made in a local and written at once. A
+  state's copy of the cartridge's RAM goes through 2 KiB of internal RAM
+  (both are behind the RAM window). `gbrun.py` maps the linear area read
+  and run only (a write stops the run; `GBRUN_LINW=1` for the old way),
+  and answers ports C0h and E4h as the console did: the build before this
+  one stops there at WS frame 13, as on the console.
+- *The first screen.* The plugin is started in the mono mode (port 60h
+  read 0Ah). The screen drawn right after `ws_system_set_mode` was drawn
+  with other tiles (pieces of what the menu had left in the tile memory);
+  the next one, set up the same way, was right, and so is the first when
+  the mode is set at the start of the vertical blank and again two frames
+  later (`text_init`). Which of the two does it was not tried apart. The
+  tile bank bit works in this mode (the test's "BANK B").
+- *How fast.* All the plugins at about three quarters of the emulator's
+  frames a second (README, "On the console", with what the instructions
+  cost). `gbrun.py`'s cycles are the emulators' table: every number in
+  this file up to here is in those cycles, and about a third short of the
+  console's for translated code. The order of two builds measured the
+  same way mostly holds, but not where a change trades bytes of code for
+  jumps or calls: a call and its return are about 16 cycles on the console
+  (6 to 8 in the table), a byte of code half a cycle (none in the table),
+  a port write 8 to 10. To do next: these costs in `gbrun.py`, and the
+  hot spots ranked again.
+
+In the same patch, what was being measured when the cartridge arrived:
+the slow ways of an instruction out of line. A short jump over the slow
+way (`EB`) was 17% of the translated code's time in ZAS and Race Drivin'.
+The slow way is now put after the block's next instructions (`cold_*` in
+`gb_drc.c`: built in 2 KiB at 9000h, placed when the code has gone 40
+bytes past its test, so that the test's jump still reaches; a block where
+it does not is translated again the old way, `drc_cold_fails`). Tried for
+reads, writes, the ALU through (HL) and PUSH/POP (`COLD_MASK` bits 1, 2,
+4), cycles a Game Boy frame against 183, the same memory in all:
+
+| | 183 | all (7) | reads (1) | reads, PUSH/POP (5) | PUSH/POP (4) |
+|---|---|---|---|---|---|
+| Super Mario Land 2 | 46,724 | 47,847 | 47,579 | 47,578 | 46,777 |
+| ZAS | 58,754 | 56,450 | 58,912 | 57,180 | 57,222 |
+| Donkey Kong Land | 67,858 | 71,528 | 69,597 | 69,724 | 68,585 |
+| Race Drivin' | 90,912 | 90,892 | | | 89,911 |
+| X | 82,485 | 79,802 | 82,278 | 79,964 | 80,512 |
+
+Kept: PUSH/POP only (4). Reads out of line cost (the slow way is the
+usual one for Donkey Kong Land's writes to the video memory and for
+reads through a pointer that moves between ROM and RAM), and the
+translator is slower with more of them. With the writes through the RAM
+window added, the build of this patch: Super Mario Land 2 46,834, ZAS
+57,371, Donkey Kong Land 69,151, Race Drivin' 90,291, X 80,542; Blargg's
+11 and Mooneye's 13 pass. Donkey Kong Land is 1.9% slower than 183 and
+that was not looked into: by the console's costs a jump saved is worth
+more and a byte added costs, so this is to be measured again once
+`gbrun.py` counts as the console does.
 
 He also saw, in 166, Super Mario Land's whole picture jump sideways
 for an instant now and then. Its status bar is a STAT interrupt at a

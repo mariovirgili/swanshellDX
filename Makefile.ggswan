@@ -36,7 +36,7 @@ else ifeq ($(GB),1)
 # GB=1: gbswan, the Game Boy plugin: its own sources (src/ggswan/gb), none
 # of the others'; output: dist/NILESWAN/PLUG_GB.BIN
 NAME		:= gbswan
-DEFINES		+= -DGGSWAN_GB -DGB_FAST -DGB_WS
+DEFINES		+= -DGGSWAN_GB -DGB_FAST -DGB_WS $(GBX)
 ROM		:= dist/NILESWAN/PLUG_GB.BIN
 INCLUDEDIRS	:= src/ggswan/gb/ws src/ggswan/gb/core
 SOURCEDIRS	:= src/ggswan/gb/ws

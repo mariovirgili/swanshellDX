@@ -6,9 +6,10 @@ emulated by a dynamic recompiler (Z80 to V30MZ code), with the original
 interpreter kept for the parts that need it. The Game Gear video memory is
 mapped onto the WonderSwan's own tile and screen hardware.
 
-Status: fairly stable (patch 183). It has been tested mostly in the
-nileswan-medem emulator and with the host test tools; tests on real
-hardware are still to come.
+Status: fairly stable (patch 184). Tested mostly in the nileswan-medem
+emulator and with the host test tools; since 2026-11-16 the five plugins
+also run on a WonderSwan (a SwanCrystal with a nileswan): see "On the
+console" below.
 
 ## Installation and use
 
@@ -393,7 +394,46 @@ it are listed in order without one.
 - lighter DYN lookup and class routine for deferred tile bytes
 - OUTI runs to CRAM handled in the run routine
 
-### Patches 90-183
+### On the console
+
+Until 2026-11-16 everything was run in nileswan-medem and in the PC
+tools. On a SwanCrystal with a nileswan (Gio's), measured with the test
+in gbswan (`make -f Makefile.ggswan GB=1 GBX=-DGB_HWTEST`: five pages
+before the game, START for the next) and with ggswan's X3 (X down):
+
+- A write to the linear area (segments 4000h-F000h) does nothing. PSRAM is
+  written through the RAM window (segment 1000h) with port CEh bit 0 set,
+  at bank ((port C0h << 4) | segment's top digit) & the ROM banks' mask
+  (port E4h: C0h was 3Fh, the mask 01Fh, so segment 4000h is bank 14h).
+- The tile bank bit of a screen entry works in the 2 bits a pixel color
+  mode. A program is started in the mono mode (port 60h read 0Ah, or 00h
+  with the menu's "fast SRAM" on); the first screen drawn right after
+  setting port 60h to 80h showed its tiles read another way, the second
+  was right. Set at the start of the vertical blank and again two frames
+  later, the first is right too.
+- Code runs exactly as fast from PSRAM (the linear area) as from the
+  internal RAM, in all fifteen tests.
+- What things cost, in cycles (a line of the display is 256): a NOP 1;
+  `mov al, [bx]` and `mov ax, [bx]` 2; `mov ax, [bx + 1]` (a word at an
+  odd address) 3.5; `mov al, es:[bx]` in the cartridge's RAM 3.5, and 2.5
+  with its wait off (port 60h bit 1); PUSH AX and POP AX 3 the pair;
+  `shl ax, 4` 3; a short jump 4 to an even address and 5 to an odd one, a
+  near jump 5 and 6; a near call, its return and a short jump 20; `in ax,
+  D2h` and `out D2h, ax` 10, and 8 with the ports' wait off (port 60h bit
+  3); sixteen bytes like translated code (`add bx, dx` / `mov al, [bx]` /
+  `mov [m], al` / `sub word [m], 5` / `jle` / `mov ah, al`) 15. So: an
+  instruction costs the larger of what it takes to run and half a cycle a
+  byte of its code, plus a cycle for each access to data (two for a word
+  at an odd address, one more in the cartridge's RAM with its wait on),
+  plus 3 for a jump taken (4 to an odd address). The tables of cycles the
+  emulators and `gbrun.py`/`wsrun.py` use (an instruction 1 to 3, a jump
+  4) are about a third short of this for translated code.
+- Frames a second, ggswan, Sailor Moon S: title 45 (59 in nileswan-medem),
+  in the game 37 (50). The menu's "fast SRAM" (port 60h bits 1 and 3
+  clear) made no difference to be seen there and nothing went wrong with
+  it on.
+
+### Patches 90-184
 
 | Patch | Change |
 |---|---|
@@ -491,3 +531,4 @@ it are listed in order without one.
 | 181 | gbswan: a state kept and brought back, START + A and START + B held half a second (Gio's request): the whole internal RAM and the cartridge's RAM copied to two PSRAM banks the recompiler does not use, between two frames; on the way back the ROM's banks are set again and everything translated is forgotten. In memory only for now (lost on leaving the game); the `.sav` file is not touched. START reaches the game a tenth of a second late, so that a key pressed with it does not pause the game first. Super Mario Land 2 slow at times (Gio, on 180: 41 frames a second): its levels and its map are read a byte at a time through three routines that set the ROM bank, copy a byte and set the bank back, some 190 times a frame where a level scrolls; the seven instructions are now one routine (`s_far`) that moves no bank unless the byte is in the other bank, and then only the ROM window for the read: the slow stretch 70,387 cycles a frame to 63,279, the map 73,857 to 64,143. INC and DEC of an 8-bit register whose Z and H are set again before they are read are the V30MZ's and nothing else. Not run on a WonderSwan or in nileswan-medem. |
 | 182 | gbswan: the state as a file on the card. START + A also writes it next to the ROM, `.st0` for the extension (16 bytes of header, the internal RAM from 0040h, the cartridge's 32 KiB: 98,256 bytes), and the game's start reads it if it is there and is this build's: a state survives the console being turned off. A fault of 181: a state kept in one game was still in the PSRAM when another was started, and START + B there brought the first game's memory back; the mark is now cleared at the start. In `gbrun.py`, which stands in for the card: kept in one run, brought back from the title screen of a fresh one with the same checksums, and the game goes on. Not tried with a card: nileswan-medem or the console. |
 | 183 | gbswan: Super Mario Land 2's slow stretches again. After 181 the next thing in them was a loop that clears a row of the level in the cartridge's RAM, `LD (HL+), A / DEC D / JR NZ`, each byte the general write. The routine there was for that loop with B (`s_fill0`) is also for D (`s_fill1`), and both also fill the cartridge's RAM when it is plain RAM. The slow stretch 63,279 cycles a frame to 59,021 (70,387 in 180: 73% of full speed to 87%), the map 64,143 to 57,760 (73,857 in 180), the same memory; the four slowest games as they were. Not run on a WonderSwan or in nileswan-medem. |
+| 184 | gbswan runs on the console. First run on a WonderSwan (Gio's SwanCrystal, 2026-11-16): the other four plugins ran, gbswan showed a screen of wrong tiles and then stopped. Two things the emulator and `gbrun.py` had let through: a write to the linear area (where the translated code and its table are read and run) does nothing on the cartridge, and the 2 bits a pixel mode set coming from the menu was not in effect for the first screen. Now every such write (the table, the code, the links between blocks, a state kept) goes through the RAM window with the PSRAM mapped there, as ggswan's always did, and the mode is set at the vertical blank, twice. `gbrun.py` stops at a write to the linear area. A test of the hardware in the plugin (`GBX=-DGB_HWTEST`): what works, and what instructions cost. Measured: code runs as fast from PSRAM as from the internal RAM; the console is at about three quarters of the emulator's frames a second (Sailor Moon S: 37 against 50), because an instruction costs at least half a cycle a byte of its code and a cycle for each access to data, a taken jump 3 more (4 to an odd address), a call and its return about 16, a port 8-10: "On the console" below. Also: the slow ways of PUSH and POP out of line (ZAS -2.4%, X -2.4%, Race Drivin' -0.7%, Super Mario Land 2 +0.2%, Donkey Kong Land +1.9%, in `gbrun.py`'s old cycles); ggswan's X3 (X down) test on a screen of its own. On the console: the games start, a state is kept and brought back (Gio). |

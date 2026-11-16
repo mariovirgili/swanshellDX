@@ -84,8 +84,20 @@ void gbf_plat_map(void) {
 #define FONT_TILE 928
 static uint8_t text_row;
 
+static void wait_vblank(void);
 static void text_init(void) {
     outportb(WS_DISPLAY_CTRL_PORT, 0);
+    // The 2 bits a pixel mode, coming from the menu's 4: on the console
+    // the first screen was drawn with the tiles still read as 4 bits a
+    // pixel ones (pieces of the menu's picture), and the second one, set
+    // up the same way after a key, was right. Set at the start of the
+    // vertical blank and again two frames later, it is right from the
+    // first (hw_test 2, 2026-11-16). Which of the two it takes is not
+    // known.
+    wait_vblank();
+    ws_system_set_mode(WS_MODE_COLOR);
+    wait_vblank();
+    wait_vblank();
     ws_system_set_mode(WS_MODE_COLOR);
     for (uint8_t i = 0; i < sizeof(font_data) / 8; i++) {
         uint8_t *t = (uint8_t*) 0x2000 + (uint16_t) (FONT_TILE + i) * 16;
@@ -162,6 +174,244 @@ static void fail(const char __far *what, uint32_t v) {
     leave();
 }
 
+#ifdef GB_HWTEST
+/* ---- a test of the hardware (first run on a WonderSwan, 2026-11-16: the
+   text was other tiles and the game did not start). Text with tiles below
+   512 and the mono palettes set too, so that it reads whatever the answers
+   are. ---- */
+static void hw_put(uint8_t row, uint8_t col, const char __far *s) {
+    uint16_t *map = (uint16_t*) 0x4800;
+    for (; *s && col < 28; s++, col++) {
+        char c = *s;
+        uint8_t k = 0;
+        for (uint8_t i = 0; font_chars[i]; i++)
+            if (font_chars[i] == c) { k = i; break; }
+        map[row * 32 + col] = 384 + k;
+    }
+}
+static void hw_hex(uint8_t row, const char __far *label, uint16_t v) {
+    static const char __far digits[] = "0123456789ABCDEF";
+    char buf[5];
+    for (uint8_t i = 0; i < 4; i++)
+        buf[i] = digits[(v >> ((3 - i) * 4)) & 15];
+    buf[4] = 0;
+    hw_put(row, 1, label);
+    hw_put(row, 14, buf);
+}
+/* The same code timed in the internal RAM and in the PSRAM (the linear
+   area, where the translated code runs), in lines of the display (256
+   cycles each), as ggswan's X3 (X down) test, and then what translated
+   code does with the cartridge: its RAM read and written, a bank port
+   written. First run on a WonderSwan: the plugins at about half the
+   emulator's frames a second. */
+#define BENCH_IRAM 0x9100u
+#define BENCH_SEG  0xC000u      // (the last code segment: nothing is translated yet)
+#define BENCH_OFF  0xF000u
+static const uint8_t bn_mix[] = { 0x01, 0xD3, 0x8A, 0x07, 0xA2, 0x20, 0x90,       // add bx, dx; mov al, [bx]; mov [9020h], al
+    0x83, 0x2E, 0x22, 0x90, 0x05, 0x7E, 0x00, 0x88, 0xC4 };                         // sub word [9022h], 5; jle $+2; mov ah, al
+static const uint8_t bn_jmp8[] = { 0xEB, 0x00 };
+static const uint8_t bn_jmp16[] = { 0xE9, 0x00, 0x00 };
+static const uint8_t bn_rd_iram[] = { 0x8A, 0x07 };                                // mov al, [bx]
+static const uint8_t bn_rd_sram[] = { 0x26, 0x8A, 0x07 };                          // mov al, es:[bx]
+static const uint8_t bn_wr_sram[] = { 0x26, 0x88, 0x07 };                          // mov es:[bx], al
+static const uint8_t bn_out[] = { 0xE7, 0xD2 };                                    // out D2h, ax (the ROM0 window's bank)
+static const uint8_t bn_nop[] = { 0x90 };
+static const uint8_t bn_pushpop[] = { 0x50, 0x58 };                                // push ax; pop ax
+static const uint8_t bn_callret[] = { 0xE8, 0x02, 0x00, 0xEB, 0x01, 0xC3 };        // call f; jmp short over; f: ret; over:
+static const uint8_t bn_in[] = { 0xE5, 0xD2 };                                     // in ax, D2h
+static const uint8_t bn_rdw[] = { 0x8B, 0x07 };                                    // mov ax, [bx]
+static const uint8_t bn_rdwo[] = { 0x8B, 0x47, 0x01 };                             // mov ax, [bx + 1] (a word at an odd address)
+static const uint8_t bn_shl4[] = { 0xC1, 0xE0, 0x04 };                             // shl ax, 4
+static const uint8_t bn_call[] = { 0xE8, 0x00, 0x00, 0x83, 0xC4, 0x02 };           // call $+3; add sp, 2
+static uint16_t bn_build(uint8_t *b, const uint8_t __far *body, uint8_t len, uint8_t copies, uint16_t n) {
+    uint8_t *p = b;
+    *p++ = 0x50; *p++ = 0x53; *p++ = 0x51; *p++ = 0x52; *p++ = 0x06;   // push ax, bx, cx, dx, es
+    *p++ = 0xB8; *p++ = 0x00; *p++ = 0x10; *p++ = 0x8E; *p++ = 0xC0;   // mov ax, 1000h; mov es, ax
+    *p++ = 0xBB; *p++ = 0x00; *p++ = 0x40;                             // mov bx, 4000h
+    *p++ = 0x31; *p++ = 0xD2;                                          // xor dx, dx
+    *p++ = 0xE5; *p++ = 0xD2;                                          // in ax, D2h
+    *p++ = 0xB9; *p++ = n; *p++ = n >> 8;                              // mov cx, n
+    uint8_t *loop = p;
+    for (uint8_t i = 0; i < copies; i++)
+        for (uint8_t j = 0; j < len; j++)
+            *p++ = body[j];
+    *p++ = 0x49;                                                       // dec cx
+    *p++ = 0x74; *p++ = 3;                                             // jz done
+    uint16_t rel = (uint16_t) (loop - (p + 3));
+    *p++ = 0xE9; *p++ = rel; *p++ = rel >> 8;                          // jmp loop
+    *p++ = 0x07; *p++ = 0x5A; *p++ = 0x59; *p++ = 0x5B; *p++ = 0x58;   // done: pop...
+    *p++ = 0xCB;                                                       // retf
+    return (uint16_t) (p - b);
+}
+static uint16_t bn_time(uint16_t seg, uint16_t off) {
+    uint16_t fp2[2] = { off, seg };
+    outportb(WS_TIMER_CTRL_PORT, WS_TIMER_CTRL_HBL_DISABLE);
+    outportw(WS_TIMER_HBL_RELOAD_PORT, 0xFFFF);
+    outportb(WS_TIMER_CTRL_PORT, WS_TIMER_CTRL_HBL_ONESHOT);
+    __asm__ volatile ("lcall *%0" : : "m" (fp2) : "ax", "bx", "cx", "dx", "memory");
+    uint16_t left = inportw(WS_TIMER_HBL_COUNTER_PORT);
+    outportb(WS_TIMER_CTRL_PORT, WS_TIMER_CTRL_HBL_DISABLE);
+    return 0xFFFF - left;
+}
+static void hw_hex2(uint8_t row, const char __far *label, uint16_t a, uint16_t b) {
+    static const char __far digits[] = "0123456789ABCDEF";
+    char buf[5];
+    buf[4] = 0;
+    hw_put(row, 1, label);
+    for (uint8_t i = 0; i < 4; i++) buf[i] = digits[(a >> ((3 - i) * 4)) & 15];
+    hw_put(row, 12, buf);
+    for (uint8_t i = 0; i < 4; i++) buf[i] = digits[(b >> ((3 - i) * 4)) & 15];
+    hw_put(row, 18, buf);
+}
+#define BN_TESTS 15
+static void hw_bench(void) {
+    struct { const uint8_t __far *body; uint8_t len, copies; const char __far *name; } t[BN_TESTS] = {
+        { bn_mix, sizeof(bn_mix), 16, "MIX" },
+        { bn_jmp8, sizeof(bn_jmp8), 64, "JMP8" },
+        { bn_jmp16, sizeof(bn_jmp16), 64, "JMP16" },
+        { bn_call, sizeof(bn_call), 32, "CALL" },
+        { bn_rd_iram, sizeof(bn_rd_iram), 64, "RD IRAM" },
+        { bn_rd_sram, sizeof(bn_rd_sram), 64, "RD SRAM" },
+        { bn_wr_sram, sizeof(bn_wr_sram), 64, "WR SRAM" },
+        { bn_out, sizeof(bn_out), 64, "OUT D2" },
+        { bn_nop, sizeof(bn_nop), 128, "NOP" },
+        { bn_pushpop, sizeof(bn_pushpop), 64, "PUSHPOP" },
+        { bn_callret, sizeof(bn_callret), 32, "CALLRET" },
+        { bn_in, sizeof(bn_in), 64, "IN D2" },
+        { bn_rdw, sizeof(bn_rdw), 64, "RD WORD" },
+        { bn_rdwo, sizeof(bn_rdwo), 64, "RD W ODD" },
+        { bn_shl4, sizeof(bn_shl4), 64, "SHL 4" },
+    };
+    // the pages: a header and up to seven tests each, on every other row
+    // from the second (test | 80h: with the cartridge's waits off, port 60h
+    // bits 1 and 3 clear - what the menu's "fast SRAM" setting does)
+    static const uint8_t pages[3][7] = {
+        { 0, 1, 2, 3, 4, 5, 0xFF },
+        { 6, 7, 0x84, 0x85, 0x86, 0x87, 0xFF },
+        { 8, 9, 10, 11, 12, 13, 14 },
+    };
+    static const char __far names[3][7] = { "BENCH1", "BENCH2", "BENCH3" };
+    uint16_t *map = (uint16_t*) 0x4800;
+    uint8_t ie = inportb(WS_INT_ENABLE_PORT);
+    outportb(WS_INT_ENABLE_PORT, 0);
+    outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_DISABLE);
+    outportw(WS_CART_EXTBANK_RAM_PORT, 0);
+    uint8_t *b = (uint8_t*) BENCH_IRAM;
+    uint8_t m = inportb(0x60);
+    for (uint8_t pg = 0; pg < 3; pg++) {
+        for (uint16_t i = 0; i < 32 * 32; i++) map[i] = 384;
+        hw_hex2(1, names[pg], m, inportb(0xA0));
+        for (uint8_t k = 0; k < 7; k++) {
+            uint8_t i = pages[pg][k];
+            if (i == 0xFF) break;
+            uint8_t fast = i & 0x80;
+            i &= 0x7F;
+            if (fast) outportb(0x60, m & ~0x0A);
+            uint16_t len = bn_build(b, t[i].body, t[i].len, t[i].copies, 4000);
+            gbd_lin_put(BENCH_SEG, BENCH_OFF, b, len);
+            uint16_t a = bn_time(0x0000, BENCH_IRAM);
+            uint16_t c = bn_time(BENCH_SEG, BENCH_OFF);
+            outportb(0x60, m);
+            hw_hex2(3 + k * 2, t[i].name, a, c);
+            if (fast) hw_put(3 + k * 2, 10, "F");
+        }
+        hw_put(1, 24, "ST");
+        while (!(ws_keypad_scan() & WS_KEY_START)) wait_vblank();
+        while (ws_keypad_scan()) wait_vblank();
+    }
+    outportb(WS_INT_ENABLE_PORT, ie);
+}
+
+static void hw_test(uint16_t old_mask) {
+    outportb(WS_DISPLAY_CTRL_PORT, 0);
+    uint8_t mode_before = inportb(0x60);
+    // (test 1 on the console: the first screen was drawn with other tiles,
+    // the second, after a key, was right. So here: the mode set at the
+    // start of the vertical blank, and set again two frames later)
+    wait_vblank();
+    ws_system_set_mode(WS_MODE_COLOR);
+    wait_vblank();
+    wait_vblank();
+    ws_system_set_mode(WS_MODE_COLOR);
+    // is the internal RAM above 4000h there at once? (written right after
+    // the mode is set, read after a few frames)
+    volatile uint8_t *early = (volatile uint8_t*) 0x9010;
+    early[0] = 0x11; early[1] = 0x22;
+    uint8_t early_now = early[0];
+    for (uint8_t i = 0; i < 4; i++) wait_vblank();
+    uint8_t early_later = early[0];
+    // the font at tiles 384-427 (3800h), the same again shifted by one
+    // letter at 896-939 (5800h): "BANK A" is drawn with tile 384 + 'A' and
+    // the bank bit: an A if the bit is not used, a B if it is
+    for (uint8_t i = 0; i < sizeof(font_data) / 8; i++) {
+        uint8_t *t = (uint8_t*) 0x3800 + (uint16_t) i * 16;
+        uint8_t *u = (uint8_t*) 0x5800 + (uint16_t) i * 16;
+        uint8_t j = i + 1 < sizeof(font_data) / 8 ? i + 1 : i;
+        for (uint8_t r = 0; r < 8; r++) {
+            t[r * 2] = font_data[i * 8 + r]; t[r * 2 + 1] = 0;
+            u[r * 2] = font_data[j * 8 + r]; u[r * 2 + 1] = 0;
+        }
+    }
+    uint16_t *map = (uint16_t*) 0x4800;
+    for (uint16_t i = 0; i < 32 * 32; i++) map[i] = 384;
+    WS_DISPLAY_COLOR_MEM(0)[0] = 0xFFF;
+    WS_DISPLAY_COLOR_MEM(0)[1] = 0x000;
+    outportb(0x1C, 0x00); outportb(0x1D, 0x00); outportb(0x1E, 0xF0); outportb(0x1F, 0xFF);
+    outportw(0x20, 0x0070);     // mono palette 0: color 0 white, color 1 black
+    outportb(WS_SCR_BASE_PORT, (0x4800 >> 11) << 4 | (0x4800 >> 11));
+    outportb(0x12, 0); outportb(0x13, 0); outportb(0x01, 0);
+    outportb(WS_DISPLAY_CTRL_PORT, WS_DISPLAY_CTRL_SCR2_ENABLE);
+
+    // (every other row, from the second to the sixteenth: the first row
+    // is cut on Gio's console and rows next to each other run together)
+    hw_put(1, 1, "GBSWAN HW TEST 3");
+    hw_hex(3, "BEFORE 60", mode_before);
+    hw_hex(5, "MODE 60", inportb(0x60));
+    hw_hex(7, "EARLY", (uint16_t) early_now << 8 | early_later);
+    hw_put(9, 1, "BANK");
+    {   // 'A' is font_chars[11]
+        map[9 * 32 + 14] = 0x2000 | (384 + 11);
+    }
+    hw_hex(11, "LIN C0", inportb(0xC0));
+    hw_hex(13, "MASK", old_mask);
+    // at least three seconds, then START
+    hw_put(15, 1, "WAIT");
+    for (uint8_t i = 0; i < 225; i++) wait_vblank();
+    hw_put(15, 1, "PRESS START");
+    while (!(ws_keypad_scan() & WS_KEY_START)) wait_vblank();
+    while (ws_keypad_scan()) wait_vblank();
+
+    for (uint16_t i = 0; i < 32 * 32; i++) map[i] = 384;
+    hw_put(1, 1, "GBSWAN HW TEST 3B");
+    // a place read through the linear area (segment 4000h), as the
+    // recompiler's (written there, it read back unchanged on the console,
+    // test 2; not written any more: gbrun.py stops at such a write)
+    volatile uint8_t __far *p = MK_FP(0x4000, 0x0123);
+    uint8_t a0 = *p;
+    hw_hex(3, "LIN READ", a0);
+    // the same place written through the RAM window (flash on), bank as
+    // ggswan works it out, and read through the linear area
+    uint16_t bank = (((uint16_t) inportb(0xC0) << 4) | 4) & (old_mask & NILE_SEG_MASK_ROM_MASK);
+    hw_hex(5, "BANK OF 4000", bank);
+    uint8_t b0 = *p;
+    outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_ENABLE);
+    outportw(WS_CART_EXTBANK_RAM_PORT, bank);
+    *(volatile uint8_t __far*) MK_FP(0x1000, 0x0123) = (uint8_t) (b0 ^ 0x5A);
+    outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_DISABLE);
+    outportw(WS_CART_EXTBANK_RAM_PORT, 0);
+    uint8_t b1 = *p;
+    hw_hex(7, "RAM WRITE", (uint16_t) b0 << 8 | b1);        // works: they differ by 5Ah
+    // the internal RAM above 4000h
+    volatile uint8_t *q = (volatile uint8_t*) 0x9000;
+    *q = 0xA5;
+    hw_hex(9, "IRAM 9000", *q);
+    hw_put(15, 1, "PRESS START");
+    while (!(ws_keypad_scan() & WS_KEY_START)) wait_vblank();
+    while (ws_keypad_scan()) wait_vblank();
+    hw_bench();
+}
+#endif
+
 /* ---- the ROM ---- */
 
 static FATFS fs;
@@ -230,9 +480,12 @@ static uint8_t exit_held;
  * forgotten (it is made again as the game goes on). */
 #define ST_SEG  0xD000u
 #define ST_SEG2 0xE000u
-#define ST_MARK ((uint32_t __far*) MK_FP(ST_SEG2, 0x8000))
+#define ST_MARK ((const uint32_t __far*) MK_FP(ST_SEG2, 0x8000))   // (read here, written by st_mark)
+static void st_mark(uint32_t v) {
+    gbd_lin_put(ST_SEG2, 0x8000, &v, 4);
+}
 #define ST_MAGIC 0x54534247ul           // "GBST"
-#define ST_KEEP ((uint8_t __far*) MK_FP(ST_SEG2, 0x9000))
+#define ST_KEEP ((const uint8_t __far*) MK_FP(ST_SEG2, 0x9000))
 static uint8_t st_req;                  // asked for: 1 keep, 2 bring back
 static uint8_t st_wait;                 // nothing to the game until the keys are let go
 static uint8_t st_held;
@@ -281,7 +534,7 @@ static void state_file_read(void) {
     unsigned int br;
     uint8_t *buf = (uint8_t*) 0x6000;
     uint8_t h[16];
-    *ST_MARK = 0;                       // (the PSRAM may still hold another game's)
+    st_mark(0);                         // (the PSRAM may still hold another game's)
     if (f_open(&fp, rom_path, FA_READ | FA_OPEN_EXISTING) != FR_OK) return;
     state_head(h);
     uint8_t bad = f_read(&fp, buf, 16, &br) != FR_OK || br != 16;
@@ -294,13 +547,13 @@ static void state_file_read(void) {
         while (left && !bad) {
             uint16_t n = left > 0x2000 ? 0x2000 : (uint16_t) left;
             if (f_read(&fp, buf, n, &br) != FR_OK || br != n) bad = 1;
-            _fmemcpy(MK_FP(seg, off), buf, n);
+            gbd_lin_put(seg, off, buf, n);
             off += n;
             left -= n;
         }
     }
     f_close(&fp);
-    if (!bad) *ST_MARK = ST_MAGIC;
+    if (!bad) st_mark(ST_MAGIC);
 }
 // rom_path's extension made .st0
 static void state_path(void) {
@@ -318,12 +571,19 @@ static void state_path(void) {
 
 static void state_save(void) {
     ia16_disable_irq();
-    _fmemcpy(MK_FP(ST_SEG, 0x0040), MK_FP(0x0000, 0x0040), 0xFFC0);
-    outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_DISABLE);
-    outportw(WS_CART_EXTBANK_RAM_PORT, 0);
-    _fmemcpy(MK_FP(ST_SEG2, 0), MK_FP(0x1000, 0), 0x8000);
+    gbd_lin_put(ST_SEG, 0x0040, MK_FP(0x0000, 0x0040), 0xFFC0);
+    // the cartridge's RAM and the PSRAM are both reached through the RAM
+    // window: 2 KiB at a time through the internal RAM (ST_BUF: as it was,
+    // it is in the copy just made)
+    for (uint16_t off = 0; off < 0x8000; off += 0x800) {
+        outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_DISABLE);
+        outportw(WS_CART_EXTBANK_RAM_PORT, 0);
+        _fmemcpy(ST_BUF, MK_FP(0x1000, off), 0x800);
+        gbd_lin_put(ST_SEG2, off, ST_BUF, 0x800);
+    }
+    _fmemcpy(ST_BUF, MK_FP(ST_SEG, (uint16_t) ST_BUF), 0x800);
     gbf_plat_ram();
-    *ST_MARK = ST_MAGIC;
+    st_mark(ST_MAGIC);
     ia16_enable_irq();
     gbv_note("SAVE");
     // the file (a second or so: the WonderSwan's sound off meanwhile)
@@ -340,7 +600,7 @@ static void state_load(void) {
     }
     ia16_disable_irq();
     // (FatFs's volume is the card's as it is now, not as it was)
-    _fmemcpy(ST_KEEP, &fs, sizeof(fs));
+    gbd_lin_put(ST_SEG2, 0x9000, &fs, sizeof(fs));
     // (the stack, D000h-D7FFh, is this function's)
     _fmemcpy(MK_FP(0x0000, 0x0040), MK_FP(ST_SEG, 0x0040), 0xD000 - 0x0040);
     _fmemcpy(MK_FP(0x0000, 0xD800), MK_FP(ST_SEG, 0xD800), 0x2800);
@@ -458,6 +718,11 @@ int main(void) {
         | NILE_POW_IO_2003 | NILE_POW_SRAM);
     outportw(IO_NILE_SEG_MASK, (old_mask & NILE_SEG_MASK_ROM_MASK) | (0xF << NILE_SEG_MASK_RAM_SHIFT));
 
+    drc_lin_hi = (uint16_t) inportb(0xC0 /* the linear area's bank */) << 4;
+    drc_lin_mask = old_mask & NILE_SEG_MASK_ROM_MASK;
+#ifdef GB_HWTEST
+    hw_test(old_mask);
+#endif
     text_init();
     text_print("GBSWAN");
     text_hex("PATCH", GGSWAN_PATCH);

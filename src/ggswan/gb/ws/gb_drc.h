@@ -28,6 +28,10 @@
 #ifndef __ASSEMBLER__
 #include <stdint.h>
 void gbd_init(void);
+void gbd_lin_open(uint16_t seg);    // writes to a segment of the linear area: through the RAM window
+void gbd_lin_close(void);
+void gbd_lin_put(uint16_t seg, uint16_t off, const void __far *src, uint16_t n);
+extern uint16_t drc_lin_hi, drc_lin_mask;
 void gbd_flush(void);           // everything translated forgotten
 void gbd_run_frame(void);
 void gbd_enter(uint16_t off, uint16_t seg);     // gb_drc_asm.s: runs translated code until it leaves

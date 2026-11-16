@@ -45,7 +45,7 @@ uint8_t drc_mbc_and, drc_mbc_z1, drc_p1_tab[4];
 uint16_t drc_mbc_top, drc_mbc_lo, drc_mbc_or, drc_mbc_hi, drc_bank_mask;
 uint8_t drc_ramg;
 uint16_t drc_ram_seg;
-uint16_t drc_blocks, drc_flushes;
+uint16_t drc_blocks, drc_flushes, drc_cold_fails;
 
 /* ---- the blocks' table and the code ---- */
 
@@ -72,9 +72,36 @@ typedef struct {
 static uint16_t code_seg, code_top;
 static uint8_t *code;
 
+// The table and the translated code are PSRAM read (and run) through the
+// linear area, segments 4000h-C000h. They cannot be written there: on the
+// cartridge a write to the linear area does nothing (first run on a
+// WonderSwan, 2026-11-16: hw_test in gb_main.c read back 55h after writing
+// AAh; nileswan-medem and gbrun.py had let it through until then). They are
+// written as the other plugins' code is: through the RAM window with the
+// PSRAM mapped there (the "flash" port), at the bank the segment is.
+// Between gbd_lin_open and gbd_lin_close the cartridge's RAM is not at
+// 1000h: nothing of the Game Boy's may be read or written.
+uint16_t drc_lin_hi, drc_lin_mask = 0xFFFF;     // (gb_main.c: port C0h << 4, the ROM banks' mask)
+static uint16_t lin_prev;
+void gbd_lin_open(uint16_t seg) {
+    lin_prev = inportw(WS_CART_EXTBANK_RAM_PORT);
+    outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_ENABLE);
+    outportw(WS_CART_EXTBANK_RAM_PORT, (drc_lin_hi | seg >> 12) & drc_lin_mask);
+}
+void gbd_lin_close(void) {
+    outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_DISABLE);
+    outportw(WS_CART_EXTBANK_RAM_PORT, lin_prev);
+}
+// (src: not in the RAM window)
+void gbd_lin_put(uint16_t seg, uint16_t off, const void __far *src, uint16_t n) {
+    gbd_lin_open(seg);
+    _fmemcpy(MK_FP(0x1000, off), src, n);
+    gbd_lin_close();
+}
+
 static void code_bank(uint16_t seg) {
     code_seg = seg;
-    _fmemcpy(MK_FP(seg, 0), drc_stubs, drc_stubs_size);
+    gbd_lin_put(seg, 0, drc_stubs, drc_stubs_size);
     code_top = drc_stubs_size;
 }
 
@@ -90,8 +117,10 @@ static const uint8_t bit_of[8] = { 1, 2, 4, 8, 16, 32, 64, 128 };
 static void flush(void) {
     memset(DRC_HAS, 0, TABLE_N / 8);
     memset((uint8_t*) DRC_RC0, 0xFF, 0x2000);       // (no address is FFFFh: both small tables empty)
-    _fmemset(TABLE, 0, 0x8000);
-    _fmemset(TABLE + TABLE_N / 2, 0, 0x8000);
+    gbd_lin_open(DRC_TABLE_SEG);
+    _fmemset(MK_FP(0x1000, 0), 0, 0x8000);
+    _fmemset(MK_FP(0x1000, 0x8000), 0, 0x8000);
+    gbd_lin_close();
     code_bank(DRC_CODE_SEG);
     drc_link = 0;
     drc_flushes++;
@@ -419,12 +448,98 @@ static void nflush(void) {
     }
 }
 static uint16_t stub_off[ST_COUNT];     // (drc_stub_offs, copied: gbd_init)
+
+// The slow ways out of line. An access through a pointer was "is it the
+// work RAM: do it, jump over the rest; the rest": the jump, taken every
+// time, was four cycles of the ten (17% of the translated code's time in
+// ZAS and in Race Drivin' was in those jumps). The rest - the high RAM,
+// the ROM, the routine - is now written apart (9000h-97FFh while a block
+// is translated) and put after the block's code, or, when the place the
+// tests jump from would be too far for a short jump, in the middle of it
+// with a jump over; each ends with a jump back to after the access.
+// While it is written, `code` points there and code_top is where it was:
+// what is relative to the place (the calls, the jump back) is noted and
+// put right when the piece is moved to its place.
+#define COLD_SCR ((uint8_t*) 0x9000)
+#define COLD_SIZE 0x800
+#define COLD_MAX 8
+static struct {
+    uint16_t pos, len, base;
+    uint16_t rel[4], pj[3], poff[3];
+    uint8_t nrel, npatch;
+} cold[COLD_MAX];
+#ifndef COLD_MASK
+#define COLD_MASK 4
+#endif
+static uint8_t cold_n, in_cold, cold_off, cold_fail;
+static uint16_t cold_used, cold_first;
+static uint8_t *cold_code;
+static uint16_t cold_top;
+static void cold_flush(uint8_t jump);
+static void cold_begin(void) {
+    if (cold_n == COLD_MAX || cold_used > COLD_SIZE - 96) cold_flush(1);
+    cold_code = code;
+    cold_top = code_top;
+    cold[cold_n].pos = cold_used;
+    cold[cold_n].base = code_top;
+    cold[cold_n].nrel = cold[cold_n].npatch = 0;
+    code = COLD_SCR + cold_used - code_top;
+    in_cold = 1;
+}
+// (the test at j, in the block's code, jumps to here)
+static void cold_label(uint16_t j) {
+    uint8_t n = cold[cold_n].npatch++;
+    cold[cold_n].pj[n] = j;
+    cold[cold_n].poff[n] = code_top - cold[cold_n].base;
+    if (!cold_first || j < cold_first) cold_first = j;
+}
+static void cold_rel(void) {
+    if (in_cold) cold[cold_n].rel[cold[cold_n].nrel++] = code_top - cold[cold_n].base;
+}
+static void cold_back(uint16_t done) {
+    E(0xE9);
+    cold_rel();
+    EW(done - (code_top + 2));
+}
+static void cold_end(void) {
+    cold[cold_n].len = code_top - cold[cold_n].base;
+    cold_used += cold[cold_n].len;
+    code = cold_code;
+    code_top = cold_top;
+    in_cold = 0;
+    cold_n++;
+}
+static void cold_flush(uint8_t jump) {
+    if (!cold_n) return;
+    if (jump) {
+        E(0xE9);
+        EW(cold_used);
+    }
+    for (uint8_t i = 0; i < cold_n; i++) {
+        uint16_t at = code_top, d = at - cold[i].base;
+        memcpy(code + at, COLD_SCR + cold[i].pos, cold[i].len);
+        for (uint8_t k = 0; k < cold[i].nrel; k++)
+            *(uint16_t*) (code + at + cold[i].rel[k]) -= d;
+        for (uint8_t k = 0; k < cold[i].npatch; k++) {
+            uint16_t t = at + cold[i].poff[k] - cold[i].pj[k];
+            if (t > 127) cold_fail = 1;     // (too far: the block is translated again without this)
+            code[cold[i].pj[k] - 1] = t;
+        }
+        code_top += cold[i].len;
+    }
+    cold_n = 0;
+    cold_used = 0;
+    cold_first = 0;
+}
+
 static void call_stub(uint8_t st) {
     E(0xE8);
+    cold_rel();
     EW(stub_off[st / 3] - (code_top + 2));
 }
 static void jmp_stub(uint8_t st) {
     E(0xE9);
+    cold_rel();
     EW(stub_off[st / 3] - (code_top + 2));
 }
 // the cycles so far off the count (the V30MZ's flags are changed)
@@ -618,6 +733,34 @@ static void read_to(uint8_t r, uint8_t hl) {
         E(0x8A); E(0x06 | r << 3); EW(cur_cart);    // mov r, es:[..]
         cdone = cart_else(cj);
     }
+    if ((COLD_MASK & 1) && !cold_off && !cur_cart) {
+        uint16_t j = range_check(hl), j2 = j + (hl ? 5 : 6);
+        E(0x8A); E(0x80 | r << 3 | (hl ? 7 : 4)); EW(0xA000);   // mov r, [bx or si - 6000h]
+        uint16_t done = code_top;
+        cold_begin();
+        cold_label(j2);                                 // from E000h up: the high RAM?
+        E(0x81); E(hl ? 0xFB : 0xFE); EW(0xFF80);       // cmp bx/si, FF80h
+        E(0x72); E(0);
+        uint16_t p = code_top;
+        E(0x8A); E(0x80 | r << 3 | (hl ? 7 : 4)); EW(0xA000);
+        cold_back(done);
+        code[p - 1] = code_top - p;
+        cold_label(j);                                  // below C000h
+        uint16_t rj = rom_open(hl);
+        E(0x26); E(0x8A); E(r << 3 | (hl ? 7 : 4));     // mov r, es:[bx or si]
+        cold_back(done);
+        code[rj - 1] = code_top - rj;
+        if (hl) { E(0x89); E(0xDE); }                   // mov si, bx
+        if (r == 0) {
+            call_stub(ST_RD);
+        } else {
+            call_stub(ST_RDT);
+            E(0x8A); E(0x06 | r << 3); EW(ADDR(drc_tmp));
+        }
+        cold_back(done);
+        cold_end();
+        return;
+    }
     uint16_t j = range_check(hl);
     E(0x8A); E(0x80 | r << 3 | (hl ? 7 : 4)); EW(0xA000);   // mov r, [bx or si - 6000h]
     uint16_t done = slow_starts(j, hl, 0);
@@ -667,6 +810,34 @@ static void write_from(uint8_t r, uint8_t imm, uint8_t hl, uint16_t next) {
         if (r != 0xFF) { E(0x88); E(0x06 | r << 3); EW(cur_cart); }
         else { E(0xC6); E(0x06); EW(cur_cart); E(imm); }
         cdone = cart_else(cj);
+    }
+    if ((COLD_MASK & 2) && !cold_off && !cur_cart) {
+        uint16_t j = range_check(hl), j2 = j + (hl ? 5 : 6);
+        if (r != 0xFF) { E(0x88); E(0x80 | r << 3 | (hl ? 7 : 4)); EW(0xA000); }
+        else { E(0xC6); E(0x80 | (hl ? 7 : 4)); EW(0xA000); E(imm); }
+        uint16_t done = code_top;
+        cold_begin();
+        cold_label(j2);                                 // from E000h up: the high RAM but IE?
+        E(0x81); E(hl ? 0xFB : 0xFE); EW(0xFF80);       // cmp bx/si, FF80h
+        E(0x72); E(0);
+        uint16_t p1 = code_top;
+        E(0x81); E(hl ? 0xFB : 0xFE); EW(0xFFFF);
+        E(0x74); E(0);
+        uint16_t p2 = code_top;
+        if (r != 0xFF) { E(0x88); E(0x80 | r << 3 | (hl ? 7 : 4)); EW(0xA000); }
+        else { E(0xC6); E(0x80 | (hl ? 7 : 4)); EW(0xA000); E(imm); }
+        cold_back(done);
+        code[p1 - 1] = code_top - p1;
+        code[p2 - 1] = code_top - p2;
+        cold_label(j);                                  // below C000h
+        if (r != 0xFF) { E(0x88); E(0x06 | r << 3); EW(ADDR(drc_tmp)); }
+        else { E(0xC6); E(0x06); EW(ADDR(drc_tmp)); E(imm); }
+        if (hl) { E(0x89); E(0xDE); }
+        call_stub(ST_WRT);
+        EW(next);
+        cold_back(done);
+        cold_end();
+        return;
     }
     uint16_t j = range_check(hl);
     if (r != 0xFF) {
@@ -828,6 +999,17 @@ static void push16(uint8_t r, uint16_t v) {
     if (r != 0xFF) { E(0x89); E(0x86 | r << 3); EW(0x9FFE); }      // mov [bp - 6002h], r
     else { E(0xC7); E(0x86); EW(0x9FFE); EW(v); }
     E(0x8D); E(0x6E); E(0xFE);                  // lea bp, [bp - 2]
+    if ((COLD_MASK & 4) && !cold_off) {
+        uint16_t done = code_top;
+        cold_begin();
+        cold_label(j);
+        if (r != 0xFF) { E(0x89); E(0xC6 | r << 3); }               // mov si, r
+        else { E(0xBE); EW(v); }
+        call_stub(ST_PUSH);
+        cold_back(done);
+        cold_end();
+        return;
+    }
     E(0xEB); E(0);
     uint16_t done = code_top;
     code[j - 1] = code_top - j;
@@ -854,6 +1036,16 @@ static void pop16(uint8_t r) {
     uint16_t j = code_top;
     E(0x8B); E(0x86 | r << 3); EW(0xA000);      // mov r, [bp - 6000h]
     E(0x8D); E(0x6E); E(0x02);                  // lea bp, [bp + 2]
+    if ((COLD_MASK & 4) && !cold_off) {
+        uint16_t done = code_top;
+        cold_begin();
+        cold_label(j);
+        call_stub(ST_POP);
+        if (r != 6) { E(0x89); E(0xF0 | r); }   // mov r, si
+        cold_back(done);
+        cold_end();
+        return;
+    }
     E(0xEB); E(0);
     uint16_t done = code_top;
     code[j - 1] = code_top - j;
@@ -931,7 +1123,14 @@ __attribute__((noinline)) static void translate_block(void) {
     cur_dir = cur_cart = 0;
     cur_cls = 0;
     for (uint8_t i = 0; i < n_ins && !ended; i++) {
+        // (the slow ways not yet placed: here, with a jump over them, when
+        // the first test that goes to them would be more than a short
+        // jump back after this instruction)
         uint16_t pc = i_pc[i], next = i_pc[i + 1];
+        // (an instruction's code is under 80 bytes; with more allowed
+        // before the next - 90 where it is a short one - more blocks had
+        // to be translated again the old way, and ZAS was slower)
+        if (cold_n && code_top - cold_first > 40) cold_flush(1);
         uint8_t op, b1, b2;
         {
             uint16_t o = pc - tbase;
@@ -1056,6 +1255,35 @@ __attribute__((noinline)) static void translate_block(void) {
                         E(alu_x86[y] | 2); E(0x06); EW(cur_cart);
                         cdone = cart_else(cj);
                     }
+                }
+                if ((COLD_MASK & 1) && !cold_off && !cur_cart) {
+                    uint16_t j = range_check(1), j2 = j + 5;
+                    if (y == 1 || y == 3) carry_in();
+                    E(alu_x86[y] | 2); E(0x87); EW(0xA000);     // op al, [bx - 6000h]
+                    uint16_t done = code_top;
+                    cold_begin();
+                    cold_label(j2);
+                    E(0x81); E(0xFB); EW(0xFF80);               // cmp bx, FF80h
+                    E(0x72); E(0);
+                    uint16_t p = code_top;
+                    if (y == 1 || y == 3) carry_in();
+                    E(alu_x86[y] | 2); E(0x87); EW(0xA000);
+                    cold_back(done);
+                    code[p - 1] = code_top - p;
+                    cold_label(j);
+                    uint16_t rj = rom_open(1);
+                    if (y == 1 || y == 3) carry_in();
+                    E(0x26); E(alu_x86[y] | 2); E(0x07);        // op al, es:[bx]
+                    cold_back(done);
+                    code[rj - 1] = code_top - rj;
+                    E(0x89); E(0xDE);
+                    call_stub(ST_RDT);
+                    if (y == 1 || y == 3) carry_in();
+                    E(alu_x86[y] | 2); E(0x06); EW(ADDR(drc_tmp));
+                    cold_back(done);
+                    cold_end();
+                    alu_done(y);
+                    continue;
                 }
                 uint16_t j = range_check(1);
                 if (y == 1 || y == 3) carry_in();
@@ -1574,6 +1802,7 @@ __attribute__((noinline)) static void translate_block(void) {
     }
     after_ei = 0;
     if (!ended) exit_to(i_pc[n_ins], 0);
+    cold_flush(0);
 }
 
 // a loop that waits on STAT (its instructions s to n - 1, the last the
@@ -1905,12 +2134,28 @@ __attribute__((noinline)) static blk_t __far *translate(uint16_t pc, uint16_t ke
             for (uint8_t i = 0; i < len; i++) E(rb(pc + i));
             E(len);
         }
-        b->pc = pc;
-        b->key = key;
+        {
+            blk_t nb;
+            nb.pc = pc;
+            nb.key = key;
+            nb.off = code_top;
+            nb.seg = code_seg;
+            gbd_lin_put(DRC_TABLE_SEG, FP_OFF(b), &nb, sizeof(nb));
+        }
         if (pc < 0x8000) DRC_HAS[h >> 3] |= bit_of[h & 7];
-        b->off = code_top;
-        b->seg = code_seg;
+        cold_off = in_ram;
+        cold_fail = 0;
+        cold_n = 0; cold_used = 0; cold_first = 0;
         translate_block();
+        if (cold_fail) {
+            // (a slow way ended up too far from its test: the block
+            // again, the old way)
+            code_top = b->off;
+            cold_off = 1;
+            cold_fail = 0;
+            translate_block();
+            drc_cold_fails++;
+        }
         if (in_ram) {
             uint8_t *h = code + b->off - 1;
             h -= *h + RAM_HEAD;
@@ -1922,7 +2167,7 @@ __attribute__((noinline)) static blk_t __far *translate(uint16_t pc, uint16_t ke
             }
             h[32] = any;
         }
-        _fmemcpy(MK_FP(code_seg, first), (const uint8_t*) DRC_EBUF, code_top - first);
+        gbd_lin_put(code_seg, first, (const uint8_t*) DRC_EBUF, code_top - first);
         drc_blocks++;
         return b;
     }
@@ -2072,7 +2317,10 @@ void gbd_run_frame(void) {
                 key = 0x8000 | (h & 0x7FFE);
                 b = find(pc, key);
                 if (b && !ram_same(b, pc)) b = 0;
-                if (!b) (*cnt)++;
+                if (!b) {
+                    uint8_t more = *cnt + 1;
+                    gbd_lin_put(FP_SEG(cnt), FP_OFF(cnt), &more, 1);
+                }
             }
             if (!b) {
                 uint16_t flushes = drc_flushes;
@@ -2095,17 +2343,19 @@ void gbd_run_frame(void) {
             }
             if (drc_link) {
                 // the exit just taken, joined to this block
-                uint8_t __far *site = MK_FP(drc_link_seg, drc_link);
+                uint8_t site[5];
                 if (drc_link_seg == b->seg) {
                     uint16_t rel = b->off - (drc_link + 3);
                     site[1] = rel & 0xFF;
                     site[2] = rel >> 8;
+                    gbd_lin_put(drc_link_seg, drc_link + 1, site + 1, 2);
                 } else {
                     site[1] = b->off & 0xFF;
                     site[2] = b->off >> 8;
                     site[3] = b->seg & 0xFF;
                     site[4] = b->seg >> 8;
                     site[0] = 0xEA;
+                    gbd_lin_put(drc_link_seg, drc_link, site, 5);
                 }
                 drc_link = 0;
             }
