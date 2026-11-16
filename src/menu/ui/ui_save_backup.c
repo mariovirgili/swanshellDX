@@ -33,12 +33,13 @@
 #include "ui/ui_dialog.h"
 #include "ui/ui_popup_list.h"
 #include "ui_save_backup.h"
+#include "../util/file.h"
+#include "../../shared/config.h"
 
 // The copy goes through PSRAM bank 0, the scratch area. At startup the
 // "flash" saves (the ROM image in PSRAM) are written back before the SRAM
 // and EEPROM ones (SAVE.INI lists them first), so nothing is lost there.
-#define SAVE_BACKUP_PSRAM_BANK 0
-#define SAVE_BACKUP_COPY_CHUNK 0x8000
+#define SAVE_BACKUP_COPY_CHUNK 4096 // of sector_buffer (title text from 6144)
 
 #define STAMP_LEN 17 // "2026-11-02_232410"
 #define LABEL_MAX 20
@@ -179,20 +180,28 @@ static int16_t copy_file(const char *src, const char *dst) {
         return result;
     }
 
-    // (no return inside: the flash mode and RAM bank must be restored)
-    ws_bank_with_flash(WS_CART_BANK_FLASH_ENABLE, {
-        ws_bank_with_ram(SAVE_BACKUP_PSRAM_BANK, {
-            while (result == FR_OK) {
-                unsigned int br, bw;
-                result = f_read(&in, MK_FP(0x1000, 0x0000), SAVE_BACKUP_COPY_CHUNK, &br);
-                if (result != FR_OK || br == 0)
-                    break;
-                result = f_write(&out, MK_FP(0x1000, 0x0000), br, &bw);
-                if (result == FR_OK && bw != br)
-                    result = FR_DENIED; // card full
-            }
-        });
-    });
+    // Through a buffer in the internal RAM, as f_write_sram_banked() does:
+    // libnile's transmit buffer is in the RAM window (segment 15), so data
+    // must not be written to the card from that window. (The first version
+    // copied through PSRAM mapped there: the copies held other data, and
+    // the menu then failed to open the save file, "Error 6".)
+    uint8_t stack_buffer[CONFIG_MEMLAYOUT_STACK_BUFFER_SIZE];
+    uint8_t *buffer = stack_buffer;
+    uint16_t buffer_size = sizeof(stack_buffer);
+    if (sector_buffer_is_active()) {
+        // (the part below the file selector's title text)
+        buffer = sector_buffer;
+        buffer_size = SAVE_BACKUP_COPY_CHUNK;
+    }
+    while (result == FR_OK) {
+        unsigned int br, bw;
+        result = f_read(&in, buffer, buffer_size, &br);
+        if (result != FR_OK || br == 0)
+            break;
+        result = f_write(&out, buffer, br, &bw);
+        if (result == FR_OK && bw != br)
+            result = FR_DENIED; // card full
+    }
 
     f_close(&in);
     int16_t close_result = f_close(&out);
