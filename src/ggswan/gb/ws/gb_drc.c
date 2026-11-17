@@ -532,12 +532,34 @@ static void cold_flush(uint8_t jump) {
     cold_first = 0;
 }
 
+// The Game Boy's cycles left to the next event are in DI while translated
+// code runs (patch 190: "sub word [gbf_cyc], n" at every block's end was
+// four cycles and a half on the console, 2,450 times a frame in ZAS; "sub
+// di, n" is one and a half). Everything else - the routines, the C side -
+// has them in gbf_cyc: DI is put there before a routine is called or
+// jumped to, and taken back after a call (the routines use DI as they
+// please). After the bytes that follow the call, for the routines that
+// have some and come back after them (STUB_DATA: cyc_load is then the
+// caller's to write). Not for the routines called most (STUB_KEEP): those
+// leave DI alone on their short ways and see to gbf_cyc themselves on the
+// long ones (gb_drc_asm.s: s_rd, s_wrt, s_lookup), so a read or a write
+// through them costs no more than before.
+static void cyc_store(void) { E(0x89); E(0x3E); EW(ADDR(gbf_cyc)); }    // mov [gbf_cyc], di
+static void cyc_load(void) { E(0x8B); E(0x3E); EW(ADDR(gbf_cyc)); }     // mov di, [gbf_cyc]
+#define STUB_DATA(st) ((st) == ST_WRT || (st) == ST_WAIT_STAT || (st) == ST_VREG || (st) == ST_FAR \
+    || (st) == ST_BANKX)
+#define STUB_KEEP(st) ((st) == ST_RD || (st) == ST_RDT || (st) == ST_WRT || (st) == ST_WRV || (st) == ST_POP \
+    || (st) == ST_INC_HL || (st) == ST_DEC_HL || (st) == ST_DAA || (st) == ST_P1 || (st) == ST_BANK0 \
+    || (st) == ST_STAT || (st) == ST_LY || (st) == ST_EXIT_DYN || (st) == ST_EXIT_DYN_F)
 static void call_stub(uint8_t st) {
+    if (!STUB_KEEP(st)) cyc_store();
     E(0xE8);
     cold_rel();
     EW(stub_off[st / 3] - (code_top + 2));
+    if (!STUB_KEEP(st) && !STUB_DATA(st)) cyc_load();
 }
 static void jmp_stub(uint8_t st) {
+    if (!STUB_KEEP(st)) cyc_store();
     E(0xE9);
     cold_rel();
     EW(stub_off[st / 3] - (code_top + 2));
@@ -545,7 +567,7 @@ static void jmp_stub(uint8_t st) {
 // the cycles so far off the count (the V30MZ's flags are changed)
 static void sub_cyc(void) {
     if (!cyc) return;
-    E(0x83); E(0x2E); EW(ADDR(gbf_cyc)); E(cyc);
+    E(0x83); E(0xEF); E(cyc);                   // sub di, n
     cyc = 0;
 }
 
@@ -605,7 +627,7 @@ static void exit_to(uint16_t target, uint8_t extra) {
     uint8_t link = in_ram ? target == blk_pc : (target < 0x4000 || (blk_pc >= 0x4000 && target >= 0x4000 && target < 0x8000));
     if (!(link && !in_ram && !after_ei && nst >= 0 && nst != nmem && n_dead(target))) nflush();
     if (after_ei) {
-        if (cyc + extra) { E(0x83); E(0x2E); EW(ADDR(gbf_cyc)); E(cyc + extra); }
+        if (cyc + extra) { E(0x83); E(0xEF); E(cyc + extra); }
         E(0xC7); E(0x06); EW(ADDR(gb) + GB_PC); EW(target);
         E(0xC7); E(0x06); EW(ADDR(drc_link)); EW(0);
         jmp_stub(ST_EXIT);
@@ -613,12 +635,13 @@ static void exit_to(uint16_t target, uint8_t extra) {
     }
     if (!link && !in_ram) {
         // (not to be joined: the table is looked in by the routine)
-        if (cyc + extra) { E(0x83); E(0x2E); EW(ADDR(gbf_cyc)); E(cyc + extra); }
+        if (cyc + extra) { E(0x83); E(0xEF); E(cyc + extra); }
         E(0xBE); EW(target);                    // mov si, target
         jmp_stub(cyc + extra ? ST_EXIT_DYN_F : ST_EXIT_DYN);
         return;
     }
-    E(0x83); E(cyc + extra ? 0x2E : 0x3E); EW(ADDR(gbf_cyc)); E(cyc + extra);     // sub (or cmp) word [gbf_cyc], n
+    if (cyc + extra) { E(0x83); E(0xEF); E(cyc + extra); }      // sub di, n
+    else { E(0x85); E(0xFF); }                                  // (or test di, di)
     E(0x7E); E(0x05);                           // jle +5
     uint16_t site = code_top;
     if (loop_body && target == blk_pc) {
@@ -639,7 +662,7 @@ static void exit_to(uint16_t target, uint8_t extra) {
 static void exit_dyn(uint8_t extra) {
     mat();
     nflush();
-    if (cyc + extra) { E(0x83); E(0x2E); EW(ADDR(gbf_cyc)); E(cyc + extra); }
+    if (cyc + extra) { E(0x83); E(0xEF); E(cyc + extra); }
     if (after_ei) {
         E(0x89); E(0x36); EW(ADDR(gb) + GB_PC);     // mov [gb.pc], si
         jmp_stub(ST_EXIT);
@@ -700,7 +723,8 @@ static uint16_t slow_starts(uint16_t j, uint8_t hl, uint8_t wr) {
     code[j - 1] = code_top - j;
     return done;
 }
-#define SLOW_ENDS(done) (code[(done) - 1] = code_top - (done))
+// (too far for the jump: the block again without the pieces put apart, which is what can make it so)
+#define SLOW_ENDS(done) do { if (code_top - (done) > 127) cold_fail = 1; code[(done) - 1] = code_top - (done); } while (0)
 
 // An access to a known address in the cartridge's RAM: "is it plain RAM
 // and enabled; ES = its segment", then the caller's instruction on
@@ -961,6 +985,7 @@ static void io_read(uint8_t n) {
         // (the read of a loop that waits for a mode: the wait is done there)
         call_stub(ST_WAIT_STAT);
         E(cur_wait);
+        cyc_load();
         return;
     }
     if (n == GB_STAT || n == GB_LY) {
@@ -1007,6 +1032,7 @@ static uint8_t io_write(uint8_t n, uint16_t next) {
         call_stub(ST_VREG);
         E(n);
         E(n == GB_SCX ? 2 : n == GB_SCY ? 3 : n == GB_WY ? 4 : n == GB_WX ? 5 : 6);
+        cyc_load();
         return 0;
     }
     if (n == GB_P1) {
@@ -1149,7 +1175,7 @@ static uint16_t unless(uint8_t c) {
 // can change it). On LY or STAT: to the next line or mode
 static void wait_skip(void) {
     mat();
-    if (idle == 1) { E(0xC7); E(0x06); EW(ADDR(gbf_cyc)); EW(0); }
+    if (idle == 1) { E(0x31); E(0xFF); }        // xor di, di: no cycles left
     else if (idle == 4) call_stub(ST_SKIP_HL);
     else if (idle == 3 && idle_modes) { }       // (its read of STAT does the waiting: io_read)
     else call_stub(idle == 2 ? ST_SKIP_LINE : ST_SKIP_MODE);
@@ -1247,6 +1273,7 @@ __attribute__((noinline)) static void translate_block(void) {
                 sub_cyc();
                 call_stub(ST_FAR);
                 E(v); EW(sh); E(rb(pc + 9)); E(c);
+                cyc_load();                         // (the flags stay the routine's)
                 E(0x72); E(0x03);                   // jc: the instructions themselves
                 E(0xE9); EW(0);                     // jmp done
                 far_patch = code_top;
@@ -1280,11 +1307,11 @@ __attribute__((noinline)) static void translate_block(void) {
             E(0x22); E(0x06); EW(0x9F0F);                       // and al, [IF]
             E(0xA8); E(0x1F);                                   // test al, 1Fh
             E(0x58);                                            // pop ax
-            E(0x74); E(14);                                     // jz halt
+            E(0x74); E(18);                                     // jz halt
             E(0xC7); E(0x06); EW(ADDR(gb) + GB_PC); EW(pc);
             E(0xC6); E(0x06); EW(ADDR(drc_interp)); E(1);
             jmp_stub(ST_EXIT);
-            E(0x83); E(0x2E); EW(ADDR(gbf_cyc)); E(1);          // halt: sub word [gbf_cyc], 1
+            E(0x83); E(0xEF); E(1);                             // halt: sub di, 1
             E(0xC6); E(0x06); EW(ADDR(gb) + GB_HALTED); E(1);
             E(0xC7); E(0x06); EW(ADDR(gb) + GB_PC); EW(next);
             E(0xC7); E(0x06); EW(ADDR(drc_link)); EW(0);
@@ -1444,13 +1471,13 @@ __attribute__((noinline)) static void translate_block(void) {
                         break;
                     }
                     mat();
-                    E(0x89); E(0xC7);                           // mov di, ax
+                    E(0x89); E(0xC6);                           // mov si, ax
                     E(0x00); E(0xC0 | r << 3 | 3);              // add bl, r.low
                     E(0x10); E(0xC0 | (r + 4) << 3 | 7);        // adc bh, r.high
                     E(0x9F);                                    // lahf
                     E(0x80); E(0xE4); E(0x11);                  // and ah, 11h
-                    E(0x81); E(0xE7); EW(0x4000);               // and di, 4000h
-                    E(0x09); E(0xF8);                           // or ax, di
+                    E(0x81); E(0xE6); EW(0x4000);               // and si, 4000h
+                    E(0x09); E(0xF0);                           // or ax, si
                     nst = 0;
                 }
                 break;
@@ -1613,7 +1640,7 @@ __attribute__((noinline)) static void translate_block(void) {
                     E(0x22); E(0x06); EW(0x9F0F);               // and al, [IF]
                     E(0xA8); E(0x1F);                           // test al, 1Fh
                     E(0x58);                                    // pop ax
-                    E(0x74); E(0x07);                           // jz +7
+                    E(0x74); E(0x0B);                           // jz +11
                     E(0x89); E(0x36); EW(ADDR(gb) + GB_PC);     // mov [gb.pc], si
                     jmp_stub(ST_EXIT);
                 }
@@ -1682,7 +1709,7 @@ __attribute__((noinline)) static void translate_block(void) {
                 mat();
                 nflush();
                 if (next <= 0x4000 && !in_ram) call_stub(ST_BANK0);
-                else { call_stub(ST_BANKX); EW(next); }
+                else { call_stub(ST_BANKX); EW(next); }     // (it comes back with DI set: s_wrt's 9)
             } else {
                 E(0xBE); EW(nn);                                // mov si, nn
                 if (y == 5) {
@@ -1870,9 +1897,8 @@ __attribute__((noinline)) static void translate_block(void) {
                     E(0x0C); E(0x10);                           // or al, 10h: C
                     if (nst < 0) { E(0x0A); E(0x06); EW(ADDR(drc_n)); }     // or al, [drc_n]
                     else if (nst) { E(0x0C); E(0x40); }
-                    E(0x89); E(0xC7);                           // mov di, ax: A:F
-                    E(0x89); E(0xF0);                           // mov ax, si
-                    push16(7, 0);                               // (DI)
+                    E(0x96);                                    // xchg ax, si: SI = A:F, AX as it was
+                    push16(6, 0);                               // (SI)
                 } else {
                     push16(R16[p], 0);
                 }

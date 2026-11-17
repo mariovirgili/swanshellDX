@@ -44,7 +44,7 @@ background and the window, switched at the right lines by the line
 interrupt, with the scroll the program gave each line; the sprites are
 the WonderSwan's.
 
-## Where it is (patch 189)
+## Where it is (patch 190)
 
 The CPU is a recompiler (`gb/ws/gb_drc.c`, `gb_drc_asm.s`; `GB-ABI.md`),
 there is sound (`gb/ws/gb_sound.c`: what it does and does not, at its
@@ -56,7 +56,8 @@ Mednafen's table of V30MZ costs up to patch 184, by the costs measured
 on the console from 185, about a third more). On a WonderSwan (Gio's
 SwanCrystal, from patch 184) the games start and run, a state is kept
 and brought back (nothing was said of the sound); no patch after 184
-has been run there yet.
+has been run there yet. From patch 190 the cycles left to the next event
+are in DI while translated code runs (`GB-ABI.md`, "Time").
 
 Right, in the plugin:
 - the 11 ROMs of Blargg's `cpu_instrs` say "Passed" (their code is run
@@ -1457,6 +1458,52 @@ cycles each, three unconditional jumps among them. The tile written last
 head, straight after the test of `gbv_tq_on`; anything else goes on to
 `wrt_pat_late` as before. Donkey Kong Land 90,960 -> 89,530 cycles a
 frame.
+
+**Patch 190.** Gio, with the Game Boy Color put aside: profile again,
+now that the console's costs are known, and see what cycles can still be
+saved. By kind of instruction (`GBRUN_KIND=1`), ZAS's scene on 189: the
+translated code is 48.6% of a frame, and of that 13.1% is the count of
+the Game Boy's cycles - `sub word [gbf_cyc], n` at every block's end and
+before every read of the time, five bytes and a memory access, four
+cycles and a half on the console, 2,457 times a frame.
+
+*The count in DI.* `gbd_enter` loads it; a block's end is `sub di, n`
+(three bytes, no memory) or `test di, di`; an idle loop found zeroes it
+with `xor di, di`. The rest of the program still has it in `gbf_cyc`
+(the routines, the events, C), so `gb_drc.c` writes `mov [gbf_cyc], di`
+before a routine is called or jumped to and `mov di, [gbf_cyc]` after
+the call comes back (`cyc_store`, `cyc_load`; after the bytes that
+follow the call, for the routines that have some). The first build did
+that around every routine: right (24 tests of 24, the scenes' memory the
+same) and worth half a percent, the store and the load being three
+cycles each and a read or a write through a routine now carrying both.
+
+*The routines called most leave DI alone* (`STUB_KEEP`): `s_rd` (only
+its last way, C's `gbf_read`, writes `gbf_cyc` and reads it back),
+`s_wrt` and `s_wrv` (the patterns, the work RAM, the high RAM and the
+OAM save AX on the stack and come back through SI; every other way
+writes `gbf_cyc` where it branches off and comes back through one place
+that reads it), `s_rdt`, `s_pop`, `s_bank0`, DAA, P1, INC (HL) and
+DEC (HL) (the old A and flags on the stack, not in DI). LY and STAT
+(`s_ly`, `s_stat`) take the time from DI itself. The exit to an address
+found as the program runs (`s_exit_dyn`) tests DI, keeps it in ES while
+DI is the index into the two small tables, and writes `gbf_cyc` only
+when it has to go to the big table or the dispatcher. What had DI as a
+scratch register in a block's own code (PUSH AF, ADD HL) has SI.
+
+*Measured* (console count, a Game Boy frame, 189 -> 190): ZAS 71,582 ->
+70,562 (-1.4%), Super Mario Land 2 55,939 -> 55,044 (-1.6%), X 100,745
+-> 99,347 (-1.4%), Donkey Kong Land 89,530 -> 89,415 (-0.1%), Race
+Drivin' 119,916 -> 119,800 (-0.1%). I had told Gio 8% for ZAS, from the instruction
+count alone; what the profile shows: the translated code is 1,836
+cycles a frame shorter in ZAS, `s_lookup` 348 longer (two moves to and
+from ES at each of the exits that go through it - three cycles; before,
+the count was not touched there at all), and in Super Mario Land 2
+`s_wrt` 299 longer (its long ways - the maps - now pay the store and the
+load themselves). What is left of the kind in ZAS: `sub di, n` 4.7% of
+the translated code, the stores and loads around the routines that
+still need them 1.5% (`s_wait_stat` first of all: it could work on DI
+too).
 
 He also saw, in 166, Super Mario Land's whole picture jump sideways
 for an instant now and then. Its status bar is a STAT interrupt at a

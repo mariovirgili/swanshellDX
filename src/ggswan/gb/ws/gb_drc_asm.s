@@ -36,6 +36,7 @@ gbd_enter:
     mov dx, ss:[gb + GB_DE]
     mov bx, ss:[gb + GB_HL]
     mov bp, ss:[gb + GB_SP]
+    mov di, ss:[gbf_cyc]        // (the cycles left: in DI while translated code runs, gb_drc.c, cyc_store)
     retf
     .global gbd_leave
 gbd_leave:
@@ -113,14 +114,18 @@ drc_stubs:
 // place for it (gb_drc.c: hash), and if it is there the jump is made
 // through the table, without the dispatcher. (After EI the translator
 // does not come here: gb_drc.c, after_ei)
+// (The cycles left come in DI and stay there: translated code does not
+// put them in gbf_cyc for this - gb_drc.c, cyc_store. ES holds them while
+// DI is the index; only the ways that go further write gbf_cyc.)
 s_exit_dyn:
-    cmp word ptr [gbf_cyc], 0
+    test di, di
 s_exit_dyn_f:
     jle s_exit_time
 s_lookup:
     // first the two small tables in the internal RAM (512 places each,
     // by the address' low bits; filled below): the first ROM area's has
     // no bank to compare (it is emptied if that bank ever changes)
+    mov es, di
     cmp si, 0x4000
     jae 4f
     mov di, si
@@ -128,10 +133,12 @@ s_lookup:
     and di, 0x0FF8
     cmp [di + DRC_RC0], si
     jne 5f
-    jmp far ptr [di + DRC_RC0 + 4]
+    mov si, di
+    mov di, es
+    jmp far ptr [si + DRC_RC0 + 4]
 4:
     test si, si
-    js s_lookup_ram
+    js 6f
     mov di, si
     shl di, 3
     and di, 0x0FF8
@@ -141,8 +148,14 @@ s_lookup:
     cmp si, [drc_keyx]
     mov si, [di + DRC_RCX]
     jne 5f
-    jmp far ptr [di + DRC_RCX + 4]
+    mov si, di
+    mov di, es
+    jmp far ptr [si + DRC_RCX + 4]
+6:
+    mov [gbf_cyc], es
+    jmp s_lookup_ram
 5:
+    mov [gbf_cyc], es
     // the blocks' table: its first place for the address
     mov di, si
     shr di, 6
@@ -190,7 +203,9 @@ s_lookup:
     mov [bx + 6], ax
     pop bx
     pop ax
-    jmp far ptr es:[di + 4]
+    mov si, di
+    mov di, [gbf_cyc]
+    jmp far ptr es:[si + 4]
 8:
     pop ax
 9:
@@ -264,6 +279,7 @@ s_lookup_ram:
     pop cx
     pop bx
     pop ax
+    mov di, [gbf_cyc]
     .byte 0xFF, 0x2E            // jmp far [drc_ram_jmp]
     .word drc_ram_jmp
 7:
@@ -273,6 +289,7 @@ s_lookup_ram:
     pop ax
     jmp 9b
 s_exit_time:
+    mov [gbf_cyc], di
     mov [gb + GB_PC], si
 // leave: gb.pc is set. What most leavings are for is done here, without
 // the dispatcher (gb_drc.c, gbd_run_frame, whose order this follows): the
@@ -359,10 +376,12 @@ s_exit_irq:
     mov ax, di
     sub word ptr [gbf_cyc], 5
     jle s_exit_slow
+    mov di, [gbf_cyc]
     jmp s_lookup
 s_exit_none:
     mov ax, di
     mov si, [gb + GB_PC]
+    mov di, [gbf_cyc]
     jmp s_lookup
 s_exit_c:
     mov ax, di
@@ -401,7 +420,7 @@ s_rd:
     // the cartridge's RAM: behind the RAM window when it is plain RAM
     // and enabled (gb_main.c: gbf_plat_map), or C
     cmp byte ptr [drc_ram_ok], 1
-    jb 4f
+    jb 8f
     mov al, 0xFF
     ja 6f                       // (none, or disabled)
     mov es, [drc_ram_seg]
@@ -424,6 +443,7 @@ s_rd:
     jae 5b                      // the high RAM, IE
     cmp si, 0xFF00
     jb 5b                       // the OAM
+8:
     cmp byte ptr [gb + GB_LCD_ON], 0
     je 4f
     cmp si, 0xFF44
@@ -431,7 +451,10 @@ s_rd:
     cmp si, 0xFF41
     je s_stat
 4:
-    // an I/O register or the cartridge's RAM: C
+    // an I/O register or the cartridge's RAM: C, which has the cycles
+    // in gbf_cyc (all the rest of s_rd leaves them in DI, where
+    // translated code has them: gb_drc.c, STUB_KEEP)
+    mov [gbf_cyc], di
     mov [drc_ah], ah
     push bx
     push cx
@@ -442,6 +465,7 @@ s_rd:
     pop cx
     pop bx
     mov ah, [drc_ah]
+    mov di, [gbf_cyc]
     ret
 
 // (LDH A, (41h) and LDH A, (44h) come straight here)
@@ -457,29 +481,28 @@ s_ly_e:
     jmp s_rd
 // LY and STAT from the time (gbf_hw.c: gbf_io_read), the LCD on: the
 // frame's cycle now is gbf_ev_pos - gbf_cyc, 114 to a line
+// (the cycles left are in DI, as translated code has them)
 s_ly:
-    mov di, ax
-    mov ax, [gbf_ev_pos]
-    sub ax, [gbf_cyc]
     push dx
+    mov dh, ah
+    mov ax, [gbf_ev_pos]
+    sub ax, di
     mov dl, 114
     div dl                      // AL = the line, AH = the cycle in it
-    pop dx
     cmp al, 153
     jne 1f
     test ah, ah
     jz 1f
     xor al, al                  // (line 153 reads 0 after its first cycle)
 1:
-    and di, 0xFF00
-    xor ah, ah
-    or ax, di
+    mov ah, dh
+    pop dx
     ret
 s_stat:
     push dx
-    mov di, ax
+    push ax
     mov ax, [gbf_ev_pos]
-    sub ax, [gbf_cyc]
+    sub ax, di
     mov dl, 114
     div dl                      // AL = the line, AH = the cycle in it
     // the usual case: a line's cycle from 1 on, not line 153: the mode
@@ -550,9 +573,8 @@ s_stat:
     jne 6f
     or al, 4
 6:
-    and di, 0xFF00
-    xor ah, ah
-    or ax, di
+    pop dx
+    mov ah, dh
     pop dx
     ret
 // the mode at each cycle of a line of the picture
@@ -616,6 +638,7 @@ s_wait_stat:
     cmp byte ptr [gb + GB_LCD_ON], 0
     jne 1f
     mov si, 0xFF41
+    mov di, [gbf_cyc]           // (s_rd wants them in DI)
     jmp s_rd
 1:
     push bx
@@ -758,6 +781,7 @@ wst_plain:
     pop dx
     pop cx
     pop bx
+    mov di, [gbf_cyc]           // (s_stat has them in DI)
     jmp s_stat
 wst_skip:
     sub [gbf_cyc], cx
@@ -1385,14 +1409,16 @@ s_wrv:
     cmp byte ptr [gbv_tq_on], 0
     jne wrv_other
     mov [gbv_pw_last], si
-    mov di, ax
+    push ax
     mov al, [drc_tmp]
     mov [si - 0x6000], al
-    mov ax, di
+    pop ax
     ret
 wrv_other:
-    mov di, sp
-    sub word ptr [di], 2        // (s_wrt returns two bytes on)
+    push bp
+    mov bp, sp
+    sub word ptr [bp + 2], 2    // (s_wrt returns two bytes on)
+    pop bp
     // (falls into s_wrt)
 
 // the byte at SI = drc_tmp. After the call: the Game Boy address of the
@@ -1408,38 +1434,46 @@ s_wrt:
     cmp byte ptr [gbv_tq_on], 0
     jne 0f
     mov [gbv_pw_last], si
-    mov di, ax
+    push ax
     mov al, [drc_tmp]
     mov [si - 0x6000], al
-    mov ax, di
-    pop di
-    add di, 2
-    jmp di
+    pop ax
+    pop si
+    add si, 2
+    jmp si
 0:
     // the patterns kept for the next frame (wrt_tq), and the tile the one
     // written last, as it is fifteen times in sixteen: here, not through
     // wrt_pat_late and wrt_tq and back (three jumps and a push and pop of
     // the seventy cycles a byte, 125 bytes a frame in Donkey Kong Land)
-    mov di, si
-    and di, 0xFFF0
-    cmp di, [gbv_tq_last]
+    push ax
+    mov ax, si
+    and al, 0xF0
+    cmp ax, [gbv_tq_last]
     jne wrt_pat_late
-    mov di, ax
     and si, 15
     add si, [gbv_tq_lastp]
     mov al, [drc_tmp]
     mov [si], al
-    mov ax, di
-    pop di
-    add di, 2
-    jmp di
+    pop ax
+    pop si
+    add si, 2
+    jmp si
 wrt_pat_late:
+    pop ax
+    mov [gbf_cyc], di
     mov di, ax
     mov al, [drc_tmp]
     jmp wrt_tq
+// (The ways above and the work RAM's and high RAM's below leave DI alone:
+// translated code calls s_wrt with the cycles only in DI, gb_drc.c,
+// STUB_KEEP. Every other way puts them in gbf_cyc first - it uses DI, and
+// what it calls reads gbf_cyc - and comes back through 9, which takes
+// them from there.)
 wrt_rest:
     cmp si, 0xC000
     jae wrt_high
+    mov [gbf_cyc], di
     cmp si, 0xA000
     jae wrt_cart                // (a program with its variables in the cartridge's RAM)
     cmp si, 0x8000
@@ -1454,14 +1488,18 @@ wrt_high:
     jb 2f
     sub si, 0x2000
 2:
-    mov di, ax
+    push ax
     mov al, [drc_tmp]
     mov [si - 0x6000], al
-    mov ax, di
+    pop ax
+    pop si
+    add si, 2
+    jmp si
 9:
-    pop di
-    add di, 2
-    jmp di
+    pop si
+    add si, 2
+    mov di, [gbf_cyc]
+    jmp si
 1:
     cmp si, 0x8000
     jb 6f
@@ -1491,10 +1529,12 @@ wrt_map:
     jb 8f
     cmp si, 0xFFFF
     jne 2b                      // the high RAM
+    mov [gbf_cyc], di
     jmp 6f                      // IE: through the dispatcher (an interrupt may be due now)
 8:
     cmp si, 0xFF00
     jb 2b                       // the OAM
+    mov [gbf_cyc], di
     // an I/O register written through a pointer: the sound's (FF10h-
     // FF3Fh) are kept as written, with a channel's start remembered
     // (gbf_hw.c: gbf_trig), and SCY, SCX, BGP, OBP0, OBP1, WY, WX
@@ -2150,14 +2190,14 @@ s_pop_af:
 // INC (HL), DEC (HL): the flags in AH before and after (C kept). After the
 // call: the next instruction's address, as s_wrt
 s_inc_hl:
-    mov di, ax                  // (A and the flags from before)
+    push ax                     // (A and the flags from before)
     mov si, bx
     call s_rd
     shr ah, 1                   // CF = C
     inc al
     jmp 1f
 s_dec_hl:
-    mov di, ax
+    push ax
     mov si, bx
     call s_rd
     shr ah, 1
@@ -2165,9 +2205,10 @@ s_dec_hl:
 1:
     lahf                        // the new Z and H, the old C
     mov [drc_tmp], al
-    and di, 0x00FF
+    pop si
+    and si, 0x00FF
     and ax, 0xFF00
-    or ax, di
+    or ax, si
     mov si, bx
     jmp s_wrt
 

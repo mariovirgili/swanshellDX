@@ -281,6 +281,7 @@ if CYCLES:
     fstart = set(starts)
     fhot = collections.Counter(); fcnt = collections.Counter()
     jst = [0, 0, 0, 0]
+    prev_a = [0]      # (the instruction before the one being counted)
     KIND = collections.Counter() if os.environ.get('GBRUN_KIND') and HW else None
     K_N = b'\xC6\x06' + (syms.get('drc_n', 0) & 0xFFFF).to_bytes(2, 'little'); K_CYC = b'\x83\x2E' + (syms.get('gbf_cyc', 0) & 0xFFFF).to_bytes(2, 'little'); K_CYC2 = b'\x83\x3E' + K_CYC[2:]
     ccache = {}
@@ -312,13 +313,15 @@ if CYCLES:
                 if h: KIND[g + 'longer to fetch than to run'] += h[0]; KIND[g + 'accesses to memory'] += h[1]
                 o = code[0]
                 if code[:4] == K_N: KIND[g + 'the N flag stored (mov byte [drc_n], n)'] += k[0]
-                elif code[:4] == K_CYC or code[:4] == K_CYC2: KIND[g + 'the cycles counted (sub word [gbf_cyc], n)'] += k[0]
+                elif code[:4] == K_CYC or code[:4] == K_CYC2 or code[:2] in (b'\x83\xEF', b'\x85\xFF'): KIND[g + 'the cycles counted (sub word [gbf_cyc], n; sub di, n)'] += k[0]
+                elif code[:2] in (b'\x89\x3E', b'\x8B\x3E') and code[2:4] == K_CYC[2:]: KIND[g + 'the cycles to and from DI around a routine'] += k[0]
                 elif o == 0xE9 and -128 <= int.from_bytes(code[1:3], 'little', signed=True) + 3 - 2 + 2 < 126: KIND[g + 'jmp near to a place a short jump reaches'] += k[0]
                 if o in (0xE8, 0xC3, 0xC2): KIND[g + 'call, ret'] += k[0]
                 elif o in (0xE9, 0xEB): KIND[g + 'jmp'] += k[0]
                 elif 0xE4 <= o < 0xE8 or 0xEC <= o < 0xF0: KIND[g + 'ports'] += k[0]
                 elif 0x50 <= o < 0x60 or o in (0x9C, 0x9D): KIND[g + 'push, pop'] += k[0]
                 elif o in (0x26, 0x2E, 0x36, 0x3E): KIND[g + 'with a segment prefix'] += k[0]
+        prev_a[0] = jst[2]
         jst[0] = ex; jst[1] = addr + size; jst[2] = addr; jst[3] = fl
         cyc[0] += c
         w = where(addr)
@@ -526,6 +529,52 @@ if os.environ.get('GBRUN_OAMSAME') and 'gbv_sprites_asm' in syms:
     uc.hook_add(UC_HOOK_CODE, h_oam, None, syms['gbv_sprites_asm'], syms['gbv_sprites_asm'])
     import atexit as _ae
     _ae.register(lambda: print('sprites rebuilt %d times, %d with the OAM unchanged' % (oam_st[2], oam_st[1])))
+if os.environ.get('GBRUN_DYNSITE') and CYCLES and 's_exit_dyn' in syms:
+    # GBRUN_DYNSITE=1: the exits to an address not known when translated (RET, JP (HL)): how many go
+    # where the same exit went the time before, and how many of those to the first ROM area
+    import collections as _c4, atexit as _ae4
+    dyn_last4 = {}; dyn_c4 = _c4.Counter()
+    dyn_offs = set(syms[n] - syms['drc_stubs'] for n in ('s_exit_dyn', 's_exit_dyn_f'))
+    def h_dyn(uc, addr, size, _):
+        if (st['gbframes'] if GBTIME else st['frame']) < PROF_FROM: return
+        site = prev_a[0]; t = uc.reg_read(UC_X86_REG_SI)
+        dyn_c4['all'] += 1
+        if dyn_last4.get(site) == t:
+            dyn_c4['same as last'] += 1
+            if t < 0x4000: dyn_c4['same as last, below 4000h'] += 1
+        if t < 0x4000: dyn_c4['below 4000h'] += 1
+        elif t < 0x8000: dyn_c4['4000h-7FFFh'] += 1
+        else: dyn_c4['RAM'] += 1
+        dyn_last4[site] = t
+    for seg in range(5, 13):
+        for o in dyn_offs:
+            uc.hook_add(UC_HOOK_CODE, h_dyn, None, (seg << 16) + o, (seg << 16) + o)
+    _ae4.register(lambda: print('dynamic exits: ' + ', '.join('%s %d' % kv for kv in dyn_c4.most_common()) + ', sites %d' % len(dyn_last4)))
+if os.environ.get('GBRUN_TRLOG') and 'translate_block' in syms and 'blk_pc' in syms:
+    # GBRUN_TRLOG=1: every block translated from GBRUN_PROF_FROM on: the Game Boy frame, its address
+    # and, for code in RAM, its first 24 bytes (what changes from one translation to the next)
+    def h_trlog(uc, addr, size, _):
+        if (st['gbframes'] if GBTIME else st['frame']) < PROF_FROM: return
+        pc = int.from_bytes(uc.mem_read(syms['blk_pc'] & 0xFFFF, 2), 'little')
+        b = bytes(uc.mem_read(pc - 0x6000, 24)).hex() if pc >= 0xC000 else ''
+        print('TR %d %04X %s' % (st['gbframes'], pc, b))
+    uc.hook_add(UC_HOOK_CODE, h_trlog, None, syms['translate_block'], syms['translate_block'])
+if os.environ.get('GBRUN_STUBS') and CYCLES and 'drc_stubs' in syms:
+    # GBRUN_STUBS=1: how many times each routine of gb_drc_asm.s is entered at its label, a Game Boy frame
+    import collections as _c5, atexit as _ae5
+    stub_n = _c5.Counter()
+    s0 = syms['drc_stubs']; s1 = syms['drc_stubs_end']
+    stub_ent = {a - s0: n for n, a in syms.items() if n and s0 <= a < s1}
+    def h_stub(uc, addr, size, _):
+        if (st['gbframes'] if GBTIME else st['frame']) < PROF_FROM: return
+        stub_n[stub_ent[addr & 0xFFFF]] += 1
+    for seg in range(5, 13):
+        for o in stub_ent:
+            uc.hook_add(UC_HOOK_CODE, h_stub, None, (seg << 16) + o, (seg << 16) + o)
+    def _stub_out():
+        f = max(1, (st['gbframes'] if GBTIME else st['frame']) - PROF_FROM)
+        print('routines entered a frame: ' + ', '.join('%s %.0f' % (k, v / f) for k, v in stub_n.most_common(40)))
+    _ae5.register(_stub_out)
 wrt_hist = None
 if os.environ.get('GBRUN_WRT') and CYCLES:
     # GBRUN_WRT=1: the addresses written through s_wrt, by 800h

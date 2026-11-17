@@ -15,7 +15,8 @@ Game Boy's state, for whoever changes the translator or its routines.
 | DX (DH, DL) | DE |
 | BX (BH, BL) | HL |
 | BP | SP |
-| SI, DI, ES | free: addresses, values on their way |
+| DI | the cycles left to the next event (patch 190; "Time" below) |
+| SI, ES | free: addresses, values on their way |
 | DS = SS = 0 | the internal RAM |
 
 `gb.a`, `gb.c`/`gb.b`, `gb.e`/`gb.d`, `gb.l`/`gb.h`, `gb.sp`, `gb.pc`
@@ -60,9 +61,10 @@ window.
 
 - **The stack**: `[BP - 6000h]`, after one comparison (SP below C000h
   goes to a routine: some programs point SP at tables in ROM). PUSH AF
-  and POP AF are the same push and pop, of DI and into SI, with the
-  flags turned before and after in the block's code (patch 186; through
-  `s_push_af` and `s_pop_af` until then).
+  and POP AF are the same push and pop, of SI (DI until patch 190, when
+  it became the cycles) and into SI, with the flags turned before and
+  after in the block's code (patch 186; through `s_push_af` and
+  `s_pop_af` until then).
 - **(HL), (BC), (DE)**: two comparisons, then `[BX - 6000h]` for
   C000h-DFFFh (to FDFFh until patch 176, which made the echo the
   console's 8000h-9DFFh); everything else through a routine (`s_rd`, `s_wrt`):
@@ -109,6 +111,24 @@ that the time it is read at is right to the instruction. A write
 through HL to an I/O register or to the cartridge's registers leaves the
 block without its cycles so far: the CPU is that much ahead (a few
 cycles), the one known shortcut in the count.
+
+While translated code runs the count is in DI, not in `gbf_cyc` (patch
+190: `sub di, n` is a cycle and a half on the console, `sub word
+[gbf_cyc], n` four and a half): `gbd_enter` loads it, and the block
+writes `gbf_cyc` before it calls or jumps to a routine and reads DI
+back after the call (`gb_drc.c`: `cyc_store`, `cyc_load`). A routine is
+then free to use DI and has the count in `gbf_cyc`, as C has. The
+exceptions are the routines listed in `STUB_KEEP` - the reads, the
+writes, POP, the bank's write from the first ROM area, DAA, P1, INC and
+DEC (HL), LY, STAT, and the exit to an address not known: they are
+called with the count only in DI, must give it back there, and write
+`gbf_cyc` themselves before anything that reads it (`gb_drc_asm.s`: the
+last way of `s_rd`, `wrt_rest` and label 9 of `s_wrt`, label 5 of
+`s_lookup`). A new routine: either it is not in `STUB_KEEP` and may do
+as it likes, or it is and must not touch DI on any way that comes back
+without reading it from `gbf_cyc`. The interrupt handlers do not use
+`gbf_cyc` (`gb_vblank_entry` saves every register, `gb_line_entry` uses
+AX and BX only).
 
 A loop that only counts BC down (`DEC BC / LD A, B / OR C / JR NZ`, a
 program's delay) is passed over to its last turn, or as far as the
