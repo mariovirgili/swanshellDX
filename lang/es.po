@@ -209,6 +209,9 @@ msgstr "Error de opciones"
 msgid "ERROR_TITLE_SAVE_STORE"
 msgstr "Error al guardar"
 
+msgid "SUBMENU_OPTION_HELP"
+msgstr "Ayuda"
+
 msgid "SUBMENU_OPTION_SETTINGS"
 msgstr "Opciones"
 

@@ -26,6 +26,7 @@
 #include "settings.h"
 #include "strings.h"
 #include "ui/ui.h"
+#include "ui_help.h"
 #include "ui_about.h"
 #include "ui_dialog.h"
 #include "ui_favorites.h"
@@ -228,13 +229,14 @@ static enum tristate ui_file_selector_file(ui_popup_list_config_t *lst, const ch
 #define OPTION_OPEN_RECENT    4
 #define OPTION_IMAGES         5
 #define OPTION_OPEN_PLAYED    6
+#define OPTION_HELP           7
 
 bool ui_file_selector_options(const char __far *filename, uint8_t attrib, uint8_t *open_list) {
     ui_popup_list_config_t lst;
 
     while (true) {
         memset(&lst, 0, sizeof(ui_popup_list_config_t));
-        uint8_t options[7];
+        uint8_t options[8];
         int i = 0;
         if (settings.favorites_mode == SETTING_FAVORITES_START_MENU) {
             options[i] = OPTION_OPEN_FAVORITES;
@@ -258,6 +260,9 @@ bool ui_file_selector_options(const char __far *filename, uint8_t attrib, uint8_
         lst.option[i++] = lang_keys[LK_SUBMENU_OPTION_TOOLS];
         options[i] = 2;
         lst.option[i++] = lang_keys[LK_SUBMENU_OPTION_SETTINGS];
+        // (the keys of the plugin that runs the file selected, or the menu's own)
+        options[i] = OPTION_HELP;
+        lst.option[i++] = lang_keys[LK_SUBMENU_OPTION_HELP];
 
         int option = ui_popup_list(&lst);
         if (option >= 0) option = options[option];
@@ -275,6 +280,10 @@ bool ui_file_selector_options(const char __far *filename, uint8_t attrib, uint8_
             break;
         case 2:
             ui_settings(&settings_root);
+            result = TRISTATE_TRUE;
+            break;
+        case OPTION_HELP:
+            ui_help(filename, attrib);
             result = TRISTATE_TRUE;
             break;
         case OPTION_OPEN_FAVORITES:

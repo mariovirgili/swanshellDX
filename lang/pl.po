@@ -195,6 +195,9 @@ msgstr "OK"
 msgid "ERROR_FR_NOT_READY"
 msgstr "Nośnik nie jest gotowy"
 
+msgid "SUBMENU_OPTION_HELP"
+msgstr "Pomoc"
+
 msgid "SUBMENU_OPTION_SETTINGS"
 msgstr "Ustawienia"
 

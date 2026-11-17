@@ -85,6 +85,9 @@ msgstr "文件格式无效"
 msgid "ERROR_FILE_NOT_EXECUTABLE"
 msgstr "文件无法执行"
 
+msgid "SUBMENU_OPTION_HELP"
+msgstr "帮助"
+
 msgid "SUBMENU_OPTION_SETTINGS"
 msgstr "设置"
 

@@ -229,6 +229,9 @@ msgstr "Impossible de charger les paramètres!"
 msgid "ERROR_TITLE_SAVE_STORE"
 msgstr "Impossible d'enregistrer la sauvegarde!"
 
+msgid "SUBMENU_OPTION_HELP"
+msgstr "Aide"
+
 msgid "SUBMENU_OPTION_SETTINGS"
 msgstr "Paramètres"
 

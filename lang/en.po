@@ -611,6 +611,9 @@ msgid "ERROR_TITLE_SAVE_STORE"
 msgstr "Could not store save data!"
 
 
+msgid "SUBMENU_OPTION_HELP"
+msgstr "Help"
+
 msgid "SUBMENU_OPTION_SETTINGS"
 msgstr "Settings"
 

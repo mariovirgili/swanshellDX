@@ -201,6 +201,9 @@ msgstr "Einstellungen konnten nicht geladen werden!"
 msgid "ERROR_TITLE_SAVE_STORE"
 msgstr "Speicherdaten konnten nicht gesichert werden!"
 
+msgid "SUBMENU_OPTION_HELP"
+msgstr "Hilfe"
+
 msgid "SUBMENU_OPTION_SETTINGS"
 msgstr "Einstellungen"
 

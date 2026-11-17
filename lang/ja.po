@@ -306,6 +306,9 @@ msgstr "フォントを読み込めませんでした！"
 msgid "ERROR_TITLE_SAVE_STORE"
 msgstr "セーブデータを保存できませんでした！"
 
+msgid "SUBMENU_OPTION_HELP"
+msgstr "ヘルプ"
+
 msgid "SUBMENU_OPTION_SETTINGS"
 msgstr "設定"
 
