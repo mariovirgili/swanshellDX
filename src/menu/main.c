@@ -55,6 +55,37 @@ void __far vblank_int_handler(void) {
 	vblank_input_update();
 }
 
+// The console's own battery (the AA cell): the hardware says only "low",
+// with an NMI, when bit 4 of port B7h is set. Asked once, at start: if the
+// NMI comes in the next 50 ms a warning is shown for a second. (Not known:
+// whether the NMI comes when the battery is already low as the bit is
+// set, or only as it becomes so - the documentation does not say, and it
+// has not been tried with a spent cell. If it is the second, this never
+// shows anything.)
+static volatile uint8_t console_battery_low;
+
+__attribute__((assume_ss_data, interrupt))
+void __far low_battery_nmi_handler(void) {
+	outportb(WS_INT_NMI_CTRL_PORT, 0);
+	console_battery_low = 1;
+}
+
+static void console_battery_check(void) {
+	// (the NMI is the CPU's interrupt 2: its vector at 0000:0008)
+	*(void __far * __far *) MK_FP(0x0000, 2 * 4) = (void __far *) low_battery_nmi_handler;
+	outportb(WS_INT_NMI_CTRL_PORT, WS_INT_NMI_CTRL_LOW_BATTERY);
+	ws_delay_ms(50);
+	outportb(WS_INT_NMI_CTRL_PORT, 0);
+	if (!console_battery_low) return;
+
+	ui_popup_dialog_config_t dlg = {0};
+	dlg.title = lang_keys[LK_WARNING_CONSOLE_BATTERY_LOW];
+	ui_popup_dialog_draw(&dlg);
+	ui_show();
+	ws_delay_ms(1000);
+	ui_layout_clear(0);
+}
+
 void signal_display_orientation(uint8_t orientation) {
     outportb(WS_LCD_ICON_PORT, (inportb(WS_LCD_ICON_PORT) & ~(WS_LCD_ICON_ORIENT_H | WS_LCD_ICON_ORIENT_V)) | orientation);
     last_signaled_icon = orientation;
@@ -120,6 +151,8 @@ void main(void) {
 
 	ui_init();
 	ui_layout_clear(0);
+
+	console_battery_check();
 
 	{
 		const char __far *title = lang_keys[LK_NAME];

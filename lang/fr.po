@@ -351,3 +351,6 @@ msgstr "Bleu"
 
 msgid "COLOR_PREVIEW"
 msgstr "Aperçu"
+
+msgid "WARNING_CONSOLE_BATTERY_LOW"
+msgstr "Pile de la console faible !"

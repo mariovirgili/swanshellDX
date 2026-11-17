@@ -417,6 +417,9 @@ msgstr "Karta pamięci usunięta!"
 msgid "PROMPT_TF_CARD_REMOVED"
 msgstr "Proszę włożyć kartę pamięci. Kartridż zostanie automatycznie uruchomiony ponownie."
 
+msgid "WARNING_CONSOLE_BATTERY_LOW"
+msgstr "Słaba bateria konsoli!"
+
 msgid "PROMPT_NO_BATTERY_TITLE"
 msgstr "Brak lub rozładowana bateria kartridża!"
 

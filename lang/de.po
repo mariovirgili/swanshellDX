@@ -431,6 +431,9 @@ msgid "PROMPT_TF_CARD_REMOVED"
 msgstr ""
 "Bitte lege eine Speicherkarte ein. Das Spielmodul startet automatisch neu."
 
+msgid "WARNING_CONSOLE_BATTERY_LOW"
+msgstr "Batterie der Konsole schwach!"
+
 msgid "PROMPT_NO_BATTERY_TITLE"
 msgstr "Batterie im Spielmodul fehlend oder leer!"
 

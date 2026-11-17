@@ -345,3 +345,6 @@ msgstr "Interfaz"
 
 msgid "SETTINGS_CONTROLS_KEY"
 msgstr "Controles"
+
+msgid "WARNING_CONSOLE_BATTERY_LOW"
+msgstr "¡Batería de la consola baja!"

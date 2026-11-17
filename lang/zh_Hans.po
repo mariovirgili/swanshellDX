@@ -401,6 +401,9 @@ msgstr "存储卡已移除！"
 msgid "PROMPT_TF_CARD_REMOVED"
 msgstr "请插入存储卡，卡带将自动重启。"
 
+msgid "WARNING_CONSOLE_BATTERY_LOW"
+msgstr "主机电池电量不足！"
+
 msgid "PROMPT_NO_BATTERY_TITLE"
 msgstr "卡带电池缺失或已耗尽！"
 

@@ -420,6 +420,9 @@ msgstr "一部の機能が利用できなくなります。続行しますか？
 msgid "PROMPT_NO_BATTERY"
 msgstr "セーブデータは保存されません。続行しますか？"
 
+msgid "WARNING_CONSOLE_BATTERY_LOW"
+msgstr "本体の電池残量が少なくなっています！"
+
 msgid "PROMPT_NO_BATTERY_TITLE"
 msgstr "カートリッジの電池がありません、または電池切れです！"
 
