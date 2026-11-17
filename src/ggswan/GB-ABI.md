@@ -94,6 +94,16 @@ window.
   one test that it is plain RAM and enabled (`drc_ram_ok`).
 - **A stack in the cartridge's RAM** (where SP is when the block is
   translated): PUSH and POP in line the same way.
+- **An exit to an address found as the program runs** (RET, RETI when
+  no interrupt waits, JP (HL), a jump read from RAM; patch 192)
+  compares SI with the address that exit went to the first time and
+  jumps far to that block; anything else goes on by the tables
+  (`s_lookup`). The exit's bytes are written by the dispatcher
+  (`drc_dlink`: the address after the exit's call of `s_dyn_first`; the
+  layout is `dyn_site`'s in `gb_drc.c`, and `gbd_run_frame` counts back
+  from that address - change both together). Everything translated is
+  forgotten together (`flush`), so a block jumped to this way is never
+  gone while the exit is there.
 - **The cartridge's RAM taken for open** (patch 191): when it is plain
   RAM and enabled as a block is translated, and has never been found
   otherwise, the tests of `drc_ram_ok` above are left out and a known

@@ -57,7 +57,14 @@ void gbf_plat_map(void) {
     drc_segtab[1] = 0x3000 + (gbf_romx_off >> 4) - 0x400;
     // (the first ROM area's bank has changed: MBC1's mode. s_exit_dyn's
     // small table for that area has no bank in it)
-    if (drc_key0 != gb.rom0_bank + 1) memset((uint8_t*) DRC_RC0, 0xFF, 0x1000);
+    if (drc_key0 != gb.rom0_bank + 1) {
+        memset((uint8_t*) DRC_RC0, 0xFF, 0x1000);
+        // (and the blocks' own jumps to addresses there - the joined
+        // exits, and from patch 192 the exits that remember where they
+        // went - have no bank in them either: everything translated is
+        // forgotten, gbd_run_frame)
+        drc_key0_break = 1;
+    }
     drc_key0 = gb.rom0_bank + 1;
     drc_keyx = gb.romx_bank + 1;
     drc_hash0 = drc_key0 << 5;      // (their part of the table's hash)

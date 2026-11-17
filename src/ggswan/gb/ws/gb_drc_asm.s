@@ -108,6 +108,44 @@ drc_stubs:
     .word s_skip_hl - . - 2
     .byte 0xE9
     .word s_vreg - . - 2
+    .byte 0xE9
+    .word s_bankx - . - 2
+    .byte 0xE9
+    .word s_bank0 - . - 2
+    .byte 0xE9
+    .word s_wrv - . - 2
+    .byte 0xE9
+    .word s_far - . - 2
+    .byte 0xE9
+    .word s_fill1 - . - 2
+    .byte 0xE9
+    .word s_exit_time - . - 2
+    .byte 0xE9
+    .word s_lookup - . - 2
+    .byte 0xE9
+    .word s_dyn_first - . - 2
+    .byte 0xE9
+    .word s_dyn_first_l - . - 2
+
+// An exit to an address found as the program runs (RET, JP (HL)), the
+// first time it is taken (gb_drc.c, exit_dyn: "cmp si, where it went
+// first / jne / jmp far to that block" - four exits in five go where they
+// first went, and s_lookup is 42 cycles on the console). The call's
+// return address says which exit: the dispatcher finds the block, writes
+// the address and the jump into the exit and makes this call a jump to
+// s_lookup (the code's room is written from C: gbd_run_frame).
+s_dyn_first:
+    pop word ptr [drc_dlink]
+    mov byte ptr [drc_dlink_l], 0
+    jmp 1f
+s_dyn_first_l:
+    pop word ptr [drc_dlink]
+    mov byte ptr [drc_dlink_l], 1
+1:
+    mov [drc_dlink_seg], cs
+    mov [gbf_cyc], di
+    mov [gb + GB_PC], si
+    jmp s_exit_slow
 
 // leave for the address in SI. When there are cycles left and the
 // address is in ROM, the block is looked for here: the table's first
@@ -2256,3 +2294,7 @@ drc_stub_offs:
     .word s_wrv - drc_stubs
     .word s_far - drc_stubs
     .word s_fill1 - drc_stubs
+    .word s_exit_time - drc_stubs
+    .word s_lookup - drc_stubs
+    .word s_dyn_first - drc_stubs
+    .word s_dyn_first_l - drc_stubs

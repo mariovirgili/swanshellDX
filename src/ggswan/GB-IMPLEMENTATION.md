@@ -44,7 +44,7 @@ background and the window, switched at the right lines by the line
 interrupt, with the scroll the program gave each line; the sprites are
 the WonderSwan's.
 
-## Where it is (patch 191)
+## Where it is (patch 192)
 
 The CPU is a recompiler (`gb/ws/gb_drc.c`, `gb_drc_asm.s`; `GB-ABI.md`),
 there is sound (`gb/ws/gb_sound.c`: what it does and does not, at its
@@ -1559,6 +1559,57 @@ the others as they were (ZAS 70,533, Donkey Kong Land 89,446, X 99,314, Race Dri
 pass. No game here closes its RAM while it runs (`drc_cart_breaks` 0
 in all five); Mooneye's `mbc1/bits_ramg` and `mbc1/ram_64kb` do, once
 each (`drc_cart_breaks` 1, two flushes), and pass.
+
+**Patch 192.** The larger attempt (see 191), measured before it was
+written. Castlevania II, 61,878 cycles a frame: the translated code is
+37.8% of it, and the jumps from block to block (`E9`), which traces
+would remove, 11.4% of that - 4% of a frame. `s_lookup` alone is 12.3%:
+it finds the block for an address known only as the program runs (RET
+above all), 182 times a frame, 42 cycles each on the console with the
+jump to it and the far jump out. Super Mario Land 2: 115 a frame.
+
+*Where an exit goes.* `GBRUN_DYNSITE=1` now also counts, exit by exit,
+how often it goes where that same exit went the first time: 82% in both
+games (more than "where it went the last time", 76%). Most are RETs of
+routines called from one place, or from one place for a long while.
+
+*The exit remembers.* `dyn_site` (`gb_drc.c`), for a block in ROM:
+
+    sub di, n / jle T
+    cmp si, FFFFh / jne M            <- the address, written later
+    [cmp word [drc_keyx], FFFFh / jne M]   <- a block below 4000h only
+    jmp far 0:0                      <- the block, written later
+    M: call s_dyn_first              <- later: jmp s_lookup
+    T: jmp s_exit_time
+
+The first time, the call's return address tells the routine which exit
+it is (`drc_dlink`, `drc_dlink_seg`, `drc_dlink_l`); it leaves for the
+dispatcher, which finds or translates the block and writes the address,
+the far jump and, for the long form, the bank's key into the exit (the
+code's room can only be written from C, through the RAM window:
+`gbd_lin_put`), and makes the call a jump to `s_lookup` - any other
+address goes by the tables as before, for six cycles more than it was.
+A block in the second ROM area runs only with its own bank there, so an
+address in that area needs no key from it; from a block in the first
+area the key is compared (`EB 06` over the test when the address is
+below 4000h). An address in RAM is never written in. The exit to a known
+address in the other area (`exit_to`, not joined) ends the same way.
+Nothing of the Game Boy's time changes: the same cycles are taken off at
+the same places, and the time run out leaves as it did.
+
+*Measured* (console count, a Game Boy frame, 191 -> 192): Castlevania II 61,878 -> 57,844 (-6.5%), Super Mario Land 2 46,981 -> 44,596 (-5.1%), Super Mario Land 35,158 -> 32,334 (-8.0%), X 99,314 -> 95,005 (-4.3%), R-Type 58,978 -> 57,304 (-2.8%), Yoshi 58,206 -> 56,566 (-2.8%), Donkey Kong Land 89,446 -> 87,005 (-2.7%), R-Type II 35,697 -> 34,785 (-2.6%), ZAS 70,533 -> 69,193 (-1.9%), Batman 61,357 -> 60,387 (-1.6%), Race Drivin' 119,825 -> 118,276 (-1.3%), Balloon Kid 69,281 -> 68,659 (-0.9%). The
+memory at each scene's end is the same; 24 tests of 24.
+
+*The first ROM area's bank.* A jump a block makes to an address below
+4000h has no bank in it - the joined exits never had, and these exits
+have none either. `gbf_plat_map` only emptied `s_lookup`'s small table
+when that bank changed (MBC1's mode, with a ROM above 512 KiB); now it
+asks for everything translated to be forgotten (`drc_key0_break`,
+`gbd_run_frame`). None of the games here changes it.
+
+*Traces* are not done: what they would add to this is the 4% of the
+jumps between blocks in Castlevania II, less elsewhere, for blocks
+written several times over.
 
 He also saw, in 166, Super Mario Land's whole picture jump sideways
 for an instant now and then. Its status bar is a STAT interrupt at a

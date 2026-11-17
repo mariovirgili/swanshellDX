@@ -534,6 +534,7 @@ if os.environ.get('GBRUN_DYNSITE') and CYCLES and 's_exit_dyn' in syms:
     # where the same exit went the time before, and how many of those to the first ROM area
     import collections as _c4, atexit as _ae4
     dyn_last4 = {}; dyn_c4 = _c4.Counter()
+    dyn_first4 = {}; dyn_fkey4 = {}; dyn_site_n4 = _c4.Counter(); dyn_site_t4 = _c4.defaultdict(set)
     dyn_offs = set(syms[n] - syms['drc_stubs'] for n in ('s_exit_dyn', 's_exit_dyn_f'))
     def h_dyn(uc, addr, size, _):
         if (st['gbframes'] if GBTIME else st['frame']) < PROF_FROM: return
@@ -545,11 +546,18 @@ if os.environ.get('GBRUN_DYNSITE') and CYCLES and 's_exit_dyn' in syms:
         if t < 0x4000: dyn_c4['below 4000h'] += 1
         elif t < 0x8000: dyn_c4['4000h-7FFFh'] += 1
         else: dyn_c4['RAM'] += 1
+        if site not in dyn_first4: dyn_first4[site] = t
+        elif dyn_first4[site] == t:
+            dyn_c4['same as first'] += 1
+            if t >= 0x4000 and t < 0x8000 and (site & 0xFFFF) and dyn_fkey4.get(site) == int.from_bytes(uc.mem_read(syms['drc_keyx'] & 0xFFFF, 2), 'little'): dyn_c4['same as first, 4000h up, same bank'] += 1
+        if site not in dyn_fkey4: dyn_fkey4[site] = int.from_bytes(uc.mem_read(syms['drc_keyx'] & 0xFFFF, 2), 'little')
+        dyn_site_n4[site] += 1; dyn_site_t4[site].add(t)
         dyn_last4[site] = t
     for seg in range(5, 13):
         for o in dyn_offs:
             uc.hook_add(UC_HOOK_CODE, h_dyn, None, (seg << 16) + o, (seg << 16) + o)
     _ae4.register(lambda: print('dynamic exits: ' + ', '.join('%s %d' % kv for kv in dyn_c4.most_common()) + ', sites %d' % len(dyn_last4)))
+    _ae4.register(lambda: print('dynamic exits by site (times, targets): ' + ' '.join('%d/%d' % (n, len(dyn_site_t4[k])) for k, n in dyn_site_n4.most_common(24))))
 if os.environ.get('GBRUN_TRLOG') and 'translate_block' in syms and 'blk_pc' in syms:
     # GBRUN_TRLOG=1: every block translated from GBRUN_PROF_FROM on: the Game Boy frame, its address
     # and, for code in RAM, its first 24 bytes (what changes from one translation to the next)

@@ -37,6 +37,8 @@ void gbd_run_frame(void);
 void gbd_enter(uint16_t off, uint16_t seg);     // gb_drc_asm.s: runs translated code until it leaves
 extern uint8_t drc_ah, drc_n, drc_tmp, drc_ei, drc_interp;
 extern uint16_t drc_link, drc_link_seg, drc_segtab[4];
+extern uint16_t drc_dlink, drc_dlink_seg;
+extern uint8_t drc_dlink_l, drc_key0_break;
 extern uint16_t drc_key0, drc_keyx;     // the table's key of the ROM bank at 0000h and at 4000h
 extern uint16_t drc_hash0, drc_hashx, drc_tseg;     // the keys' part of the table's hash; the table's segment
 extern uint8_t drc_must, drc_ram_ok;
@@ -93,6 +95,10 @@ extern const uint16_t __far drc_stub_offs[];
 #define ST_WRV       90     /* a write the block knows is to the video memory */
 #define ST_FAR       93     /* a byte copied from another ROM bank and the bank set back (gb_drc_asm.s, s_far) */
 #define ST_FILL1     96     /* s_fill0 with D for the count */
-#define ST_COUNT     33
+#define ST_EXIT_TIME 99     /* leave to the address in SI, the time run out (DI the cycles) */
+#define ST_LOOKUP    102    /* on to the block at SI by the tables (DI the cycles) */
+#define ST_DYN_FIRST 105    /* an exit to an address found as the program runs, the first time: the dispatcher writes where it went into the exit */
+#define ST_DYN_FIRST_L 108  /* ... from a block in the first ROM area (the exit has the bank's test too) */
+#define ST_COUNT     37
 
 #endif

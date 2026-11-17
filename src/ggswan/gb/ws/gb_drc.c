@@ -38,6 +38,8 @@ uint16_t drc_cmp_ram;               // where they are in the internal RAM,
 uint8_t drc_cmp_len;                // how many
 uint8_t gbd_ram_cmp(void);          // gb_asm.s
 uint16_t drc_link, drc_link_seg, drc_segtab[4];
+uint16_t drc_dlink, drc_dlink_seg;
+uint8_t drc_dlink_l, drc_key0_break;
 uint16_t drc_key0, drc_keyx, drc_hash0, drc_hashx, drc_tseg = DRC_TABLE_SEG;
 uint16_t drc_ram_jmp[2];        // (gb_drc_asm.s, s_lookup_ram: the block to go to)
 uint8_t drc_must, drc_ram_ok;
@@ -123,6 +125,7 @@ static void flush(void) {
     gbd_lin_close();
     code_bank(DRC_CODE_SEG);
     drc_link = 0;
+    drc_dlink = 0;
     drc_flushes++;
 }
 
@@ -153,7 +156,7 @@ void gbd_write(uint16_t a, uint8_t v) {
         gbf_write(a, v);
         drc_must = drc_key0 != k0 ? 1 : drc_keyx != kx ? 2 : 0;
         // (gbf_plat_ram: the dispatcher now, which forgets the blocks)
-        if (drc_cart_break) { drc_must = 1; drc_interp = 1; }
+        if (drc_cart_break || drc_key0_break) { drc_must = 1; drc_interp = 1; }
     } else {
         // An event that is due (a block goes on to its end past the
         // event's cycle) is done before a register is written: the write
@@ -626,6 +629,27 @@ static uint8_t n_dead(uint16_t a) {
     }
     return 0;
 }
+// (the end of an exit to the address in SI, the cycles taken off DI or, has_cyc 0, none to take)
+static void dyn_site(uint8_t has_cyc) {
+    // "is it where this exit went the first time? Then there" (s_dyn_first,
+    // gb_drc_asm.s; the address, the bank's key and the jump are written
+    // by gbd_run_frame the first time through). From a block in the first
+    // ROM area the second area's bank is compared too: the same address
+    // there is another block under another bank.
+    uint8_t lform = blk_pc < 0x4000;
+    es_ram = 0;
+    if (!(has_cyc)) { E(0x85); E(0xFF); }       // test di, di
+    E(0x7E); E(lform ? 22 : 14);                    // jle: the time has run out
+    E(0x81); E(0xFE); EW(0xFFFF);                   // cmp si, (where it went first)
+    E(0x75); E(lform ? 13 : 5);                     // jne: by the tables
+    if (lform) {
+        E(0x81); E(0x3E); EW(ADDR(drc_keyx)); EW(0xFFFF);   // cmp word [drc_keyx], (the bank's key then)
+        E(0x75); E(5);
+    }
+    E(0xEA); EW(0); EW(0);                          // jmp far (that block)
+    E(0xE8); cold_rel(); EW(stub_off[(lform ? ST_DYN_FIRST_L : ST_DYN_FIRST) / 3] - (code_top + 2));
+    E(0xE9); cold_rel(); EW(stub_off[ST_EXIT_TIME / 3] - (code_top + 2));
+}
 static uint16_t loop_body;  // in a block that starts with a call for a whole loop: where the loop's own code starts (0: no such call)
 // leave for a known address; link: the dispatcher may join the jump to
 // the block there
@@ -644,7 +668,7 @@ static void exit_to(uint16_t target, uint8_t extra) {
         // (not to be joined: the table is looked in by the routine)
         if (cyc + extra) { E(0x83); E(0xEF); E(cyc + extra); }
         E(0xBE); EW(target);                    // mov si, target
-        jmp_stub(cyc + extra ? ST_EXIT_DYN_F : ST_EXIT_DYN);
+        dyn_site(cyc + extra != 0);
         return;
     }
     if (cyc + extra) { E(0x83); E(0xEF); E(cyc + extra); }      // sub di, n
@@ -675,7 +699,11 @@ static void exit_dyn(uint8_t extra) {
         jmp_stub(ST_EXIT);
         return;
     }
-    jmp_stub(cyc + extra ? ST_EXIT_DYN_F : ST_EXIT_DYN);
+    if (in_ram) {
+        jmp_stub(cyc + extra ? ST_EXIT_DYN_F : ST_EXIT_DYN);
+        return;
+    }
+    dyn_site(cyc + extra != 0);
 }
 // the instruction at pc is the interpreter's
 static void exit_interp(uint16_t pc) {
@@ -2405,6 +2433,11 @@ void gbd_run_frame(void) {
         } else if (!(++fr & 31)) drc_cart_n = 3000;
     }
     while (!gb.frame_done) {
+        if (drc_key0_break) {
+            // (the first ROM area has another bank: gbf_plat_map)
+            drc_key0_break = 0;
+            flush();
+        }
         if (drc_cart_break) {
             // (the cartridge's RAM is no longer what the blocks took it for)
             drc_cart_break = 0;
@@ -2447,12 +2480,12 @@ void gbd_run_frame(void) {
                 } else {
                     gb_cpu_interrupt();
                 }
-                drc_link = 0;
+                drc_link = 0; drc_dlink = 0;
                 continue;
             }
             if (drc_interp || gb.stopped || gb.locked) {
                 drc_interp = 0;
-                drc_link = 0;
+                drc_link = 0; drc_dlink = 0;
                 to_gbf();
                 gb_step();
                 from_gbf();
@@ -2513,7 +2546,7 @@ void gbd_run_frame(void) {
                 }
                 if (*cnt >= RAM_FORMS) {
                     uint16_t end = pc + *c;
-                    drc_link = 0;
+                    drc_link = 0; drc_dlink = 0;
                     to_gbf();
                     do {
                         gb_step();
@@ -2558,6 +2591,34 @@ void gbd_run_frame(void) {
                 rc[2] = b->off;
                 rc[3] = b->seg;
             }
+            if (drc_dlink) {
+                // an exit to an address found as the program runs, taken
+                // for the first time (exit_dyn): where it went, into it.
+                // R is the address after its call of s_dyn_first.
+                uint16_t r = drc_dlink, sg = drc_dlink_seg;
+                if (pc < 0x8000) {
+                    uint16_t w[2];
+                    w[0] = b->off; w[1] = b->seg;
+                    gbd_lin_put(sg, r - 7, w, 4);
+                    if (drc_dlink_l) {
+                        if (pc >= 0x4000) gbd_lin_put(sg, r - 12, &key, 2);
+                        else {
+                            uint8_t over[2];        // (no bank to compare: jmp short to the jump)
+                            over[0] = 0xEB; over[1] = 0x06;
+                            gbd_lin_put(sg, r - 16, over, 2);
+                        }
+                        gbd_lin_put(sg, r - 20, &pc, 2);
+                    } else {
+                        gbd_lin_put(sg, r - 12, &pc, 2);
+                    }
+                }
+                // (from now on the other addresses go by the tables)
+                uint8_t j[3];
+                uint16_t rel = stub_off[ST_LOOKUP / 3] - r;
+                j[0] = 0xE9; j[1] = rel & 0xFF; j[2] = rel >> 8;
+                gbd_lin_put(sg, r - 3, j, 3);
+                drc_dlink = 0;
+            }
             if (drc_link) {
                 // the exit just taken, joined to this block
                 uint8_t site[5];
@@ -2591,6 +2652,7 @@ void gbd_run_frame(void) {
             gbd_enter(b->off, b->seg);
             gb_phase = GB_PHASE_DISP;
         }
+        drc_dlink = 0;
         if (!gb.frame_done) gbf_host_event();
     }
 }
