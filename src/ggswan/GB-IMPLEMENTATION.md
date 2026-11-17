@@ -44,7 +44,7 @@ background and the window, switched at the right lines by the line
 interrupt, with the scroll the program gave each line; the sprites are
 the WonderSwan's.
 
-## Where it is (patch 186)
+## Where it is (patch 189)
 
 The CPU is a recompiler (`gb/ws/gb_drc.c`, `gb_drc_asm.s`; `GB-ABI.md`),
 there is sound (`gb/ws/gb_sound.c`: what it does and does not, at its
@@ -1427,6 +1427,36 @@ save at the block's end.
 `s_wait_stat` (7.6% of ZAS's frame now, 39 calls of some 140 cycles) has
 no one costly thing in it - its division is a tenth; a shorter way for
 its usual case is the next thing to try there, with `s_lookup` (7.4%).
+
+**Patch 189.** Gio passed on three things ChatGPT proposed for the
+video, each to be measured by itself: skip `gbv_sprites_asm` when the
+sprites have not changed, look at what the patterns kept for the next
+frame cost (`gbv_tq_new`, `gbv_tq_copy_asm`, `tq_frame`), a dirty flag for
+the OAM and the LCDC bits the sprites depend on.
+
+*The sprites.* How often the OAM is as it was at the last rebuild
+(`GBRUN_OAMSAME=1`): ZAS 0 of 160 frames, Donkey Kong Land 11 of 160,
+Super Mario Land 2 42 of 120. `gbv_sprites_asm` is 4-5% of a frame in the
+last two and 8% in ZAS. To know that nothing changed: a compare of the
+160 bytes with a copy kept (some 500 cycles when they are the same, and
+400 more to copy when they are not) - worth about 1% of a frame in Super
+Mario Land 2's scene and costing 0.6% in ZAS; or a flag set by whatever
+writes the OAM, which is the DMA (where a compare in place of the copy
+would be nearly free) but also `s_wrt`, `gbf_write`, the loops done in one
+go (`copy_do`, `s_fill*`), an LD (nn), A the block does itself, a PUSH
+with the stack there: one missed and the sprites stay as they were. Not
+done.
+
+*The patterns kept.* Donkey Kong Land, by function: `gbv_tq_new` 1.3% of
+a frame, `gbv_tq_copy_asm` 0.7%, `tq_frame` under 0.3%. The cost is the
+byte's own way: `s_wrt` (two compares for the patterns, `gbv_tq_on`) ->
+`wrt_pat_late` -> `jmp wrt_tq` -> "the tile written last?" with a push
+and a pop -> the write -> `jmp 9b` -> the return: 125 bytes a frame, 70
+cycles each, three unconditional jumps among them. The tile written last
+(`gbv_tq_last`, fifteen bytes in sixteen) is now written at `s_wrt`'s
+head, straight after the test of `gbv_tq_on`; anything else goes on to
+`wrt_pat_late` as before. Donkey Kong Land 90,960 -> 89,530 cycles a
+frame.
 
 He also saw, in 166, Super Mario Land's whole picture jump sideways
 for an instant now and then. Its status bar is a STAT interrupt at a

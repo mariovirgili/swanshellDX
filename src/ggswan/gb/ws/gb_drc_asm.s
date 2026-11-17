@@ -1406,11 +1406,29 @@ s_wrt:
     cmp si, 0x8000
     jb wrt_rest
     cmp byte ptr [gbv_tq_on], 0
-    jne wrt_pat_late
+    jne 0f
     mov [gbv_pw_last], si
     mov di, ax
     mov al, [drc_tmp]
     mov [si - 0x6000], al
+    mov ax, di
+    pop di
+    add di, 2
+    jmp di
+0:
+    // the patterns kept for the next frame (wrt_tq), and the tile the one
+    // written last, as it is fifteen times in sixteen: here, not through
+    // wrt_pat_late and wrt_tq and back (three jumps and a push and pop of
+    // the seventy cycles a byte, 125 bytes a frame in Donkey Kong Land)
+    mov di, si
+    and di, 0xFFF0
+    cmp di, [gbv_tq_last]
+    jne wrt_pat_late
+    mov di, ax
+    and si, 15
+    add si, [gbv_tq_lastp]
+    mov al, [drc_tmp]
+    mov [si], al
     mov ax, di
     pop di
     add di, 2
