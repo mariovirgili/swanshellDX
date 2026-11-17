@@ -6,7 +6,7 @@ emulated by a dynamic recompiler (Z80 to V30MZ code), with the original
 interpreter kept for the parts that need it. The Game Gear video memory is
 mapped onto the WonderSwan's own tile and screen hardware.
 
-Status: fairly stable (patch 186). Tested mostly in the nileswan-medem
+Status: fairly stable (patch 187). Tested mostly in the nileswan-medem
 emulator and with the host test tools; since 2026-11-16 the five plugins
 also run on a WonderSwan (a SwanCrystal with a nileswan): see "On the
 console" below.
@@ -65,6 +65,8 @@ of the recompiler is behind a problem.
 |---|---|
 | Y2 (Y right) + Y4 (Y left) together | **Pause** (sound off) and resume: frame by frame, like Mednafen's Alt+A. |
 | Y3 (Y down), while paused | Runs **one frame**, then pauses again. While paused, `F` in the left border shows the Game Gear frame number (last 3 digits). |
+| START + A, held half a second | **The state kept** (patch 187): the game as it is at that moment, in memory and in a file next to the ROM (`.st0`); the sound stops for the second or two the file takes. `SAVE` in the left border when the numbers are shown |
+| START + B, held half a second | **The state brought back** (`LOAD`; `NONE` when none has been kept), also after the console has been off. What was translated is translated again: a pause of a moment |
 | START + Y1 (Y up), held for a second | **Back to the menu** (the cartridge RAM is then saved: see below). |
 | Y4 (Y left) held, then START | **The numbers in the borders**, off and on (patch 151). (Y4 first: START alone is the game's Start button.) |
 
@@ -78,6 +80,12 @@ plugin keeps the Game Gear cartridge RAM. When the menu starts again
 (START + Y1 (Y up) held for a second in the game, or the console turned
 off and on), it writes the SRAM back to the `.sav` file, with the
 backups set in the menu's settings.
+
+A state (START + A, patch 187) is something else: the plugin's whole
+memory at that moment, in a `.st0` file next to the ROM. It holds the
+cartridge's RAM as it was, so bringing a state back undoes a save the
+game made after it. A `.st0` file is that build's of the plugin only:
+another patch number does not read it.
 
 ## The numbers in the borders
 
@@ -208,6 +216,8 @@ the picture while playing. The background priority is always on.
 | START | The **Pause** button (sent to the game when START is let go) |
 | Y1 (Y up), Y3 (Y down), Y4 (Y left), Y2 (Y right) | **Move the view** over the picture, 2 pixels a frame (X 0-32, Y 0-48; it starts in the middle). Not into the first 8 columns while the game blanks them. |
 | Y2 (Y right) + Y4 (Y left) together | Pause and resume, frame by frame with Y3 (Y down), as on the Game Gear |
+| START + A, held half a second | **The state kept** (patch 187): the game as it is at that moment, in memory and in a file next to the ROM (`.st0`); the sound stops for the second or two the file takes. `SAVE` over the side of the picture when the numbers are shown |
+| START + B, held half a second | **The state brought back** (`LOAD`; `NONE` when none has been kept), also after the console has been off. What was translated is translated again: a pause of a moment |
 | START + Y1 (Y up), held for a second | Back to the menu |
 | START + Y4 (Y left) | **The numbers** (FPS, the recompiler's, the profile) over the sides of the picture, on and off (patch 151). They use screen 2, as the background's priority does: with the numbers on, no priority (as with Y1 (Y up) held at the start) |
 | START + Y3 (Y down) | **Whole picture**, on and off (an experiment): the 192 lines squeezed into the 144 of the screen, one line in four left out. It takes about a quarter of the CPU, small text loses lines, and sprites keep their height (the pieces of a tall figure overlap). Sideways the view is still 224 columns. |
@@ -443,7 +453,7 @@ before the game, START for the next) and with ggswan's X3 (X down):
   fetch than to run, 14% accesses to data, 7.5% counting the Game Boy's
   cycles at each block's end, 5% storing N, 3% jumps to odd addresses.
 
-### Patches 90-186
+### Patches 90-187
 
 | Patch | Change |
 |---|---|
@@ -544,3 +554,4 @@ before the game, START for the next) and with ggswan's X3 (X down):
 | 184 | gbswan runs on the console. First run on a WonderSwan (Gio's SwanCrystal, 2026-11-16): the other four plugins ran, gbswan showed a screen of wrong tiles and then stopped. Two things the emulator and `gbrun.py` had let through: a write to the linear area (where the translated code and its table are read and run) does nothing on the cartridge, and the 2 bits a pixel mode set coming from the menu was not in effect for the first screen. Now every such write (the table, the code, the links between blocks, a state kept) goes through the RAM window with the PSRAM mapped there, as ggswan's always did, and the mode is set at the vertical blank, twice. `gbrun.py` stops at a write to the linear area. A test of the hardware in the plugin (`GBX=-DGB_HWTEST`): what works, and what instructions cost. Measured: code runs as fast from PSRAM as from the internal RAM; the console is at about three quarters of the emulator's frames a second (Sailor Moon S: 37 against 50), because an instruction costs at least half a cycle a byte of its code and a cycle for each access to data, a taken jump 3 more (4 to an odd address), a call and its return about 16, a port 8-10: "On the console" below. Also: the slow ways of PUSH and POP out of line (ZAS -2.4%, X -2.4%, Race Drivin' -0.7%, Super Mario Land 2 +0.2%, Donkey Kong Land +1.9%, in `gbrun.py`'s old cycles); ggswan's X3 (X down) test on a screen of its own. On the console: the games start, a state is kept and brought back (Gio). |
 | 185 | The console's cycles in the PC tools, and the first things they showed. `gbrun.py GBRUN_HW=1` (and `wsrun.py WSRUN_HW=1`) count an instruction as measured on the SwanCrystal in 184; `GBRUN_KIND=1` says what the translated code's cycles go on. Then, each measured alone with that count: (1) a block joined to one a conditional jump can reach is "jg there; jmp short slow" in place of "jle slow; jmp near there" (four cycles for six); (2) every block starts at an even address (a jump to an odd one is a cycle more); (3) N is not stored before a jump to code that writes it before reading it (`n_dead`: three cycles and a half at most exits), nor before a write through a pointer that stays in the work RAM; (4) a program that keeps its variables in the cartridge's RAM and goes to them through pointers (Super Mario Land 2: 135 reads and 58 writes a frame through `s_rd` and `s_wrt`, 57 cycles each) gets that access in its blocks' own code (30 cycles), once the routines have counted 3000 such accesses in 32 frames - everything is then translated again, once; (5) POP with the stack pointer in the ROM (Donkey Kong Land draws from tables so, 64 a frame) reads its word from the ROM's segment, not through two calls of `s_rd`, and POP AF has the work RAM's case in itself; (6) the slow ways of PUSH and POP that 184 put apart go after the jump a following access already has, not after it under a jump of their own (a read after a PUSH ended with two jumps, ten cycles for four). Cycles a Game Boy frame, the console's count, 184 -> 185: Super Mario Land 2 62,726 -> 56,177 (-10.4%), Donkey Kong Land 97,300 -> 91,629 (-5.8%), ZAS 80,504 -> 77,203 (-4.1%), X 113,720 -> 108,368 (-4.7%), Race Drivin' 124,696 -> 122,135 (-2.1%); the Game Boy's memory the same in all five, the 24 tests pass. Tried and left out: the read's and the write's slow ways apart, and the routine's call before the ROM's read (each worse in Super Mario Land 2, by 0.7% to 2.2%). Not run on the console yet. |
 | 186 | PUSH AF and POP AF in the block's own code. Each was a routine (`s_push_af`, `s_pop_af`: F made from AH and `drc_n`, or back) that then went through the push's or the pop's: about 54 and 48 cycles on the console, half of them the call, the jump between the two and the return. ZAS and X do some ninety a frame (their interrupt routines and their drawing): the routines were 7-8% of a frame there. Now the pop or the push is the block's usual one and the dozen instructions that turn the flags are after or before it; N is a constant there when the block knows it. Also the sprites' sorting loop tighter (a key below all the others ends the moves, one jump a move, no segment prefixes): ZAS -0.5%. Looked at and left: the Game Boy's cycle count in a register (DI is the temporary of nearly every routine: one to three cycles more at each of their calls for three less at each block's end); the sprites' order of two frames ago (ZAS moves its sprites round the OAM every frame, 195 moves a frame to sort them, and that order is no better); skipping the sprites when the OAM has not changed (never in ZAS; 35% of the frames in Super Mario Land 2, where the sprites are 5% of a frame). Cycles a Game Boy frame, the console's count, 185 -> 186: ZAS 77,203 -> 71,649 (-7.2%), X 108,368 -> 100,884 (-6.9%), Donkey Kong Land 91,629 -> 90,960 (-0.7%), Super Mario Land 2 56,177 -> 55,939 (-0.4%), Race Drivin' 122,135 -> 119,916 (-1.8%); the Game Boy's memory the same, the 24 tests pass. Not run on the console yet. |
+| 187 | ggswan and smsswan: a state kept and brought back, as gbswan's (Gio's request): START + A and START + B held half a second. The whole internal RAM (the Z80's memory, the video memory, the screens, every variable) and the 64 KiB of SRAM behind the RAM window go to the two PSRAM banks after the block table's (linear segments B000h and C000h), and to a file next to the ROM, `.st0` (131,072 bytes), read at the start if it is this build's and this plugin's. Coming back: everything but the stack, the ROM's banks set again, everything translated forgotten, the sound's registers written again. On the Game Gear START reaches the game after eight frames of it alone, or as a short press when let go sooner (it is the game's Start, and was sent as soon as pressed: with A or B a moment later the game would have paused first); on the Master System START with A or B is not a Pause when let go. In `wsrun.py`, which now stands in for the file: Sonic (Game Gear) kept at frame 338 and brought back at 558 has at frame 700 the work RAM of a plain run at 480, and so has a Master System game; kept in one run and brought back at frame 138 of a fresh one, the work RAM at 300 is the plain run's at 500. Not sgswan (its screen's tables are in a PSRAM bank) nor sfswan (its memory is in PSRAM): next. Not run on the console or in nileswan-medem; the note on the screen was not looked at. |

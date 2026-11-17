@@ -132,6 +132,12 @@ static void psram_write(uint8_t which, uint16_t off, const uint8_t *src, uint16_
     ws_ram_window_restore();   // back to Game Gear slot 2 (main.c)
 }
 
+/// (main.c, a state kept: bytes of the internal RAM to the PSRAM bank
+/// `which` after the code cache's first; the RAM window is put back)
+void drc_psram_put(uint8_t which, uint16_t off, const uint8_t *src, uint16_t len) {
+    psram_write(which, off, src, len);
+}
+
 // a block table entry (code == 0xFF: leave T_CODE alone), in one window
 // switch instead of one per field
 static void table_put(uint16_t h, uint16_t pc, uint16_t off, uint8_t bank, uint8_t code) {

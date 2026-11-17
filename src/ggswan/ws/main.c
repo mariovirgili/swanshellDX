@@ -2449,8 +2449,45 @@ static __attribute__((unused)) void stats_toggle(void) {
 #endif
 }
 
+// (a state kept and brought back, below: not sgswan's nor sfswan's yet)
+#if !defined(GGSWAN_SF7000) && !defined(GGSWAN_SG1000) && !defined(GGSWAN_HOST)
+#define ST_STATES 1
+static uint8_t st_req, st_held, st_wait, st_t0, st_note;
+static uint8_t st_used;          // START was held with A or B: not a Start or a Pause for the game when it is let go
+static volatile uint8_t vblanks;
+#endif
 GGSWAN_HOST_VISIBLE void read_keys(void) {
     uint16_t k = ws_keypad_scan();
+#if defined(ST_STATES) && !defined(GGSWAN_HOST)
+    // START + A, START + B held half a second (38 of the WonderSwan's
+    // frames): the state kept, brought back. None of the three keys is
+    // the game's while they are held so, nor until all are let go
+    static uint8_t st_combo;
+    if (st_wait) {
+        if (k & (WS_KEY_START | WS_KEY_A | WS_KEY_B)) k &= ~(WS_KEY_START | WS_KEY_A | WS_KEY_B);
+        else st_wait = 0;
+    }
+    if ((k & WS_KEY_START) && (k & (WS_KEY_A | WS_KEY_B))) {
+        if (!st_held) {
+            st_held = 1;
+            st_t0 = vblanks;
+        } else if (st_held == 1 && (uint8_t) (vblanks - st_t0 + (vblanks < st_t0 ? 75 : 0)) >= 38) {
+            st_req = (k & WS_KEY_A) ? 1 : 2;
+            st_held = 2;
+            st_wait = 1;
+        }
+        st_combo = 1;
+        st_used = 1;
+        k &= ~(WS_KEY_START | WS_KEY_A | WS_KEY_B);
+    } else {
+        st_held = 0;
+        // (START still held after the other is let go: none of them the game's)
+        if (st_combo) {
+            if (k & WS_KEY_START) k &= ~(WS_KEY_START | WS_KEY_A | WS_KEY_B);
+            else st_combo = 0;
+        }
+    }
+#endif
 #if defined(GGSWAN_SG1000) && !defined(GGSWAN_HOST)
     // sgswan: the Y buttons move the 224x144 view over the 256x192
     // picture, as smsswan's
@@ -2565,6 +2602,10 @@ GGSWAN_HOST_VISIBLE void read_keys(void) {
                 start_st = 0;
             }
         } else {
+#ifdef ST_STATES
+            if (st_used) start_y1 = 1;
+            st_used = 0;
+#endif
             if (start_held && !start_y1) g |= GG_KEY_START;
             start_held = 0;
         }
@@ -2623,7 +2664,26 @@ GGSWAN_HOST_VISIBLE void read_keys(void) {
             start_st = 1;
         } else {
             start_st = 0;
+#if defined(ST_STATES) && !defined(GGSWAN_HOST)
+            // START reaches the game after 8 frames of it alone (pressed
+            // with A or B a moment later it would have paused the game
+            // first); let go sooner, it is pressed for the game for 6
+            // frames then (as gbswan)
+            static uint8_t start_n, start_tap;
+            if (k & WS_KEY_START) {
+                if (start_n < 8) start_n++;
+                else g |= GG_KEY_START;
+            } else {
+                if (start_n && start_n < 8 && !st_used) start_tap = 6;
+                if (!(ws_keypad_scan() & WS_KEY_START)) { start_n = 0; st_used = 0; }
+                if (start_tap) {
+                    start_tap--;
+                    g |= GG_KEY_START;
+                }
+            }
+#else
             if (k & WS_KEY_START) g |= GG_KEY_START;
+#endif
         }
     }
 #endif
@@ -2795,6 +2855,168 @@ static void exit_check(void) {
     outportb(IO_NILE_EMU_CNT, 0);
     nile_soft_reset();
 }
+
+#ifdef ST_STATES
+/*
+ * A state kept and brought back (as gbswan's, patches 181-184): START + A
+ * held half a second keeps it, START + B brings it back. What is kept is
+ * the whole internal RAM (the Z80's memory, the video memory, the screens,
+ * every variable of the machine and of the plugin) and the 64 KiB of SRAM
+ * behind the RAM window (the cartridge's RAM), in the two PSRAM banks
+ * after the block table's (linear segments B000h and C000h: read there,
+ * written through the RAM window), and in a file next to the ROM,
+ * ".st0", read at the start if it is this build's. Coming back: the
+ * memory but the stack (main's, which is where this is called from,
+ * between two frames), the ROM's banks as they were, everything
+ * translated forgotten, the sound's registers written again.
+ * Not sgswan (its screen's tables are in a PSRAM bank of their own) nor
+ * sfswan (its memory is in PSRAM): to be done.
+ */
+#define ST_IRAM_BANK (DRC_CODE_BANKS + 1)
+#define ST_SRAM_BANK (DRC_CODE_BANKS + 2)
+#define ST_IRAM_SEG (DRC_TABLE_SEG + 0x1000u)
+#define ST_SRAM_SEG (DRC_TABLE_SEG + 0x2000u)
+#define ST_BUF ((uint8_t*) 0xE000)      // 2 KiB the translator uses only while it translates
+#define ST_MAGIC (0x54530000ul | ((uint32_t) (GGSWAN_PATCH & 0xFF) << 8) | ST_KIND)
+#ifdef GGSWAN_SMS
+#define ST_KIND 'S'
+#else
+#define ST_KIND 'G'
+#endif
+#define ST_MARK ((const uint32_t __far*) MK_FP(ST_IRAM_SEG, 0))
+extern char __wf_heap_start[];          // (the end of the C data: the stack is from there to 4000h)
+static void put_text(uint8_t row, uint8_t col, const char __far *t);
+
+static void st_mark(uint32_t v) {
+    drc_psram_put(ST_IRAM_BANK, 0, (const uint8_t*) &v, 4);
+}
+// (with the numbers off nothing is written on the borders or over the picture:
+// the sound stopping for the file's second is then the only sign)
+static void st_show(const char __far *t) {
+    if (stats_hide) return;
+    put_text(3, 0, t);
+    st_note = 3;
+}
+// the state's file: the ROM's path with ".st0" for its extension, put
+// there and taken away again (the path is the game's)
+static char st_ext[4];
+static uint16_t st_dot;
+static void st_path(uint8_t on) {
+    if (on) {
+        uint16_t n = 0, dot = 0;
+        while (rom_path[n]) {
+            if (rom_path[n] == '.') dot = n;
+            if (rom_path[n] == '/') dot = 0;
+            n++;
+        }
+        if (!dot || dot + 4 >= ROM_PATH_SIZE) { st_dot = 0; return; }
+        st_dot = dot;
+        for (uint8_t i = 0; i < 4; i++) st_ext[i] = rom_path[dot + 1 + i];
+        rom_path[dot + 1] = 's'; rom_path[dot + 2] = 't'; rom_path[dot + 3] = '0'; rom_path[dot + 4] = 0;
+    } else if (st_dot) {
+        for (uint8_t i = 0; i < 4; i++) rom_path[st_dot + 1 + i] = st_ext[i];
+    }
+}
+static FIL st_fp;
+static uint8_t st_file_write(void) {
+    uint8_t bad = 0;
+    UINT bw;
+    st_path(1);
+    if (!st_dot) return 1;
+    if (f_open(&st_fp, rom_path, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) { st_path(0); return 1; }
+    for (uint8_t part = 0; part < 2 && !bad; part++) {
+        uint16_t seg = part ? ST_SRAM_SEG : ST_IRAM_SEG;
+        uint16_t off = 0;
+        do {
+            _fmemcpy(ST_BUF, MK_FP(seg, off), 0x800);
+            if (f_write(&st_fp, ST_BUF, 0x800, &bw) != FR_OK || bw != 0x800) bad = 1;
+            off += 0x800;
+        } while (off && !bad);
+    }
+    if (f_close(&st_fp) != FR_OK) bad = 1;
+    st_path(0);
+    // (ST_BUF as it was: it is in the copy)
+    _fmemcpy(ST_BUF, MK_FP(ST_IRAM_SEG, (uint16_t) ST_BUF), 0x800);
+    return bad;
+}
+// at the start: the file, if there is one and it is this build's
+static void st_file_read(void) {
+    uint8_t bad = 0;
+    UINT br;
+    st_mark(0);                         // (the PSRAM may still hold another game's)
+    st_path(1);
+    if (!st_dot) return;
+    if (f_open(&st_fp, rom_path, FA_READ) != FR_OK) { st_path(0); return; }
+    for (uint8_t part = 0; part < 2 && !bad; part++) {
+        uint16_t off = 0;
+        do {
+            if (f_read(&st_fp, ST_BUF, 0x800, &br) != FR_OK || br != 0x800) { bad = 1; break; }
+            if (!part && !off && *(uint32_t*) ST_BUF != ST_MAGIC) { bad = 1; break; }
+            drc_psram_put(part ? ST_SRAM_BANK : ST_IRAM_BANK, off, ST_BUF, 0x800);
+            off += 0x800;
+        } while (off);
+    }
+    f_close(&st_fp);
+    st_path(0);
+    if (bad) st_mark(0);
+}
+static void psg_output(void);
+__attribute__((noinline)) static void state_save(void) {
+    ia16_disable_irq();
+    drc_psram_put(ST_IRAM_BANK, 0x0040, (const uint8_t*) 0x0040, 0xFFC0);
+    // the SRAM and the PSRAM are both reached through the RAM window: 2 KiB
+    // at a time through the internal RAM
+    uint16_t off = 0;
+    do {
+        outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_DISABLE);
+        outportw(WS_CART_EXTBANK_RAM_PORT, 0);
+        _fmemcpy(ST_BUF, MK_FP(0x1000, off), 0x800);
+        drc_psram_put(ST_SRAM_BANK, off, ST_BUF, 0x800);
+        off += 0x800;
+    } while (off);
+    _fmemcpy(ST_BUF, MK_FP(ST_IRAM_SEG, (uint16_t) ST_BUF), 0x800);
+    ws_ram_window_restore();
+    st_mark(ST_MAGIC);
+    ia16_enable_irq();
+    st_show("SAVE");
+    // the file (a second or two: the WonderSwan's sound off meanwhile)
+    uint8_t snd = inportb(WS_SOUND_CH_CTRL_PORT);
+    outportb(WS_SOUND_CH_CTRL_PORT, 0);
+    if (st_file_write()) st_show("FILE");           // (kept in memory, not on the card)
+    outportb(WS_SOUND_CH_CTRL_PORT, snd);
+}
+__attribute__((noinline)) static void state_load(void) {
+    if (*ST_MARK != ST_MAGIC) {
+        st_show("NONE");
+        return;
+    }
+    ia16_disable_irq();
+    FATFS keep = fs;                    // (FatFs's volume is the card's as it is now, not as it was)
+    uint16_t off = 0;
+    do {
+        _fmemcpy(ST_BUF, MK_FP(ST_SRAM_SEG, off), 0x800);
+        outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_DISABLE);
+        outportw(WS_CART_EXTBANK_RAM_PORT, 0);
+        _fmemcpy(MK_FP(0x1000, off), ST_BUF, 0x800);
+        off += 0x800;
+    } while (off);
+    // (the stack, from the end of the C data to 4000h, is this function's and main's)
+    _fmemcpy(MK_FP(0x0000, 0x0040), MK_FP(ST_IRAM_SEG, 0x0040), (uint16_t) __wf_heap_start - 0x0040);
+    _fmemcpy(MK_FP(0x0000, 0x4000), MK_FP(ST_IRAM_SEG, 0x4000), 0xC000);
+    fs = keep;
+    gg_remap();
+    ws_ram_window_restore();
+    drc_flush_request = 1;
+    psg_dirty = 0xFF;
+    psg_output();
+    st_req = 0;
+    st_held = 2;
+    st_wait = 1;
+    exit_held = 0;
+    ia16_enable_irq();
+    st_show("LOAD");
+}
+#endif
 
 static void frame_step(void) {
     exit_check();
@@ -3204,6 +3426,9 @@ int main(void) {
         drc_rt_rom_banks(banks);
 #endif
 
+#ifdef ST_STATES
+    st_file_read();
+#endif
     ia16_disable_irq();
     ws_int_set_handler(WS_INT_VBLANK, (ia16_int_handler_t) vblank_irq_entry);
     ws_int_enable(WS_INT_ENABLE_VBLANK);
@@ -3221,6 +3446,14 @@ int main(void) {
         prof_phase = PROF_OTHER;
         frame_step();
         read_keys();
+#ifdef ST_STATES
+        if (st_req) {
+            uint8_t r = st_req;
+            st_req = 0;
+            if (r == 1) state_save();
+            else state_load();
+        }
+#endif
         gg_run_frame();   // (video_present at its line 168)
 #ifdef GGSWAN_NILEDBG
         // niledebug (USB debugger, build with NILEDBG=1, inject with
@@ -3233,6 +3466,9 @@ int main(void) {
         // frames per second, in the left border (the WS shows 75.47 Hz)
         if (vblanks >= 75) {
             vblanks -= 75;
+#ifdef ST_STATES
+            if (st_note && !--st_note && !stats_hide) put_text(3, 0, "    ");
+#endif
 #ifdef GGSWAN_SF7000
             if (!kb_open)   // (the keyboard has the font's tiles)
 #endif

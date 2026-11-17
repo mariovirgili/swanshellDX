@@ -74,6 +74,8 @@ uint16_t ws_map2_iram(void);
 
 /// main.c: put the RAM window back as Game Gear slot 2 needs it
 void ws_ram_window_restore(void);
+/// bytes of the internal RAM to the PSRAM bank `which` after the code cache's first (a state kept: main.c)
+void drc_psram_put(uint8_t which, uint16_t off, const uint8_t *src, uint16_t len);
 /// check the PSRAM banks of the recompiler (0: all right)
 uint8_t drc_rt_test_banks(void);
 /// Diagnostics: the same code timed in IRAM and in PSRAM (see drc_rt.c)

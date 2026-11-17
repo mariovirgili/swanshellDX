@@ -302,12 +302,23 @@ def retf(pop=0):
 rom_pos = [0]
 sys_disk = open(os.environ['WSRUN_SYS'], 'rb').read() if os.environ.get('WSRUN_SYS') else None
 cur = [rom]
+STATE_F = os.environ.get('WSRUN_STATE')
+state_file = [bytearray(open(STATE_F, 'rb').read()) if STATE_F and os.path.exists(STATE_F) else None]
 def sd(name):
     ax = uc.reg_read(UC_X86_REG_AX)
     if name == 'f_open':
         # (WSRUN_SYS=file: what sfswan finds at /NILESWAN/SF7000.SF, its
         # system disk; anything else opened is the ROM or disk given)
         path = bytes(uc.mem_read(uc.reg_read(UC_X86_REG_DX), 64)).split(b'\0')[0]
+        if path.upper().endswith(b'.ST0'):
+            # (a state's file: kept here, and in WSRUN_STATE=file from one run to the next)
+            if uc.reg_read(UC_X86_REG_CX) & 2:
+                state_file[0] = bytearray(); cur[0] = None
+            elif state_file[0] is None:
+                uc.reg_write(UC_X86_REG_AX, 4); retf(); return   # FR_NO_FILE
+            else:
+                cur[0] = bytes(state_file[0]); rom_pos[0] = 0
+            uc.reg_write(UC_X86_REG_AX, 0); retf(); return
         cur[0] = sys_disk if (sys_disk and b'SF7000.SF' in path.upper()) else rom
         if b'SF7000.SF' in path.upper() and not sys_disk:
             uc.reg_write(UC_X86_REG_AX, 4); retf(); return   # FR_NO_FILE
@@ -321,9 +332,21 @@ def sd(name):
         d = cur[0][rom_pos[0]:rom_pos[0] + n]; rom_pos[0] += len(d)
         uc.mem_write(buf, d); uc.mem_write(brp, len(d).to_bytes(2, 'little'))
         uc.reg_write(UC_X86_REG_AX, 0); retf(4); return
+    elif name == 'f_write':
+        # (fp AX, buff DX with its segment in CX, btw and bw on the stack)
+        buf = (uc.reg_read(UC_X86_REG_CX) << 4) + uc.reg_read(UC_X86_REG_DX)
+        sp = uc.reg_read(UC_X86_REG_SP)
+        n = int.from_bytes(uc.mem_read(sp + 4, 2), 'little')
+        bwp = int.from_bytes(uc.mem_read(sp + 6, 2), 'little')
+        state_file[0] += bytes(uc.mem_read(buf & 0xFFFFF, n))
+        uc.mem_write(bwp, n.to_bytes(2, 'little'))
+        uc.reg_write(UC_X86_REG_AX, 0); retf(4); return
     uc.reg_write(UC_X86_REG_AX, 0); retf()
-SD = {syms[n]: n for n in ('f_mount', 'f_open', 'f_read', 'f_close')}
+SD = {syms[n]: n for n in ('f_mount', 'f_open', 'f_read', 'f_close', 'f_write') if n in syms}
 FAIL, FRAME, TRANS = syms['fail'], syms['gg_run_frame'], syms['drc_translate']
+for _n in ('state_save', 'state_load'):
+    if _n in syms:
+        uc.hook_add(UC_HOOK_CODE, lambda uc, a, sz, n: print('%s at frame %d' % (n, st['frame'])), _n, syms[_n], syms[_n])
 KEYSYM = syms['gg'] + 0   # (gg.keys: found below)
 
 trail = collections.deque(maxlen=40)
@@ -387,6 +410,7 @@ def h_code(uc, addr, size, ud):
                 uc.mem_write(syms[pk.split(':')[0]], bytes([int(pk.split(':')[1], 16)]))
         uc.mem_write(syms['gg'] + 0x6C, bytes([pending_keys[0]]))   # gg.keys (read_keys: none here)
         if fr in WS_KEYS: ws_keys[0] = WS_KEYS[fr]
+        if os.environ.get('WSRUN_STDBG') and 'st_held' in syms and fr % 10 == 0: print('ST', fr, ws_keys[0], [uc.mem_read(syms[n], 1)[0] for n in ('st_held', 'st_req', 'st_wait', 'st_t0', 'vblanks')])
         if SF_TYPE: sf_type(fr)
         if fr % EVERY == 0: report(fr)
         if fr >= FRAMES: uc.emu_stop()
@@ -679,6 +703,9 @@ while st['frame'] < FRAMES:
         start = a
         continue
     raise SystemExit('stopped at %04X:%04X (%s)' % (cs, ip, fname(a)))
+import zlib as _z
+print('Z80: pc %04X  work RAM %08X  video RAM %08X  state file %s' % (int.from_bytes(uc.mem_read(PCSYM, 2), 'little'), _z.crc32(bytes(uc.mem_read(0x8000, 0x2000))), _z.crc32(bytes(uc.mem_read(0x4000, 0x4000))), len(state_file[0]) if state_file[0] is not None else 'none'))
+if STATE_F and state_file[0] is not None: open(STATE_F, 'wb').write(bytes(state_file[0]))
 if STACK:
     m = bytes(uc.mem_read(STACK, 0x3E00 - STACK))
     low = next((i for i, v in enumerate(m) if v != 0xA5), len(m))
