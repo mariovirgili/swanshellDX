@@ -44,7 +44,7 @@ background and the window, switched at the right lines by the line
 interrupt, with the scroll the program gave each line; the sprites are
 the WonderSwan's.
 
-## Where it is (patch 190)
+## Where it is (patch 191)
 
 The CPU is a recompiler (`gb/ws/gb_drc.c`, `gb_drc_asm.s`; `GB-ABI.md`),
 there is sound (`gb/ws/gb_sound.c`: what it does and does not, at its
@@ -1504,6 +1504,61 @@ load themselves). What is left of the kind in ZAS: `sub di, n` 4.7% of
 the translated code, the stores and loads around the routines that
 still need them 1.5% (`s_wait_stat` first of all: it could work on DI
 too).
+
+**Patch 191.** After 190's 1.5% Gio stopped: "we have reached a big
+limit with this implementation; is it right to go on like this?" No, not
+by the percent. Two things first. Every game there is here, in play,
+console count against the 51,430 of a Game Boy frame's time: Super Mario
+Land 35,158 and R-Type II 35,697 (full speed); Super Mario Land 2 55,044
+(93%), Yoshi 58,206, R-Type 58,978, Batman 61,357, Castlevania II 61,878
+(83%); Balloon Kid 69,281, ZAS 70,562; Donkey Kong Land 89,415, X 99,347,
+Race Drivin' 119,800 (43%). So five ordinary games are 7% to 17% short,
+and something worth 10-15% matters more than the five slowest. And, with
+Gio's yes, one larger attempt: traces (blocks joined across their
+jumps), to be dropped under 5%.
+
+*What the profile for that showed instead.* The jumps between blocks
+(`E9`) are 5.3% of the translated code in Super Mario Land 2 and 11.4%
+in Castlevania II: traces are for the second (still to do). In Super
+Mario Land 2 the time is elsewhere: by first opcode byte, `80` (cmp byte)
+16.2%, `EB` (jmp short) 12.8%, `8E` (mov es) 9.7%, `26` (the ES prefix)
+9.5% - the access to the cartridge's RAM, where the game keeps its
+variables. A known address there (patch 177) was
+
+    cmp byte [drc_ram_ok], 1 / jne slow / mov es, [drc_ram_seg] /
+    mov es:[nn], al / jmp done / slow: ... call s_wrt ... / done:
+
+some 14 cycles for the three of the access, four times in a row in the
+hottest block; and an access through a pointer (patch 185) has the same
+test after its two comparisons.
+
+*Taken for open.* `translate` sets `cart_sure` when the RAM is plain and
+enabled now (`drc_ram_ok == 1`) and has not been found otherwise since
+the start. Then a known address is `mov es, [drc_ram_seg]` and the
+access, nothing else (LD A, (nn), LD (nn), A, the reads and writes
+through a register pair whose value the block knows, the ALU with
+(HL)); an access through a pointer and the stack in the cartridge's RAM
+lose the test. `es_ram`: ES is known to be the RAM's segment after such
+an access until a routine is called, ES is loaded for something else, or
+a piece put apart begins or ends - the next access leaves the load out.
+(The segment is still read each time it is loaded: the RAM's bank can
+change, through a routine, which clears `es_ram`.)
+
+*When it stops being so.* `gbf_plat_ram` (every change of the RAM's
+state goes through it) sets `drc_cart_break` if blocks were made that
+way (`drc_cart_assumed`) and the RAM is no longer plain and enabled.
+`gbd_write` then asks for the dispatcher (`drc_must`, and `drc_interp`
+so that `s_exit` does not go on by the tables); `gbd_run_frame` forgets
+everything translated and sets `drc_cart_unsure`, for good: a program
+that enables its RAM only around each use pays that once and has the
+tests as before.
+
+*Measured* (console count, 190 -> 191): Super Mario Land 2 55,044 ->
+46,981 (-14.6%: 47,486 before `es_ram`), full speed in that scene;
+the others as they were (ZAS 70,533, Donkey Kong Land 89,446, X 99,314, Race Drivin' 119,825: none of them goes to that RAM that way). The memory at each scene's end is the same and the 24 tests
+pass. No game here closes its RAM while it runs (`drc_cart_breaks` 0
+in all five); Mooneye's `mbc1/bits_ramg` and `mbc1/ram_64kb` do, once
+each (`drc_cart_breaks` 1, two flushes), and pass.
 
 He also saw, in 166, Super Mario Land's whole picture jump sideways
 for an instant now and then. Its status bar is a STAT interrupt at a

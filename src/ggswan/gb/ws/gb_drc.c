@@ -152,6 +152,8 @@ void gbd_write(uint16_t a, uint8_t v) {
         uint16_t k0 = drc_key0, kx = drc_keyx;
         gbf_write(a, v);
         drc_must = drc_key0 != k0 ? 1 : drc_keyx != kx ? 2 : 0;
+        // (gbf_plat_ram: the dispatcher now, which forgets the blocks)
+        if (drc_cart_break) { drc_must = 1; drc_interp = 1; }
     } else {
         // An event that is due (a block goes on to its end past the
         // event's cycle) is done before a register is written: the write
@@ -473,6 +475,7 @@ static struct {
 #endif
 static uint8_t cold_n, in_cold, cold_off, cold_fail;
 static uint16_t cold_used, cold_first;
+static uint8_t es_ram;     // (below: sure_es)
 static uint8_t *cold_code;
 static uint16_t cold_top;
 static void cold_flush(uint8_t jump);
@@ -485,6 +488,7 @@ static void cold_begin(void) {
     cold[cold_n].nrel = cold[cold_n].npatch = 0;
     code = COLD_SCR + cold_used - code_top;
     in_cold = 1;
+    es_ram = 0;
 }
 // (the test at j, in the block's code, jumps to here)
 static void cold_label(uint16_t j) {
@@ -507,6 +511,7 @@ static void cold_end(void) {
     code = cold_code;
     code_top = cold_top;
     in_cold = 0;
+    es_ram = 0;
     cold_n++;
 }
 static void cold_flush(uint8_t jump) {
@@ -552,6 +557,7 @@ static void cyc_load(void) { E(0x8B); E(0x3E); EW(ADDR(gbf_cyc)); }     // mov d
     || (st) == ST_INC_HL || (st) == ST_DEC_HL || (st) == ST_DAA || (st) == ST_P1 || (st) == ST_BANK0 \
     || (st) == ST_STAT || (st) == ST_LY || (st) == ST_EXIT_DYN || (st) == ST_EXIT_DYN_F)
 static void call_stub(uint8_t st) {
+    es_ram = 0;
     if (!STUB_KEEP(st)) cyc_store();
     E(0xE8);
     cold_rel();
@@ -559,6 +565,7 @@ static void call_stub(uint8_t st) {
     if (!STUB_KEEP(st) && !STUB_DATA(st)) cyc_load();
 }
 static void jmp_stub(uint8_t st) {
+    es_ram = 0;
     if (!STUB_KEEP(st)) cyc_store();
     E(0xE9);
     cold_rel();
@@ -730,11 +737,29 @@ static uint16_t slow_starts(uint16_t j, uint8_t hl, uint8_t wr) {
 // and enabled; ES = its segment", then the caller's instruction on
 // es:[address]; cart_else: "jmp done", and the usual code follows for when
 // it is not
+// (cart_sure: this block is translated taking the cartridge's RAM for
+// plain RAM that is enabled, as it is now - no test, and for a known
+// address no other way at all. Everything translated is forgotten the
+// first time that stops being so, and nothing is taken for sure after:
+// gbf_plat_ram, gbd_run_frame)
+uint8_t drc_cart_assumed, drc_cart_break, drc_cart_unsure;
+uint16_t drc_cart_breaks;
+static uint8_t cart_sure;
+// (es_ram: ES is the cartridge's RAM here for sure - the access before
+// this one in the block's line loaded it and nothing since has called a
+// routine, loaded ES or been a place other code comes to: four accesses
+// in a row, as Super Mario Land 2 has them, load it once)
+static void sure_es(void) {
+    drc_cart_assumed = 1;
+    if (!es_ram || in_cold) { E(0x8E); E(0x06); EW(ADDR(drc_ram_seg)); }    // mov es, [drc_ram_seg]
+    es_ram = !in_cold;
+    E(0x26);                                        // es:
+}
 static uint16_t cart_open(void) {
     E(0x80); E(0x3E); EW(ADDR(drc_ram_ok)); E(1);   // cmp byte [drc_ram_ok], 1
     E(0x75); E(0);                                  // jne slow
     uint16_t j = code_top;
-    E(0x8E); E(0x06); EW(ADDR(drc_ram_seg));        // mov es, [drc_ram_seg]
+    es_ram = 0; E(0x8E); E(0x06); EW(ADDR(drc_ram_seg));        // mov es, [drc_ram_seg]
     E(0x26);                                        // es:
     return j;
 }
@@ -754,10 +779,10 @@ static uint16_t rom_open(uint8_t hl) {
     if (hl) { E(0xF6); E(0xC7); E(0x80); } else { E(0xF7); E(0xC6); EW(0x8000); }   // test bh, 80h / test si, 8000h
     E(0x75); E(0);                                  // jnz: not the ROM
     uint16_t j = code_top;
-    E(0x8E); E(0x06); EW(ADDR(drc_segtab));         // mov es, [drc_segtab]
+    es_ram = 0; E(0x8E); E(0x06); EW(ADDR(drc_segtab));         // mov es, [drc_segtab]
     if (hl) { E(0x80); E(0xFF); E(0x40); } else { E(0x81); E(0xFE); EW(0x4000); }   // cmp bh, 40h / cmp si, 4000h
     E(0x72); E(4);                                  // jb +4
-    E(0x8E); E(0x06); EW(ADDR(drc_segtab) + 2);     // mov es, [drc_segtab + 2]
+    es_ram = 0; E(0x8E); E(0x06); EW(ADDR(drc_segtab) + 2);     // mov es, [drc_segtab + 2]
     return j;
 }
 #define rom_else cart_else
@@ -780,17 +805,21 @@ static uint16_t cartp_open(uint8_t hl) {
     if (hl) { E(0x80); E(0xFF); E(0xC0); } else { E(0x81); E(0xFE); EW(0xC000); }
     E(0x73); E(0);                                  // jae: not it
     uint16_t j2 = code_top;
-    E(0x80); E(0x3E); EW(ADDR(drc_ram_ok)); E(1);   // cmp byte [drc_ram_ok], 1
-    E(0x75); E(0);                                  // jne: not it
-    uint16_t j3 = code_top;
-    E(0x8E); E(0x06); EW(ADDR(drc_ram_seg));        // mov es, [drc_ram_seg]
+    uint16_t j3 = 0;
+    if (cart_sure) drc_cart_assumed = 1;
+    else {
+        E(0x80); E(0x3E); EW(ADDR(drc_ram_ok)); E(1);   // cmp byte [drc_ram_ok], 1
+        E(0x75); E(0);                                  // jne: not it
+        j3 = code_top;
+    }
+    es_ram = 0; E(0x8E); E(0x06); EW(ADDR(drc_ram_seg));        // mov es, [drc_ram_seg]
     cartp_j[0] = j1; cartp_j[1] = j2;
     return j3;
 }
 static uint16_t cartp_else(uint16_t j3) {
     E(0xEB); E(0);
     uint16_t done = code_top;
-    code[j3 - 1] = code_top - j3;
+    if (j3) code[j3 - 1] = code_top - j3;
     code[cartp_j[0] - 1] = code_top - cartp_j[0];
     code[cartp_j[1] - 1] = code_top - cartp_j[1];
     return done;
@@ -804,7 +833,7 @@ static void read_to(uint8_t r, uint8_t hl) {
     }
     if (cur_cls && !cur_cart) {
         if (cur_cls >= 3) {
-            E(0x8E); E(0x06); EW(ADDR(drc_segtab) + (cur_cls == 4 ? 2 : 0));    // mov es, [..]
+            es_ram = 0; E(0x8E); E(0x06); EW(ADDR(drc_segtab) + (cur_cls == 4 ? 2 : 0));    // mov es, [..]
             E(0x26); E(0x8A); E(r << 3 | (hl ? 7 : 4));                         // mov r, es:[bx or si]
         } else {
             E(0x8A); E(0x80 | r << 3 | (hl ? 7 : 4)); EW(0xA000);               // mov r, [bx or si - 6000h]
@@ -813,6 +842,11 @@ static void read_to(uint8_t r, uint8_t hl) {
     }
     clob();
     uint16_t cdone = 0;
+    if (cur_cart && cart_sure) {
+        sure_es();
+        E(0x8A); E(0x06 | r << 3); EW(cur_cart);    // mov r, es:[..]
+        return;
+    }
     if (cur_cart) {
         uint16_t cj = cart_open();
         E(0x8A); E(0x06 | r << 3); EW(cur_cart);    // mov r, es:[..]
@@ -900,6 +934,12 @@ static void write_from(uint8_t r, uint8_t imm, uint8_t hl, uint16_t next) {
     // a half at every write through a pointer)
     if ((COLD_MASK & 2) && !cold_off && !cur_cart) nflush();
     uint16_t cdone = 0;
+    if (cur_cart && cart_sure) {
+        sure_es();
+        if (r != 0xFF) { E(0x88); E(0x06 | r << 3); EW(cur_cart); }
+        else { E(0xC6); E(0x06); EW(cur_cart); E(imm); }
+        return;
+    }
     if (cur_cart) {
         uint16_t cj = cart_open();
         if (r != 0xFF) { E(0x88); E(0x06 | r << 3); EW(cur_cart); }
@@ -1064,16 +1104,20 @@ static uint8_t io_write(uint8_t n, uint16_t next) {
 // translated: Super Mario Land 2 keeps it there): "is SP in it (from lo to
 // hi), is it plain RAM and enabled; ES = its segment", the fast case
 // follows; returns where the three jumps to the slow case are counted from
-static uint8_t sp_cart;
+static uint8_t sp_cart, sp_sure;
 static uint16_t cart_sp_check(uint16_t lo, uint16_t hi) {
     E(0x81); E(0xFD); EW(lo);                   // cmp bp, lo
     E(0x72); E(0);                              // jb slow
     uint16_t j = code_top;
     E(0x81); E(0xFD); EW(hi);                   // cmp bp, hi
     E(0x77); E(0);                              // ja slow
-    E(0x80); E(0x3E); EW(ADDR(drc_ram_ok)); E(1);
-    E(0x75); E(0);                              // jne slow
-    E(0x8E); E(0x06); EW(ADDR(drc_ram_seg));    // mov es, [drc_ram_seg]
+    sp_sure = cart_sure;
+    if (cart_sure) drc_cart_assumed = 1;
+    else {
+        E(0x80); E(0x3E); EW(ADDR(drc_ram_ok)); E(1);
+        E(0x75); E(0);                              // jne slow
+    }
+    es_ram = 0; E(0x8E); E(0x06); EW(ADDR(drc_ram_seg));    // mov es, [drc_ram_seg]
     return j;
 }
 static uint16_t cart_sp_slow(uint16_t j) {
@@ -1081,7 +1125,7 @@ static uint16_t cart_sp_slow(uint16_t j) {
     uint16_t done = code_top;
     code[j - 1] = code_top - j;
     code[j + 5] = code_top - (j + 6);
-    code[j + 12] = code_top - (j + 13);
+    if (!sp_sure) code[j + 12] = code_top - (j + 13);
     return done;
 }
 
@@ -1184,6 +1228,7 @@ static void wait_skip(void) {
 __attribute__((noinline)) static void translate_block(void) {
     uint8_t ended = 0;
     uint16_t block_start = code_top;
+    es_ram = 0;
     fl = 0;
     hfix = 0;
     nst = nmem = -1;
@@ -1348,7 +1393,7 @@ __attribute__((noinline)) static void translate_block(void) {
                 if (y == 1 || y == 3) carry_in();
                 E(alu_x86[y] | 2); E(0x06); EW(cur_dir);        // op al, [..]
             } else if (z == 6 && cur_cls && !cur_cart) {
-                if (cur_cls >= 3) { E(0x8E); E(0x06); EW(ADDR(drc_segtab) + (cur_cls == 4 ? 2 : 0)); }
+                if (cur_cls >= 3) { es_ram = 0; E(0x8E); E(0x06); EW(ADDR(drc_segtab) + (cur_cls == 4 ? 2 : 0)); }
                 if (y == 1 || y == 3) carry_in();
                 if (cur_cls >= 3) { E(0x26); E(alu_x86[y] | 2); E(0x07); }      // op al, es:[bx]
                 else { E(alu_x86[y] | 2); E(0x87); EW(0xA000); }                // op al, [bx - 6000h]
@@ -1358,6 +1403,12 @@ __attribute__((noinline)) static void translate_block(void) {
                 if (cur_cart) {
                     // (ADC and SBC take C from AH, which the test would
                     // lose: the usual way for those)
+                    if (y != 1 && y != 3 && cart_sure) {
+                        sure_es();
+                        E(alu_x86[y] | 2); E(0x06); EW(cur_cart);
+                        alu_done(y);
+                        continue;
+                    }
                     if (y != 1 && y != 3) {
                         uint16_t cj = cart_open();
                         E(alu_x86[y] | 2); E(0x06); EW(cur_cart);
@@ -1685,11 +1736,17 @@ __attribute__((noinline)) static void translate_block(void) {
                 // the cartridge's RAM (some programs keep their variables
                 // there): when it is plain RAM and enabled, through its
                 // segment here; else the routine
+                if (cart_sure) {
+                    if (y == 5) mat(); else clob();
+                    sure_es();
+                    E(y == 5 ? 0xA2 : 0xA0); EW(nn);            // mov es:[nn], al / mov al, es:[nn]
+                    break;
+                }
                 if (y == 5) { mat(); nflush(); } else clob();
                 E(0x80); E(0x3E); EW(ADDR(drc_ram_ok)); E(1);   // cmp byte [drc_ram_ok], 1
                 E(0x75); E(0);                                  // jne slow
                 uint16_t j = code_top;
-                E(0x8E); E(0x06); EW(ADDR(drc_ram_seg));        // mov es, [drc_ram_seg]
+                es_ram = 0; E(0x8E); E(0x06); EW(ADDR(drc_ram_seg));        // mov es, [drc_ram_seg]
                 E(0x26); E(y == 5 ? 0xA2 : 0xA0); EW(nn);       // mov es:[nn], al / mov al, es:[nn]
                 E(0xEB); E(0);
                 uint16_t done = code_top;
@@ -2252,6 +2309,8 @@ __attribute__((noinline)) static blk_t __far *translate(uint16_t pc, uint16_t ke
         blk_pc = pc;
         in_ram = key >= 0x8000;
         sp_cart = gb.sp >= 0xA000 && gb.sp < 0xC000;
+        cart_sure = drc_ram_ok == 1 && !drc_cart_unsure;
+        es_ram = 0;
         tfill(pc);
         scan_block(pc);
         uint16_t first = code_top;
@@ -2346,6 +2405,14 @@ void gbd_run_frame(void) {
         } else if (!(++fr & 31)) drc_cart_n = 3000;
     }
     while (!gb.frame_done) {
+        if (drc_cart_break) {
+            // (the cartridge's RAM is no longer what the blocks took it for)
+            drc_cart_break = 0;
+            drc_cart_unsure = 1;
+            drc_cart_assumed = 0;
+            drc_cart_breaks++;
+            flush();
+        }
         // (the event that ends the frame may have been done by the routine
         // that leaves a block, gb_drc_asm.s, s_exit: it comes back here
         // with the frame done and time left)

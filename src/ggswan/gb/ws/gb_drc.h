@@ -40,6 +40,8 @@ extern uint16_t drc_link, drc_link_seg, drc_segtab[4];
 extern uint16_t drc_key0, drc_keyx;     // the table's key of the ROM bank at 0000h and at 4000h
 extern uint16_t drc_hash0, drc_hashx, drc_tseg;     // the keys' part of the table's hash; the table's segment
 extern uint8_t drc_must, drc_ram_ok;
+extern uint8_t drc_cart_assumed, drc_cart_break, drc_cart_unsure;
+extern uint16_t drc_cart_breaks;
 extern uint8_t drc_mbc_and, drc_mbc_z1, drc_p1_tab[4];
 extern uint16_t drc_mbc_top, drc_mbc_lo, drc_mbc_or, drc_mbc_hi, drc_bank_mask;
 extern uint8_t drc_ramg;

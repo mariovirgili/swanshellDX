@@ -94,6 +94,16 @@ window.
   one test that it is plain RAM and enabled (`drc_ram_ok`).
 - **A stack in the cartridge's RAM** (where SP is when the block is
   translated): PUSH and POP in line the same way.
+- **The cartridge's RAM taken for open** (patch 191): when it is plain
+  RAM and enabled as a block is translated, and has never been found
+  otherwise, the tests of `drc_ram_ok` above are left out and a known
+  address has no other way (`cart_sure`); ES, once loaded with the
+  RAM's segment, is not loaded again for the accesses that follow until
+  a routine is called or ES is used for something else (`es_ram`). The
+  rule this rests on: every change of the RAM's state goes through
+  `gbf_plat_ram`, which sets `drc_cart_break` when such blocks exist and
+  the RAM is no longer open; the dispatcher then forgets everything
+  translated and `drc_cart_unsure` keeps the tests in from then on.
 - A write to an I/O register or to the cartridge's registers may not
   come back: when an interrupt can now be taken, the time to the next
   event has run out or the code's own ROM bank has changed

@@ -40,6 +40,8 @@ void gbf_plat_ram(void) {
     // (MBC2's half bytes, MBC3's clock)
     drc_ram_ok = gb.mbc == 2 || (gb.mbc == 3 && gb.rtc_sel) ? 0 : gb.ram_banks && (gb.ram_on || !gb.mbc) ? 1 : 2;
     drc_ram_seg = 0x1000 + (gbf_ram_off >> 4) - 0xA00;
+    // (blocks translated taking it for plain RAM that is enabled: gb_drc.c, cart_sure)
+    if (drc_cart_assumed && drc_ram_ok != 1) drc_cart_break = 1;
     // (gb_drc_asm.s, s_wrt: 0 no "RAM on" register at 0000h-1FFFh or not a plain one, 1 off, 2 on)
     drc_ramg = gb.mbc == 1 || gb.mbc == 3 || gb.mbc == 5 ? 1 + (gb.ram_on != 0) : 0;
 }
