@@ -1571,8 +1571,22 @@ __attribute__((noinline)) static void translate_block(void) {
         case 1:
             if (!(op & 8)) {                                    // POP
                 if (p == 3) {
-                    clob();
-                    call_stub(ST_POP_AF);
+                    // (in the block's own code since 186: the routine's
+                    // call, its jump and its return were half of its 48
+                    // cycles on the console; ZAS and X do some ninety a
+                    // frame)
+                    pop16(6);                                   // SI = A:F
+                    E(0x89); E(0xF0);                           // mov ax, si
+                    E(0x86); E(0xE0);                           // xchg al, ah: AL = A, AH = F
+                    E(0x89); E(0xC6);                           // mov si, ax
+                    E(0x80); E(0xE4); E(0x40);                  // and ah, 40h
+                    E(0x88); E(0x26); EW(ADDR(drc_n));          // mov [drc_n], ah
+                    E(0x89); E(0xF0);                           // mov ax, si
+                    E(0xD0); E(0xEC);                           // shr ah, 1
+                    E(0x80); E(0xE4); E(0x50);                  // and ah, 50h: Z (80h -> 40h), H (20h -> 10h)
+                    E(0xF7); E(0xC6); EW(0x1000);               // test si, 1000h
+                    E(0x74); E(0x03);                           // jz +3
+                    E(0x80); E(0xCC); E(0x01);                  // or ah, 1: C
                     fl = 0;
                     nst = nmem = -1;
                 } else {
@@ -1844,9 +1858,21 @@ __attribute__((noinline)) static void translate_block(void) {
         case 5:
             if (!(op & 8)) {                                    // PUSH
                 if (p == 3) {
+                    // (in the block's own code since 186, as POP AF; N a
+                    // constant when the block knows it)
                     mat();
-                    nflush();
-                    call_stub(ST_PUSH_AF);
+                    E(0x89); E(0xC6);                           // mov si, ax
+                    E(0x86); E(0xE0);                           // xchg al, ah: AL = the flags, AH = A
+                    E(0xD0); E(0xE0);                           // shl al, 1
+                    E(0x24); E(0xA0);                           // and al, A0h: Z (40h -> 80h), H (10h -> 20h)
+                    E(0xF7); E(0xC6); EW(0x0100);               // test si, 0100h
+                    E(0x74); E(0x02);                           // jz +2
+                    E(0x0C); E(0x10);                           // or al, 10h: C
+                    if (nst < 0) { E(0x0A); E(0x06); EW(ADDR(drc_n)); }     // or al, [drc_n]
+                    else if (nst) { E(0x0C); E(0x40); }
+                    E(0x89); E(0xC7);                           // mov di, ax: A:F
+                    E(0x89); E(0xF0);                           // mov ax, si
+                    push16(7, 0);                               // (DI)
                 } else {
                     push16(R16[p], 0);
                 }

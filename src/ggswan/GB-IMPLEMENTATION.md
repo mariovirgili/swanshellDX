@@ -44,7 +44,7 @@ background and the window, switched at the right lines by the line
 interrupt, with the scroll the program gave each line; the sprites are
 the WonderSwan's.
 
-## Where it is (patch 185)
+## Where it is (patch 186)
 
 The CPU is a recompiler (`gb/ws/gb_drc.c`, `gb_drc_asm.s`; `GB-ABI.md`),
 there is sound (`gb/ws/gb_sound.c`: what it does and does not, at its
@@ -1377,6 +1377,56 @@ cycle count in a register (three of the 4.5 cycles at every exit: ZAS
 about 4% of the frame; DI is the candidate, used as a temporary 176 times
 in the routines); `s_wait_stat`'s division; `s_lookup` (6-7% of a frame
 in every game).
+
+**Patch 186.** After 185 ZAS's frame (77,203 cycles, the console's
+count) had `s_pop_af` at 4.6%, `s_push_af` at 3.0% and `s_push` at 2.3%;
+X much the same. `s_pop_af` was "the word (in itself since 185, or `call
+s_pop`); A and F apart; N to `drc_n`; Z, H, C to their places in AH;
+`ret`", some 48 cycles with its call; `s_push_af` the reverse and a jump
+to `s_push`, some 54. The translator now writes, for POP AF, `pop16(6)`
+(the block's usual pop, into SI) and then
+
+    mov ax, si / xchg al, ah / mov si, ax / and ah, 40h /
+    mov [drc_n], ah / mov ax, si / shr ah, 1 / and ah, 50h /
+    test si, 1000h / jz +3 / or ah, 1
+
+and for PUSH AF, after the flags are in AH,
+
+    mov si, ax / xchg al, ah / shl al, 1 / and al, A0h /
+    test si, 0100h / jz +2 / or al, 10h / [N] / mov di, ax / mov ax, si
+
+and `push16(7)` (DI). [N] is `or al, 40h`, nothing, or `or al, [drc_n]`
+when the block does not know N (and then `drc_n` has it: 185's `n_dead`
+sees PUSH AF as a reader). The two routines are still in the copies,
+unused by the translator.
+
+The sprites (`gbv_sprites_asm`, 8.7% of ZAS's frame): `GBRUN_OAMSAME=1`
+says how often they are rebuilt with the OAM as it was - never in ZAS
+in 160 frames, 42 times in 120 in Super Mario Land 2. In ZAS the
+insertion sort that starts from last frame's order makes 195 moves a
+frame, nearly what no order at all would cost: the game moves its
+sprites round the OAM every frame, so the order kept (by place in the
+OAM) says nothing of the next. Two orders kept, a frame each in turn:
+the same 195, taken out. Kept: the loop itself - a zero word below the
+keys (CB2Eh) in place of the test for the first place, the move at the
+loop's head so that each move is one taken jump, DS for SS. 17.5 cycles a
+move to about 12.
+
+The cycle count in a register (185's "left for later"): looked at and
+dropped. There is no free register; DI, the candidate, is the temporary
+of nearly every routine (`s_lookup` 28 uses, `s_wrt` and its parts about
+20, `s_push` 9), and saving it there costs what the count in it would
+save at the block's end.
+
+| | SML2 | ZAS | DKL | X | Race |
+|---|---|---|---|---|---|
+| 185 | 56,177 | 77,203 | 91,629 | 108,368 | 122,135 |
+| the sprites' loop (and two orders, since taken out) | 56,022 | 76,817 | | | |
+| + PUSH AF, POP AF in line | 55,939 | 71,649 | 90,960 | 100,884 | 119,916 |
+
+`s_wait_stat` (7.6% of ZAS's frame now, 39 calls of some 140 cycles) has
+no one costly thing in it - its division is a tenth; a shorter way for
+its usual case is the next thing to try there, with `s_lookup` (7.4%).
 
 He also saw, in 166, Super Mario Land's whole picture jump sideways
 for an instant now and then. Its status bar is a STAT interrupt at a

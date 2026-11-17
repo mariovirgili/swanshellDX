@@ -39,8 +39,9 @@ nobody.
 
 N is not in a register: every instruction leaves it 0 or 1 whatever its
 operands, so the translator knows it, and writes it to `drc_n` (0 or
-40h) when the block is left or before PUSH AF. POP AF sets it from the
-stack.
+40h) when the block is left; PUSH AF takes it as a constant when the
+block knows it (patch 186), from `drc_n` otherwise. POP AF sets it from
+the stack.
 
 At every exit of a block the flags are in AH and N in `drc_n` - but,
 since patch 185, not at an exit to code in the ROM that writes N before
@@ -59,8 +60,9 @@ window.
 
 - **The stack**: `[BP - 6000h]`, after one comparison (SP below C000h
   goes to a routine: some programs point SP at tables in ROM). PUSH AF
-  and POP AF always go through the routines, which do the work RAM and
-  the high RAM themselves.
+  and POP AF are the same push and pop, of DI and into SI, with the
+  flags turned before and after in the block's code (patch 186; through
+  `s_push_af` and `s_pop_af` until then).
 - **(HL), (BC), (DE)**: two comparisons, then `[BX - 6000h]` for
   C000h-DFFFh (to FDFFh until patch 176, which made the echo the
   console's 8000h-9DFFh); everything else through a routine (`s_rd`, `s_wrt`):

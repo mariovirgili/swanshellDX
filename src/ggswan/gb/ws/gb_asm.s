@@ -103,7 +103,7 @@ gb_line_entry:
  * A WS sprite: tile, attributes (palette 12 or 13, over screen 2 unless
  * the Game Boy has it behind the background, the flips), Y, X.
  */
-#define SPR_ORDER 0xCB00        /* 40 bytes: the sprites in last frame's order, as offsets into the OAM */
+#define SPR_ORDER 0xCB00        /* 40 bytes: the sprites in last frame's order, as offsets into the OAM; CB2Eh: the word below the keys */
 #define SPR_TALL  0xCB80        /* 176 bytes, by a sprite's Y: 8 x 16 where its top line is (LCDC bit 2 there) */
 #define SPR_KEYS  0xCB30        /* 40 words being sorted: X (FFh: not on the screen), offset */
     .global gbv_sprites_asm
@@ -115,14 +115,18 @@ gbv_sprites_asm:
     push ss
     pop es
     // the 40 sprites, in the order they had a frame ago (few change
-    // places from one frame to the next), each put in its place among
-    // those before it: by X, then by its place in the OAM; the ones not
-    // on the screen last
+    // places from one frame to the next - but ZAS, which moves them round
+    // the OAM every frame: 195 moves a frame there, and the order of two
+    // frames ago, tried in 186, is no better), each put in its place
+    // among those before it: by X, then by its place in the OAM; the ones
+    // not on the screen last
+    mov word ptr [SPR_KEYS - 2], 0      // (a key below every other: the moves stop there)
     xor si, si
 1:
-    mov bh, ss:[gbv_oam_hi]     // (FFh: 9D00h, the OAM as it was before a copy made in the middle of the frame)
-    mov bl, ss:[SPR_ORDER + si]
-    mov ax, ss:[0x9E00 + bx]    // AL = Y, AH = X
+    mov bh, [gbv_oam_hi]        // (FFh: 9D00h, the OAM as it was before a copy made in the middle of the frame)
+    mov bl, [SPR_ORDER + si]
+    mov ax, [0x9E00 + bx]       // AL = Y, AH = X
+    mov dl, bl
     test al, al
     jz 5f
     cmp al, 160
@@ -131,29 +135,28 @@ gbv_sprites_asm:
     jz 5f
     cmp ah, 168
     jae 5f
-    mov bp, ax
-    and bp, 0xFF
-    cmp byte ptr [bp + SPR_TALL], 0
+    mov bl, al
+    xor bh, bh
+    cmp byte ptr [bx + SPR_TALL], 0
     jnz 6f
     cmp al, 8
     ja 6f                       // (8 x 8, above the screen: not seen)
 5:
     mov ah, 0xFF
 6:
-    mov al, bl
+    mov al, dl
     mov di, si
     shl di, 1
-2:
-    test di, di
-    jz 3f
-    mov dx, ss:[SPR_KEYS - 2 + di]
-    cmp dx, ax
-    jbe 3f
-    mov ss:[SPR_KEYS + di], dx
+    jmp 2f
+    .balign 2
+4:
+    mov [SPR_KEYS + di], dx
     sub di, 2
-    jmp 2b
-3:
-    mov ss:[SPR_KEYS + di], ax
+2:
+    mov dx, [SPR_KEYS - 2 + di]
+    cmp dx, ax
+    ja 4b
+    mov [SPR_KEYS + di], ax
     inc si
     cmp si, 40
     jb 1b
@@ -162,25 +165,25 @@ gbv_sprites_asm:
     xor dx, dx                  // WS sprites written
     xor si, si
 6:
-    mov bx, ss:[SPR_KEYS + si]
+    mov bx, [SPR_KEYS + si]
     shr si, 1
-    mov ss:[SPR_ORDER + si], bl
+    mov [SPR_ORDER + si], bl
     shl si, 1
     cmp bh, 0xFF
     je 8f
-    mov bh, ss:[gbv_oam_hi]
-    mov ax, ss:[0x9E02 + bx]    // AL = tile, AH = flags
+    mov bh, [gbv_oam_hi]
+    mov ax, [0x9E02 + bx]       // AL = tile, AH = flags
     push si
     mov si, ax
     shr si, 12                  // the flags' high half
     mov ah, cs:[spr_attr + si]
     pop si
-    mov cx, ss:[0x9E00 + bx]    // CL = Y, CH = X
-    mov bp, cx
-    and bp, 0xFF
+    mov cx, [0x9E00 + bx]       // CL = Y, CH = X
+    mov bl, cl
+    xor bh, bh
     sub cl, 16
     add ch, 24
-    cmp byte ptr [bp + SPR_TALL], 0
+    cmp byte ptr [bx + SPR_TALL], 0
     jnz 7f
     stosw
     mov ax, cx

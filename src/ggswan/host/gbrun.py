@@ -275,6 +275,7 @@ if CYCLES:
     HOT = bool(os.environ.get('GBRUN_HOT'))     # GBRUN_HOT=1: the blocks most cycles are spent in
     hot = collections.Counter(); hcnt = collections.Counter()
     FUNC = os.environ.get('GBRUN_FUNC')     # GBRUN_FUNC=name: that function's instructions by cycles
+    if FUNC in stub_names: FUNC = 'routine ' + FUNC      # (or a routine of gb_drc_asm.s, by its label)
     # GBRUN_CALLS=1: every function of the plugin by its cycles (its own, not its callees') and the times it is entered, from GBRUN_PROF_FROM
     CALLS = collections.Counter() if os.environ.get('GBRUN_CALLS') else None
     fstart = set(starts)
