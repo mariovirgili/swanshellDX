@@ -114,14 +114,21 @@ gbv_sprites_asm:
     push es
     push ss
     pop es
-    // the 40 sprites, in the order they had a frame ago (few change
-    // places from one frame to the next - but ZAS, which moves them round
-    // the OAM every frame: 195 moves a frame there, and the order of two
-    // frames ago, tried in 186, is no better), each put in its place
-    // among those before it: by X, then by its place in the OAM; the ones
-    // not on the screen last
+    // The sprites on the screen, each put in its place among those
+    // before it: by X, then by its place in the OAM (the Game Boy's
+    // order of drawing). They are taken in the order they had a frame
+    // ago, so few change places. The ones not on the screen are not
+    // sorted at all (patch 193): until then they were, last, and a
+    // sprite that came onto the screen had to be moved past every one of
+    // them - Castlevania II, which has four or five of its forty on the
+    // screen and moves them round the OAM, made 165 moves a frame, half
+    // this routine's time. SPR_ORDER for the next frame: the ones off the
+    // screen first, as they come (written behind the place being read),
+    // then the ones on it, sorted.
     mov word ptr [SPR_KEYS - 2], 0      // (a key below every other: the moves stop there)
     xor si, si
+    xor bp, bp                  // twice the sprites on the screen so far
+    xor cx, cx                  // the ones off it so far
 1:
     mov bh, [gbv_oam_hi]        // (FFh: 9D00h, the OAM as it was before a copy made in the middle of the frame)
     mov bl, [SPR_ORDER + si]
@@ -140,13 +147,11 @@ gbv_sprites_asm:
     cmp byte ptr [bx + SPR_TALL], 0
     jnz 6f
     cmp al, 8
-    ja 6f                       // (8 x 8, above the screen: not seen)
-5:
-    mov ah, 0xFF
+    jbe 5f                      // (8 x 8, above the screen: not seen)
 6:
     mov al, dl
-    mov di, si
-    shl di, 1
+    mov di, bp
+    add bp, 2
     jmp 2f
     .balign 2
 4:
@@ -157,20 +162,37 @@ gbv_sprites_asm:
     cmp dx, ax
     ja 4b
     mov [SPR_KEYS + di], ax
+3:
     inc si
     cmp si, 40
     jb 1b
+    jmp 7f
+5:
+    mov bx, cx
+    mov [SPR_ORDER + bx], dl
+    inc cx
+    jmp 3b
+7:
+    // (the order kept: the ones on the screen after the others)
+    xor si, si
+    mov bx, cx
+    jmp 9f
+8:
+    mov al, [SPR_KEYS + si]
+    mov [SPR_ORDER + bx], al
+    inc bx
+    add si, 2
+9:
+    cmp si, bp
+    jb 8b
 
     mov di, 0x5800
     xor dx, dx                  // WS sprites written
     xor si, si
+    test bp, bp
+    jz 9f
 6:
     mov bx, [SPR_KEYS + si]
-    shr si, 1
-    mov [SPR_ORDER + si], bl
-    shl si, 1
-    cmp bh, 0xFF
-    je 8f
     mov bh, [gbv_oam_hi]
     mov ax, [0x9E02 + bx]       // AL = tile, AH = flags
     push si
@@ -210,8 +232,9 @@ gbv_sprites_asm:
     add dx, 2
 8:
     add si, 2
-    cmp si, 80
+    cmp si, bp
     jb 6b
+9:
     mov ax, dx
     pop es
     pop bp

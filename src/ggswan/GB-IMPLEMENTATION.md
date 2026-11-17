@@ -44,7 +44,7 @@ background and the window, switched at the right lines by the line
 interrupt, with the scroll the program gave each line; the sprites are
 the WonderSwan's.
 
-## Where it is (patch 192)
+## Where it is (patch 193)
 
 The CPU is a recompiler (`gb/ws/gb_drc.c`, `gb_drc_asm.s`; `GB-ABI.md`),
 there is sound (`gb/ws/gb_sound.c`: what it does and does not, at its
@@ -1610,6 +1610,70 @@ asks for everything translated to be forgotten (`drc_key0_break`,
 *Traces* are not done: what they would add to this is the 4% of the
 jumps between blocks in Castlevania II, less elsewhere, for blocks
 written several times over.
+
+**Patch 193.** Gio, after 192: what could still have an effect, and
+should ChatGPT be asked? Asked (reasoning High), with the profile of
+Castlevania II on 192, the costs measured on the console and the list
+of what is done. What it proposed, with its own estimates of a frame:
+the next block laid right after the one that jumps to it, so that the
+jump is not there (1.2-3.0%); the slow way of a memory access put where
+nothing falls into it - before a block's entry, after a jump that is
+always taken - so that the fast way has no jump over it (0.8-2.0%); one
+test of the range for several accesses through HL in a row (0.5-1.8%);
+shorter encodings, 83 for 81 where the constant allows (0.4-1.2%); the
+flags not kept at an exit when the block it goes to writes them first
+(0.3-1.0%); the entries of the blocks most jumped to on even addresses;
+the cycles taken off once for several blocks (not safe for the time);
+DS moved so that [bx] is the Game Boy's address (it says itself: not
+worth the risk). And two remarks: all of it together would not bring
+that game to full speed, so look outside the recompiler too; and is the
+3.7% of a frame spent translating in a game already running a waste?
+
+*Measured before anything was written* (Castlevania II, cycles of a
+frame's 57,806; the translated code is 25,322). The jumps at a block's
+end, which the first proposal removes: 215, 0.4% - not done. The jumps
+of the conditional exits (the loops): 1,276. The other near jumps (to
+the routines, the returns that miss): 1,098. The short jumps over the
+slow way of an access: 1,644, 2.8% - the second proposal's most. `lahf`
+before an exit: 418. The translating: 66 blocks in the 160 frames, every
+one at an address not seen before - the game goes on into new code; not
+a waste. (`GBRUN_E9=1`, `GBRUN_TRLOG=1`.)
+
+*A fault in the profiler.* `GBRUN_JMPS`' "xN" - how many times the
+instructions with an opcode ran - is some nine times too many (the
+cycles, which add up to the frame, are right: a `jmp near` whose cycles
+are 23,677 in 160 frames ran 4,700 times, not the 41,600 counted). I had
+taken "2,457 times a frame" for ZAS's `sub word [gbf_cyc], n` from it
+and told Gio 8% before 190, which gave 1.5; and the shares "by kind"
+given to ChatGPT made the jumps look heavier than they are. From here
+the estimates are in cycles.
+
+*Outside the recompiler.* `gbv_sprites_asm` is 8.5% of that frame,
+4,900 cycles, and by instruction (`GBRUN_FUNC`) half of it is the
+insertion sort's inner loop: 165 moves a frame. The forty sprites were
+all sorted, by X and then by their place in the OAM, the ones not on
+the screen with a key above every other, taken in last frame's order
+so that few would move. Castlevania II has four or five on the screen
+and gives them other places in the OAM from frame to frame: each one
+that came onto the screen sat among the thirty-odd that were not and
+was moved past them all. Now a sprite not on the screen is not put
+among the keys at all: its offset is written into `SPR_ORDER` at once
+(behind the place being read, so nothing not yet read is lost), and the
+ones on the screen follow it there, sorted, when the loop is done. The
+second loop, which writes the WonderSwan's table, goes over the ones on
+the screen only. What is drawn cannot differ - the same keys, sorted
+the same way - and does not: `GBRUN_SPRHASH=1` makes one checksum of the
+table at 5800h as it is at every entry of the routine, and the builds
+before and after give the same in Castlevania II (2,159 tables), Super
+Mario Land 2 (1,439) and ZAS (1,059). (The picture at the end of a run
+is not a check for this: it is taken at another moment of the
+WonderSwan's frame when the speed changes.)
+
+*Measured* (console count, a Game Boy frame, 192 -> 193): Castlevania II 57,806 -> 54,689 (-5.4%), Super Mario Land 32,334 -> 31,288 (-3.2%), R-Type II 34,785 -> 33,844 (-2.7%), Super Mario Land 2 44,550 -> 43,609 (-2.1%), R-Type 57,304 -> 56,498 (-1.4%), Batman 60,387 -> 59,591 (-1.3%), Yoshi 56,566 -> 55,882 (-1.2%), Balloon Kid 68,659 -> 67,897 (-1.1%), ZAS 69,193 -> 68,626 (-0.8%), Donkey Kong Land 87,005 -> 86,522 (-0.6%), Race Drivin' 118,276 -> 117,951 (-0.3%), X 95,005 -> 94,870 (-0.1%).
+24 tests of 24, the memory at each scene's end the same.
+
+`gb_sound_frame` (4.5%, 2,534 cycles a frame) was looked at the same
+way: nothing in it stands out - the dearest instruction is 4%.
 
 He also saw, in 166, Super Mario Land's whole picture jump sideways
 for an instant now and then. Its status bar is a STAT interrupt at a

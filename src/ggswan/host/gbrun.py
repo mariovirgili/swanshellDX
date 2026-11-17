@@ -583,6 +583,16 @@ if os.environ.get('GBRUN_STUBS') and CYCLES and 'drc_stubs' in syms:
         f = max(1, (st['gbframes'] if GBTIME else st['frame']) - PROF_FROM)
         print('routines entered a frame: ' + ', '.join('%s %.0f' % (k, v / f) for k, v in stub_n.most_common(40)))
     _ae5.register(_stub_out)
+if os.environ.get('GBRUN_SPRHASH') and 'gbv_sprites_asm' in syms:
+    # GBRUN_SPRHASH=1: the WonderSwan's sprite table (5800h, 512 bytes) as it is each time gbv_sprites_asm
+    # is entered - what the call before left - all of them in one checksum (the same from two builds: the
+    # same sprites, in the same order, every frame)
+    import atexit as _ae6
+    sprh = [0, 0]
+    def h_sprh(uc, addr, size, _):
+        sprh[0] = zlib.crc32(bytes(uc.mem_read(0x5800, 512)), sprh[0]); sprh[1] += 1
+    uc.hook_add(UC_HOOK_CODE, h_sprh, None, syms['gbv_sprites_asm'], syms['gbv_sprites_asm'])
+    _ae6.register(lambda: print('sprite tables: %d, checksum %08X' % (sprh[1], sprh[0])))
 wrt_hist = None
 if os.environ.get('GBRUN_WRT') and CYCLES:
     # GBRUN_WRT=1: the addresses written through s_wrt, by 800h
@@ -791,6 +801,27 @@ if CYCLES and HOT and hot:
             byop[b_] += n_; nop[b_] += hcnt.get(a_, 0)
         t_ = sum(hot.values())
         print('translated code by opcode: ' + ' '.join('%02X:%.1f%%(x%d)' % (k, 100.0 * v / t_, nop[k]) for k, v in byop.most_common(14)))
+    if os.environ.get('GBRUN_E9'):
+        # GBRUN_E9=1: the jumps from block to block (E9 after "jle +5"), in V30MZ cycles a Game Boy frame
+        # (the cycles are counted right; hcnt is not - it comes out some nine times too many): those at a
+        # block's end (nothing jumps over the exit) and those of a conditional exit; the 20 that cost most
+        fr_ = max(1, (st['gbframes'] if GBTIME else st['frame']) - PROF_FROM)
+        e9 = []; tot_end = tot_side = tot_other = 0
+        for a_, n_ in hot.items():
+            if uc.mem_read(a_, 1)[0] != 0xE9: continue
+            if bytes(uc.mem_read(a_ - 2, 2)) != b'\x7E\x05': tot_other += n_; continue
+            pre = bytes(uc.mem_read(a_ - 16, 16)); side = 0
+            for k in range(0, 13):
+                if 0x70 <= pre[k] <= 0x7F and (a_ - 16 + k + 2 + pre[k + 1]) in (a_ + 30, a_ + 24): side = 1
+            rel = int.from_bytes(uc.mem_read(a_ + 1, 2), 'little'); tgt = (a_ & 0xF0000) + ((a_ + 3 + rel) & 0xFFFF)
+            if side: tot_side += n_
+            else: tot_end += n_
+            e9.append((n_, a_, tgt, side))
+        e9.sort(reverse=True)
+        print('jumps between blocks, cycles a frame: at a block\'s end %.0f, conditional exits %.0f, other E9 %.0f; all translated code %.0f' % (tot_end / fr_, tot_side / fr_, tot_other / fr_, sum(hot.values()) / fr_))
+        print('  the 20 that cost most (cycles a frame, where, to, end or conditional): ' + ' '.join('%.0f:%05X>%05X:%s' % (n_ / fr_, a_, t_, 'c' if sd_ else 'e') for n_, a_, t_, sd_ in e9[:20]))
+        eb_ = sum(n_ for a_, n_ in hot.items() if uc.mem_read(a_, 1)[0] == 0xEB); lahf_ = sum(n_ for a_, n_ in hot.items() if uc.mem_read(a_, 1)[0] == 0x9F and bytes(uc.mem_read(a_ + 1, 2)) == b'\x83\xEF')
+        print('  jmp short (EB) %.0f cycles a frame; lahf just before "sub di, n" %.0f' % (eb_ / fr_, lahf_ / fr_))
     tab = bytes(psram[0x14].raw)
     blocks = sorted((int.from_bytes(tab[i + 6:i + 8], 'little') >> 12, int.from_bytes(tab[i + 4:i + 6], 'little'),
         int.from_bytes(tab[i:i + 2], 'little'), int.from_bytes(tab[i + 2:i + 4], 'little')) for i in range(0, 8192 * 8, 8) if tab[i + 2] | tab[i + 3])
