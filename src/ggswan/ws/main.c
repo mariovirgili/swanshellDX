@@ -2449,8 +2449,10 @@ static __attribute__((unused)) void stats_toggle(void) {
 #endif
 }
 
-// (a state kept and brought back, below: not sgswan's nor sfswan's yet)
-#if !defined(GGSWAN_SF7000) && !defined(GGSWAN_SG1000) && !defined(GGSWAN_HOST)
+// (a state kept and brought back, below. Not sfswan: the code for it is
+// there - ST_PARTS 3, st_src - and was not finished: its stack is under 4
+// KiB, the first try ran over it, and Gio can do without)
+#if !defined(GGSWAN_HOST) && !defined(GGSWAN_SF7000)
 #define ST_STATES 1
 static uint8_t st_req, st_held, st_wait, st_t0, st_note;
 static uint8_t st_used;          // START was held with A or B: not a Start or a Pause for the game when it is let go
@@ -2568,6 +2570,10 @@ GGSWAN_HOST_VISIBLE void read_keys(void) {
                 start_y3 = 0;
             }
         } else {
+#ifdef ST_STATES
+            if (st_used) start_y = 1;
+            st_used = 0;
+#endif
             if (start_held && !start_y)
                 kb_show(!kb_open);
             start_held = 0;
@@ -2650,6 +2656,10 @@ GGSWAN_HOST_VISIBLE void read_keys(void) {
                 start_st = 0;
             }
         } else {
+#ifdef ST_STATES
+            if (st_used) start_y1 = 1;
+            st_used = 0;
+#endif
             if (start_held && !start_y1) g |= GG_KEY_START;
             start_held = 0;
         }
@@ -2869,16 +2879,27 @@ static void exit_check(void) {
  * memory but the stack (main's, which is where this is called from,
  * between two frames), the ROM's banks as they were, everything
  * translated forgotten, the sound's registers written again.
- * Not sgswan (its screen's tables are in a PSRAM bank of their own) nor
- * sfswan (its memory is in PSRAM): to be done.
+ * sgswan (patch 188): the second bank is the screen's tables and the
+ * ROM's bank from 8000h, where its RAM and video memory are; sfswan: a
+ * bank more, its 64 KiB of RAM (st_src).
  */
 #define ST_IRAM_BANK (DRC_CODE_BANKS + 1)
-#define ST_SRAM_BANK (DRC_CODE_BANKS + 2)
+// (the banks after it, one for ggswan, smsswan and sgswan, two for sfswan: st_src)
+#ifdef GGSWAN_SF7000
+#define ST_PARTS 3
+#else
+#define ST_PARTS 2
+#endif
 #define ST_IRAM_SEG (DRC_TABLE_SEG + 0x1000u)
-#define ST_SRAM_SEG (DRC_TABLE_SEG + 0x2000u)
-#define ST_BUF ((uint8_t*) 0xE000)      // 2 KiB the translator uses only while it translates
+#define ST_CHUNK 512                    // (a piece at a time through st_buf: no internal RAM is free of something,
+static uint8_t st_buf[ST_CHUNK];        // and sfswan's stack is 4 KiB: not there)
+#define buf st_buf
 #define ST_MAGIC (0x54530000ul | ((uint32_t) (GGSWAN_PATCH & 0xFF) << 8) | ST_KIND)
-#ifdef GGSWAN_SMS
+#if defined(GGSWAN_SF7000)
+#define ST_KIND 'F'
+#elif defined(GGSWAN_SG1000)
+#define ST_KIND '1'
+#elif defined(GGSWAN_SMS)
 #define ST_KIND 'S'
 #else
 #define ST_KIND 'G'
@@ -2924,19 +2945,17 @@ static uint8_t st_file_write(void) {
     st_path(1);
     if (!st_dot) return 1;
     if (f_open(&st_fp, rom_path, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) { st_path(0); return 1; }
-    for (uint8_t part = 0; part < 2 && !bad; part++) {
-        uint16_t seg = part ? ST_SRAM_SEG : ST_IRAM_SEG;
+    for (uint8_t part = 0; part < ST_PARTS && !bad; part++) {
+        uint16_t seg = ST_IRAM_SEG + part * 0x1000u;
         uint16_t off = 0;
         do {
-            _fmemcpy(ST_BUF, MK_FP(seg, off), 0x800);
-            if (f_write(&st_fp, ST_BUF, 0x800, &bw) != FR_OK || bw != 0x800) bad = 1;
-            off += 0x800;
+            _fmemcpy(buf, MK_FP(seg, off), ST_CHUNK);
+            if (f_write(&st_fp, buf, ST_CHUNK, &bw) != FR_OK || bw != ST_CHUNK) bad = 1;
+            off += ST_CHUNK;
         } while (off && !bad);
     }
     if (f_close(&st_fp) != FR_OK) bad = 1;
     st_path(0);
-    // (ST_BUF as it was: it is in the copy)
-    _fmemcpy(ST_BUF, MK_FP(ST_IRAM_SEG, (uint16_t) ST_BUF), 0x800);
     return bad;
 }
 // at the start: the file, if there is one and it is this build's
@@ -2947,18 +2966,46 @@ static void st_file_read(void) {
     st_path(1);
     if (!st_dot) return;
     if (f_open(&st_fp, rom_path, FA_READ) != FR_OK) { st_path(0); return; }
-    for (uint8_t part = 0; part < 2 && !bad; part++) {
+    for (uint8_t part = 0; part < ST_PARTS && !bad; part++) {
         uint16_t off = 0;
         do {
-            if (f_read(&st_fp, ST_BUF, 0x800, &br) != FR_OK || br != 0x800) { bad = 1; break; }
-            if (!part && !off && *(uint32_t*) ST_BUF != ST_MAGIC) { bad = 1; break; }
-            drc_psram_put(part ? ST_SRAM_BANK : ST_IRAM_BANK, off, ST_BUF, 0x800);
-            off += 0x800;
+            if (f_read(&st_fp, buf, ST_CHUNK, &br) != FR_OK || br != ST_CHUNK) { bad = 1; break; }
+            if (!part && !off) {
+                uint32_t m;
+                memcpy(&m, buf, 4);
+                if (m != ST_MAGIC) { bad = 1; break; }
+            }
+            drc_psram_put(ST_IRAM_BANK + part, off, buf, ST_CHUNK);
+            off += ST_CHUNK;
         } while (off);
     }
     f_close(&st_fp);
     st_path(0);
     if (bad) st_mark(0);
+}
+// what is kept outside the internal RAM, 64 KiB of it, by its place in
+// the state's second bank: the RAM window there (st_src). ggswan,
+// smsswan: the SRAM (the cartridge's RAM). sgswan has nothing in the
+// SRAM: the first half is the bank of the screen's tables (sg_video.inc:
+// they end before 3000h), the second the ROM's bank from 8000h - the RAM
+// of a cartridge that has some, then the TMS9918A's video memory
+// (sfswan, two banks: the SF-7000's 64 KiB of RAM, then the bank of the
+// screen's tables and the video memory. The disk is not kept: what a
+// program wrote to it after the state stays written)
+static void st_src(uint8_t part, uint16_t off) {
+#if defined(GGSWAN_SF7000)
+    (void) off;
+    outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_ENABLE);
+    outportw(WS_CART_EXTBANK_RAM_PORT, GG_PSRAM_FIRST_BANK + part - 1);
+#elif defined(GGSWAN_SG1000)
+    (void) part;
+    outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_ENABLE);
+    outportw(WS_CART_EXTBANK_RAM_PORT, off >= 0x8000 ? GG_PSRAM_FIRST_BANK : SG_TABLE_BANK);
+#else
+    (void) part; (void) off;
+    outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_DISABLE);
+    outportw(WS_CART_EXTBANK_RAM_PORT, 0);
+#endif
 }
 static void psg_output(void);
 __attribute__((noinline)) static void state_save(void) {
@@ -2966,15 +3013,15 @@ __attribute__((noinline)) static void state_save(void) {
     drc_psram_put(ST_IRAM_BANK, 0x0040, (const uint8_t*) 0x0040, 0xFFC0);
     // the SRAM and the PSRAM are both reached through the RAM window: 2 KiB
     // at a time through the internal RAM
-    uint16_t off = 0;
-    do {
-        outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_DISABLE);
-        outportw(WS_CART_EXTBANK_RAM_PORT, 0);
-        _fmemcpy(ST_BUF, MK_FP(0x1000, off), 0x800);
-        drc_psram_put(ST_SRAM_BANK, off, ST_BUF, 0x800);
-        off += 0x800;
-    } while (off);
-    _fmemcpy(ST_BUF, MK_FP(ST_IRAM_SEG, (uint16_t) ST_BUF), 0x800);
+    for (uint8_t part = 1; part < ST_PARTS; part++) {
+        uint16_t off = 0;
+        do {
+            st_src(part, off);
+            _fmemcpy(buf, MK_FP(0x1000, off), ST_CHUNK);
+            drc_psram_put(ST_IRAM_BANK + part, off, buf, ST_CHUNK);
+            off += ST_CHUNK;
+        } while (off);
+    }
     ws_ram_window_restore();
     st_mark(ST_MAGIC);
     ia16_enable_irq();
@@ -2985,27 +3032,45 @@ __attribute__((noinline)) static void state_save(void) {
     if (st_file_write()) st_show("FILE");           // (kept in memory, not on the card)
     outportb(WS_SOUND_CH_CTRL_PORT, snd);
 }
+// (the internal RAM from a to b as it was kept)
+static void st_back(uint16_t a, uint16_t b) {
+    if (b > a) _fmemcpy(MK_FP(0x0000, a), MK_FP(ST_IRAM_SEG, a), b - a);
+}
 __attribute__((noinline)) static void state_load(void) {
     if (*ST_MARK != ST_MAGIC) {
         st_show("NONE");
         return;
     }
     ia16_disable_irq();
-    FATFS keep = fs;                    // (FatFs's volume is the card's as it is now, not as it was)
-    uint16_t off = 0;
-    do {
-        _fmemcpy(ST_BUF, MK_FP(ST_SRAM_SEG, off), 0x800);
-        outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_DISABLE);
-        outportw(WS_CART_EXTBANK_RAM_PORT, 0);
-        _fmemcpy(MK_FP(0x1000, off), ST_BUF, 0x800);
-        off += 0x800;
-    } while (off);
+    for (uint8_t part = 1; part < ST_PARTS; part++) {
+        uint16_t off = 0;
+        do {
+            _fmemcpy(buf, MK_FP(ST_IRAM_SEG + part * 0x1000u, off), ST_CHUNK);
+            st_src(part, off);
+            _fmemcpy(MK_FP(0x1000, off), buf, ST_CHUNK);
+            off += ST_CHUNK;
+        } while (off);
+    }
     // (the stack, from the end of the C data to 4000h, is this function's and main's)
-    _fmemcpy(MK_FP(0x0000, 0x0040), MK_FP(ST_IRAM_SEG, 0x0040), (uint16_t) __wf_heap_start - 0x0040);
+    // (and but FatFs's volume, which is the card's as it is now, and the
+    // piece being copied through)
+    {
+        uint16_t a = (uint16_t) &fs, an = sizeof(fs), b = (uint16_t) st_buf, bn = sizeof(st_buf);
+        if (a > b) { uint16_t t = a; a = b; b = t; t = an; an = bn; bn = t; }
+        st_back(0x0040, a);
+        st_back(a + an, b);
+        st_back(b + bn, (uint16_t) __wf_heap_start);
+    }
     _fmemcpy(MK_FP(0x0000, 0x4000), MK_FP(ST_IRAM_SEG, 0x4000), 0xC000);
-    fs = keep;
-    gg_remap();
-    ws_ram_window_restore();
+    // (the ROM's windows by the mapper's registers; the RAM window as it
+    // was when the state was kept - sgswan's is on the video memory, which
+    // the mapper knows nothing of)
+    {
+        uint8_t wf = ram_window_flash;
+        uint16_t wb = ram_window_bank;
+        gg_remap();
+        ram_window_set(wf, wb);
+    }
     drc_flush_request = 1;
     psg_dirty = 0xFF;
     psg_output();
@@ -3017,6 +3082,7 @@ __attribute__((noinline)) static void state_load(void) {
     st_show("LOAD");
 }
 #endif
+#undef buf
 
 static void frame_step(void) {
     exit_check();

@@ -310,6 +310,7 @@ def sd(name):
         # (WSRUN_SYS=file: what sfswan finds at /NILESWAN/SF7000.SF, its
         # system disk; anything else opened is the ROM or disk given)
         path = bytes(uc.mem_read(uc.reg_read(UC_X86_REG_DX), 64)).split(b'\0')[0]
+        if os.environ.get('WSRUN_STDBG'): print('f_open', path, uc.reg_read(UC_X86_REG_CX) & 255)
         if path.upper().endswith(b'.ST0'):
             # (a state's file: kept here, and in WSRUN_STATE=file from one run to the next)
             if uc.reg_read(UC_X86_REG_CX) & 2:
@@ -344,16 +345,33 @@ def sd(name):
     uc.reg_write(UC_X86_REG_AX, 0); retf()
 SD = {syms[n]: n for n in ('f_mount', 'f_open', 'f_read', 'f_close', 'f_write') if n in syms}
 FAIL, FRAME, TRANS = syms['fail'], syms['gg_run_frame'], syms['drc_translate']
+# (a state kept and brought back: the frames; WSRUN_STCMP=1: what is not
+# as it was when kept, at the first frame run after it is brought back)
+st_snap = [None, 0]
+def h_state(uc, a, sz, n):
+    print('%s at frame %d' % (n, st['frame']))
+    if n == 'state_save': st_snap[0] = (bytes(uc.mem_read(0, 0x10000)), bytes(psram[0].raw), bytes(psram[1].raw), bytes(sram[0].raw), bytes(ports))
+    else: st_snap[1] = 1
+def st_compare():
+    st_snap[1] = 0
+    now = (bytes(uc.mem_read(0, 0x10000)), bytes(psram[0].raw), bytes(psram[1].raw), bytes(sram[0].raw), bytes(ports))
+    for nm, a, b in zip(('internal RAM', 'PSRAM bank 0', 'PSRAM bank 1', 'SRAM', 'ports'), st_snap[0], now):
+        d = [i for i in range(len(a)) if a[i] != b[i]]
+        runs = []
+        for i in d:
+            if runs and i - runs[-1][1] <= 8: runs[-1][1] = i
+            else: runs.append([i, i])
+        print('  %s: %d bytes differ: %s' % (nm, len(d), ' '.join('%04X-%04X' % (x, y) for x, y in runs[:40])))
 for _n in ('state_save', 'state_load'):
     if _n in syms:
-        uc.hook_add(UC_HOOK_CODE, lambda uc, a, sz, n: print('%s at frame %d' % (n, st['frame'])), _n, syms[_n], syms[_n])
+        uc.hook_add(UC_HOOK_CODE, h_state, _n, syms[_n], syms[_n])
 KEYSYM = syms['gg'] + 0   # (gg.keys: found below)
 
 trail = collections.deque(maxlen=40)
 jst = [0, 0, 0, 0]   # taken-jump extra, the address after it, the last address, a jump
 # WSRUN_HW=1: the cycles as the console takes them (cost_hw)
 HW = bool(os.environ.get('WSRUN_HW'))
-WATCH = dict((syms[n], n) for n in os.environ.get('WSRUN_WATCH', '').split(',') if n in syms)
+WATCH = dict((syms[n], n) for n in os.environ.get('WSRUN_WATCH', '').split(',') if n and n in syms)
 long_n = collections.Counter(); long_max = collections.Counter(); rep_run = [0, 0]
 LONGX = os.environ.get('WSRUN_LONGX'); long_hist = collections.Counter()   # (WSRUN_LONGX=1: those REPs by length and frame)
 def blk_name(addr):
@@ -402,12 +420,17 @@ def h_code(uc, addr, size, ud):
         st['f0'] = st['cyc']
         st['frame'] += 1
         fr = st['frame']
+        if st_snap[1] and st_snap[0] and os.environ.get('WSRUN_STCMP'): st_compare()
         if fr in KEYS: pending_keys[0] = KEYS[fr]
         # WSRUN_POKE=symbol:hex[,symbol:hex]: bytes written at the start
         # of every frame (what a key of the WonderSwan would set)
         for pk in os.environ.get('WSRUN_POKE', '').split(','):
             if pk:
                 uc.mem_write(syms[pk.split(':')[0]], bytes([int(pk.split(':')[1], 16)]))
+        # WSRUN_POKE1=frame:symbol:hex: a byte written once, at that frame's start
+        for pk in os.environ.get('WSRUN_POKE1', '').split(','):
+            if pk and int(pk.split(':')[0]) == fr:
+                uc.mem_write(syms[pk.split(':')[1]], bytes([int(pk.split(':')[2], 16)]))
         uc.mem_write(syms['gg'] + 0x6C, bytes([pending_keys[0]]))   # gg.keys (read_keys: none here)
         if fr in WS_KEYS: ws_keys[0] = WS_KEYS[fr]
         if os.environ.get('WSRUN_STDBG') and 'st_held' in syms and fr % 10 == 0: print('ST', fr, ws_keys[0], [uc.mem_read(syms[n], 1)[0] for n in ('st_held', 'st_req', 'st_wait', 'st_t0', 'vblanks')])
@@ -704,7 +727,7 @@ while st['frame'] < FRAMES:
         continue
     raise SystemExit('stopped at %04X:%04X (%s)' % (cs, ip, fname(a)))
 import zlib as _z
-print('Z80: pc %04X  work RAM %08X  video RAM %08X  state file %s' % (int.from_bytes(uc.mem_read(PCSYM, 2), 'little'), _z.crc32(bytes(uc.mem_read(0x8000, 0x2000))), _z.crc32(bytes(uc.mem_read(0x4000, 0x4000))), len(state_file[0]) if state_file[0] is not None else 'none'))
+print('Z80: pc %04X  work RAM %08X  video RAM %08X  bank 0 from C000h %08X  bank 0 %08X  state file %s' % (int.from_bytes(uc.mem_read(PCSYM, 2), 'little'), _z.crc32(bytes(uc.mem_read(0x8000, 0x2000))), _z.crc32(bytes(uc.mem_read(0x4000, 0x4000))), _z.crc32(bytes(psram[0].raw[0xC000:])), _z.crc32(bytes(psram[0].raw)), len(state_file[0]) if state_file[0] is not None else 'none'))
 if STATE_F and state_file[0] is not None: open(STATE_F, 'wb').write(bytes(state_file[0]))
 if STACK:
     m = bytes(uc.mem_read(STACK, 0x3E00 - STACK))
