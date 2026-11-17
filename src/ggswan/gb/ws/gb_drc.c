@@ -575,13 +575,35 @@ static uint8_t operand(uint16_t a, uint8_t n) {
     return dyn;
 }
 
+// N at a jump to code in ROM: is it written there before anything reads
+// it? What writes H writes N, and what reads N (DAA, PUSH AF) reads H: the
+// table has it. Then drc_n need not be stored before the jump ("mov byte
+// [drc_n], n" is three cycles and a half on the console at nearly every
+// exit). An interrupt taken between the two blocks pushes and pops the old
+// N with AF, and the code there then writes it all the same.
+static uint8_t n_dead(uint16_t a) {
+    for (uint8_t k = 0; k < 16; k++) {
+        if (a >= 0x7FFE) return 0;
+        uint8_t op = rb(a);
+        uint8_t f = op_flags(op, op == 0xCB ? rb(a + 1) : 0);
+        if (f & RD(FH)) return 0;
+        if (f & FH) return 1;
+        if (f & F_END) return 0;
+        if ((f & F_OUT) && op != 0xCB) {
+            // (a conditional jump, call or return: the other way is not looked at)
+            if ((op & 0xE7) == 0x20 || (op >= 0xC0 && (op & 0xE7) == 0xC0) || (op & 0xE7) == 0xC2 || (op & 0xE7) == 0xC4) return 0;
+        }
+        a += op == 0xCB ? 2 : (op_inf[op][1] & 3);
+    }
+    return 0;
+}
 static uint16_t loop_body;  // in a block that starts with a call for a whole loop: where the loop's own code starts (0: no such call)
 // leave for a known address; link: the dispatcher may join the jump to
 // the block there
 static void exit_to(uint16_t target, uint8_t extra) {
     mat();
-    nflush();
     uint8_t link = in_ram ? target == blk_pc : (target < 0x4000 || (blk_pc >= 0x4000 && target >= 0x4000 && target < 0x8000));
+    if (!(link && !in_ram && !after_ei && nst >= 0 && nst != nmem && n_dead(target))) nflush();
     if (after_ei) {
         if (cyc + extra) { E(0x83); E(0x2E); EW(ADDR(gbf_cyc)); E(cyc + extra); }
         E(0xC7); E(0x06); EW(ADDR(gb) + GB_PC); EW(target);
@@ -656,6 +678,11 @@ static uint16_t range_check(uint8_t hl) {
 static uint16_t slow_starts(uint16_t j, uint8_t hl, uint8_t wr) {
     E(0xEB); E(0);
     uint16_t done = code_top;
+    // (the pieces written apart so far, if they are few, here, where
+    // nothing falls into them: put after the access they were jumped over
+    // by a jump the access' own jump landed on - ten cycles for four at
+    // every read after a PUSH)
+    if (cold_n && !in_cold && cold_used <= 32) cold_flush(0);
     uint16_t fast = j + (hl ? 5 : 6);
     code[fast - 1] = code_top - fast;
     E(0x81); E(hl ? 0xFB : 0xFE); EW(0xFF80);       // cmp bx/si, FF80h
@@ -710,6 +737,40 @@ static uint16_t rom_open(uint8_t hl) {
     return j;
 }
 #define rom_else cart_else
+
+// An access through BX (hl) or SI that may be in the cartridge's RAM, for a
+// program that keeps its variables there (Super Mario Land 2: 135 reads
+// and 58 writes a frame through the routines, some 57 cycles each on the
+// console against 30 here): "is it A000h-BFFFh, plain RAM and enabled; ES
+// = its segment", the caller's instruction with an ES prefix follows, then
+// cartp_else and the routine's call for the rest. Only once the routines
+// have counted enough such accesses (drc_cartp, gb_drc_asm.s): it is 26
+// bytes at every access through a pointer.
+uint8_t drc_cartp, drc_cart_req;
+uint16_t drc_cart_n = 3000;
+static uint16_t cartp_j[2];
+static uint16_t cartp_open(uint8_t hl) {
+    if (hl) { E(0x80); E(0xFF); E(0xA0); } else { E(0x81); E(0xFE); EW(0xA000); }   // cmp bh, A0h / cmp si, A000h
+    E(0x72); E(0);                                  // jb: not it
+    uint16_t j1 = code_top;
+    if (hl) { E(0x80); E(0xFF); E(0xC0); } else { E(0x81); E(0xFE); EW(0xC000); }
+    E(0x73); E(0);                                  // jae: not it
+    uint16_t j2 = code_top;
+    E(0x80); E(0x3E); EW(ADDR(drc_ram_ok)); E(1);   // cmp byte [drc_ram_ok], 1
+    E(0x75); E(0);                                  // jne: not it
+    uint16_t j3 = code_top;
+    E(0x8E); E(0x06); EW(ADDR(drc_ram_seg));        // mov es, [drc_ram_seg]
+    cartp_j[0] = j1; cartp_j[1] = j2;
+    return j3;
+}
+static uint16_t cartp_else(uint16_t j3) {
+    E(0xEB); E(0);
+    uint16_t done = code_top;
+    code[j3 - 1] = code_top - j3;
+    code[cartp_j[0] - 1] = code_top - cartp_j[0];
+    code[cartp_j[1] - 1] = code_top - cartp_j[1];
+    return done;
+}
 
 // r (an x86 8 bit register) = the byte at HL (hl) or at SI
 static void read_to(uint8_t r, uint8_t hl) {
@@ -767,6 +828,12 @@ static void read_to(uint8_t r, uint8_t hl) {
     uint16_t rj = rom_open(hl);
     E(0x26); E(0x8A); E(r << 3 | (hl ? 7 : 4));     // mov r, es:[bx or si]
     uint16_t rdone = rom_else(rj);
+    uint16_t kdone = 0;
+    if (drc_cartp && !cdone) {
+        uint16_t k = cartp_open(hl);
+        E(0x26); E(0x8A); E(r << 3 | (hl ? 7 : 4)); // mov r, es:[bx or si]
+        kdone = cartp_else(k);
+    }
     if (hl) { E(0x89); E(0xDE); }               // mov si, bx
     if (r == 0) {
         call_stub(ST_RD);
@@ -777,6 +844,7 @@ static void read_to(uint8_t r, uint8_t hl) {
     SLOW_ENDS(done);
     SLOW_ENDS(rdone);
     if (cdone) SLOW_ENDS(cdone);
+    if (kdone) SLOW_ENDS(kdone);
 }
 
 // the byte at HL (hl) or at SI = r, or = imm when r is FFh; next: the
@@ -803,7 +871,10 @@ static void write_from(uint8_t r, uint8_t imm, uint8_t hl, uint16_t next) {
         return;
     }
     mat();
-    nflush();
+    // (N is stored where the routine is called, which may leave the block:
+    // the write to the work RAM itself does not need it - three cycles and
+    // a half at every write through a pointer)
+    if ((COLD_MASK & 2) && !cold_off && !cur_cart) nflush();
     uint16_t cdone = 0;
     if (cur_cart) {
         uint16_t cj = cart_open();
@@ -846,6 +917,15 @@ static void write_from(uint8_t r, uint8_t imm, uint8_t hl, uint16_t next) {
         E(0xC6); E(0x80 | (hl ? 7 : 4)); EW(0xA000); E(imm);
     }
     uint16_t done = slow_starts(j, hl, 1);
+    uint16_t kdone = 0;
+    if (drc_cartp && !cdone) {
+        uint16_t k = cartp_open(hl);
+        E(0x26);
+        if (r != 0xFF) { E(0x88); E(r << 3 | (hl ? 7 : 4)); }   // mov es:[bx or si], r
+        else { E(0xC6); E(hl ? 7 : 4); E(imm); }
+        kdone = cartp_else(k);
+    }
+    if (nst >= 0 && nst != nmem) { E(0xC6); E(0x06); EW(ADDR(drc_n)); E(nst ? 0x40 : 0); }  // (nmem as it was: the other ways have not stored it)
     if (r != 0xFF) {
         E(0x88); E(0x06 | r << 3); EW(ADDR(drc_tmp));
     } else {
@@ -856,6 +936,7 @@ static void write_from(uint8_t r, uint8_t imm, uint8_t hl, uint16_t next) {
     EW(next);
     SLOW_ENDS(done);
     if (cdone) SLOW_ENDS(cdone);
+    if (kdone) SLOW_ENDS(kdone);
 }
 
 // A = A op x, the Game Boy's operation number (ADD ADC SUB SBC AND XOR OR
@@ -2127,6 +2208,7 @@ __attribute__((noinline)) static blk_t __far *translate(uint16_t pc, uint16_t ke
             // the forms of it met since (gbd_run_frame), the bytes
             // translated, then their number, before the code
             uint8_t len = i_pc[n_ins] - pc;
+            if ((code_top + RAM_HEAD + len + 1) & 1) E(0x90);   // (the block's code at an even address: see below)
             ram_direct = (pc >= 0xC000 && pc <= 0xE000 - len) || (pc >= 0xFF80 && pc <= 0xFFFF - len);
             memset(tmpl_can, 0, 16);
             code_top += RAM_HEAD - 1;
@@ -2134,6 +2216,9 @@ __attribute__((noinline)) static blk_t __far *translate(uint16_t pc, uint16_t ke
             for (uint8_t i = 0; i < len; i++) E(rb(pc + i));
             E(len);
         }
+        // (a jump to an odd address takes the console a cycle more: every
+        // block starts at an even one)
+        if (!in_ram && (code_top & 1)) E(0x90);
         {
             blk_t nb;
             nb.pc = pc;
@@ -2195,6 +2280,19 @@ void gbd_init(void) {
 
 void gbd_run_frame(void) {
     gb.frame_done = 0;
+    if (!drc_cartp) {
+        // (the program keeps going to the cartridge's RAM through
+        // pointers, 3000 times in 32 frames: everything again, with that
+        // in the blocks' own code. Donkey Kong Land gets to 3000 in half a
+        // minute of play, less than once a frame: not for it - the blocks
+        // would be longer for nothing and translating them all again is a
+        // third of a second.)
+        static uint8_t fr;
+        if (drc_cart_req) {
+            drc_cartp = 1;
+            flush();
+        } else if (!(++fr & 31)) drc_cart_n = 3000;
+    }
     while (!gb.frame_done) {
         // (the event that ends the frame may have been done by the routine
         // that leaves a block, gb_drc_asm.s, s_exit: it comes back here
@@ -2344,7 +2442,18 @@ void gbd_run_frame(void) {
             if (drc_link) {
                 // the exit just taken, joined to this block
                 uint8_t site[5];
-                if (drc_link_seg == b->seg) {
+                int16_t near8 = (int16_t) (b->off - drc_link);
+                if (drc_link_seg == b->seg && near8 >= -128 && near8 <= 127) {
+                    // (near enough for a conditional jump to reach: "jle
+                    // slow; jmp near there" becomes "jg there; jmp short
+                    // slow", four cycles for six on the console, three for
+                    // five as Mednafen counts: the loops, mostly)
+                    site[0] = 0x7F;
+                    site[1] = (uint8_t) near8;
+                    site[2] = 0xEB;
+                    site[3] = 0x03;
+                    gbd_lin_put(drc_link_seg, drc_link - 2, site, 4);
+                } else if (drc_link_seg == b->seg) {
                     uint16_t rel = b->off - (drc_link + 3);
                     site[1] = rel & 0xFF;
                     site[2] = rel >> 8;

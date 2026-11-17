@@ -160,6 +160,65 @@ def cost_m(code, cx, first):
     if op == 0xF4: return c + 1, 0
     return c + 4, 0                                                  # F5, F8-FD
 
+# The cycles on the console (a SwanCrystal, measured 2026-11-16 with gbswan's
+# GB_HWTEST bench, the same from internal RAM and from the cartridge's): an
+# instruction takes what it takes to run or to be fetched (two bytes a cycle),
+# whichever is longer, and one cycle more for each access to memory (two for a
+# word at an odd address); a jump taken three more than its fetch, and one
+# more to an odd address; a port 8 (10 one of the cartridge's if it waits,
+# port 60h bit 3, which the menu sets unless "Fast SRAM"). Measured: nop 1,
+# mov al,[bx] 2, mov ax,[bx+1] 3.5, es: mov al,[bx] 2.5, push + pop 3,
+# shl ax,4 3, jmp short 4/5, jmp near 5/6, call + ret 15-16, out 8/10.
+# Not modelled: the cycle more of an access through the RAM window when the
+# cartridge waits (port 60h bit 1), and a word at an odd address is seen only
+# where the address is in the instruction.
+JUMPS = (0xE8, 0xE9, 0xEA, 0xEB, 0xC2, 0xC3, 0xCA, 0xCB, 0xCF, 0x9A)
+STACK = {0x06: 1, 0x0E: 1, 0x16: 1, 0x1E: 1, 0x07: 1, 0x17: 1, 0x1F: 1, 0x68: 1, 0x6A: 1, 0x9C: 1, 0x9D: 1,
+         0xE8: 1, 0xC2: 1, 0xC3: 1, 0x9A: 2, 0xCA: 2, 0xCB: 2, 0xCD: 3, 0xCF: 3, 0xC9: 1, 0xD7: 1}
+_mdd = []
+HWP = {}      # an instruction's cycles more than it takes to run, for its length, and its accesses to memory
+def accesses(code, op, m):
+    """the accesses to memory of an instruction (not a string one)"""
+    if not _mdd:
+        import capstone as _cs
+        d = _cs.Cs(_cs.CS_ARCH_X86, _cs.CS_MODE_16); d.detail = True; _mdd.append(d)
+    n = STACK.get(op, 0)
+    if op == 0xFF: n += (0, 0, 1, 2, 0, 0, 1, 0)[m >> 3 & 7]
+    if op == 0x8D: return n
+    try: ins = next(_mdd[0].disasm(code, 0))
+    except StopIteration: return n
+    for o in ins.operands:
+        if o.type == 3:     # (memory)
+            k = (1 if o.access & 1 else 0) + (1 if o.access & 2 else 0) or 1
+            if o.size == 2 and o.mem.base == 0 and o.mem.index == 0 and o.mem.disp & 1: k *= 2
+            n += k
+    return n
+def cost_hw(code, cx, first):
+    """(cycles, extra if the jump is taken, 1: a jump)"""
+    n = len(code); i = 0
+    while i < n and code[i] in (0x26, 0x2E, 0x36, 0x3E, 0xF2, 0xF3): i += 1
+    if i >= n: return n / 2, 0, 0
+    op = code[i]; m = code[i + 1] if i + 1 < n else 0xC0
+    if op in STR_CYC:
+        c, ex = cost_m(code, cx, first)
+        return c, 0, 0
+    if 0x50 <= op < 0x60: return 1.5, 0, 0
+    if op == 0x90: return 1, 0, 0
+    if 0x70 <= op < 0x80 or 0xE0 <= op < 0xE4: return max(1, n / 2), 3, 1
+    if op == 0xEB: return 4, 0, 1
+    if op == 0xE9: return 5, 0, 1
+    if op == 0xE8: return 8, 0, 1
+    if op in (0xC2, 0xC3): return 7, 0, 1
+    if 0xE4 <= op < 0xE8: return (8 + 2 * HWWAIT if m >= 0xC0 else 8), 0, 0
+    if 0xEC <= op < 0xF0: return 8, 0, 0
+    # (what the instruction takes between registers, and its accesses)
+    r = bytearray(code[i:i + 2])
+    if len(r) > 1: r[1] |= 0xC0
+    c, ex = cost_m(bytes(r), cx, first)
+    HWP[code] = (max(0, n / 2 - c), accesses(code, op, m))
+    return max(c, n / 2) + accesses(code, op, m), 0, 1 if op in JUMPS or (op == 0xFF and (m >> 3 & 7) in (2, 3, 4, 5)) else 0
+HWWAIT = 0 if os.environ.get('WSRUN_FAST') or os.environ.get('GBRUN_FAST') else 1     # WSRUN_FAST=1, GBRUN_FAST=1: the cartridge does not wait
+
 def cost(code):
     c = cost_cache.get(code)
     if c is not None: return c
@@ -268,7 +327,9 @@ FAIL, FRAME, TRANS = syms['fail'], syms['gg_run_frame'], syms['drc_translate']
 KEYSYM = syms['gg'] + 0   # (gg.keys: found below)
 
 trail = collections.deque(maxlen=40)
-jst = [0, 0, 0]   # taken-jump extra, the address after it, the last address
+jst = [0, 0, 0, 0]   # taken-jump extra, the address after it, the last address, a jump
+# WSRUN_HW=1: the cycles as the console takes them (cost_hw)
+HW = bool(os.environ.get('WSRUN_HW'))
 WATCH = dict((syms[n], n) for n in os.environ.get('WSRUN_WATCH', '').split(',') if n in syms)
 long_n = collections.Counter(); long_max = collections.Counter(); rep_run = [0, 0]
 LONGX = os.environ.get('WSRUN_LONGX'); long_hist = collections.Counter()   # (WSRUN_LONGX=1: those REPs by length and frame)
@@ -338,6 +399,12 @@ def h_code(uc, addr, size, ud):
         prev_addr[0] = addr
     if ROUGH:
         c = cost(bytes(uc.mem_read(addr, size)))
+    elif HW:
+        c, ex, fl = cost_hw(bytes(uc.mem_read(addr, size)), uc.reg_read(UC_X86_REG_CX), jst[2] != addr)
+        if addr != jst[1]:
+            if jst[0]: c += jst[0]
+            if (jst[0] or jst[3]) and addr & 1: c += 1
+        jst[0] = ex; jst[1] = addr + size; jst[2] = addr; jst[3] = fl
     else:
         c, ex = cost_m(bytes(uc.mem_read(addr, size)), uc.reg_read(UC_X86_REG_CX), jst[2] != addr)
         if jst[0] and addr != jst[1]: c += jst[0]     # the jump before this one was taken

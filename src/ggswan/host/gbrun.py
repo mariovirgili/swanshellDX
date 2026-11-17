@@ -20,6 +20,14 @@ end)  GBRUN_SHOTS=n,n,...  GBRUN_LINE=instructions a line (default
 80: about 256 cycles; only how fast the plugin seems depends on it)
 GBRUN_CYCLES=1: count V30MZ cycles (Mednafen's costs, as wsrun.py) in
 place of instructions: slow, for measuring.
+GBRUN_HW=1: the cycles as the console takes them (wsrun.py, cost_hw:
+measured on a SwanCrystal; about a third more than Mednafen's), and what
+is to be believed for speed since patch 185; GBRUN_FAST=1 with it: the
+cartridge's ports without their wait. GBRUN_KIND=1 with it: the cycles of
+the translated code and of its routines by what they go on (fetching,
+accesses, jumps, the cycle count, N). GBRUN_WRT=1: the addresses the
+routines s_wrt and s_rd are called for. GBRUN_OAMSAME=1: how many times
+the sprites are rebuilt with the OAM unchanged.
 Prints, at the end and every 75 frames: Game Boy frames shown, and
 instructions (or cycles) run a Game Boy frame; with GBRUN_CYCLES, where
 the cycles went."""
@@ -35,7 +43,8 @@ FHASH = open(os.environ['GBRUN_FHASH'], 'w') if os.environ.get('GBRUN_FHASH') el
 KEYS = dict((int(k.split(':')[0]), int(k.split(':')[1], 16)) for k in sys.argv[5].split(',')) if len(sys.argv) > 5 and sys.argv[5] else {}
 SHOTS = set(int(x) for x in os.environ.get('GBRUN_SHOTS', str(FRAMES - 1)).split(',') if x)
 LINE_INSNS = int(os.environ.get('GBRUN_LINE', '80'))
-CYCLES = bool(os.environ.get('GBRUN_CYCLES'))
+HW = bool(os.environ.get('GBRUN_HW'))     # GBRUN_HW=1: the cycles as the console takes them (wsrun.py's cost_hw), not Mednafen's
+CYCLES = bool(os.environ.get('GBRUN_CYCLES')) or HW
 UNIT = 'cycles' if CYCLES else 'instructions'
 GBTIME = bool(os.environ.get('GBRUN_GBTIME'))   # frames, keys, GBRUN_PROF_FROM count Game Boy frames
 PROF_FROM = int(os.environ.get('GBRUN_PROF_FROM', '0'))    # (the cycles counted by function from this frame on)
@@ -270,7 +279,9 @@ if CYCLES:
     CALLS = collections.Counter() if os.environ.get('GBRUN_CALLS') else None
     fstart = set(starts)
     fhot = collections.Counter(); fcnt = collections.Counter()
-    jst = [0, 0, 0]
+    jst = [0, 0, 0, 0]
+    KIND = collections.Counter() if os.environ.get('GBRUN_KIND') and HW else None
+    K_N = b'\xC6\x06' + (syms.get('drc_n', 0) & 0xFFFF).to_bytes(2, 'little'); K_CYC = b'\x83\x2E' + (syms.get('gbf_cyc', 0) & 0xFFFF).to_bytes(2, 'little'); K_CYC2 = b'\x83\x3E' + K_CYC[2:]
     ccache = {}
     def h_cyc(uc, addr, size, _):
         # (Unicorn drops what a hook raises: say it)
@@ -281,11 +292,33 @@ if CYCLES:
         code = bytes(uc.mem_read(addr, size))
         k = ccache.get(code)
         if k is None or code[0] in (0xF2, 0xF3):
-            k = cost_m(code, uc.reg_read(UC_X86_REG_CX), jst[2] != addr)
+            k = cost_hw(code, uc.reg_read(UC_X86_REG_CX), jst[2] != addr) if HW else cost_m(code, uc.reg_read(UC_X86_REG_CX), jst[2] != addr) + (0,)
             if code[0] not in (0xF2, 0xF3): ccache[code] = k
-        c, ex = k
-        if jst[0] and addr != jst[1]: c += jst[0]
-        jst[0] = ex; jst[1] = addr + size; jst[2] = addr
+        c, ex, fl = k
+        if addr != jst[1]:
+            if jst[0]: c += jst[0]
+            if HW and (jst[0] or jst[3]) and addr & 1: c += 1
+        if KIND is not None:
+            # GBRUN_KIND=1 (with GBRUN_HW): the cycles of the translated code and of its routines by what they are spent on
+            w = where(addr)
+            if w[0] == 't' or w[:7] == 'routine':
+                g = 'T ' if w[0] == 't' else 'R '
+                KIND[g + 'all'] += c
+                if addr != jst[1]:
+                    if jst[0]: KIND[g + 'jump taken (3 each)'] += jst[0]
+                    if (jst[0] or jst[3]) and addr & 1: KIND[g + 'odd target (1 each)'] += 1
+                h = HWP.get(code)
+                if h: KIND[g + 'longer to fetch than to run'] += h[0]; KIND[g + 'accesses to memory'] += h[1]
+                o = code[0]
+                if code[:4] == K_N: KIND[g + 'the N flag stored (mov byte [drc_n], n)'] += k[0]
+                elif code[:4] == K_CYC or code[:4] == K_CYC2: KIND[g + 'the cycles counted (sub word [gbf_cyc], n)'] += k[0]
+                elif o == 0xE9 and -128 <= int.from_bytes(code[1:3], 'little', signed=True) + 3 - 2 + 2 < 126: KIND[g + 'jmp near to a place a short jump reaches'] += k[0]
+                if o in (0xE8, 0xC3, 0xC2): KIND[g + 'call, ret'] += k[0]
+                elif o in (0xE9, 0xEB): KIND[g + 'jmp'] += k[0]
+                elif 0xE4 <= o < 0xE8 or 0xEC <= o < 0xF0: KIND[g + 'ports'] += k[0]
+                elif 0x50 <= o < 0x60 or o in (0x9C, 0x9D): KIND[g + 'push, pop'] += k[0]
+                elif o in (0x26, 0x2E, 0x36, 0x3E): KIND[g + 'with a segment prefix'] += k[0]
+        jst[0] = ex; jst[1] = addr + size; jst[2] = addr; jst[3] = fl
         cyc[0] += c
         w = where(addr)
         prof[w] += c
@@ -480,6 +513,18 @@ if os.environ.get('GBRUN_STUB') and CYCLES:
                 break
     for seg in range(5, 13):
         uc.hook_add(UC_HOOK_CODE, h_stub, None, (seg << 16) + soff, (seg << 16) + soff)
+if os.environ.get('GBRUN_OAMSAME') and 'gbv_sprites_asm' in syms:
+    # GBRUN_OAMSAME=1: how many times the sprites are rebuilt with the OAM as it was the time before
+    oam_st = [None, 0, 0]
+    def h_oam(uc, addr, size, _):
+        if (st['gbframes'] if GBTIME else st['frame']) < PROF_FROM: return
+        o = bytes(uc.mem_read(0x9E00, 160))
+        oam_st[2] += 1
+        if o == oam_st[0]: oam_st[1] += 1
+        oam_st[0] = o
+    uc.hook_add(UC_HOOK_CODE, h_oam, None, syms['gbv_sprites_asm'], syms['gbv_sprites_asm'])
+    import atexit as _ae
+    _ae.register(lambda: print('sprites rebuilt %d times, %d with the OAM unchanged' % (oam_st[2], oam_st[1])))
 wrt_hist = None
 if os.environ.get('GBRUN_WRT') and CYCLES:
     # GBRUN_WRT=1: the addresses written through s_wrt, by 800h
@@ -491,6 +536,16 @@ if os.environ.get('GBRUN_WRT') and CYCLES:
         wrt_hist[uc.reg_read(UC_X86_REG_SI) & 0xF800] += 1
     for seg in range(5, 13):
         uc.hook_add(UC_HOOK_CODE, h_wrt, None, (seg << 16) + woff, (seg << 16) + woff)
+    # (and those read through s_rd and s_rdt)
+    rd_hist = _c.Counter()
+    def h_rdh(uc, addr, size, _):
+        if (st['gbframes'] if GBTIME else st['frame']) < PROF_FROM: return
+        rd_hist[uc.reg_read(UC_X86_REG_SI) & 0xF800] += 1
+    for nm in ('s_rd', 's_rdt'):
+        if nm in syms:
+            roff = syms[nm] - syms['drc_stubs']
+            for seg in range(5, 13):
+                uc.hook_add(UC_HOOK_CODE, h_rdh, None, (seg << 16) + roff, (seg << 16) + roff)
 if os.environ.get('GBRUN_SLOW') and 's_exit_slow' in syms:
     # GBRUN_SLOW=from-to: in those Game Boy frames, why the routine that leaves a block went to the dispatcher
     import collections as _c
@@ -713,6 +768,8 @@ if CYCLES and HOT and hot:
         print('  %5.1f%% of translated code: block %04X (bank %d): %s' % (100.0 * n / tot, pc, key - 1, rom[a:a + 20].hex() if key < 0x8000 else 'RAM'))
 if wrt_hist:
     print('s_wrt: ' + ' '.join('%04X:%d' % kv for kv in sorted(wrt_hist.items())))
+if wrt_hist is not None and rd_hist:
+    print('s_rd: ' + ' '.join('%04X:%d' % kv for kv in sorted(rd_hist.items())))
 if stubcalls:
     tab = bytes(psram[0x14].raw)
     blocks = sorted((int.from_bytes(tab[i + 6:i + 8], 'little') >> 12, int.from_bytes(tab[i + 4:i + 6], 'little'),
@@ -729,6 +786,11 @@ if stubcalls:
 if callers:
     print('  calls: %d' % sum(callers.values()))
     for k, v in callers.most_common(12): print('  %6d  %s %s' % (v, k[0], k[1]))
+if CYCLES and KIND:
+    for g in 'TR':
+        print('translated code' if g == 'T' else 'its routines')
+        for k, v in KIND.most_common():
+            if k[0] == g: print('  %5.1f%%  %s' % (100.0 * v / KIND[g + ' all'], k[2:]))
 if CYCLES and st['gbframes']:
     # (not the wait for the frame's time, nor the wait for a list to be shown: HLT's cycles are not counted anyway)
     if not os.environ.get('GBRUN_KEEPWAIT'):

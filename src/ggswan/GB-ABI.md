@@ -42,7 +42,10 @@ operands, so the translator knows it, and writes it to `drc_n` (0 or
 40h) when the block is left or before PUSH AF. POP AF sets it from the
 stack.
 
-At every exit of a block the flags are in AH and N in `drc_n`. Outside
+At every exit of a block the flags are in AH and N in `drc_n` - but,
+since patch 185, not at an exit to code in the ROM that writes N before
+anything reads it (`gb_drc.c`, `n_dead`): there `drc_n` may have the N
+of an earlier instruction. Nothing but DAA and PUSH AF reads it. Outside
 translated code AH is `drc_ah`; `gb.f` has the Game Boy's own byte only
 around a step of the interpreter.
 

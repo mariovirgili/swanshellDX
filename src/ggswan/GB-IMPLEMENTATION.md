@@ -44,18 +44,19 @@ background and the window, switched at the right lines by the line
 interrupt, with the scroll the program gave each line; the sprites are
 the WonderSwan's.
 
-## Where it is (patch 184)
+## Where it is (patch 185)
 
 The CPU is a recompiler (`gb/ws/gb_drc.c`, `gb_drc_asm.s`; `GB-ABI.md`),
 there is sound (`gb/ws/gb_sound.c`: what it does and does not, at its
 head), a cartridge with a battery keeps its RAM in a `.sav` file,
 through the menu, as the Game Gear's games do, and MBC3 has its clock
-(`GB-ACCURACY.md`: it counts only while the game runs). Everything
-below is from `gbrun.py` (the plugin in Unicorn, the cycles by
-Mednafen's table of V30MZ costs): **nothing of gbswan since the video
-test has been run on a WonderSwan or in nileswan-medem**, the sound has
-not been heard by anybody, and the menu's part of the saves was only
-compiled.
+(`GB-ACCURACY.md`: it counts only while the game runs). The numbers
+below are from `gbrun.py` (the plugin in Unicorn; the cycles by
+Mednafen's table of V30MZ costs up to patch 184, by the costs measured
+on the console from 185, about a third more). On a WonderSwan (Gio's
+SwanCrystal, from patch 184) the games start and run, a state is kept
+and brought back (nothing was said of the sound); no patch after 184
+has been run there yet.
 
 Right, in the plugin:
 - the 11 ROMs of Blargg's `cpu_instrs` say "Passed" (their code is run
@@ -1289,6 +1290,93 @@ window added, the build of this patch: Super Mario Land 2 46,834, ZAS
 that was not looked into: by the console's costs a jump saved is worth
 more and a byte added costs, so this is to be measured again once
 `gbrun.py` counts as the console does.
+
+**Patch 185.** The costs measured in 184 went into the PC tools
+(`wsrun.py`, `cost_hw`, used by `gbrun.py` with `GBRUN_HW=1`): an
+instruction is the larger of Mednafen's count for its form between
+registers and half a cycle a byte, plus its accesses to memory (found
+with Capstone: one each, two for a read and write, two for a word at an
+odd address when the address is in the instruction; PUSH and POP a cycle
+and a half each as measured), a jump taken 3 more and 1 more to an odd
+address, a call 8 and a return 7, a cartridge port 10. (A hook on every
+access to memory, tried first, hung the run in Unicorn.) Not in it: the
+cycle more of an access through the RAM window when the cartridge waits,
+and odd addresses reached through a register. The five slow scenes come
+to 1.34-1.41 times the old count, as the console is to the emulator.
+
+`GBRUN_KIND=1` splits the translated code's cycles. Super Mario Land 2:
+jmp 16.9%, longer to fetch than to run 15.9%, accesses 13.6%, a segment
+prefix 8.3%, `sub word [gbf_cyc], n` 7.5%, call and ret 6.3%, jumps taken
+5.1%, `mov byte [drc_n], n` 4.8%, odd targets 3.2%. In ZAS the cycle
+count is 14.1%. A block's exit is `lahf` / `mov byte [drc_n], n` (3.5) /
+`sub word [gbf_cyc], n` (4.5) / `jle` / `jmp near` (5 or 6): fifteen
+cycles.
+
+What was changed, in the order tried (console's count, cycles a Game Boy
+frame; the Game Boy's memory at the end the same as 184's every time):
+
+| | SML2 | ZAS | DKL | X | Race |
+|---|---|---|---|---|---|
+| 184 | 62,726 | 80,504 | 97,300 | 113,720 | 124,696 |
+| near links as `jg` | 62,360 | 80,109 | | | |
+| + even block starts, `n_dead` | 61,441 | 78,971 | 96,035 | 110,831 | 122,791 |
+| + cartridge RAM through pointers in line | 56,186 | 78,788 | 96,133 | | |
+| + POP from the ROM, POP AF | | 77,551 | 92,123 | | |
+| + cold pieces after a jump, N at the routine's call | 56,177 | 77,203 | 91,629 | 108,368 | 122,135 |
+
+- *Near links.* `gbd_run_frame` joins an exit to its block by writing the
+  jump at the exit; when the block is within a conditional jump's reach
+  of the `jle` it writes `7F rel8 EB 03` over `7E 05 E9`: taken, four
+  cycles (five to an odd address) for the six of a `jle` not taken and a
+  near jump.
+- *Even starts.* A NOP before a block whose code would start at an odd
+  address (before its header, for code in RAM).
+- *`n_dead`.* At an exit to a known address in the ROM that may be joined,
+  the translator reads up to sixteen instructions there: if one that
+  writes H (it then writes N) comes before one that reads H (DAA, PUSH
+  AF), before the block's end and before a conditional jump, call or
+  return, `drc_n` is not stored at this exit. An interrupt taken between
+  the two blocks pushes AF with the old N and pops it; the code then
+  writes N as it would have. The interpreter, if it runs that code in the
+  block's place, runs the same instructions.
+- *The cartridge's RAM in line.* `cartp_open` / `cartp_else` in `read_to`
+  and `write_from`, after the work RAM's and the ROM's ways: "A000h-BFFFh,
+  `drc_ram_ok` is 1: ES = `drc_ram_seg`, the access with an ES prefix".
+  26 bytes at every access through a pointer, so only for a program that
+  needs it: `s_rd` and `wrt_cart` count down `drc_cart_n` at each access
+  of that kind, `gbd_run_frame` sets it to 3000 every 32 frames, and when
+  it gets to zero (`drc_cart_req`) the frame's start sets `drc_cartp` and
+  empties the cache. Counted over the whole run at first: Donkey Kong
+  Land got to 3000 in half a minute and paid a third of a second for
+  nothing (102,334).
+- *POP from the ROM.* `s_pop`: SP below 8000h and the word wholly in one
+  of the two areas, `mov si, es:[bp]` with that area's segment. `s_pop_af`
+  does the work RAM's case itself: `call s_pop` and its `ret` were 15
+  cycles.
+- *Cold pieces.* 184 put PUSH's and POP's slow ways apart, written out at
+  the next instruction 40 bytes on, under a `jmp near` over them. After a
+  PUSH, a read's `jmp short` to its end landed on that jump: ten cycles.
+  `slow_starts` (the `jmp short` that ends the work RAM's way of a read
+  or a write) now writes out the pieces there, if they are 32 bytes or
+  less, where nothing falls into them.
+- *N at the call.* `write_from` stored N before the tests; only the call
+  of `s_wrt` can leave the block, so the store is there (and `nmem` is
+  left as it was: the other ways have not stored it).
+
+Tried and not kept (Super Mario Land 2, against 61,441): the read's
+routine call as a cold piece 62,784 (the pieces' `jmp near` over them is
+run by everything that follows); the write's slow way cold 62,195; the
+call placed before the ROM's read so that the read falls through 61,875.
+All three move a cost from one kind of access to another, and this game's
+were of the other kind - which is how its use of the cartridge's RAM was
+found (`GBRUN_WRT=1`: every address `s_rd` was called for was
+A000h-AFFFh).
+
+Left for later, with what the count says they are worth: the Game Boy's
+cycle count in a register (three of the 4.5 cycles at every exit: ZAS
+about 4% of the frame; DI is the candidate, used as a temporary 176 times
+in the routines); `s_wait_stat`'s division; `s_lookup` (6-7% of a frame
+in every game).
 
 He also saw, in 166, Super Mario Land's whole picture jump sideways
 for an instant now and then. Its status bar is a STAT interrupt at a

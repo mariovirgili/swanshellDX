@@ -406,6 +406,10 @@ s_rd:
     ja 6f                       // (none, or disabled)
     mov es, [drc_ram_seg]
     mov al, es:[si]
+    // (counted: after enough of them the blocks do it themselves, gb_drc.c, cartp_open)
+    dec word ptr [drc_cart_n]
+    jnz 6f
+    mov byte ptr [drc_cart_req], 1
 6:
     ret
 2:
@@ -1767,6 +1771,9 @@ wrt_cart:
     mov al, [drc_tmp]
     mov es:[si], al
     mov ax, di
+    dec word ptr [drc_cart_n]
+    jnz 9b
+    mov byte ptr [drc_cart_req], 1
     jmp 9b
 8:
     call s_cwrite
@@ -2045,6 +2052,22 @@ s_pop:
     lea bp, [bp + 2]
     ret
 1:
+    // the stack pointer in the ROM (Donkey Kong Land draws with POPs from
+    // tables there, 64 a frame; each was two calls of s_rd): the word
+    // from its area's segment, if it does not cross to the other area
+    cmp bp, 0x7FFE
+    ja 4f
+    mov es, [drc_segtab + 2]
+    cmp bp, 0x4000
+    jae 5f
+    cmp bp, 0x3FFE
+    ja 4f
+    mov es, [drc_segtab]
+5:
+    mov si, es:[bp]
+    lea bp, [bp + 2]
+    ret
+4:
     push ax
     mov si, bp
     call s_rd
@@ -2080,7 +2103,18 @@ s_push_af:
 
 // POP AF
 s_pop_af:
+    // (the stack in the work RAM, as it nearly always is: the word here,
+    // not through s_pop - its call and return are 15 cycles on the console)
+    cmp bp, 0xC000
+    jb 2f
+    cmp bp, 0xDFFE
+    ja 2f
+    mov si, [bp - 0x6000]
+    lea bp, [bp + 2]
+    jmp 3f
+2:
     call s_pop                  // SI = A:F
+3:
     mov ax, si
     xchg al, ah                 // AL = A, AH = F
     mov di, ax
