@@ -1177,7 +1177,7 @@ static bool ui_file_selector_images_available(void) {
 }
 
 // Find the pictures of entry idx (none for folders and the root entries).
-static uint8_t ui_file_selector_find_images(uint16_t idx, game_images_t *images);
+static uint8_t ui_file_selector_find_images(uint16_t idx, game_images_t *images, bool quick);
 static uint8_t ui_file_selector_special_list(uint16_t offset);
 
 // The VGM player took its track as menu music (already in the music area):
@@ -1224,19 +1224,19 @@ static bool ui_file_selector_idle(struct ui_selector_config *config, uint16_t id
         // thumb.bmp of the game in a popup (found again: loading the menu
         // music may have reused the buffer)
         game_images_t *images = game_images_buffer();
-        ui_file_selector_find_images(idx, images);
+        ui_file_selector_find_images(idx, images, true);
 #ifdef CONFIG_ENABLE_WALLPAPER
         if (game_images_thumb_path(images, images->tmp))
             ui_show_thumbnail(images->tmp);
 #endif
     } else if (ticks == IMAGES_INDICATOR_TICKS) {
-        images_shown_count = ui_file_selector_find_images(idx, game_images_buffer());
+        images_shown_count = ui_file_selector_find_images(idx, game_images_buffer(), true);
         if (images_shown_count)
             ui_file_selector_draw_images_indicator(images_shown_count);
     } else if (ticks == IMAGES_PREVIEW_TICKS && settings.images_preview == SETTING_IMAGES_PREVIEW_BACKGROUND) {
         // (found again: loading the menu music may have reused the buffer)
         game_images_t *images = game_images_buffer();
-        if (images_shown_count && ui_file_selector_find_images(idx, images)
+        if (images_shown_count && ui_file_selector_find_images(idx, images, true)
             && game_images_path(images, 0, images->tmp)) {
             // the first picture behind the list (the rows are redrawn)
             if (ui_load_background(images->tmp)) {
@@ -1254,7 +1254,7 @@ static bool ui_file_selector_idle(struct ui_selector_config *config, uint16_t id
     return false;
 }
 
-static uint8_t ui_file_selector_find_images(uint16_t idx, game_images_t *images) {
+static uint8_t ui_file_selector_find_images(uint16_t idx, game_images_t *images, bool quick) {
     images->count = 0;
     images->has_thumb = false; // (folders and the root entries return early)
     if (ui_file_selector_special_list(idx) != FAVORITES_LIST_NONE)
@@ -1271,13 +1271,13 @@ static uint8_t ui_file_selector_find_images(uint16_t idx, game_images_t *images)
         n++;
     }
     images->tmp[n] = 0;
-    return game_images_find(images->tmp, images);
+    return game_images_find(images->tmp, images, quick);
 }
 
 // Y3 / Start > Images. Returns true if the user chose to play the game.
 static bool ui_file_selector_view_images(uint16_t idx, char *title_buf) {
     game_images_t *images = game_images_buffer();
-    if (!ui_file_selector_images_available() || !ui_file_selector_find_images(idx, images)) {
+    if (!ui_file_selector_images_available() || !ui_file_selector_find_images(idx, images, false)) {
         ui_draw_statusbar(lang_keys[LK_UI_STATUS_NO_IMAGES]);
         for (uint8_t i = 0; i < 60; i++)
             wait_for_vblank();

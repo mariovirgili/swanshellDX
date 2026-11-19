@@ -52,9 +52,16 @@ static bool picture_ok(const char *path) {
     return ok;
 }
 
+// A picture's size from its directory entry: 224x144 at 4 bits (16246 bytes
+// with the usual header) up to the 64 KB a picture may take.
+#define PICTURE_MIN_SIZE (14 + BMP_MIN_HEADER_SIZE + 16 * 4 + 224 * 144 / 2)
+
 // Collect the (up to GAME_IMAGES_MAX, alphabetically first) valid pictures
-// of images->dir.
-static uint8_t collect(game_images_t *images) {
+// of images->dir. quick: a picture is judged by its size only (opening each
+// file means looking the folder up again on the card, through the whole
+// IMAGES folder: the slow part of moving the selection); otherwise its
+// header is read and checked.
+static uint8_t collect(game_images_t *images, bool quick) {
     DIR dir;
     FILINFO fno;
     char *path = images->tmp;
@@ -87,7 +94,7 @@ static uint8_t collect(game_images_t *images) {
         memcpy(path, images->dir, dlen);
         path[dlen] = '/';
         memcpy(path + dlen + 1, fno.fname, len + 1);
-        if (!picture_ok(path))
+        if (quick ? (fno.fsize < PICTURE_MIN_SIZE || fno.fsize > 65535) : !picture_ok(path))
             continue;
 
         uint8_t last = images->count < GAME_IMAGES_MAX ? images->count : GAME_IMAGES_MAX - 1;
@@ -101,7 +108,7 @@ static uint8_t collect(game_images_t *images) {
     return images->count;
 }
 
-uint8_t game_images_find(const char __far *file_name, game_images_t *images) {
+uint8_t game_images_find(const char __far *file_name, game_images_t *images, bool quick) {
     images->count = 0;
     images->has_thumb = false;
     strcpy(images->dir, s_path_images_dir);
@@ -120,11 +127,11 @@ uint8_t game_images_find(const char __far *file_name, game_images_t *images) {
                 dot = p;
         if (dot == NULL || dot == images->dir + base) {
             if (tries == 0)
-                collect(images); // no extension: the name as it is
+                collect(images, quick); // no extension: the name as it is
             break;
         }
         *dot = 0;
-        if (collect(images) || images->has_thumb)
+        if (collect(images, quick) || images->has_thumb)
             break;
     }
     return images->count;
@@ -215,7 +222,7 @@ done:
 
 #else
 
-uint8_t game_images_find(const char __far *file_name, game_images_t *images) {
+uint8_t game_images_find(const char __far *file_name, game_images_t *images, bool quick) {
     images->count = 0;
     images->has_thumb = false;
     return 0;

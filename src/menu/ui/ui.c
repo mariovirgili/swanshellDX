@@ -45,6 +45,7 @@ ws_display_tile_t bitmap_tiles[512];
 
 #ifdef CONFIG_ENABLE_WALLPAPER
 static bool thumb_active = false; // the thumbnail popup is shown
+static bool thumb_saved = false;  // the wallpaper under it is in the scratch bank
 #endif
 
 __attribute__((section(".iramCx_4000"), retain))
@@ -182,6 +183,7 @@ void ui_init(void) {
     ui_hide();
 #ifdef CONFIG_ENABLE_WALLPAPER
     thumb_active = false; // (ui_hide() turned the window off)
+    thumb_saved = false;
 #endif
     icons_visible = 0;
 
@@ -481,6 +483,44 @@ static inline uint8_t thumb_pixel(const uint8_t __far *data, uint16_t pitch, uin
     return (x & 1) ? (b & 15) : (b >> 4);
 }
 
+/* What the box covers of the wallpaper (its tiles, their screen cells and
+ * palette 15) is kept in the PSRAM scratch bank, after the picture's file,
+ * and put back when the box closes: reading the wallpaper again from the
+ * card and converting it took longer than anything else when the selection
+ * moved. */
+#define THUMB_FILE_MAX   0x8000                  // the picture's file below this
+#define THUMB_SAVE_TILES 0x8000                  // w * h * 32 bytes (4032)
+#define THUMB_SAVE_CELLS (THUMB_SAVE_TILES + 0x1000)
+#define THUMB_SAVE_PAL   (THUMB_SAVE_CELLS + 0x0200)
+
+static uint8_t thumb_x0, thumb_y0, thumb_w, thumb_h;
+
+static inline uint16_t thumb_tile(uint8_t x, uint8_t y) {
+    return x * WS_DISPLAY_HEIGHT_TILES + y;
+}
+
+// (the scratch bank is mapped) wallpaper under the box -> scratch bank, or back
+static void thumb_save_restore(bool restore) {
+    uint16_t __far *tiles = MK_FP(0x1000, THUMB_SAVE_TILES);
+    uint16_t __far *cells = MK_FP(0x1000, THUMB_SAVE_CELLS);
+    uint16_t __far *pal = MK_FP(0x1000, THUMB_SAVE_PAL);
+    for (uint8_t ix = 0; ix < thumb_w; ix++) {
+        // the tiles of a column of the box follow each other
+        uint16_t *vram = (uint16_t*) (0x8000 + thumb_tile(thumb_x0 + ix, thumb_y0) * 32);
+        for (uint16_t i = 0; i < thumb_h * 16; i++, tiles++, vram++) {
+            if (restore) *vram = *tiles; else *tiles = *vram;
+        }
+        for (uint8_t iy = 0; iy < thumb_h; iy++, cells++) {
+            uint16_t ws_iram *cell = bitmap_screen1 + (thumb_y0 + iy) * 32 + thumb_x0 + ix;
+            if (restore) *cell = *cells; else *cells = *cell;
+        }
+    }
+    for (uint8_t c = 0; c < 16; c++, pal++) {
+        if (restore) WS_DISPLAY_COLOR_MEM(THUMB_PALETTE)[c] = *pal;
+        else *pal = WS_DISPLAY_COLOR_MEM(THUMB_PALETTE)[c];
+    }
+}
+
 // The picture is in the RAM window (PSRAM scratch bank).
 static void thumb_draw(uint8_t x0, uint8_t y0, uint8_t w, uint8_t h) {
     bmp_header_t __far *bmp = MK_FP(0x1000, 0x0000);
@@ -496,7 +536,16 @@ static void thumb_draw(uint8_t x0, uint8_t y0, uint8_t w, uint8_t h) {
         for (uint8_t iy = 0; iy < h; iy++) {
             uint16_t tile = (x0 + ix) * WS_DISPLAY_HEIGHT_TILES + (y0 + iy);
             uint32_t *dst = (uint32_t*) (0x8000 + tile * 32);
-            for (uint8_t r = 0; r < 8; r++) {
+            if (bitmap_rotation && ix && iy && ix < w - 1 && iy < h - 1) {
+                // inside the frame, not turned: a row of the tile is 4
+                // bytes of the file, in the same order (left pixel in the
+                // high nibble)
+                for (uint8_t r = 0; r < 8; r++) {
+                    const uint32_t __far *src = (const uint32_t __far*) (data
+                        + (uint16_t) (THUMB_H - 1 - (iy * 8 + r)) * pitch + ix * 4);
+                    dst[r] = wsx_planar_convert_4bpp_packed_row(*src);
+                }
+            } else for (uint8_t r = 0; r < 8; r++) {
                 uint8_t packed[4];
                 for (uint8_t k = 0; k < 8; k++) {
                     uint8_t nib;
@@ -525,13 +574,15 @@ bool ui_show_thumbnail(const char *path) {
     if (f_open(&fp, path, FA_READ | FA_OPEN_EXISTING) != FR_OK)
         return false;
     uint32_t size = f_size(&fp);
-    if (size > 65535) {
+    if (size > THUMB_FILE_MAX) {
         f_close(&fp);
         return false;
     }
 
     uint8_t x0, y0, w, h;
     thumb_geometry(&x0, &y0, &w, &h);
+    thumb_x0 = x0; thumb_y0 = y0; thumb_w = w; thumb_h = h;
+    thumb_saved = false;
     bool ok = false;
     // read into the PSRAM scratch bank, then convert (no return inside:
     // the previous flash mode and RAM bank must be restored)
@@ -540,6 +591,10 @@ bool ui_show_thumbnail(const char *path) {
             unsigned int br;
             if (f_read(&fp, MK_FP(0x1000, 0x0000), size, &br) == FR_OK && br == size
                 && thumb_header_ok(MK_FP(0x1000, 0x0000), size)) {
+                if (wallpaper_status == 1) {
+                    thumb_save_restore(false);
+                    thumb_saved = true;
+                }
                 // wait for the vertical blank: the tiles change on screen
                 while (inportb(WS_DISPLAY_LINE_PORT) < WS_DISPLAY_HEIGHT_PIXELS);
                 thumb_draw(x0, y0, w, h);
@@ -563,6 +618,16 @@ void ui_hide_thumbnail(void) {
     if (!thumb_active)
         return;
     thumb_active = false;
+    if (thumb_saved && wallpaper_status == 1) {
+        // put back what the box covered, then show the list there again
+        thumb_saved = false;
+        while (inportb(WS_DISPLAY_LINE_PORT) < WS_DISPLAY_HEIGHT_PIXELS);
+        ws_bank_with_ram(UI_SCRATCH_PSRAM_BANK, {
+            thumb_save_restore(true);
+        });
+        outportb(WS_DISPLAY_CTRL_PORT, inportb(WS_DISPLAY_CTRL_PORT) & ~WS_DISPLAY_CTRL_SCR2_WIN_OUTSIDE);
+        return;
+    }
     outportb(WS_DISPLAY_CTRL_PORT, inportb(WS_DISPLAY_CTRL_PORT) & ~WS_DISPLAY_CTRL_SCR2_WIN_OUTSIDE);
     if (wallpaper_status == 1) {
         // its tiles and palette 15 were used by the box

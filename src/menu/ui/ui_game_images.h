@@ -49,7 +49,9 @@ typedef struct {
 game_images_t *game_images_buffer(void);
 
 /// Find the pictures of a file (name only, no folder). Returns the count.
-uint8_t game_images_find(const char __far *file_name, game_images_t *images);
+/// quick: judge each picture by its size only, without opening it (for the
+/// list; the viewer checks every header).
+uint8_t game_images_find(const char __far *file_name, game_images_t *images, bool quick);
 
 /// Full path of picture i in buf (GAME_IMAGES_PATH_MAX bytes).
 /// Path of images->dir/thumb.bmp (false if the folder has none).
