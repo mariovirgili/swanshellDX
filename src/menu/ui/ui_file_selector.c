@@ -1163,7 +1163,7 @@ static void ui_file_selector_draw_images_indicator(uint8_t count) {
 /* === Game images: indicator, preview behind the list, viewer === */
 
 #define IMAGES_INDICATOR_TICKS 10  // ~0.13 s after the selection stops
-#define IMAGES_PREVIEW_TICKS   38  // ~0.5 s
+#define IMAGES_PREVIEW_TICKS   19  // ~0.25 s
 
 static uint8_t images_shown_count;  // indicator currently shown
 static bool images_preview_active;  // a game picture replaces the wallpaper
