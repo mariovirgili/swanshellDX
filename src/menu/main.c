@@ -138,6 +138,8 @@ void factory_reset(void) {
 
 void main(void) {
 	ia16_disable_irq();
+	// after START + Y1 in a game the game's sound may still be playing
+	menu_sound_reset();
 
 	bool is_safe_mode = (inportb(IO_NILE_SPI_CNT+1) & (NILE_SPI_CLOCK_CART >> 8)) != 0;
 

@@ -35,6 +35,11 @@ void menu_music_init(void);
 /**
  * Start background music, if enabled in settings and not already playing.
  */
+/// Silence everything a game may have left playing (the console is not
+/// reset by a soft reset into the menu): the sound channels and their
+/// volumes, sound DMA and HyperVoice.
+void menu_sound_reset(void);
+
 void menu_music_start(void);
 
 /**

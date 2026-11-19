@@ -368,13 +368,28 @@ void menu_music_apply_volume(void) {
         vgm_ws_volume_scale = menu_music_volume_scale();
 }
 
+void menu_sound_reset(void) {
+    // sound DMA first: it would keep feeding channel 2 or HyperVoice
+    outportb(WS_SDMA_CTRL_PORT, 0);
+    ws_sound_reset();
+    // (ws_sound_reset() leaves the volumes of channels 1 and 2 and the
+    // test port)
+    outportw(WS_SOUND_VOL_CH1_PORT, 0);
+    outportb(WS_SOUND_TEST_PORT, 0);
+    if (ws_system_is_color_model()) {
+        outportw(WS_HYPERV_CTRL_PORT, 0);
+        outportw(WS_HYPERV_OUT_L_PORT, 0);
+        outportw(WS_HYPERV_OUT_R_PORT, 0);
+    }
+}
+
 void menu_music_start(void) {
     if (menu_music_playing || menu_music_bank == MENU_MUSIC_NOT_LOADED)
         return;
     if (!(settings.file_flags & SETTING_FILE_MENU_MUSIC))
         return;
 
-    ws_sound_reset();
+    menu_sound_reset();
     outportb(WS_SOUND_WAVE_BASE_PORT, WS_SOUND_WAVE_BASE_ADDR(MENU_MUSIC_WAVE_BASE));
     vgm_ws_volume_scale = menu_music_volume_scale();
 
