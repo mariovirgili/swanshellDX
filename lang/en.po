@@ -436,6 +436,12 @@ msgstr "BIOS variant for .fx loader"
 msgid "SETTINGS_PROG_FX_BIOS_HELP"
 msgstr "The BIOS variant used by .fx programs.\n\nFor serial communication, Native uses the USB port, Compatible uses the console EXT port."
 
+msgid "SETTINGS_PROG_KEYPAD_RESET"
+msgstr "START+Y1 back to menu"
+
+msgid "SETTINGS_PROG_KEYPAD_RESET_HELP"
+msgstr "In WonderSwan games that read the buttons the classic way, START+Y1 resets into the menu.\n\nThe game is patched in memory at launch, never on the card. Also in Tools."
+
 msgid "SETTINGS_PROG_VERIFY_SAVES"
 msgstr "Verify written save data"
 

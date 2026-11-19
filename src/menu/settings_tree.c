@@ -54,6 +54,7 @@ DEFINE_STRING_LOCAL(s_save_manage_key, "SaveManage");
 DEFINE_STRING_LOCAL(s_program_fast_sram_key, "ProgFastSRAM");
 DEFINE_STRING_LOCAL(s_program_verify_saves_key, "ProgVerifySave");
 DEFINE_STRING_LOCAL(s_program_fx_bios_key, "ProgFxCmptBios");
+DEFINE_STRING_LOCAL(s_program_keypad_reset_key, "ProgStartY1Menu");
 DEFINE_STRING_LOCAL(s_cart_mcu_spi_speed_key, "CartMcuSpiSpeed");
 DEFINE_STRING_LOCAL(s_display_orientation_key, "DispOrient");
 DEFINE_STRING_LOCAL(s_language, "Language");
@@ -453,6 +454,21 @@ static const setting_t __far setting_program_fx_bios = {
     }
 };
 
+// SwanShellDX: START + Y1 in a game back to the menu (also in Tools); a
+// setting so that it is kept in the settings file
+static const setting_t __far setting_program_keypad_reset = {
+    s_program_keypad_reset_key,
+    LK_SETTINGS_PROG_KEYPAD_RESET,
+    LK_SETTINGS_PROG_KEYPAD_RESET_HELP,
+    SETTING_TYPE_FLAG,
+    0,
+    .flag = {
+        &settings.prog.flags,
+        SETTING_PROG_FLAG_KEYPAD_RESET_SHIFT,
+        LK_NO, LK_YES
+    }
+};
+
 static const uint16_t __wf_rom settings_spi_speed_table[] = {
     LK_SETTINGS_CART_MCU_SPI_SPEED_384KHZ,
     LK_SETTINGS_CART_MCU_SPI_SPEED_6MHZ,
@@ -525,11 +541,12 @@ static const setting_category_t __far settings_sys_advanced = {
     LK_SETTINGS_ADVANCED_KEY,
     0,
     &settings_system,
-    4,
+    5,
     {
         &setting_program_fast_sram,
         &setting_cart_mcu_spi_speed,
         &setting_program_fx_bios,
+        &setting_program_keypad_reset,
         &setting_factory_reset
     }
 };
