@@ -623,6 +623,12 @@ msgstr "Tools"
 msgid "SUBMENU_OPTION_TOOLS_SCRAPE_ROMS"
 msgstr "Scrape ROMs"
 
+msgid "SUBMENU_OPTION_TOOLS_KEYPAD_RESET_ON"
+msgstr "START+Y1 to menu: ON"
+
+msgid "SUBMENU_OPTION_TOOLS_KEYPAD_RESET_OFF"
+msgstr "START+Y1 to menu: OFF"
+
 msgid "SUBMENU_OPTION_TOOLS_REMOVE_INDEX"
 msgstr "Remove ROM index"
 

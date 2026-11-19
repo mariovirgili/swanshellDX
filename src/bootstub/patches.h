@@ -15,7 +15,10 @@
  * with swanshell. If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include <stdbool.h>
+#include <stdint.h>
 #include <wonderful.h>
 #include <ws.h>
 
 void patch_apply_freya_soft_reset(uint16_t last_bank);
+bool patch_apply_keypad_reset(uint16_t total_banks);

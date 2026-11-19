@@ -927,7 +927,14 @@ int16_t launch_rom_via_bootstub(const launch_rom_metadata_t *meta) {
         bootstub_data->prog_rom_type = ROM_TYPE_UNKNOWN;
     }
     bootstub_data->prog_flags2 = (settings.prog.flags & SETTING_PROG_FLAG_SRAM_OVERCLOCK) ? 0x00 : 0x0A;
+    // (a plugin has said so before: it reads its keys itself)
+    bool is_plugin = bootstub_data->prog_patches & BOOTSTUB_PROG_PATCH_IPC_RESERVED;
     bootstub_data->prog_patches = bootstub_data->prog_rom_type == ROM_TYPE_FREYA ? BOOTSTUB_PROG_PATCH_FREYA_SOFT_RESET : 0;
+    // START + Y1 back to the menu: the bootstub looks for the game's button
+    // read and patches it only if it has the classic form
+    if (bootstub_data->prog_rom_type == ROM_TYPE_WS && !is_plugin
+        && (settings.prog.flags & SETTING_PROG_FLAG_KEYPAD_RESET))
+        bootstub_data->prog_patches |= BOOTSTUB_PROG_PATCH_KEYPAD_RESET;
     if (bootstub_data->prog_rom_type == ROM_TYPE_PCV2) {
         bootstub_data->start_pointer = MK_FP(0x4000, 0x0010);
     } else {

@@ -181,6 +181,10 @@ typedef struct setting {
 #define SETTING_PROG_FLAG_FX_COMPATIBLE_BIOS_SHIFT 1
 #define SETTING_PROG_FLAG_FX_COMPATIBLE_BIOS (1 << SETTING_PROG_FLAG_FX_COMPATIBLE_BIOS_SHIFT)
 
+// SwanShellDX: START + Y1 in a WonderSwan game resets into the menu
+#define SETTING_PROG_FLAG_KEYPAD_RESET_SHIFT 2
+#define SETTING_PROG_FLAG_KEYPAD_RESET (1 << SETTING_PROG_FLAG_KEYPAD_RESET_SHIFT)
+
 typedef struct __attribute__((packed)) {
     uint8_t flags;
 } settings_prog_t;
