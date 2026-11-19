@@ -107,11 +107,9 @@ static enum tristate ui_file_selector_tools(ui_popup_list_config_t *lst, const c
         lst->option[1] = lang_keys[LK_SUBMENU_OPTION_WITCH];
         lst->option[2] = lang_keys[LK_SUBMENU_OPTION_CONTROLLER_MODE];
         lst->option[3] = lang_keys[LK_SUBMENU_OPTION_TOOLS_SCRAPE_ROMS];
-        lst->option[4] = lang_keys[(settings.prog.flags & SETTING_PROG_FLAG_KEYPAD_RESET)
-            ? LK_SUBMENU_OPTION_TOOLS_KEYPAD_RESET_ON : LK_SUBMENU_OPTION_TOOLS_KEYPAD_RESET_OFF];
         // only if this folder has a ROM index
         if (f_exists_far(s_file_index_name))
-            lst->option[5] = lang_keys[LK_SUBMENU_OPTION_TOOLS_REMOVE_INDEX];
+            lst->option[4] = lang_keys[LK_SUBMENU_OPTION_TOOLS_REMOVE_INDEX];
 
         switch (ui_popup_list(lst)) {
         case UI_POPUP_ACTION_START:
@@ -144,12 +142,6 @@ static enum tristate ui_file_selector_tools(ui_popup_list_config_t *lst, const c
             ui_dialog_error_check(ui_file_selector_scrape_directory(), lang_keys[LK_SUBMENU_OPTION_TOOLS_SCRAPE_ROMS], 0);
             return TRISTATE_TRUE;
         case 4:
-            // START + Y1 in games: on / off (the list is shown again)
-            settings.prog.flags ^= SETTING_PROG_FLAG_KEYPAD_RESET;
-            settings_save();
-            ui_popup_list_clear(lst);
-            break;
-        case 5:
             ui_dialog_error_check(ui_file_selector_remove_index(), lang_keys[LK_SUBMENU_OPTION_TOOLS_REMOVE_INDEX], 0);
             return TRISTATE_TRUE;
         }

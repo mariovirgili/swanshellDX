@@ -454,8 +454,7 @@ static const setting_t __far setting_program_fx_bios = {
     }
 };
 
-// SwanShellDX: START + Y1 in a game back to the menu (also in Tools); a
-// setting so that it is kept in the settings file
+// SwanShellDX: START + Y1 in a game back to the menu
 static const setting_t __far setting_program_keypad_reset = {
     s_program_keypad_reset_key,
     LK_SETTINGS_PROG_KEYPAD_RESET,
