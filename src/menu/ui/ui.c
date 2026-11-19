@@ -622,8 +622,12 @@ void ui_hide_thumbnail(void) {
         // put back what the box covered, then show the list there again
         thumb_saved = false;
         while (inportb(WS_DISPLAY_LINE_PORT) < WS_DISPLAY_HEIGHT_PIXELS);
-        ws_bank_with_ram(UI_SCRATCH_PSRAM_BANK, {
-            thumb_save_restore(true);
+        // (the RAM window shows the PSRAM only with port CEh's flash bit
+        // set: without it, it is the cartridge's save RAM)
+        ws_bank_with_flash(WS_CART_BANK_FLASH_ENABLE, {
+            ws_bank_with_ram(UI_SCRATCH_PSRAM_BANK, {
+                thumb_save_restore(true);
+            });
         });
         outportb(WS_DISPLAY_CTRL_PORT, inportb(WS_DISPLAY_CTRL_PORT) & ~WS_DISPLAY_CTRL_SCR2_WIN_OUTSIDE);
         return;
