@@ -18,9 +18,12 @@
  * Games built with Bandai's library read the buttons with
  *     mov al, 40h / out 0B5h, al / ... / nop / in al, 0B5h
  * or with a delay loop (push cx / mov cx, n / loop / pop cx) before the IN. The
- * last NOP and the IN (or the loop) become "call near keypad_reset_hook",
- * and the hook (copied into free space of the same 64 KB bank) does the IN for the
- * game. If START is down, it also reads the Y group: with Y1 down too it
+ * last three NOPs and the IN (or the loop and the IN) become "call far" to
+ * keypad_reset_hook, copied into free space of the same 64 KB bank and
+ * reached through that bank's segment in the linear window (4000h-F000h):
+ * a near call would land elsewhere when the game runs its code with a CS
+ * that is not the bank's (GunPey: E800h, Anchorz Field: FE00h). The hook
+ * does the IN for the game. If START is down, it also reads the Y group: with Y1 down too it
  * resets the cartridge into the menu, like nile_soft_reset().
  *
  * The game is patched only when its button read is found in one of these
@@ -46,7 +49,7 @@ keypad_reset_hook:
     test al, 0x02           // START?
     jnz 1f
     popf
-    ret
+    retf
 1:
     push ax
     push cx
@@ -65,7 +68,7 @@ keypad_reset_hook:
     pop cx
     pop ax
     popf
-    ret
+    retf
 4:
     // as nile_soft_reset(): the flash was kept awake by the bootstub
     cli
@@ -118,6 +121,11 @@ patch_apply_keypad_reset:
 2:
     cmp dx, bx
     jae 5f
+    mov ax, dx                  // only banks seen through segments 4-F of
+    sub ax, bx                  // the linear window: (bank - banks) & 0Fh
+    and ax, 0x0F
+    cmp ax, 4
+    jb 4f
     mov ax, dx
     out WS_CART_EXTBANK_RAM_PORT, ax
     mov ax, 8
@@ -143,7 +151,11 @@ patch_apply_keypad_reset:
     pop si                      // the IN
     pop ax                      // its bank
     out WS_CART_EXTBANK_RAM_PORT, ax
+    sub ax, bx
+    and ax, 0x0F
+    shl ax, 12                  // its segment in the linear window
     push cx
+    push ax
     mov ax, HOOK_SIZE
     call keypad_reset_free
     test ax, ax
@@ -156,24 +168,37 @@ patch_apply_keypad_reset:
     cld
     rep movsb
     pop si
-    lea di, [si - 1]
-    cmp byte ptr es:[di], 0x90
-    je 7f
-    // "loop $ / pop cx / in al, 0B5h" -> "pop cx / call near hook / nop":
-    // no more loop: the hook waits itself
     lea di, [si - 3]
+    cmp byte ptr es:[si - 1], 0x90
+    je 7f
+    // "mov cx, n / (nop) / loop / pop cx / in al, 0B5h"
+    // -> "pop cx / call far hook / nop ...": the hook waits itself
+    mov al, es:[si - 2]         // FEh / FDh / FCh
+    neg al
+    sub al, 2                   // NOPs in the loop: 0 / 1 / 2
+    xor ah, ah
+    lea di, [si - 6]
+    sub di, ax                  // the "mov cx, n"
     mov byte ptr es:[di], 0x59
     inc di
-    mov byte ptr es:[di + 3], 0x90
+    push di
+    add di, 5
+    lea cx, [si + 2]
+    sub cx, di
+    mov al, 0x90
+    rep stosb
+    pop di
 7:
-    // the last NOP and "in al, 0B5h" (or the above) -> "call near hook"
-    mov byte ptr es:[di], 0xE8
-    mov ax, dx
-    sub ax, di
-    sub ax, 3
-    mov es:[di + 1], ax
+    // the last three NOPs and "in al, 0B5h" (or the above) -> "call far"
+    mov byte ptr es:[di], 0x9A
+    mov es:[di + 1], dx
+    pop ax
+    mov es:[di + 3], ax
     mov word ptr [bp + 16], 1
+    jmp 10f
 8:
+    pop ax
+10:
     pop cx
     loop 6b
 9:
@@ -187,9 +212,9 @@ patch_apply_keypad_reset:
     // the mapped bank, 0 if none. A button read is
     //     mov al, 40h / out 0B5h, al / (up to 96 bytes without another
     //     OUT to 0B5h) / in al, 0B5h
-    // where the IN follows a NOP, or the end of a delay loop
-    //     push cx / mov cx, n / loop $ (or a loop over one or two NOPs:
-    //     nothing else, as the loop goes) / pop cx
+    // where the IN follows three NOPs, or the end of a delay loop
+    //     mov cx, n / loop $ (or a loop over one or two NOPs: nothing
+    //     else, as the loop goes) / pop cx
     // (the caller tells them apart by the byte before the IN).
     .global keypad_reset_find
 keypad_reset_find:
@@ -234,23 +259,37 @@ keypad_reset_find:
     mov si, dx
     mov al, es:[si - 1]
     cmp al, 0x90
+    jne 7f
+    cmp word ptr es:[si - 3], 0x9090    // three NOPs: room for "call far"
     je 5f
+    jmp 1b
+7:
     cmp al, 0x59            // pop cx
     jne 1b
     cmp byte ptr es:[si - 3], 0xE2  // loop ...
     jne 1b
     mov al, es:[si - 2]
+    // "mov cx, n" right before the loop body, so that the whole delay
+    // (mov, loop, pop, in: 8 bytes or more) can make room for the call
     cmp al, 0xFE            // loop $
+    jne 6f
+    cmp byte ptr es:[si - 6], 0xB9
     je 5f
+    jmp 1b
+6:
     cmp al, 0xFD            // loop over one NOP
     jne 6f
     cmp byte ptr es:[si - 4], 0x90
+    jne 1b
+    cmp byte ptr es:[si - 7], 0xB9
     je 5f
     jmp 1b
 6:
     cmp al, 0xFC            // loop over two NOPs
     jne 1b
     cmp word ptr es:[si - 5], 0x9090
+    jne 1b
+    cmp byte ptr es:[si - 8], 0xB9
     jne 1b
 5:
     mov ax, dx
