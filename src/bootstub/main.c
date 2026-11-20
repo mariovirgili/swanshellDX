@@ -265,10 +265,10 @@ int main(void) {
 		patch_apply_freya_soft_reset(total_banks - 1);
 	}
 	// START + Y1 back to the menu, if the game reads its buttons the
-	// classic way (otherwise the flag is dropped and nothing changes)
-	if ((bootstub_data->prog_patches & BOOTSTUB_PROG_PATCH_KEYPAD_RESET)
-		&& !patch_apply_keypad_reset(total_banks)) {
-		bootstub_data->prog_patches &= ~BOOTSTUB_PROG_PATCH_KEYPAD_RESET;
+	// classic way. The flash stays awake for the reset either way: an IPS
+	// patch launched from the menu may carry its own START + Y1 hook.
+	if (bootstub_data->prog_patches & BOOTSTUB_PROG_PATCH_KEYPAD_RESET) {
+		patch_apply_keypad_reset(total_banks);
 	}
 	outportw(IO_NILE_SPI_CNT, NILE_SPI_CLOCK_CART | NILE_SPI_DEV_NONE);
 
