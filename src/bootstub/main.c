@@ -264,12 +264,6 @@ int main(void) {
 	if (bootstub_data->prog_patches & BOOTSTUB_PROG_PATCH_FREYA_SOFT_RESET) {
 		patch_apply_freya_soft_reset(total_banks - 1);
 	}
-	// START + Y1 back to the menu, if the game reads its buttons the
-	// classic way. The flash stays awake for the reset either way: an IPS
-	// patch launched from the menu may carry its own START + Y1 hook.
-	if (bootstub_data->prog_patches & BOOTSTUB_PROG_PATCH_KEYPAD_RESET) {
-		patch_apply_keypad_reset(total_banks);
-	}
 	outportw(IO_NILE_SPI_CNT, NILE_SPI_CLOCK_CART | NILE_SPI_DEV_NONE);
 
 	outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_DISABLE);
@@ -290,7 +284,7 @@ int main(void) {
 	outportb(WS_SYSTEM_CTRL_COLOR_PORT, bootstub_data->prog_flags2);
 
 	// deinitialize cartridge
-	if (bootstub_data->prog_patches & (BOOTSTUB_PROG_PATCH_FREYA_SOFT_RESET | BOOTSTUB_PROG_PATCH_KEYPAD_RESET | BOOTSTUB_PROG_PATCH_KEYPAD_HOOKED)) {
+	if (bootstub_data->prog_patches & (BOOTSTUB_PROG_PATCH_FREYA_SOFT_RESET | BOOTSTUB_PROG_PATCH_KEYPAD_HOOKED)) {
 		// FIXME: soft reset patch does not wake up flash, which crashes IPL0
 		// as it expects flash to be ready; therefore, for now, bootstub has to
 		// keep it awake during execution.

@@ -23,8 +23,7 @@
 
 #define BOOTSTUB_PROG_PATCH_FREYA_SOFT_RESET 0x01
 #define BOOTSTUB_PROG_PATCH_IPC_RESERVED     0x02
-#define BOOTSTUB_PROG_PATCH_KEYPAD_RESET     0x04 ///< START + Y1: back to the menu (SwanShellDX)
-#define BOOTSTUB_PROG_PATCH_KEYPAD_HOOKED    0x08 ///< START + Y1 already patched by the menu: keep the flash awake only
+#define BOOTSTUB_PROG_PATCH_KEYPAD_HOOKED    0x08 ///< START + Y1 patched in by the menu (SwanShellDX): keep the flash awake for the reset
 #define BOOTSTUB_CLUSTER_AT_PSRAM 0xFFFFFFF8
 
 #define ROM_TYPE_UNKNOWN 0x00

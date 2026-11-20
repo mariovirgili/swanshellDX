@@ -512,6 +512,10 @@ exit_no_launch:
 
 /* === START + Y1 patches (/NILESWAN/PATCHES) ===
  *
+ * With the option on, every WonderSwan ROM is loaded into PSRAM by the menu
+ * and launched from there: patched by its .Y1P variant if it has one, else
+ * by the automatic patch above (if its button read has a known form).
+ *
  * One text file per game, named after the ROM footer (the last 16 bytes,
  * read at once, while a CRC32 of a 4-16 MB ROM would take seconds here):
  *     <publisher><game id><version><checksum><banks>.Y1P
@@ -573,6 +577,223 @@ static uint16_t kp_record(const char *v, uint32_t *ofs, uint8_t which, uint8_t *
     return 0;
 }
 
+/* === START + Y1: automatic patch ===
+ * For ROMs without a .Y1P variant. The same steps as y1p.py's "auto" (its
+ * output is compared byte for byte with this code's): the game's button
+ * read "mov al, 40h / out 0B5h, al / ... / in al, 0B5h" in the last 16
+ * banks (one or two of them; more: left alone) becomes a call to kr_hook,
+ * copied into padding. The ROM is in PSRAM from bank 0; the RAM window
+ * (flash mode on) shows the bank being worked on. */
+
+uint16_t keypad_reset_find(uint16_t from);
+uint16_t keypad_reset_free(uint16_t size);
+
+// The hook. Entry 00h: selects the buttons group (out 0B5h, 40h) and waits;
+// entry 0Bh: in al, 0B5h for the game (flags and every other register
+// kept); with START and Y1 down, the soft reset of nile_soft_reset() (the
+// bootstub keeps the flash awake for IPL0). RETF at 13h and 34h, RET there
+// for a near call.
+static const uint8_t __far kr_hook[] = {
+    0x51, 0xB0, 0x40, 0xE6, 0xB5, 0xB9, 0x18, 0x00, 0xE2, 0xFE, 0x59, 0x9C,
+    0xE4, 0xB5, 0xA8, 0x02, 0x75, 0x02, 0x9D, 0xCB, 0x50, 0x51, 0xB0, 0x10,
+    0xE6, 0xB5, 0xB9, 0x18, 0x00, 0xE2, 0xFE, 0xE4, 0xB5, 0x88, 0xC4, 0xB0,
+    0x40, 0xE6, 0xB5, 0xB9, 0x18, 0x00, 0xE2, 0xFE, 0xF6, 0xC4, 0x01, 0x75,
+    0x04, 0x59, 0x58, 0x9D, 0xCB, 0xFA, 0x31, 0xC0, 0xE6, 0xB7, 0xB0, 0xDD,
+    0xE6, 0xE2, 0x31, 0xC0, 0xE7, 0x00, 0x48, 0x50, 0x40, 0x50, 0x48, 0x68,
+    0x90, 0xEA, 0x68, 0xE7, 0xE4, 0x68, 0xE6, 0xC0, 0x89, 0xE1, 0x16, 0x51,
+    0xCB
+};
+#define KR_HOOK_SIZE  sizeof(kr_hook)
+#define KR_HOOK_PLAIN 0x0B
+#define KR_HOOK_RET1  0x13
+#define KR_HOOK_RET2  0x34
+
+enum { KR_PLAIN, KR_PLAIN_CX0, KR_SELECT, KR_SELECT_CX0, KR_LOOP };
+
+typedef struct {
+    uint16_t bank, start, in;
+    uint8_t form;
+} kr_site_t;
+
+#define KR_BYTE(ofs) (((const uint8_t __far*) MK_FP(0x1000, 0))[(uint16_t) (ofs)])
+
+// The button read whose "mov al, 40h" is at i (bank mapped):
+//   loop:       ... mov cx,n / (nop) / loop / pop cx / in   -> from the mov cx
+//   select:     out / nop... / in                           -> from the out
+//   select-cx0: out / mov cx,n / loop $ / nop... / in       -> from the out
+//   plain-cx0:  out / code / mov cx,n / loop $ / nop... / in -> from the mov cx
+//   plain:      out / other code / nop... / in              -> from the NOPs
+static bool kr_read_site(uint16_t i, kr_site_t *site) {
+    uint16_t si = i + 4, in = 0;
+    for (uint8_t k = 0; k < 96; k++, si++) {
+        if (si < i)
+            return false; // past the end of the bank
+        if (KR_BYTE(si) == 0xB5) {
+            uint8_t p = KR_BYTE(si - 1);
+            if (p == 0xE4) {
+                in = si - 1;
+                break;
+            }
+            if (p == 0xE6 || p == 0xE7)
+                return false;
+        }
+    }
+    if (!in)
+        return false;
+    site->in = in;
+    if (KR_BYTE(in - 1) == 0x59) {
+        if (KR_BYTE(in - 3) != 0xE2)
+            return false;
+        uint8_t d = KR_BYTE(in - 2);
+        site->form = KR_LOOP;
+        if (d == 0xFE && KR_BYTE(in - 6) == 0xB9)
+            site->start = in - 6;
+        else if (d == 0xFD && KR_BYTE(in - 4) == 0x90 && KR_BYTE(in - 7) == 0xB9)
+            site->start = in - 7;
+        else if (d == 0xFC && KR_BYTE(in - 5) == 0x90 && KR_BYTE(in - 4) == 0x90 && KR_BYTE(in - 8) == 0xB9)
+            site->start = in - 8;
+        else
+            return false;
+        return true;
+    }
+    uint8_t n = 0;
+    while (n < 255 && KR_BYTE(in - 1 - n) == 0x90)
+        n++;
+    uint16_t k = in - n; // first NOP (or the IN)
+    if (k == i + 4) {
+        site->form = KR_SELECT;
+        site->start = i + 2;
+        return true;
+    }
+    if (k - 5 >= i + 4 && KR_BYTE(k - 5) == 0xB9 && KR_BYTE(k - 2) == 0xE2 && KR_BYTE(k - 1) == 0xFE) {
+        // "mov cx, n / loop $" right before the NOPs
+        if (k - 5 == i + 4) {
+            site->form = KR_SELECT_CX0;
+            site->start = i + 2;
+        } else {
+            site->form = KR_PLAIN_CX0;
+            site->start = k - 5;
+        }
+        return true;
+    }
+    if (n >= 1) {
+        site->form = KR_PLAIN;
+        site->start = k;
+        return true;
+    }
+    return false;
+}
+
+// Place for the hook in the mapped bank, 0 if none: see keypad_reset_free();
+// else, but not in the ROM's last bank (header), 00h padding up to the end
+// of the bank.
+static uint16_t kr_free(bool last_bank) {
+    uint16_t place = keypad_reset_free(KR_HOOK_SIZE);
+    if (place || last_bank)
+        return place;
+    uint16_t need = KR_HOOK_SIZE + 128 < 256 ? 256 : KR_HOOK_SIZE + 128;
+    for (uint16_t ofs = 0xFF00 - need; ofs != 0; ofs++) // up to 0xFFFF
+        if (KR_BYTE(ofs) != 0x00)
+            return 0;
+    return 0xFF00 - KR_HOOK_SIZE - 64;
+}
+
+static inline bool kr_linear(uint16_t bank, uint16_t banks) {
+    // seen in the linear window (segments 4-F)
+    return banks < 16 || ((bank - banks) & 0x0F) >= 4;
+}
+
+static void kr_map(uint16_t bank) {
+    outportw(WS_CART_EXTBANK_RAM_PORT, bank);
+}
+
+// Flash mode must be on. Returns true if at least one read was patched.
+static bool keypad_auto_patch(uint16_t banks) {
+    kr_site_t sites[2];
+    uint8_t count = 0;
+    uint16_t first = banks > 16 ? banks - 16 : 0;
+
+    for (uint16_t b = first; b < banks; b++) {
+        kr_map(b);
+        uint16_t i = keypad_reset_find(8);
+        while (i) {
+            kr_site_t s;
+            if (kr_read_site(i, &s)) {
+                if (count == 2)
+                    return false; // not the classic single routine
+                s.bank = b;
+                sites[count++] = s;
+            }
+            i = keypad_reset_find(i + 1);
+        }
+    }
+
+    bool done = false;
+    while (count) {
+        kr_site_t *s = &sites[--count];
+        bool far = kr_linear(s->bank, banks);
+        uint16_t room = s->in + 2 - s->start;
+        uint8_t prefix = s->form == KR_LOOP ? 1 : 0;
+        uint8_t suffix = (s->form == KR_SELECT_CX0 || s->form == KR_PLAIN_CX0) ? 3 : 0;
+        if (room < prefix + (far ? 5 : 3) + suffix)
+            continue;
+
+        // the hook: in the read's bank, or (far call) in another linear bank
+        uint16_t hb = s->bank, hook;
+        kr_map(hb);
+        hook = kr_free(hb == banks - 1);
+        if (!hook && far) {
+            for (hb = banks - 1; ; hb--) {
+                if (hb != s->bank && kr_linear(hb, banks)) {
+                    kr_map(hb);
+                    if ((hook = kr_free(hb == banks - 1)))
+                        break;
+                }
+                if (hb == first)
+                    break;
+            }
+        }
+        if (!hook)
+            continue;
+        uint8_t __far *bank = MK_FP(0x1000, 0);
+        _fmemcpy(bank + hook, kr_hook, KR_HOOK_SIZE);
+        if (!far)
+            bank[hook + KR_HOOK_RET1] = bank[hook + KR_HOOK_RET2] = 0xC3;
+        uint16_t entry = hook + ((s->form == KR_SELECT || s->form == KR_SELECT_CX0) ? 0 : KR_HOOK_PLAIN);
+
+        kr_map(s->bank);
+        bank = MK_FP(0x1000, 0); // (the same window, now on the read's bank)
+        uint16_t p = s->start;
+        if (prefix)
+            bank[p++] = 0x59; // pop cx (the loop goes)
+        if (far) {
+            uint16_t seg = ((hb - banks) & 0x0F) << 12;
+            bank[p] = 0x9A;
+            bank[p + 1] = entry;
+            bank[p + 2] = entry >> 8;
+            bank[p + 3] = seg;
+            bank[p + 4] = seg >> 8;
+            p += 5;
+        } else {
+            uint16_t rel = entry - (p + 3);
+            bank[p] = 0xE8;
+            bank[p + 1] = rel;
+            bank[p + 2] = rel >> 8;
+            p += 3;
+        }
+        if (suffix) {
+            bank[p] = 0xB9; // mov cx, 0: as after the game's loop
+            bank[p + 1] = 0;
+            bank[p + 2] = 0;
+            p += 3;
+        }
+        while (p != s->in + 2)
+            bank[p++] = 0x90;
+        done = true;
+    }
+    return done;
+}
+
 int16_t launch_keypad_patch(const char *path, const launch_rom_metadata_t *meta) {
     FIL pf, rf;
     char line[KP_LINE_SIZE];
@@ -588,10 +809,10 @@ int16_t launch_keypad_patch(const char *path, const launch_rom_metadata_t *meta)
     snprintf(line, sizeof(line), "/NILESWAN/PATCHES/%02X%02X%02X%04X%04X.Y1P",
         meta->footer.publisher_id, meta->footer.game_id, meta->footer.game_version,
         meta->footer.checksum, meta->rom_banks);
-    if (f_open(&pf, line, FA_OPEN_EXISTING | FA_READ) != FR_OK)
-        return FR_NO_FILE;
+    bool have_file = f_open(&pf, line, FA_OPEN_EXISTING | FA_READ) == FR_OK;
     if (f_open(&rf, path, FA_OPEN_EXISTING | FA_READ) != FR_OK) {
-        f_close(&pf);
+        if (have_file)
+            f_close(&pf);
         return FR_NO_FILE;
     }
     uint32_t rom_size = f_size(&rf);
@@ -600,7 +821,7 @@ int16_t launch_keypad_patch(const char *path, const launch_rom_metadata_t *meta)
     uint32_t start = 0, found = 0xFFFFFFFF;
     bool ok = true;
     uint16_t records = 0;
-    while (true) {
+    while (have_file) {
         r = ini_next(&pf, line, sizeof(line), &key, &value);
         if (r == INI_NEXT_ERROR)
             break;
@@ -628,15 +849,12 @@ int16_t launch_keypad_patch(const char *path, const launch_rom_metadata_t *meta)
             records++;
     }
     f_close(&rf);
-    if (found == 0xFFFFFFFF) {
-        f_close(&pf);
-        return FR_NO_FILE;
-    }
 
-    // Load the ROM and write the variant's new bytes
+    // Load the ROM; then the variant's new bytes, or the automatic patch
     uint32_t max_size = (uint32_t) asset_heap_get_free_first_banks() << 16;
     if (rom_size > max_size) {
-        f_close(&pf);
+        if (have_file)
+            f_close(&pf);
         return FR_NO_FILE;
     }
     uint16_t prev_ram = inportw(WS_CART_EXTBANK_RAM_PORT);
@@ -645,29 +863,38 @@ int16_t launch_keypad_patch(const char *path, const launch_rom_metadata_t *meta)
     progress_lk = 0xFFFF;
     progress_show(LK_UI_STATUS_PATCH_LOADING, 0, 1);
     uint32_t size;
+    bool patched = false;
     result = load_rom_to_psram(path, 0, &size);
-    if (result == FR_OK)
-        result = f_lseek(&pf, found);
     if (result == FR_OK) {
         outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_ENABLE);
-        while ((r = ini_next(&pf, line, sizeof(line), &key, &value)) == INI_NEXT_KEY_VALUE) {
-            if (strcmp(key, "p"))
-                continue;
-            uint32_t ofs;
-            uint16_t n = kp_record(value, &ofs, 2, buf);
-            if (n)
-                psram_write(ofs, buf, n);
+        if (found != 0xFFFFFFFF) {
+            result = f_lseek(&pf, found);
+            while (result == FR_OK
+                && (r = ini_next(&pf, line, sizeof(line), &key, &value)) == INI_NEXT_KEY_VALUE) {
+                if (strcmp(key, "p"))
+                    continue;
+                uint32_t ofs;
+                uint16_t n = kp_record(value, &ofs, 2, buf);
+                if (n)
+                    psram_write(ofs, buf, n);
+            }
+            patched = result == FR_OK;
+        } else {
+            ui_draw_statusbar(lang_keys[LK_UI_STATUS_PATCH_STARTING]);
+            patched = keypad_auto_patch((size + 0xFFFF) >> 16);
         }
     }
     outportb(WS_CART_BANK_FLASH_PORT, prev_flash);
     outportw(WS_CART_EXTBANK_ROM0_PORT, prev_rom0);
     outportw(WS_CART_EXTBANK_RAM_PORT, prev_ram);
-    f_close(&pf);
+    if (have_file)
+        f_close(&pf);
     if (result != FR_OK)
         return FR_NO_FILE; // launched the usual way instead
 
+    // launched from PSRAM, patched or not (no second load)
     bootstub_data->prog.size = size;
     bootstub_data->prog.cluster = BOOTSTUB_CLUSTER_AT_PSRAM;
-    launch_keypad_patched = true;
+    launch_keypad_patched = patched;
     return FR_OK;
 }

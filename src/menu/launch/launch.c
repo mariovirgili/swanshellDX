@@ -933,13 +933,10 @@ int16_t launch_rom_via_bootstub(const launch_rom_metadata_t *meta) {
     bootstub_data->prog_patches = bootstub_data->prog_rom_type == ROM_TYPE_FREYA ? BOOTSTUB_PROG_PATCH_FREYA_SOFT_RESET : 0;
     // START + Y1 back to the menu: the bootstub looks for the game's button
     // read and patches it only if it has the classic form
-    // (a patch from /NILESWAN/PATCHES is already in: no search, only the
-    // flash kept awake for the reset)
-    if (launch_keypad_patched)
+    // START + Y1 patched in by launch_keypad_patch(): the flash stays awake
+    // for the reset into the menu
+    if (launch_keypad_patched && !is_plugin)
         bootstub_data->prog_patches |= BOOTSTUB_PROG_PATCH_KEYPAD_HOOKED;
-    else if (bootstub_data->prog_rom_type == ROM_TYPE_WS && !is_plugin
-        && (settings.prog.flags & SETTING_PROG_FLAG_KEYPAD_RESET))
-        bootstub_data->prog_patches |= BOOTSTUB_PROG_PATCH_KEYPAD_RESET;
     launch_keypad_patched = false;
     if (bootstub_data->prog_rom_type == ROM_TYPE_PCV2) {
         bootstub_data->start_pointer = MK_FP(0x4000, 0x0010);
