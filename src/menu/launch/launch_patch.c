@@ -48,6 +48,8 @@
 #include "ui/ui.h"
 #include "util/asset_heap.h"
 #include "util/file.h"
+#include "util/ini.h"
+#include "settings.h"
 #include <stdio.h>
 
 #define PSRAM_BANK_SIZE 0x10000UL
@@ -506,4 +508,166 @@ int16_t launch_patched_rom(const char *patch_path) {
 exit_no_launch:
     mcu_reset_if_not_native();
     return result;
+}
+
+/* === START + Y1 patches (/NILESWAN/PATCHES) ===
+ *
+ * One text file per game, named after the ROM footer (the last 16 bytes,
+ * read at once, while a CRC32 of a 4-16 MB ROM would take seconds here):
+ *     <publisher><game id><version><checksum><banks>.Y1P
+ * in hex, 2+2+2+4+4 digits: "01230045A10010.Y1P". A file may hold several
+ * variants (the original and its translations often share the footer):
+ *     ; comment
+ *     [GunPey (J)]
+ *     crc=A1656BBB                    (for people; not checked)
+ *     p=0EEE31:9090909090:9A76FE00E0  (file offset : original : new, hex)
+ *     p=...
+ * The first variant whose original bytes all match the ROM file is
+ * applied, after loading the ROM into PSRAM. Records hold up to 160 bytes
+ * (the hook is 74). */
+
+bool launch_keypad_patched;
+
+#define KP_MAX_BYTES 160
+#define KP_LINE_SIZE (16 + KP_MAX_BYTES * 4 + 8)
+
+static int8_t hex_nibble(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    return -1;
+}
+
+// "offset:orig:new": offset, and with which = 1 the original bytes, 2 the
+// new ones, into buf. Returns the byte count, 0 if malformed.
+static uint16_t kp_record(const char *v, uint32_t *ofs, uint8_t which, uint8_t *buf) {
+    uint32_t o = 0;
+    int8_t n;
+    while ((n = hex_nibble(*v)) >= 0) {
+        o = (o << 4) | n;
+        v++;
+    }
+    if (*v != ':')
+        return 0;
+    *ofs = o;
+    for (uint8_t field = 1; field <= 2; field++) {
+        uint16_t count = 0;
+        v++;
+        while (true) {
+            int8_t hi = hex_nibble(v[0]);
+            if (hi < 0)
+                break;
+            int8_t lo = hex_nibble(v[1]);
+            if (lo < 0 || count >= KP_MAX_BYTES)
+                return 0;
+            if (field == which)
+                buf[count] = (hi << 4) | lo;
+            count++;
+            v += 2;
+        }
+        if (field == which)
+            return count;
+        if (*v != ':')
+            return 0;
+    }
+    return 0;
+}
+
+int16_t launch_keypad_patch(const char *path, const launch_rom_metadata_t *meta) {
+    FIL pf, rf;
+    char line[KP_LINE_SIZE];
+    uint8_t buf[KP_MAX_BYTES], rom_buf[KP_MAX_BYTES];
+    char *key, *value;
+    ini_next_result_t r;
+    int16_t result;
+
+    launch_keypad_patched = false;
+    if (!(settings.prog.flags & SETTING_PROG_FLAG_KEYPAD_RESET) || meta->rom_type != ROM_TYPE_WS)
+        return FR_NO_FILE;
+
+    snprintf(line, sizeof(line), "/NILESWAN/PATCHES/%02X%02X%02X%04X%04X.Y1P",
+        meta->footer.publisher_id, meta->footer.game_id, meta->footer.game_version,
+        meta->footer.checksum, meta->rom_banks);
+    if (f_open(&pf, line, FA_OPEN_EXISTING | FA_READ) != FR_OK)
+        return FR_NO_FILE;
+    if (f_open(&rf, path, FA_OPEN_EXISTING | FA_READ) != FR_OK) {
+        f_close(&pf);
+        return FR_NO_FILE;
+    }
+    uint32_t rom_size = f_size(&rf);
+
+    // Find the first variant whose original bytes are all in the ROM
+    uint32_t start = 0, found = 0xFFFFFFFF;
+    bool ok = true;
+    uint16_t records = 0;
+    while (true) {
+        r = ini_next(&pf, line, sizeof(line), &key, &value);
+        if (r == INI_NEXT_ERROR)
+            break;
+        if (r == INI_NEXT_FINISHED || r == INI_NEXT_CATEGORY) {
+            if (ok && records) {
+                found = start;
+                break;
+            }
+            if (r == INI_NEXT_FINISHED)
+                break;
+            start = f_tell(&pf);
+            ok = true;
+            records = 0;
+            continue;
+        }
+        if (!ok || strcmp(key, "p"))
+            continue;
+        uint32_t ofs;
+        uint16_t n = kp_record(value, &ofs, 1, buf);
+        UINT br;
+        if (n == 0 || ofs + n > rom_size || f_lseek(&rf, ofs) != FR_OK
+            || f_read(&rf, rom_buf, n, &br) != FR_OK || br != n || memcmp(buf, rom_buf, n))
+            ok = false;
+        else
+            records++;
+    }
+    f_close(&rf);
+    if (found == 0xFFFFFFFF) {
+        f_close(&pf);
+        return FR_NO_FILE;
+    }
+
+    // Load the ROM and write the variant's new bytes
+    uint32_t max_size = (uint32_t) asset_heap_get_free_first_banks() << 16;
+    if (rom_size > max_size) {
+        f_close(&pf);
+        return FR_NO_FILE;
+    }
+    uint16_t prev_ram = inportw(WS_CART_EXTBANK_RAM_PORT);
+    uint16_t prev_rom0 = inportw(WS_CART_EXTBANK_ROM0_PORT);
+    uint8_t prev_flash = inportb(WS_CART_BANK_FLASH_PORT);
+    progress_lk = 0xFFFF;
+    progress_show(LK_UI_STATUS_PATCH_LOADING, 0, 1);
+    uint32_t size;
+    result = load_rom_to_psram(path, 0, &size);
+    if (result == FR_OK)
+        result = f_lseek(&pf, found);
+    if (result == FR_OK) {
+        outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_ENABLE);
+        while ((r = ini_next(&pf, line, sizeof(line), &key, &value)) == INI_NEXT_KEY_VALUE) {
+            if (strcmp(key, "p"))
+                continue;
+            uint32_t ofs;
+            uint16_t n = kp_record(value, &ofs, 2, buf);
+            if (n)
+                psram_write(ofs, buf, n);
+        }
+    }
+    outportb(WS_CART_BANK_FLASH_PORT, prev_flash);
+    outportw(WS_CART_EXTBANK_ROM0_PORT, prev_rom0);
+    outportw(WS_CART_EXTBANK_RAM_PORT, prev_ram);
+    f_close(&pf);
+    if (result != FR_OK)
+        return FR_NO_FILE; // launched the usual way instead
+
+    bootstub_data->prog.size = size;
+    bootstub_data->prog.cluster = BOOTSTUB_CLUSTER_AT_PSRAM;
+    launch_keypad_patched = true;
+    return FR_OK;
 }

@@ -51,9 +51,16 @@ int16_t launch_router_file(char *path, const char *ext, uint16_t flags) {
                     }
                 }
                 if (result == FR_OK) {
-                    result = launch_set_bootstub_file_entry(path, &bootstub_data->prog);
-                    if (result == FR_OK) {
+                    // START + Y1: the game's patch from /NILESWAN/PATCHES,
+                    // if there is one (the ROM is then already in PSRAM)
+                    if (!(flags & LAUNCH_ROUTER_USE_SERIAL_OUT)
+                        && launch_keypad_patch(path, &meta) == FR_OK) {
                         result = launch_rom_via_bootstub(&meta);
+                    } else {
+                        result = launch_set_bootstub_file_entry(path, &bootstub_data->prog);
+                        if (result == FR_OK) {
+                            result = launch_rom_via_bootstub(&meta);
+                        }
                     }
                 }
             }

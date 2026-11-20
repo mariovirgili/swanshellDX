@@ -16,6 +16,10 @@
 #ifndef LAUNCH_PATCH_H_
 #define LAUNCH_PATCH_H_
 
+#include <stdbool.h>
+#include <stdint.h>
+#include "launch.h"
+
 #include <stdint.h>
 
 /**
@@ -30,5 +34,22 @@
  * Only returns on error.
  */
 int16_t launch_patched_rom(const char *patch_path);
+
+/**
+ * SwanShellDX, START + Y1 back to the menu: look for this ROM's patch in
+ * /NILESWAN/PATCHES (named after the ROM footer, see the .c file). If one
+ * of its variants matches the ROM, the ROM is loaded into PSRAM, patched
+ * and left there for launch_rom_via_bootstub() (prog.cluster/size set,
+ * launch_keypad_patched true).
+ *
+ * Returns FR_OK when patched, FR_NO_FILE when there is nothing to apply
+ * (option off, not a WonderSwan ROM, no patch file, no matching variant):
+ * the caller then launches the ROM as usual, and the bootstub's own search
+ * takes over.
+ */
+int16_t launch_keypad_patch(const char *path, const launch_rom_metadata_t *meta);
+
+/// Set by launch_keypad_patch(); read and cleared by launch_rom_via_bootstub().
+extern bool launch_keypad_patched;
 
 #endif /* LAUNCH_PATCH_H_ */

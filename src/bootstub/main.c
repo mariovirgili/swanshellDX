@@ -290,7 +290,7 @@ int main(void) {
 	outportb(WS_SYSTEM_CTRL_COLOR_PORT, bootstub_data->prog_flags2);
 
 	// deinitialize cartridge
-	if (bootstub_data->prog_patches & (BOOTSTUB_PROG_PATCH_FREYA_SOFT_RESET | BOOTSTUB_PROG_PATCH_KEYPAD_RESET)) {
+	if (bootstub_data->prog_patches & (BOOTSTUB_PROG_PATCH_FREYA_SOFT_RESET | BOOTSTUB_PROG_PATCH_KEYPAD_RESET | BOOTSTUB_PROG_PATCH_KEYPAD_HOOKED)) {
 		// FIXME: soft reset patch does not wake up flash, which crashes IPL0
 		// as it expects flash to be ready; therefore, for now, bootstub has to
 		// keep it awake during execution.
