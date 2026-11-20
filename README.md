@@ -1,3 +1,5 @@
+# SwanShellDX! Coming soon...
+___________________________
 # swanshell
 
 [![Translation status](https://weblate.asie.pl/widget/49bitcat/swanshell/svg-badge.svg)](https://weblate.asie.pl/engage/49bitcat/)
