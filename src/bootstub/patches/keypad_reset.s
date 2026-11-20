@@ -188,7 +188,8 @@ patch_apply_keypad_reset:
     //     mov al, 40h / out 0B5h, al / (up to 96 bytes without another
     //     OUT to 0B5h) / in al, 0B5h
     // where the IN follows a NOP, or the end of a delay loop
-    //     push cx / mov cx, n / (nop) / loop / pop cx
+    //     push cx / mov cx, n / loop $ (or a loop over one or two NOPs:
+    //     nothing else, as the loop goes) / pop cx
     // (the caller tells them apart by the byte before the IN).
     .global keypad_reset_find
 keypad_reset_find:
@@ -236,13 +237,21 @@ keypad_reset_find:
     je 5f
     cmp al, 0x59            // pop cx
     jne 1b
-    cmp byte ptr es:[si - 3], 0xE2  // loop back by 2 or 3 bytes
+    cmp byte ptr es:[si - 3], 0xE2  // loop ...
     jne 1b
     mov al, es:[si - 2]
-    cmp al, 0xFC
-    jb 1b
-    cmp al, 0xFD
-    ja 1b
+    cmp al, 0xFE            // loop $
+    je 5f
+    cmp al, 0xFD            // loop over one NOP
+    jne 6f
+    cmp byte ptr es:[si - 4], 0x90
+    je 5f
+    jmp 1b
+6:
+    cmp al, 0xFC            // loop over two NOPs
+    jne 1b
+    cmp word ptr es:[si - 5], 0x9090
+    jne 1b
 5:
     mov ax, dx
     jmp 9f
@@ -257,16 +266,21 @@ keypad_reset_find:
     IA16_RET
 
     // ax = bytes needed
-    // returns ax = offset of a free place (inside a run of at least 256
-    // bytes of FFh, 64 bytes after its start) in the mapped bank, 0 if none.
-    // The last 256 bytes of the bank are not used.
+    // returns ax = offset of a free place in the mapped bank, 0 if none:
+    // the last run of at least 256 FFh bytes (and 128 more than needed)
+    // that reaches 0xFF00 or is at least 1 KB long, with the hook 64 bytes
+    // before its end. The padding at the end of the bank's code is the
+    // likeliest to be really unused; the first run found used to be inside
+    // graphics or tables, and the games crashed.
     .global keypad_reset_free
 keypad_reset_free:
     push bx
     push cx
     push dx
+    push si
     push di
     push es
+    push ax                 // the size, for the end
     push 0x1000
     pop es
     cld
@@ -276,19 +290,20 @@ keypad_reset_free:
     jae 0f
     mov bx, 256
 0:
+    xor si, si              // si = end of the last run long enough
     xor di, di
 1:
     mov cx, 0xFF00
     sub cx, di
-    jbe 8f
+    jbe 7f
     mov al, 0xFF
     repne scasb             // the start of a run
-    jne 8f
+    jne 7f
     mov dx, di
     dec dx                  // dx = first FFh
     mov cx, 0xFF00
     sub cx, di
-    jbe 8f
+    jbe 7f
     repe scasb              // its end
     jne 2f
     inc di                  // ran to the limit: all FFh
@@ -298,14 +313,27 @@ keypad_reset_free:
     sub ax, dx
     cmp ax, bx
     jb 1b
-    mov ax, dx
-    add ax, 64
+    cmp di, 0xFF00          // padding up to the end of the bank
+    je 3f
+    cmp ax, 1024            // elsewhere only a long run: shorter ones were
+    jb 1b                   // blank tiles or tables (Tetsuman, Anchorz Field)
+3:
+    mov si, di
+    jmp 1b
+7:
+    pop ax
+    test si, si
+    jz 8f
+    xchg ax, si             // ax = end, si = size
+    sub ax, si
+    sub ax, 64
     jmp 9f
 8:
     xor ax, ax
 9:
     pop es
     pop di
+    pop si
     pop dx
     pop cx
     pop bx
