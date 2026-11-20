@@ -729,6 +729,11 @@ static bool keypad_auto_patch(uint16_t banks) {
     }
 
     bool done = false;
+    // hooks already copied (a second read reuses one it can reach: the
+    // padding may not hold two)
+    uint16_t placed_bank[2], placed_hook[2];
+    bool placed_far[2];
+    uint8_t placed = 0;
     while (count) {
         kr_site_t *s = &sites[--count];
         bool far = kr_linear(s->bank, banks);
@@ -738,27 +743,43 @@ static bool keypad_auto_patch(uint16_t banks) {
         if (room < prefix + (far ? 5 : 3) + suffix)
             continue;
 
-        // the hook: in the read's bank, or (far call) in another linear bank
-        uint16_t hb = s->bank, hook;
-        kr_map(hb);
-        hook = kr_free(hb == banks - 1);
-        if (!hook && far) {
-            for (hb = banks - 1; ; hb--) {
-                if (hb != s->bank && kr_linear(hb, banks)) {
-                    kr_map(hb);
-                    if ((hook = kr_free(hb == banks - 1)))
-                        break;
-                }
-                if (hb == first)
-                    break;
+        // the hook: one already copied that this call can reach (any far
+        // one for a far call, one in the same bank for a near call), else a
+        // new copy in the read's bank or (far call) in another linear bank
+        uint16_t hb = 0, hook = 0;
+        for (uint8_t j = 0; j < placed; j++) {
+            if (placed_far[j] == far && (far || placed_bank[j] == s->bank)) {
+                hb = placed_bank[j];
+                hook = placed_hook[j];
+                break;
             }
         }
-        if (!hook)
-            continue;
         uint8_t __far *bank = MK_FP(0x1000, 0);
-        _fmemcpy(bank + hook, kr_hook, KR_HOOK_SIZE);
-        if (!far)
-            bank[hook + KR_HOOK_RET1] = bank[hook + KR_HOOK_RET2] = 0xC3;
+        if (!hook) {
+            hb = s->bank;
+            kr_map(hb);
+            hook = kr_free(hb == banks - 1);
+            if (!hook && far) {
+                for (hb = banks - 1; ; hb--) {
+                    if (hb != s->bank && kr_linear(hb, banks)) {
+                        kr_map(hb);
+                        if ((hook = kr_free(hb == banks - 1)))
+                            break;
+                    }
+                    if (hb == first)
+                        break;
+                }
+            }
+            if (!hook)
+                continue;
+            bank = MK_FP(0x1000, 0);
+            _fmemcpy(bank + hook, kr_hook, KR_HOOK_SIZE);
+            if (!far)
+                bank[hook + KR_HOOK_RET1] = bank[hook + KR_HOOK_RET2] = 0xC3;
+            placed_bank[placed] = hb;
+            placed_hook[placed] = hook;
+            placed_far[placed++] = far;
+        }
         uint16_t entry = hook + ((s->form == KR_SELECT || s->form == KR_SELECT_CX0) ? 0 : KR_HOOK_PLAIN);
 
         kr_map(s->bank);
