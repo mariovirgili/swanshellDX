@@ -2959,6 +2959,16 @@ static uint8_t st_file_write(void) {
     return bad;
 }
 // at the start: the file, if there is one and it is this build's
+// The card's driver moves the cartridge windows: back to the ROM banks the
+// game mapped (slots 0 and 1) and to slot 2's RAM window. Without this a
+// game that keeps the banks it started with (Addams Family, Alex Kidd)
+// ran on whatever the card left there: black or white screen.
+static void st_windows_restore(void) {
+    outportw(WS_CART_EXTBANK_ROM0_PORT, GG_PSRAM_FIRST_BANK + (drc_st.keys[1] >> 2));
+    outportw(WS_CART_EXTBANK_ROM1_PORT, GG_PSRAM_FIRST_BANK + (drc_st.keys[2] >> 2));
+    ws_ram_window_restore();
+}
+
 static void st_file_read(void) {
     uint8_t bad = 0;
     UINT br;
@@ -3030,6 +3040,7 @@ __attribute__((noinline)) static void state_save(void) {
     uint8_t snd = inportb(WS_SOUND_CH_CTRL_PORT);
     outportb(WS_SOUND_CH_CTRL_PORT, 0);
     if (st_file_write()) st_show("FILE");           // (kept in memory, not on the card)
+    st_windows_restore();
     outportb(WS_SOUND_CH_CTRL_PORT, snd);
 }
 // (the internal RAM from a to b as it was kept)
@@ -3494,6 +3505,7 @@ int main(void) {
 
 #ifdef ST_STATES
     st_file_read();
+    st_windows_restore();
 #endif
     ia16_disable_irq();
     ws_int_set_handler(WS_INT_VBLANK, (ia16_int_handler_t) vblank_irq_entry);
