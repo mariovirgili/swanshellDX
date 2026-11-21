@@ -100,6 +100,8 @@ bool ui_file_selector_default_predicate(const FILINFO __far *fno, const char __f
             if (!strcasecmp(ext, s_file_ext_eeprom)) return false;
             if (!strcasecmp(ext, s_file_ext_flash)) return false;
             if (!strcasecmp(ext, s_file_ext_rtc)) return false;
+            if (!strcasecmp(ext, s_file_ext_sav)) return false;
+            if (!strcasecmp(ext, s_file_ext_state)) return false;
         }
     }
 

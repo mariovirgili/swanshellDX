@@ -70,6 +70,9 @@ DEFINE_STRING(s_file_ext_sram, ".ram");
 DEFINE_STRING(s_file_ext_eeprom, ".eeprom");
 DEFINE_STRING(s_file_ext_flash, ".flash");
 DEFINE_STRING(s_file_ext_rtc, ".rtc");
+// the emulator plugins: a game's save and its savestate
+DEFINE_STRING(s_file_ext_sav, ".sav");
+DEFINE_STRING(s_file_ext_state, ".st0");
 
 DEFINE_STRING(s_path_save_ini, "/NILESWAN/SAVE.INI");
 DEFINE_STRING(s_path_config_ini, "/NILESWAN/CONFIG.INI");

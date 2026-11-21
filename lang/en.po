@@ -225,7 +225,7 @@ msgid "SETTINGS_FILE_SHOW_SAVES_KEY"
 msgstr "Show save files"
 
 msgid "SETTINGS_FILE_SHOW_SAVES_HELP"
-msgstr "Shows or hides files used for save data (.ram, .flash, .eeprom, .rtc)."
+msgstr "Shows or hides files used for save data (.ram, .flash, .eeprom, .rtc) and the plugins' saves and savestates (.sav, .st0). Patches (.ips, .bps) are always shown."
 
 msgid "SETTINGS_FILE_SORT_FILESYSTEM"
 msgstr "Filesystem"
