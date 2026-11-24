@@ -73,6 +73,8 @@ DEFINE_STRING(s_file_ext_rtc, ".rtc");
 // the emulator plugins: a game's save and its savestate
 DEFINE_STRING(s_file_ext_sav, ".sav");
 DEFINE_STRING(s_file_ext_state, ".st0");
+// the plugins' menu settings for one game (the plugin's are in /NILESWAN)
+DEFINE_STRING(s_file_ext_cfg, ".cfg");
 
 DEFINE_STRING(s_path_save_ini, "/NILESWAN/SAVE.INI");
 DEFINE_STRING(s_path_config_ini, "/NILESWAN/CONFIG.INI");

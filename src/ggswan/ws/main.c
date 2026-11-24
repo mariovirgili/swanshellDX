@@ -3425,10 +3425,14 @@ static void frame_step(void) {
  */
 static uint16_t font_entry(char c);
 #define MENU_W 28
-enum { MP_MAIN, MP_VIDEO, MP_AUDIO, MP_STATES, MP_ABOUT };
-enum { MI_NONE, MI_PAGE_VIDEO, MI_PAGE_AUDIO, MI_PAGE_STATES, MI_PAGE_ABOUT,
+enum { MP_MAIN, MP_VIDEO, MP_AUDIO, MP_STATES, MP_OPTIONS, MP_ABOUT };
+enum { MI_NONE, MI_PAGE_VIDEO, MI_PAGE_AUDIO, MI_PAGE_STATES, MI_PAGE_OPTIONS, MI_PAGE_ABOUT,
        MI_FRAMESKIP, MI_STRETCH, MI_PROFILER, MI_SPRITES, MI_SAVE, MI_LOAD,
-       MI_VOLUME, MI_SOUND };
+       MI_VOLUME, MI_SOUND, MI_SCOPE, MI_DEFAULTS };
+// the settings saved per game (the ROM's .cfg) rather than for the
+// plugin (OPTIONS; below, cfg_*)
+static uint8_t cfg_game;
+static void cfg_defaults(void);
 
 static uint16_t menu_blank;
 static void menu_text(uint8_t row, uint8_t col, const char __far *t) {
@@ -3450,7 +3454,12 @@ static uint8_t menu_items(uint8_t page, uint8_t *it) {
 #ifdef ST_STATES
         it[n++] = MI_PAGE_STATES;
 #endif
+        it[n++] = MI_PAGE_OPTIONS;
         it[n++] = MI_PAGE_ABOUT;
+        break;
+    case MP_OPTIONS:
+        it[n++] = MI_SCOPE;
+        it[n++] = MI_DEFAULTS;
         break;
     case MP_VIDEO:
         it[n++] = MI_FRAMESKIP;
@@ -3508,6 +3517,12 @@ static void menu_change(uint8_t item, uint8_t back) {
         snd_mute ^= 1;
         snd_volume_set();
         break;
+    case MI_SCOPE:
+        cfg_game ^= 1;
+        break;
+    case MI_DEFAULTS:
+        cfg_defaults();
+        break;
 #if defined(GGSWAN_SG1000)
     case MI_STRETCH: sg_squeeze ^= 1; break;
     case MI_SPRITES: sg_limit ^= 1; sg_spr_dirty = 2; break;
@@ -3526,6 +3541,9 @@ static const char __far *menu_label(uint8_t item) {
     switch (item) {
     case MI_PAGE_VIDEO: return "VIDEO";
     case MI_PAGE_AUDIO: return "AUDIO";
+    case MI_PAGE_OPTIONS: return "OPTIONS";
+    case MI_SCOPE: return "SAVE SETTINGS FOR";
+    case MI_DEFAULTS: return "RESET TO DEFAULTS";
     case MI_VOLUME: return "VOLUME";
     case MI_SOUND: return "SOUND";
     case MI_PAGE_STATES: return "STATES";
@@ -3543,7 +3561,7 @@ static const char __far *menu_label(uint8_t item) {
 static void menu_draw(uint8_t page, uint8_t sel) {
     uint8_t it[8];
     menu_clear();
-    menu_text(1, 2, page == MP_VIDEO ? "VIDEO" : page == MP_AUDIO ? "AUDIO" : page == MP_STATES ? "STATES" : page == MP_ABOUT ? "ABOUT" : "MENU");
+    menu_text(1, 2, page == MP_VIDEO ? "VIDEO" : page == MP_AUDIO ? "AUDIO" : page == MP_OPTIONS ? "OPTIONS" : page == MP_STATES ? "STATES" : page == MP_ABOUT ? "ABOUT" : "MENU");
     if (page == MP_ABOUT) {
 #ifdef GGSWAN_SF7000
         menu_text(4, 2, "SFSWAN - SC-3000 + SF-7000");
@@ -3581,6 +3599,8 @@ static void menu_draw(uint8_t page, uint8_t sel) {
         } else if (it[i] == MI_VOLUME) {
             char t[4] = { (char) ('0' + snd_vol), '/', '8', 0 };
             menu_text(row, 22, t);
+        } else if (it[i] == MI_SCOPE) {
+            menu_text(row + 1, 4, cfg_game ? "THIS GAME" : "THE PLUGIN (ALL GAMES)");
         } else if (it[i] == MI_SOUND) {
             menu_text(row, 22, snd_mute ? "OFF" : "ON");
         } else if (it[i] >= MI_STRETCH && it[i] <= MI_SPRITES)
@@ -3616,6 +3636,174 @@ static void menu_screen2_back(void) {
 #else
     screen2_mode(drc_st.prio_on);
 #endif
+}
+
+/*
+ * The menu's settings kept on the card (OPTIONS, patch 226): a file for
+ * the plugin, /NILESWAN/PLUG_xx.CFG, or one for the game, its ROM's path
+ * with ".cfg" (as .sav and .st0). At the start: the game's if there is
+ * one (OPTIONS shows THIS GAME then), else the plugin's, else the
+ * defaults. Written when the menu closes and something changed; going
+ * back from THIS GAME to THE PLUGIN deletes the game's file. 16 bytes:
+ * "GC", the version, then the values; another version, or values out of
+ * range: the file is not used.
+ */
+#define CFG_VERSION 1
+struct cfg {
+    uint8_t magic[2], version;
+    uint8_t frameskip, volume, mute, stretch, profiler, sprites;
+    uint8_t pad[7];
+};
+_Static_assert(sizeof(struct cfg) == 16, "cfg: 16 bytes");
+#if defined(GGSWAN_SF7000)
+static char cfg_plugin_path[] = "/NILESWAN/PLUG_SF.CFG";
+#elif defined(GGSWAN_SG1000)
+static char cfg_plugin_path[] = "/NILESWAN/PLUG_SG.CFG";
+#elif defined(GGSWAN_SMS)
+static char cfg_plugin_path[] = "/NILESWAN/PLUG_SMS.CFG";
+#else
+static char cfg_plugin_path[] = "/NILESWAN/PLUG_GG.CFG";
+#endif
+static struct cfg cfg_dflt, cfg_saved;   // (the defaults; as on the card)
+static uint8_t cfg_game_saved;
+static FIL cfg_fp;
+
+static void cfg_get(struct cfg *c) {
+    memset(c, 0, sizeof(*c));
+    c->magic[0] = 'G';
+    c->magic[1] = 'C';
+    c->version = CFG_VERSION;
+    c->frameskip = fs_mode;
+    c->volume = snd_vol;
+    c->mute = snd_mute;
+    c->stretch = menu_on(MI_STRETCH);
+    c->profiler = menu_on(MI_PROFILER);
+    c->sprites = menu_on(MI_SPRITES);
+}
+static void cfg_set(const struct cfg *c) {
+    fs_mode = c->frameskip;
+    fs_run = 0;
+    snd_vol = c->volume;
+    snd_mute = c->mute;
+    snd_volume_set();
+    // (the switches through the menu's own code: what they also do)
+    if (menu_on(MI_STRETCH) != c->stretch) menu_change(MI_STRETCH, 0);
+    if (menu_on(MI_PROFILER) != c->profiler) menu_change(MI_PROFILER, 0);
+    if (menu_on(MI_SPRITES) != c->sprites) menu_change(MI_SPRITES, 0);
+}
+static void cfg_defaults(void) {
+    cfg_set(&cfg_dflt);
+}
+static uint8_t cfg_valid(const struct cfg *c) {
+    return c->magic[0] == 'G' && c->magic[1] == 'C' && c->version == CFG_VERSION
+        && c->frameskip <= 5 && c->volume <= 8 && c->mute <= 1
+        && c->stretch <= 1 && c->profiler <= 1 && c->sprites <= 1;
+}
+
+// the game's file: the ROM's path with ".cfg", put there and taken away
+// again (as st_path)
+static char cfg_ext[4];
+static uint16_t cfg_dot;
+static uint8_t cfg_rom_path(uint8_t on) {
+    if (on) {
+        uint16_t n = 0, dot = 0;
+        while (rom_path[n]) {
+            if (rom_path[n] == '.') dot = n;
+            if (rom_path[n] == '/') dot = 0;
+            n++;
+        }
+        cfg_dot = 0;
+        if (!dot || dot + 4 >= ROM_PATH_SIZE) return 0;
+        cfg_dot = dot;
+        for (uint8_t i = 0; i < 4; i++) cfg_ext[i] = rom_path[dot + 1 + i];
+        rom_path[dot + 1] = 'c'; rom_path[dot + 2] = 'f'; rom_path[dot + 3] = 'g'; rom_path[dot + 4] = 0;
+        return 1;
+    }
+    if (cfg_dot)
+        for (uint8_t i = 0; i < 4; i++) rom_path[cfg_dot + 1 + i] = cfg_ext[i];
+    return 0;
+}
+
+// the card's driver moves the cartridge windows: all of them back after
+static uint16_t cfg_win[3];
+static uint8_t cfg_flash;
+static void cfg_io_begin(void) {
+    cfg_win[0] = inportw(WS_CART_EXTBANK_ROM0_PORT);
+    cfg_win[1] = inportw(WS_CART_EXTBANK_ROM1_PORT);
+    cfg_win[2] = inportw(WS_CART_EXTBANK_RAM_PORT);
+    cfg_flash = inportb(WS_CART_BANK_FLASH_PORT);
+}
+static void cfg_io_end(void) {
+    outportw(WS_CART_EXTBANK_ROM0_PORT, cfg_win[0]);
+    outportw(WS_CART_EXTBANK_ROM1_PORT, cfg_win[1]);
+    outportb(WS_CART_BANK_FLASH_PORT, cfg_flash);
+    outportw(WS_CART_EXTBANK_RAM_PORT, cfg_win[2]);
+}
+
+static uint8_t cfg_read_file(const char *path, struct cfg *c) {
+    UINT br;
+    if (f_open(&cfg_fp, path, FA_READ) != FR_OK)
+        return 0;
+    uint8_t ok = f_read(&cfg_fp, c, sizeof(*c), &br) == FR_OK && br == sizeof(*c);
+    f_close(&cfg_fp);
+    return ok && cfg_valid(c);
+}
+static uint8_t cfg_write_file(const char *path, const struct cfg *c) {
+    UINT bw;
+    if (f_open(&cfg_fp, path, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK)
+        return 0;
+    uint8_t ok = f_write(&cfg_fp, c, sizeof(*c), &bw) == FR_OK && bw == sizeof(*c);
+    if (f_close(&cfg_fp) != FR_OK) ok = 0;
+    return ok;
+}
+
+// at the start, before the first frame
+static void cfg_load(void) {
+    struct cfg c;
+    cfg_get(&cfg_dflt);
+    cfg_saved = cfg_dflt;
+    cfg_io_begin();
+    uint8_t found = 0;
+    if (cfg_rom_path(1)) {
+        found = cfg_read_file(rom_path, &c);
+        cfg_rom_path(0);
+    }
+    if (found) {
+        cfg_game = 1;
+    } else {
+        found = cfg_read_file(cfg_plugin_path, &c);
+    }
+    cfg_io_end();
+    cfg_game_saved = cfg_game;
+    if (found) {
+        cfg_set(&c);
+        cfg_get(&cfg_saved);
+    }
+}
+
+// the menu closed: to the card if something changed
+static void cfg_store(void) {
+    struct cfg c;
+    cfg_get(&c);
+    if (!memcmp(&c, &cfg_saved, sizeof(c)) && cfg_game == cfg_game_saved)
+        return;
+    cfg_io_begin();
+    uint8_t ok;
+    if (cfg_game) {
+        ok = cfg_rom_path(1) && cfg_write_file(rom_path, &c);
+        cfg_rom_path(0);
+    } else {
+        ok = cfg_write_file(cfg_plugin_path, &c);
+        if (cfg_game_saved && cfg_rom_path(1)) {
+            f_unlink(rom_path);   // (the game's settings no more)
+            cfg_rom_path(0);
+        }
+    }
+    cfg_io_end();
+    if (ok) {
+        cfg_saved = c;
+        cfg_game_saved = cfg_game;
+    }
 }
 
 static void menu_run(void) {
@@ -3657,11 +3845,11 @@ static void menu_run(void) {
             if (page == MP_ABOUT || !n)
                 continue;
             uint8_t item = it[sel];
-            if (item == MI_PAGE_VIDEO || item == MI_PAGE_AUDIO || item == MI_PAGE_STATES || item == MI_PAGE_ABOUT) {
+            if (item >= MI_PAGE_VIDEO && item <= MI_PAGE_ABOUT) {
                 if (!(p & WS_KEY_A))
                     continue;
                 main_sel = sel;
-                page = item == MI_PAGE_VIDEO ? MP_VIDEO : item == MI_PAGE_AUDIO ? MP_AUDIO : item == MI_PAGE_STATES ? MP_STATES : MP_ABOUT;
+                page = item == MI_PAGE_VIDEO ? MP_VIDEO : item == MI_PAGE_AUDIO ? MP_AUDIO : item == MI_PAGE_STATES ? MP_STATES : item == MI_PAGE_OPTIONS ? MP_OPTIONS : MP_ABOUT;
                 sel = 0;
 #ifdef ST_STATES
             } else if (item == MI_SAVE || item == MI_LOAD) {
@@ -3671,6 +3859,8 @@ static void menu_run(void) {
                 break;
 #endif
             } else {
+                if (item == MI_DEFAULTS && !(p & WS_KEY_A))
+                    continue;   // (an action: A only)
                 menu_change(item, (p & WS_KEY_X4) != 0);
             }
         } else {
@@ -3693,6 +3883,7 @@ static void menu_run(void) {
 #endif
     outportb(0x01, back);
     outportb(WS_DISPLAY_CTRL_PORT, ctrl);
+    cfg_store();   // (the settings to the card, if changed)
     ws_int_ack(WS_INT_ACK_LINE_MATCH);   // (one latched while it was off)
     outportb(WS_INT_ENABLE_PORT, ints);
     step_keys = 0xFFFF;
@@ -4095,6 +4286,7 @@ int main(void) {
         drc_rt_rom_banks(banks);
 #endif
 
+    cfg_load();   // (the menu's settings: the game's, the plugin's)
 #ifdef ST_STATES
     st_file_read();
     st_windows_restore();
