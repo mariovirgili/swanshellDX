@@ -881,21 +881,18 @@ static void cfg_ext(uint8_t on) {
     rom_path[cfg_dot + 2] = on ? 'f' : 't';
     rom_path[cfg_dot + 3] = on ? 'g' : '0';
 }
-// the card's driver moves the cartridge's windows: all of them back after
-static uint16_t cfg_win[3];
-static uint8_t cfg_flash;
+// the card's driver moves the cartridge's windows: all of them back after,
+// from the Game Boy's banks (as a state brought back does: state_load),
+// not from the ports read before - the console does not read the
+// flash/PSRAM port back (ggswan's settings broke on it, patch 238; here
+// it is 0 anyway: patch 239 for the same way everywhere)
 static void cfg_io_begin(void) {
-    cfg_win[0] = inportw(WS_CART_EXTBANK_ROM0_PORT);
-    cfg_win[1] = inportw(WS_CART_EXTBANK_ROM1_PORT);
-    cfg_win[2] = inportw(WS_CART_EXTBANK_RAM_PORT);
-    cfg_flash = inportb(WS_CART_BANK_FLASH_PORT);
 }
 static void cfg_io_end(void) {
-    outportw(WS_CART_EXTBANK_ROM0_PORT, cfg_win[0]);
-    outportw(WS_CART_EXTBANK_ROM1_PORT, cfg_win[1]);
-    outportb(WS_CART_BANK_FLASH_PORT, cfg_flash);
-    outportw(WS_CART_EXTBANK_RAM_PORT, cfg_win[2]);
+    outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_DISABLE);
+    gbf_plat_map();     // (ROM0, ROM1 and the cartridge's RAM: the banks as they are)
 }
+
 static uint8_t cfg_read_file(const char *path, struct cfg *c) {
     unsigned int br;
     if (f_open(&fp, path, FA_READ | FA_OPEN_EXISTING) != FR_OK) return 0;
