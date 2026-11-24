@@ -99,6 +99,7 @@ extern const uint16_t __far drc_stub_offs[];
 #define ST_LOOKUP    102    /* on to the block at SI by the tables (DI the cycles) */
 #define ST_DYN_FIRST 105    /* an exit to an address found as the program runs, the first time: the dispatcher writes where it went into the exit */
 #define ST_DYN_FIRST_L 108  /* ... from a block in the first ROM area (the exit has the bank's test too) */
-#define ST_COUNT     37
+#define ST_DYN_FIRST_C 111  /* ... constant ROM0 -> ROMX target (bank check only, no cmp si) */
+#define ST_COUNT     38
 
 #endif

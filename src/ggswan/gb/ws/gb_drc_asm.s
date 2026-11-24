@@ -126,6 +126,8 @@ drc_stubs:
     .word s_dyn_first - . - 2
     .byte 0xE9
     .word s_dyn_first_l - . - 2
+    .byte 0xE9
+    .word s_dyn_first_c - . - 2
 
 // An exit to an address found as the program runs (RET, JP (HL)), the
 // first time it is taken (gb_drc.c, exit_dyn: "cmp si, where it went
@@ -141,6 +143,10 @@ s_dyn_first:
 s_dyn_first_l:
     pop word ptr [drc_dlink]
     mov byte ptr [drc_dlink_l], 1
+    jmp 1f
+s_dyn_first_c:
+    pop word ptr [drc_dlink]
+    mov byte ptr [drc_dlink_l], 2
 1:
     mov [drc_dlink_seg], cs
     mov [gbf_cyc], di
@@ -2364,3 +2370,4 @@ drc_stub_offs:
     .word s_lookup - drc_stubs
     .word s_dyn_first - drc_stubs
     .word s_dyn_first_l - drc_stubs
+    .word s_dyn_first_c - drc_stubs

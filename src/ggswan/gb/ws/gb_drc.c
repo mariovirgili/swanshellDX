@@ -645,6 +645,20 @@ static void dyn_site(uint8_t has_cyc) {
     E(0xE8); cold_rel(); EW(stub_off[(lform ? ST_DYN_FIRST_L : ST_DYN_FIRST) / 3] - (code_top + 2));
     E(0xE9); cold_rel(); EW(stub_off[ST_EXIT_TIME / 3] - (code_top + 2));
 }
+// Constant ROM0 -> ROMX exit (target fixed in 4000h-7FFFh): checks drc_keyx
+// only on the hit path, loading SI only on miss or timeout.
+static void dyn_const_site(uint16_t target, uint8_t has_cyc) {
+    es_ram = 0;
+    if (!has_cyc) { E(0x85); E(0xFF); }             // test di, di
+    E(0x7E); E(19);                                 // jle T
+    E(0x81); E(0x3E); EW(ADDR(drc_keyx)); EW(0xFFFF);   // cmp word [drc_keyx], key
+    E(0x75); E(5);                                  // jne M
+    E(0xEA); EW(0); EW(0);                          // jmp (patched to EB / E9 / EA)
+    E(0xBE); EW(target);                            // M: mov si, target
+    E(0xE8); cold_rel(); EW(stub_off[ST_DYN_FIRST_C / 3] - (code_top + 2));
+    E(0xBE); EW(target);                            // T: mov si, target
+    E(0xE9); cold_rel(); EW(stub_off[ST_EXIT_TIME / 3] - (code_top + 2));
+}
 static uint16_t loop_body;  // in a block that starts with a call for a whole loop: where the loop's own code starts (0: no such call)
 // leave for a known address; link: the dispatcher may join the jump to
 // the block there
@@ -662,8 +676,12 @@ static void exit_to(uint16_t target, uint8_t extra) {
     if (!link && !in_ram) {
         // (not to be joined: the table is looked in by the routine)
         if (cyc + extra) { E(0x83); E(0xEF); E(cyc + extra); }
-        E(0xBE); EW(target);                    // mov si, target
-        dyn_site(cyc + extra != 0);
+        if (blk_pc < 0x4000 && target >= 0x4000 && target < 0x8000) {
+            dyn_const_site(target, cyc + extra != 0);
+        } else {
+            E(0xBE); EW(target);                // mov si, target
+            dyn_site(cyc + extra != 0);
+        }
         return;
     }
     if (cyc + extra) { E(0x83); E(0xEF); E(cyc + extra); }      // sub di, n
@@ -2618,27 +2636,47 @@ void gbd_run_frame(void) {
                 // for the first time (exit_dyn): where it went, into it.
                 // R is the address after its call of s_dyn_first.
                 uint16_t r = drc_dlink, sg = drc_dlink_seg;
+                uint8_t jmp[5];
+                uint8_t jlen = 5;
+                uint16_t joff = drc_dlink_l == 2 ? (uint16_t) (r - 11)
+                              : (drc_dlink_l == 1 && pc < 0x4000) ? (uint16_t) (r - 16)
+                              : (uint16_t) (r - 8);
                 if (pc < 0x8000) {
-                    uint16_t w[2];
-                    w[0] = b->off; w[1] = b->seg;
-                    gbd_lin_put(sg, r - 7, w, 4);
-                    if (drc_dlink_l) {
-                        if (pc >= 0x4000) gbd_lin_put(sg, r - 12, &key, 2);
-                        else {
-                            uint8_t over[2];        // (no bank to compare: jmp short to the jump)
-                            over[0] = 0xEB; over[1] = 0x06;
-                            gbd_lin_put(sg, r - 16, over, 2);
+                    if (b->seg == sg) {
+                        int16_t rel8 = (int16_t) (b->off - (joff + 2));
+                        if (rel8 >= -128 && rel8 <= 127) {
+                            jmp[0] = 0xEB; jmp[1] = (uint8_t) rel8;
+                            jlen = 2;
+                        } else {
+                            uint16_t rel16 = b->off - (joff + 3);
+                            jmp[0] = 0xE9; jmp[1] = rel16 & 0xFF; jmp[2] = rel16 >> 8;
+                            jlen = 3;
                         }
-                        gbd_lin_put(sg, r - 20, &pc, 2);
                     } else {
-                        gbd_lin_put(sg, r - 12, &pc, 2);
+                        jmp[0] = 0xEA;
+                        jmp[1] = b->off & 0xFF; jmp[2] = b->off >> 8;
+                        jmp[3] = b->seg & 0xFF; jmp[4] = b->seg >> 8;
                     }
                 }
-                // (from now on the other addresses go by the tables)
                 uint8_t j[3];
                 uint16_t rel = stub_off[ST_LOOKUP / 3] - r;
                 j[0] = 0xE9; j[1] = rel & 0xFF; j[2] = rel >> 8;
-                gbd_lin_put(sg, r - 3, j, 3);
+                gbd_lin_open(sg);
+                if (pc < 0x8000) {
+                    _fmemcpy(MK_FP(0x1000, joff), jmp, jlen);
+                    if (drc_dlink_l == 2) {
+                        _fmemcpy(MK_FP(0x1000, r - 15), &key, 2);
+                    } else if (drc_dlink_l == 1) {
+                        if (pc >= 0x4000)
+                            _fmemcpy(MK_FP(0x1000, r - 12), &key, 2);
+                        _fmemcpy(MK_FP(0x1000, r - 20), &pc, 2);
+                    } else {
+                        _fmemcpy(MK_FP(0x1000, r - 12), &pc, 2);
+                    }
+                }
+                // (from now on the other addresses go by the tables)
+                _fmemcpy(MK_FP(0x1000, r - 3), j, 3);
+                gbd_lin_close();
                 drc_dlink = 0;
             }
             if (drc_link) {
