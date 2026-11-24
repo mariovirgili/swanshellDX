@@ -55,7 +55,8 @@ uint16_t drc_entry[2];   // far pointer used by drc_enter: offset, segment
 #define STUB_VCNT   0x0BF8   // IN A,(7Eh) (drc_emit_vcnt_stub)
 #define STUB_PAIRS  0x0C48   // OUTI / OUTI / DEC L x 4 repeated (drc.c)
 #define STUB_NT     0x0D20   // a name table byte (put_nt)
-#define CACHE_START 0x1110
+#define STUB_VWAIT  0x1110   // IN A,(7Eh) / CP n / JR cc back (drc.c)
+#define CACHE_START 0x1200
 // translation buffer in free IRAM (between the font tiles and the mask tile)
 #ifdef GGSWAN_SG1000
 // sgswan: A600h-BEFFh are tiles there (main.c, sg_video.inc: the Game
@@ -1114,11 +1115,12 @@ void drc_rt_init(uint16_t bank) {
         env.ntw_off = 0;
         env.ntwa_off = 0;
         env.trow_off = 0;
+        env.vwait_off = 0;
         if (!drc_no_fast) {
             uint16_t ntwa = 0;
             uint16_t l9 = drc_emit_ntw_stub(&env, stub + STUB_NTW, STUB_NTW, &ntwa);
 #ifdef GGSWAN_HOST
-            if (STUB_NTW + l9 > CACHE_START) { printf("NTW stub: no room (%X)\n", l9); exit(1); }
+            if (STUB_NTW + l9 > STUB_VWAIT) { printf("NTW stub: no room (%X)\n", l9); exit(1); }
             if (getenv("GGSWAN_STUBS")) printf("NTW stub %X bytes\n", l9);
 #else
             (void) l9;
@@ -1144,6 +1146,14 @@ void drc_rt_init(uint16_t bank) {
             (void) l8;
 #endif
             env.pairs_off = STUB_PAIRS + DRC_PAIRS_ENTRY;
+            uint16_t l11 = drc_emit_vwait_stub(&env, stub + STUB_VWAIT, STUB_VWAIT);
+#ifdef GGSWAN_HOST
+            if (STUB_VWAIT + l11 > CACHE_START) { printf("VWAIT stub: no room (%X)\n", l11); exit(1); }
+            if (getenv("GGSWAN_STUBS")) printf("VWAIT stub %X bytes\n", l11);
+#else
+            (void) l11;
+#endif
+            env.vwait_off = STUB_VWAIT;
         }
         env.ldi_off = STUB_LDI;
         uint16_t l3 = drc_emit_ldi_stub(&env, stub + STUB_LDI, STUB_LDI, 0);
@@ -1181,6 +1191,7 @@ void drc_rt_init(uint16_t bank) {
     env.cls_off = 0;
     env.nt_stub_off = 0;
     env.vcnt_off = 0;
+    env.vwait_off = 0;
     env.outi_off = 0;
     env.outi1_off = 0;
     env.pairs_off = 0;

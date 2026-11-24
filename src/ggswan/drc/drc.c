@@ -2235,6 +2235,143 @@ uint16_t drc_emit_vcnt_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) 
     return (uint16_t) (o - o_start);
 }
 
+/*
+ * Routine for IN A,(7Eh) / CP n / JR cc back (vwait in drc_rt.c, at
+ * env->vwait_off): skips the 30-cycle turns whose V counter keeps the
+ * loop going, updating [cycles] directly without calling the C helper.
+ * In: SI = n | (cc << 8). Keeps AX, BX, CX, DX, BP, DS, ES; uses SI, DI
+ * and x86 flags. Not plain (fl_off, cycles <= 0, frame_given >= 65536):
+ * returns immediately without changing [cycles], matching C vwait().
+ */
+uint16_t drc_emit_vwait_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) {
+    env = e;
+    o = o_start = out; o_base = out_off;
+#ifdef GGSWAN_HOST
+#define VW_JBACK(op, dst) do { int16_t r_ = (int16_t) ((dst) - (o + 2)); \
+        if (r_ < -128 || r_ > 127) { extern void abort(void); abort(); } \
+        B(op); B((uint8_t) r_); } while (0)
+#else
+#define VW_JBACK(op, dst) do { B(op); B((uint8_t) ((dst) - (o + 1))); } while (0)
+#endif
+    B(0x80); B(0x3E); W(SA(fl_off)); B(0);           // cmp byte [fl_off], 0
+    uint8_t *e1 = jcc8(0x75);                        // jne early_ret
+    B(0x83); B(0x3E); W(VA(frame_given) + 2); B(0);  // cmp word [frame_given + 2], 0
+    uint8_t *e2 = jcc8(0x75);                        // jne early_ret
+    B(0x83); B(0x3E); W(SA(cycles)); B(0);           // cmp word [cycles], 0
+    uint8_t *go = jcc8(0x7F);                        // jg go
+    land8(e1); land8(e2);
+    B(0xC3);                                         // early_ret: ret
+    land8(go);
+    B(0x50); B(0x53); B(0x51); B(0x52);              // push ax, bx, cx, dx
+    B(0x89); B(0xF3);                                // mov bx, si (BL = n, BH = cc)
+    B(0x8B); B(0x0E); W(SA(cycles));                 // mov cx, [cycles] (cur_cyc > 0)
+    B(0x8B); B(0x3E); W(SA(left_base));              // mov di, [left_base]
+    B(0x01); B(0xCF);                                // add di, cx (di = left_base + cur_cyc)
+    B(0xA1); W(VA(frame_given));                     // mov ax, [frame_given] (fg)
+    B(0x85); B(0xFF);                                // test di, di
+    uint8_t *pos_ok = jcc8(0x7E);                    // jle pos_ok
+    B(0x39); B(0xC7);                                // cmp di, ax
+    uint8_t *bail0 = jcc8(0x77);                     // ja bail_pop (di > 0 && di > fg: k = 0)
+    land8(pos_ok);
+    B(0x29); B(0xF8);                                // sub ax, di (pos = fg - di)
+    B(0x31); B(0xD2);                                // xor dx, dx
+    B(0xBE); W(GG_CYCLES_PER_LINE);                  // mov si, 228
+    B(0xF7); B(0xF6);                                // div si (AX = line, DX = rem)
+    B(0x3D); W(GG_LINES - 1);                        // cmp ax, 261
+    B(0x76); B(0x03);                                // jbe +3
+    B(0xB8); W(GG_LINES - 1);                        // mov ax, 261
+    B(0x89); B(0xC6);                                // mov si, ax (SI = line)
+
+    uint8_t *loop = o;
+    B(0x89); B(0xF0);                                // mov ax, si
+#ifdef GGSWAN_SMS
+    B(0x3B); B(0x06); W(VA(vcnt_max));               // cmp ax, [vcnt_max] (DAh or EAh)
+#else
+    B(0x3D); W(0xDA);                                // cmp ax, DAh
+#endif
+    B(0x76); B(0x03);                                // jbe +3
+    B(0x2D); W(6);                                   // sub ax, 6
+    B(0x84); B(0xFF);                                // test bh, bh
+    uint8_t *chk123 = jcc8(0x75);                    // jnz chk123
+    B(0x38); B(0xD8);                                // cmp al, bl (cc == 0: JR NZ)
+    uint8_t *done0 = jcc8(0x74);                     // je done
+
+    uint8_t *again = o;
+    B(0x81); B(0xFE); W(GG_LINES - 1);               // cmp si, 261
+    uint8_t *kmax1 = jcc8(0x73);                     // jae clamp_kmax
+    B(0x80); B(0xFA); B(30);                         // cmp dl, 30
+    uint8_t *slow = jcc8(0x73);                      // jae slow_step (iter 0 with rem >= 30)
+    B(0x80); B(0xFA); B(18);                         // cmp dl, 18
+    uint8_t *s240 = jcc8(0x72);                      // jb step_240
+    B(0x80); B(0xEA); B(18);                         // sub dl, 18
+    B(0xB8); W(210);                                 // mov ax, 210 (7 * 30)
+    uint8_t *to_step = jcc8(0xEB);                   // jmp do_step
+    land8(s240);
+    B(0x80); B(0xC2); B(12);                         // add dl, 12
+    B(0xB8); W(240);                                 // mov ax, 240 (8 * 30)
+    uint8_t *do_step = o;
+    land8(to_step);
+    B(0x39); B(0xC1);                                // cmp cx, ax (cur_cyc <= step?)
+    uint8_t *kmax2 = jcc8(0x7E);                     // jle clamp_kmax
+    B(0x29); B(0xC1);                                // sub cx, ax (cur_cyc -= step)
+    B(0x46);                                         // inc si (line++)
+    B(0x29); B(0xC7);                                // sub di, ax (di -= step)
+    VW_JBACK(0x71, loop);                            // jno loop
+    B(0x3B); B(0x3E); W(VA(frame_given));            // cmp di, [frame_given]
+    VW_JBACK(0x76, loop);                            // jbe loop
+
+    uint8_t *done = o;
+    land8(done0);
+    B(0x89); B(0x0E); W(SA(cycles));                 // done: mov [cycles], cx
+    land8(bail0);
+    B(0x5A); B(0x59); B(0x5B); B(0x58);              // bail_pop: pop dx, cx, bx, ax
+    B(0xC3);                                         // ret
+
+    // cc == 1 (Z), 2 (NC), 3 (C)
+    land8(chk123);
+    B(0x80); B(0xFF); B(2);                          // cmp bh, 2
+    uint8_t *chk_z = jcc8(0x72);                     // jb chk_z (cc == 1)
+    uint8_t *chk_nc = jcc8(0x74);                    // je chk_nc (cc == 2)
+    B(0x38); B(0xD8);                                // cmp al, bl (cc == 3: JR C)
+    VW_JBACK(0x72, again);                           // jb again
+    VW_JBACK(0xEB, done);                            // jmp done
+    land8(chk_nc);
+    B(0x38); B(0xD8);                                // cmp al, bl (cc == 2: JR NC)
+    VW_JBACK(0x73, again);                           // jae again
+    VW_JBACK(0xEB, done);                            // jmp done
+    land8(chk_z);
+    B(0x38); B(0xD8);                                // cmp al, bl (cc == 1: JR Z)
+    VW_JBACK(0x74, again);                           // je again
+    VW_JBACK(0xEB, done);                            // jmp done
+
+    // clamp_kmax: cur_cyc = ((cur_cyc - 1) % 30) + 1
+    land8(kmax1); land8(kmax2);
+    B(0x89); B(0xC8);                                // mov ax, cx
+    B(0x48);                                         // dec ax
+    B(0x31); B(0xD2);                                // xor dx, dx
+    B(0xBE); W(30);                                  // mov si, 30
+    B(0xF7); B(0xF6);                                // div si (DX = (cur_cyc - 1) % 30)
+    B(0x42);                                         // inc dx
+    B(0x89); B(0xD1);                                // mov cx, dx
+    VW_JBACK(0xEB, done);                            // jmp done
+
+    // slow_step: iter 0 with 30 <= rem <= 227 (DH == 0)
+    land8(slow);
+    B(0xB8); W(257);                                 // mov ax, 257
+    B(0x29); B(0xD0);                                // sub ax, dx (u = 257 - rem)
+    B(0x88); B(0xC2);                                // mov dl, al (u)
+    B(0xB6); B(30);                                  // mov dh, 30
+    B(0xF6); B(0xF6);                                // div dh (AL = dk, AH = r)
+    B(0x28); B(0xE2);                                // sub dl, ah (step = 30 * dk)
+    B(0x88); B(0xD0);                                // mov al, dl
+    B(0xB2); B(29);                                  // mov dl, 29
+    B(0x28); B(0xE2);                                // sub dl, ah (rem_new = 29 - r)
+    B(0x30); B(0xE4);                                // xor ah, ah (AX = step)
+    VW_JBACK(0xEB, do_step);                         // jmp do_step
+#undef VW_JBACK
+    return (uint16_t) (o - o_start);
+}
+
 #ifdef GGSWAN_SG1000
 /*
  * sgswan: the TMS9918A's ports without the C helper (gg.c: vdp_write_data,
@@ -5134,8 +5271,14 @@ retry_gen:
         && (ins[0].nn & 0xC1) == 0x40 && ins[1].pre == 0 && ins[1].op == 0xFE
         && ins[2].pre == 0 && (ins[2].op & 0xE7) == 0x20
         && (uint16_t) (ins[2].pc + 2 + (int8_t) ins[2].nn) == ins[0].pc) {
-        B(0xC7); B(0x06); W(SA(arg)); W((uint16_t) (ins[1].nn & 0xFF) | (((ins[2].op >> 3) & 3) << 8));
-        helper(DRC_H_VWAIT);
+        uint16_t varg = (uint16_t) (ins[1].nn & 0xFF) | (((ins[2].op >> 3) & 3) << 8);
+        if (env->vwait_off) {
+            B(0xBE); W(varg);                        // mov si, varg
+            call_near(env->vwait_off);
+        } else {
+            B(0xC7); B(0x06); W(SA(arg)); W(varg);
+            helper(DRC_H_VWAIT);
+        }
     }
     for (i = 0; i < n; i++) {
         uint16_t row = row_at(i, n);

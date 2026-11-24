@@ -202,6 +202,8 @@ typedef struct {
     // routine for OUTI x 3 / OUT (BEh),A: a tile row of three planes and
     // a fourth from A (drc_emit_trow_stub; 0: none)
     uint16_t trow_off;
+    // routine for IN A,(7Eh) / CP n / JR cc back (drc_emit_vwait_stub; 0: helper)
+    uint16_t vwait_off;
 #ifdef GGSWAN_SG1000
     // sgswan: the TMS9918A's ports (drc_emit_sg_stubs; 0: the helper).
     // sg_vdp: IRAM address of gg.vdp (vdp_addr is 0: none of the Game
@@ -266,6 +268,7 @@ uint16_t drc_emit_ctl_stub(const drc_env_t *env, uint8_t *out, uint16_t out_off)
 uint16_t drc_emit_sg_stubs(const drc_env_t *e, uint8_t *out, uint16_t out_off, uint16_t *at);
 #endif
 uint16_t drc_emit_vcnt_stub(const drc_env_t *env, uint8_t *out, uint16_t out_off);
+uint16_t drc_emit_vwait_stub(const drc_env_t *env, uint8_t *out, uint16_t out_off);
 
 /// Write the routine for OUTI / OUTI / DEC L x 4 repeated (entry at +
 /// DRC_PAIRS_ENTRY); returns its length
