@@ -243,7 +243,11 @@ static void text_title(const char *path) {
         uint8_t n = len > 26 ? 26 : (uint8_t) len;
         for (uint8_t i = 0; i < n; i++) line[i] = name[i];
         line[n] = 0;
+        uint8_t step = text_step;
+        if (len > n)
+            text_step = 1;   // (the second line right under the first)
         text_print(line);
+        text_step = step;
         name += n;
         len -= n;
     }

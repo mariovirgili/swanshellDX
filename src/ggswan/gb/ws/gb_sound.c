@@ -176,9 +176,13 @@ static void step8(void) {
     }
 }
 
+// the menu's AUDIO (gb_main.c): 0-8 (8 as the Game Boy has it), off
+uint8_t gb_snd_vol = 8, gb_snd_mute;
+
 // a volume (0-15) to the WS's left and right, by NR51's bits for the channel
 static uint8_t pan(uint8_t c, uint8_t v) {
     uint8_t p = NR(0x25);
+    v = gb_snd_mute ? 0 : (uint8_t) ((v * gb_snd_vol + 4) >> 3);
     return ((p >> (4 + c) & 1) ? v << 4 : 0) | ((p >> c & 1) ? v : 0);
 }
 

@@ -108,9 +108,8 @@ static void text_init(void) {
     wait_vblank();
     wait_vblank();
     ws_system_set_mode(WS_MODE_COLOR);
-    // (the first 44 glyphs, as before: the 4 added for the plugins' menu
-    // would go past the tiles gbswan keeps for its font)
-    for (uint8_t i = 0; i < 44; i++) {
+    // (48 glyphs: 5A00h-5CFFh, free up to 5FF0h: GB-MEMORY-MAP.md)
+    for (uint8_t i = 0; i < sizeof(font_data) / 8; i++) {
         uint8_t *t = (uint8_t*) 0x2000 + (uint16_t) (FONT_TILE + i) * 16;
         for (uint8_t r = 0; r < 8; r++) {
             t[r * 2] = font_data[i * 8 + r];
@@ -172,7 +171,12 @@ static void text_title(const char *path) {
         uint8_t n = len > 26 ? 26 : (uint8_t) len;
         for (uint8_t i = 0; i < n; i++) line[i] = name[i];
         line[n] = 0;
-        text_print(line);
+        if (len > n && text_row < 17) {
+            text_put(text_row, 1, line);    // (the second line right under the first)
+            text_row++;
+        } else {
+            text_print(line);
+        }
         name += n;
         len -= n;
     }
@@ -548,6 +552,7 @@ static uint8_t st_wait;                 // nothing to the game until the keys ar
 static uint8_t st_held;
 static uint16_t st_t0;
 static uint8_t start_n, start_tap, start_used;
+static uint8_t menu_req;                // START + Y3: the menu, between two frames
 
 // The state as a file on the card, next to the ROM, with .st0 for its
 // extension (rom_path, once the ROM has been read): 16 bytes - "GBST",
@@ -690,6 +695,17 @@ void gb_frame_keys(void) {
         return;
     }
     exit_held = 0;
+    // START + Y3 (Y down): the menu (opened between two frames, in
+    // gb_emulate). Y3 alone is still SELECT, and Y2 (Y right) too
+    static uint8_t menu_held;
+    if ((k & (WS_KEY_START | WS_KEY_Y3)) == (WS_KEY_START | WS_KEY_Y3)) {
+        if (!menu_held) menu_req = 1;
+        menu_held = 1;
+        start_used = 1;
+        return;
+    }
+    if (!(k & WS_KEY_Y3)) menu_held = 0;
+    else if (menu_held) return;        // (START let go first: not the game's)
     // START + Y4 (Y left): the figures on the screen, on and off
     static uint8_t stats_held;
     if ((k & (WS_KEY_START | WS_KEY_Y4)) == (WS_KEY_START | WS_KEY_Y4)) {
@@ -747,6 +763,331 @@ void gb_frame_keys(void) {
     }
 }
 
+/* ---- the menu (START + Y3 (Y down), as the other plugins: patch 229) ----
+ * The game stopped while it is open (between two frames, in gb_emulate:
+ * nothing translated running), the sound off, the screen the menu's:
+ * screen 1 alone (its map, 4000h, kept at 9000h and put back), the
+ * vertical blank interrupt only counting (gbv_menu), the line one off.
+ * Closed, the next vertical blank shows the game's list again.
+ * X1 (X up) / X3 (X down): the line; A, X2 (X right), X4 (X left): change
+ * it; A: into a page; B: back, or closed (also START + Y3 again).
+ * Settings: /NILESWAN/PLUG_GB.CFG, or the game's .cfg (OPTIONS), the same
+ * 16 bytes as the other plugins'. */
+#define SCR1_MAP ((uint16_t*) 0x4000)
+#define MENU_KEEP ((uint16_t*) 0x9000)  // (18 rows of 32: free internal RAM)
+enum { MP_MAIN, MP_VIDEO, MP_AUDIO, MP_STATES, MP_OPTIONS, MP_ABOUT };
+enum { MI_PAGE_VIDEO = 1, MI_PAGE_AUDIO, MI_PAGE_STATES, MI_PAGE_OPTIONS, MI_PAGE_ABOUT,
+       MI_PROFILER, MI_VOLUME, MI_SOUND, MI_SAVE, MI_LOAD, MI_SCOPE, MI_DEFAULTS };
+static uint8_t cfg_game;
+
+static void menu_put(uint8_t row, uint8_t col, const char __far *t) {
+    for (; *t && col < 28; t++, col++) {
+        uint8_t k = 0;
+        for (uint8_t i = 0; font_chars[i]; i++)
+            if (font_chars[i] == *t) { k = i; break; }
+        SCR1_MAP[row * 32 + col] = 0x2000 | ((FONT_TILE + k) & 511) | (1 << 9);
+    }
+}
+static void menu_clear(void) {
+    for (uint16_t i = 0; i < 18 * 32; i++)
+        SCR1_MAP[i] = 0x2000 | (FONT_TILE & 511) | (1 << 9);   // (' ': palette 1's black)
+}
+static uint8_t menu_items(uint8_t page, uint8_t *it) {
+    uint8_t n = 0;
+    switch (page) {
+    case MP_MAIN:
+        it[n++] = MI_PAGE_VIDEO; it[n++] = MI_PAGE_AUDIO; it[n++] = MI_PAGE_STATES;
+        it[n++] = MI_PAGE_OPTIONS; it[n++] = MI_PAGE_ABOUT;
+        break;
+    case MP_VIDEO: it[n++] = MI_PROFILER; break;
+    case MP_AUDIO: it[n++] = MI_VOLUME; it[n++] = MI_SOUND; break;
+    case MP_STATES: it[n++] = MI_SAVE; it[n++] = MI_LOAD; break;
+    case MP_OPTIONS: it[n++] = MI_SCOPE; it[n++] = MI_DEFAULTS; break;
+    }
+    return n;
+}
+static const char __far *menu_label(uint8_t item) {
+    switch (item) {
+    case MI_PAGE_VIDEO: return "VIDEO";
+    case MI_PAGE_AUDIO: return "AUDIO";
+    case MI_PAGE_STATES: return "STATES";
+    case MI_PAGE_OPTIONS: return "OPTIONS";
+    case MI_PAGE_ABOUT: return "ABOUT";
+    case MI_PROFILER: return "PROFILER";
+    case MI_VOLUME: return "VOLUME";
+    case MI_SOUND: return "SOUND";
+    case MI_SAVE: return "SAVE";
+    case MI_LOAD: return "LOAD";
+    case MI_SCOPE: return "SAVE SETTINGS FOR";
+    case MI_DEFAULTS: return "RESET TO DEFAULTS";
+    }
+    return "";
+}
+// the profiler: 0 off, 1 on (all of it), 2 the FPS only
+static uint8_t prof_level(void) {
+    return !gbv_stats_shown() ? 0 : gbv_fps_only ? 2 : 1;
+}
+static void prof_level_set(uint8_t l) {
+    if (gbv_stats_shown()) gbv_stats_toggle();
+    gbv_fps_only = l == 2;
+    if (l) gbv_stats_toggle();
+}
+
+/* the settings, as the other plugins' (src/ggswan/ws/main.c: struct cfg) */
+#define CFG_VERSION 1
+struct cfg {
+    uint8_t magic[2], version;
+    uint8_t frameskip, volume, mute, stretch, profiler, sprites;
+    uint8_t pad[7];
+};
+static char cfg_plugin_path[] = "/NILESWAN/PLUG_GB.CFG";
+static struct cfg cfg_saved;
+static uint8_t cfg_game_saved;
+static void cfg_get(struct cfg *c) {
+    memset(c, 0, sizeof(*c));
+    c->magic[0] = 'G'; c->magic[1] = 'C'; c->version = CFG_VERSION;
+    c->volume = gb_snd_vol;
+    c->mute = gb_snd_mute;
+    c->profiler = prof_level();
+}
+static void cfg_set(const struct cfg *c) {
+    gb_snd_vol = c->volume;
+    gb_snd_mute = c->mute;
+    if (prof_level() != c->profiler) prof_level_set(c->profiler);
+}
+static void cfg_defaults(void) {
+    struct cfg c;
+    memset(&c, 0, sizeof(c));
+    c.volume = 8;
+    cfg_set(&c);
+}
+static uint8_t cfg_valid(const struct cfg *c) {
+    return c->magic[0] == 'G' && c->magic[1] == 'C' && c->version == CFG_VERSION
+        && c->volume <= 8 && c->mute <= 1 && c->profiler <= 2;
+}
+// rom_path is the state's (.st0, state_path): its extension made "cfg"
+// and back again
+static uint16_t cfg_dot;
+static void cfg_ext(uint8_t on) {
+    if (!cfg_dot) {
+        for (uint16_t n = 0; rom_path[n]; n++)
+            if (rom_path[n] == '.') cfg_dot = n;
+    }
+    if (!cfg_dot) return;
+    rom_path[cfg_dot + 1] = on ? 'c' : 's';
+    rom_path[cfg_dot + 2] = on ? 'f' : 't';
+    rom_path[cfg_dot + 3] = on ? 'g' : '0';
+}
+// the card's driver moves the cartridge's windows: all of them back after
+static uint16_t cfg_win[3];
+static uint8_t cfg_flash;
+static void cfg_io_begin(void) {
+    cfg_win[0] = inportw(WS_CART_EXTBANK_ROM0_PORT);
+    cfg_win[1] = inportw(WS_CART_EXTBANK_ROM1_PORT);
+    cfg_win[2] = inportw(WS_CART_EXTBANK_RAM_PORT);
+    cfg_flash = inportb(WS_CART_BANK_FLASH_PORT);
+}
+static void cfg_io_end(void) {
+    outportw(WS_CART_EXTBANK_ROM0_PORT, cfg_win[0]);
+    outportw(WS_CART_EXTBANK_ROM1_PORT, cfg_win[1]);
+    outportb(WS_CART_BANK_FLASH_PORT, cfg_flash);
+    outportw(WS_CART_EXTBANK_RAM_PORT, cfg_win[2]);
+}
+static uint8_t cfg_read_file(const char *path, struct cfg *c) {
+    unsigned int br;
+    if (f_open(&fp, path, FA_READ | FA_OPEN_EXISTING) != FR_OK) return 0;
+    uint8_t ok = f_read(&fp, c, sizeof(*c), &br) == FR_OK && br == sizeof(*c);
+    f_close(&fp);
+    return ok && cfg_valid(c);
+}
+static uint8_t cfg_write_file(const char *path, const struct cfg *c) {
+    unsigned int bw;
+    if (f_open(&fp, path, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) return 0;
+    uint8_t ok = f_write(&fp, c, sizeof(*c), &bw) == FR_OK && bw == sizeof(*c);
+    if (f_close(&fp) != FR_OK) ok = 0;
+    return ok;
+}
+// at the start (gb_emulate, the picture set up): the game's, the plugin's
+static void cfg_load(void) {
+    struct cfg c;
+    cfg_get(&cfg_saved);
+    cfg_io_begin();
+    cfg_ext(1);
+    uint8_t found = cfg_read_file(rom_path, &c);
+    cfg_ext(0);
+    if (found) cfg_game = 1;
+    else found = cfg_read_file(cfg_plugin_path, &c);
+    cfg_io_end();
+    cfg_game_saved = cfg_game;
+    if (found) {
+        cfg_set(&c);
+        cfg_get(&cfg_saved);
+    }
+}
+static void cfg_store(void) {
+    struct cfg c;
+    cfg_get(&c);
+    if (!memcmp(&c, &cfg_saved, sizeof(c)) && cfg_game == cfg_game_saved) return;
+    cfg_io_begin();
+    uint8_t ok;
+    if (cfg_game) {
+        cfg_ext(1);
+        ok = cfg_write_file(rom_path, &c);
+        cfg_ext(0);
+    } else {
+        ok = cfg_write_file(cfg_plugin_path, &c);
+        if (cfg_game_saved) {
+            cfg_ext(1);
+            f_unlink(rom_path);     // (the game's settings no more)
+            cfg_ext(0);
+        }
+    }
+    cfg_io_end();
+    if (ok) {
+        cfg_saved = c;
+        cfg_game_saved = cfg_game;
+    }
+}
+
+static void menu_draw(uint8_t page, uint8_t sel) {
+    uint8_t it[8];
+    menu_clear();
+    menu_put(1, 2, page == MP_VIDEO ? "VIDEO" : page == MP_AUDIO ? "AUDIO" : page == MP_STATES ? "STATES"
+        : page == MP_OPTIONS ? "OPTIONS" : page == MP_ABOUT ? "ABOUT" : "MENU");
+    if (page == MP_ABOUT) {
+        menu_put(4, 2, "GBSWAN - GAME BOY");
+        char pb[10] = "PATCH ";
+        uint16_t v = GGSWAN_PATCH;
+        uint8_t k = 6;
+        if (v >= 100) pb[k++] = '0' + v / 100;
+        if (v >= 10) pb[k++] = '0' + (v / 10) % 10;
+        pb[k++] = '0' + v % 10;
+        pb[k] = 0;
+        menu_put(6, 2, pb);
+        menu_put(8, 2, "CREATED BY CLAUDE");
+        menu_put(10, 2, "WITH GIO-74");
+        menu_put(16, 2, "B: BACK");
+        return;
+    }
+    uint8_t n = menu_items(page, it);
+    for (uint8_t i = 0; i < n; i++) {
+        uint8_t row = 4 + i * 2;
+        if (i == sel) menu_put(row, 1, ">");
+        menu_put(row, 3, menu_label(it[i]));
+        switch (it[i]) {
+        case MI_PROFILER: {
+            uint8_t l = prof_level();
+            menu_put(row, 22, l == 0 ? "OFF" : l == 2 ? "FPS" : "ON");
+            break;
+        }
+        case MI_VOLUME: {
+            char t[4] = { (char) ('0' + gb_snd_vol), '/', '8', 0 };
+            menu_put(row, 22, t);
+            break;
+        }
+        case MI_SOUND: menu_put(row, 22, gb_snd_mute ? "OFF" : "ON"); break;
+        case MI_SCOPE: menu_put(row + 1, 4, cfg_game ? "THIS GAME" : "THE PLUGIN (ALL GAMES)"); break;
+        }
+    }
+    menu_put(16, 2, page == MP_MAIN ? "A: OPEN  B: CLOSE" : "A: CHANGE  B: BACK");
+}
+
+static void menu_change(uint8_t item, uint8_t back) {
+    switch (item) {
+    case MI_PROFILER: {
+        uint8_t l = prof_level();
+        l = back ? (l == 0 ? 1 : l == 2 ? 0 : 2) : (l == 0 ? 2 : l == 2 ? 1 : 0);
+        prof_level_set(l);
+        break;
+    }
+    case MI_VOLUME:
+        if (back) { if (gb_snd_vol) gb_snd_vol--; }
+        else if (gb_snd_vol < 8) gb_snd_vol++;
+        break;
+    case MI_SOUND: gb_snd_mute ^= 1; break;
+    case MI_SCOPE: cfg_game ^= 1; break;
+    case MI_DEFAULTS: cfg_defaults(); break;
+    }
+}
+
+static void menu_wait_frame(void) {
+    uint16_t v = gbv_vblanks;
+    while (gbv_vblanks == v) ia16_halt();
+}
+
+static void menu_run(void) {
+    // the picture as the game had it: screen 1's map, the line interrupt
+    for (uint16_t i = 0; i < 18 * 32; i++) MENU_KEEP[i] = SCR1_MAP[i];
+    uint8_t ints = inportb(WS_INT_ENABLE_PORT);
+    ia16_disable_irq();
+    gbv_menu = 1;
+    outportb(WS_INT_ENABLE_PORT, ints & ~WS_INT_ENABLE_LINE_MATCH);
+    ia16_enable_irq();
+    outportb(WS_SOUND_CH_CTRL_PORT, 0);
+    uint8_t page = MP_MAIN, sel = 0, main_sel = 0, it[8];
+    menu_draw(page, sel);
+    outportb(0x10, 0);
+    outportb(0x11, 0);
+    outportb(0x01, (1 << 4) | 0);               // (the backdrop: palette 1's black)
+    outportb(WS_DISPLAY_CTRL_PORT, WS_DISPLAY_CTRL_SCR1_ENABLE);
+    uint16_t held = ws_keypad_scan();           // (START + Y3 still held: not presses)
+    for (;;) {
+        menu_wait_frame();
+        uint16_t k = ws_keypad_scan(), p = k & ~held;
+        held = k;
+        if ((k & (WS_KEY_START | WS_KEY_Y3)) == (WS_KEY_START | WS_KEY_Y3) && (p & (WS_KEY_START | WS_KEY_Y3)))
+            break;
+        uint8_t n = menu_items(page, it);
+        if (p & WS_KEY_B) {
+            if (page == MP_MAIN) break;
+            page = MP_MAIN;
+            sel = main_sel;
+        } else if ((p & WS_KEY_X1) && sel) {
+            sel--;
+        } else if ((p & WS_KEY_X3) && sel + 1 < n) {
+            sel++;
+        } else if (p & (WS_KEY_A | WS_KEY_X2 | WS_KEY_X4)) {
+            if (page == MP_ABOUT || !n) continue;
+            uint8_t item = it[sel];
+            if (item >= MI_PAGE_VIDEO && item <= MI_PAGE_ABOUT) {
+                if (!(p & WS_KEY_A)) continue;
+                main_sel = sel;
+                page = item == MI_PAGE_VIDEO ? MP_VIDEO : item == MI_PAGE_AUDIO ? MP_AUDIO
+                    : item == MI_PAGE_STATES ? MP_STATES : item == MI_PAGE_OPTIONS ? MP_OPTIONS : MP_ABOUT;
+                sel = 0;
+            } else if (item == MI_SAVE || item == MI_LOAD) {
+                if (!(p & WS_KEY_A)) continue;
+                st_req = item == MI_SAVE ? 1 : 2;   // (gb_emulate, the menu closed)
+                break;
+            } else {
+                if (item == MI_DEFAULTS && !(p & WS_KEY_A)) continue;
+                menu_change(item, (p & WS_KEY_X4) != 0);
+            }
+        } else {
+            continue;
+        }
+        menu_draw(page, sel);
+    }
+    // closed: the keys let go first (none of them reaches the game)
+    while (ws_keypad_scan()) menu_wait_frame();
+    cfg_store();
+    // screen 1 as it was, but its left columns blank: the figures there
+    // (or a note) are written again within a second, and the profiler
+    // may have been switched in the menu
+    for (uint16_t i = 0; i < 18 * 32; i++) SCR1_MAP[i] = MENU_KEEP[i];
+    for (uint8_t r = 0; r < 18; r++)
+        for (uint8_t c = 0; c < 4; c++)
+            SCR1_MAP[r * 32 + c] = 0x2000 | 511 | (1 << 9);
+    ia16_disable_irq();
+    ws_int_ack(WS_INT_ACK_LINE_MATCH);
+    outportb(WS_INT_ENABLE_PORT, ints);
+    gbv_menu = 0;
+    ia16_enable_irq();
+    start_n = start_tap = 0;
+    start_used = 1;
+    exit_held = 0;
+}
+
 /* ---- start ---- */
 
 // (on the stack below 2000h: gb_asm.s)
@@ -755,8 +1096,13 @@ void gb_emulate(void) {
     gbd_init();
     gb_sound_init();
     gb_phase = GB_PHASE_DISP;
+    cfg_load();     // (the menu's settings: the game's, the plugin's)
     for (;;) {
         gbd_run_frame();
+        if (menu_req) {
+            menu_req = 0;
+            menu_run();
+        }
         if (st_req) {
             uint8_t r = st_req;
             st_req = 0;

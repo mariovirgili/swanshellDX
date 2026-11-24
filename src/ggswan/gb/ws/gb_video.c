@@ -256,10 +256,18 @@ static void tq_frame(void) {
     tq_mark = tq_pend;
 }
 
+// the menu open (gb_main.c): the screen is the menu's, the lists wait
+volatile uint8_t gbv_menu;
+uint8_t gbv_fps_only;
+
 void gb_vblank_irq(void) {
     gbv_vblanks++;
     phase_n[gb_phase]++;
     line_base += 159;
+    if (gbv_menu) {
+        ws_int_ack(WS_INT_ACK_VBLANK | WS_INT_ACK_LINE_MATCH);
+        return;
+    }
     if (list_ready) {
         uint8_t *t = list_shown;
         list_shown = list_made;
@@ -541,6 +549,10 @@ void gbv_stats_toggle(void) {
     stats_frames = 0;
 }
 
+uint8_t gbv_stats_shown(void) {
+    return stats_on;
+}
+
 static void stats_show(void) {
     static const char __far names[GB_PHASES][4] = { "RUN", "DSP", "TRN", "VID", "IDL" };
     uint16_t n[GB_PHASES], total;
@@ -552,6 +564,8 @@ static void stats_show(void) {
     stat_put(0, "FPS");
     stat_num(1, (uint32_t) stats_frames * 7547 / ((uint32_t) total * 100), 0);
     stats_frames = 0;
+    if (gbv_fps_only)
+        return;
     for (uint8_t i = 0; i < GB_PHASES; i++) {
         stat_put(2 + i * 2, names[i]);
         stat_num(3 + i * 2, n[i] * 100 / total, 0);

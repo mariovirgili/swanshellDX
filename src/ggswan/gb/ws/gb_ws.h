@@ -16,6 +16,10 @@ uint8_t gbv_sprites_asm(void);           // gb_asm.s: the WS sprite table from t
 void gb_frame_keys(void);       // gb_main.c: the keys, once a frame (and the way out)
 extern volatile uint16_t gbv_vblanks;
 void gbv_stats_toggle(void);
+uint8_t gbv_stats_shown(void);  // the figures on (gbv_stats_toggle)
+extern uint8_t gbv_fps_only;    // the figures: the FPS only (the menu's PROFILER: FPS)
+extern volatile uint8_t gbv_menu;   // the menu open: the vertical blank only counts
+extern uint8_t gb_snd_vol, gb_snd_mute;   // the menu's AUDIO (gb_sound.c)
 void gbv_note(const char __far *t);
 uint16_t gbv_now_lines(void);
 void gb_sound_init(void);       // gb_sound.c
