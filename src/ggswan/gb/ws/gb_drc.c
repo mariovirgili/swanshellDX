@@ -866,6 +866,63 @@ static uint16_t cartp_else(uint16_t j3) {
     return done;
 }
 
+// Where HL points as the block is translated (it is translated when it
+// is first run, with the registers as the program has them) is where an
+// access through it is taken to go, for the cartridge's RAM: that test
+// comes first, and the usual tests follow for when it goes elsewhere. A
+// variable in the cartridge's RAM is then "cmp bh, A0h / jb / cmp bh,
+// C0h / jae / mov es, [seg] / mov al, es:[bx]", 11 cycles on the console
+// for 26 (Super Mario Land 2: -590 cycles a frame). The same for the ROM
+// (a table read through HL) was tried and dropped: it saved nothing in
+// Castlevania II, Batman and SML2, and cost 350 cycles a frame in ZAS,
+// where HL goes elsewhere too often. Only while nothing in the block has
+// put HL elsewhere (hl_moved), and not when the slow ways are apart or
+// the block is being done again without them (a short jump has to pass
+// the usual tests). Also for A = A op (HL).
+static uint8_t hl_moved;
+static uint8_t hl_moves(uint8_t op, uint8_t b1) {
+    return op == 0x21 || (op & 0xCF) == 0x09 || op == 0x24 || op == 0x25 || op == 0x26
+        || (op >= 0x60 && op <= 0x67 && op != 0x64) || op == 0xE1 || op == 0xF8
+        || (op == 0xCB && (b1 & 7) == 4 && (b1 >> 6) != 1);
+}
+// (what the access itself is, on es:[bx]: written by the caller through emit_es)
+static uint8_t pr_r, pr_imm, pr_wr;
+static void pr_access(void) {
+    if (pr_wr == 2) {                                           // A = A op es:[bx] (pr_r: the operation)
+        static const uint8_t __far op_x86[8] = { 0x02, 0x12, 0x2A, 0x1A, 0x22, 0x32, 0x0A, 0x3A };
+        if (pr_r == 1 || pr_r == 3) carry_in();
+        E(0x26); E(op_x86[pr_r]); E(0x07);
+        return;
+    }
+    E(0x26);
+    if (!pr_wr) { E(0x8A); E(pr_r << 3 | 7); }                  // mov r, es:[bx]
+    else if (pr_r != 0xFF) { E(0x88); E(pr_r << 3 | 7); }       // mov es:[bx], r
+    else { E(0xC6); E(7); E(pr_imm); }                          // mov byte es:[bx], imm
+}
+// returns where the jump over the usual tests is counted from (0: nothing taken for likely)
+static uint16_t predicted(uint8_t r, uint8_t imm, uint8_t wr) {
+    if (hl_moved || in_ram || cold_off || in_cold) return 0;
+    uint8_t h = gb.h;
+    pr_r = r; pr_imm = imm; pr_wr = wr;
+    if (h >= 0xA0 && h < 0xC0 && drc_cartp && cart_sure) {
+        drc_cart_assumed = 1;
+        E(0x80); E(0xFF); E(0xA0);                  // cmp bh, A0h
+        E(0x72); E(0);
+        uint16_t j1 = code_top;
+        E(0x80); E(0xFF); E(0xC0);                  // cmp bh, C0h
+        E(0x73); E(0);
+        uint16_t j2 = code_top;
+        es_ram = 0; E(0x8E); E(0x06); EW(ADDR(drc_ram_seg));
+        pr_access();
+        E(0xEB); E(0);
+        uint16_t done = code_top;
+        code[j1 - 1] = code_top - j1;
+        code[j2 - 1] = code_top - j2;
+        return done;
+    }
+    return 0;
+}
+
 // r (an x86 8 bit register) = the byte at HL (hl) or at SI
 static void read_to(uint8_t r, uint8_t hl) {
     if (cur_dir) {
@@ -921,6 +978,7 @@ static void read_to(uint8_t r, uint8_t hl) {
         cold_end();
         return;
     }
+    uint16_t pdone = hl && !cdone ? predicted(r, 0, 0) : 0;
     uint16_t j = range_check(hl);
     E(0x8A); E(0x80 | r << 3 | (hl ? 7 : 4)); EW(0xA000);   // mov r, [bx or si - 6000h]
     uint16_t done = slow_starts(j, hl, 0);
@@ -944,6 +1002,7 @@ static void read_to(uint8_t r, uint8_t hl) {
     SLOW_ENDS(rdone);
     if (cdone) SLOW_ENDS(cdone);
     if (kdone) SLOW_ENDS(kdone);
+    if (pdone) SLOW_ENDS(pdone);
 }
 
 // the byte at HL (hl) or at SI = r, or = imm when r is FFh; next: the
@@ -1015,6 +1074,7 @@ static void write_from(uint8_t r, uint8_t imm, uint8_t hl, uint16_t next) {
         cold_end();
         return;
     }
+    uint16_t pdone = hl && !cdone ? predicted(r, imm, 1) : 0;
     uint16_t j = range_check(hl);
     if (r != 0xFF) {
         E(0x88); E(0x80 | r << 3 | (hl ? 7 : 4)); EW(0xA000);
@@ -1042,6 +1102,7 @@ static void write_from(uint8_t r, uint8_t imm, uint8_t hl, uint16_t next) {
     SLOW_ENDS(done);
     if (cdone) SLOW_ENDS(cdone);
     if (kdone) SLOW_ENDS(kdone);
+    if (pdone) SLOW_ENDS(pdone);
 }
 
 // A = A op x, the Game Boy's operation number (ADD ADC SUB SBC AND XOR OR
@@ -1311,6 +1372,8 @@ __attribute__((noinline)) static void translate_block(void) {
     if (code_top != block_start) loop_body = code_top;
     uint8_t prev_ei = 0, far_end = 0;
     uint16_t far_patch = 0;
+    uint8_t prev_op = 0, prev_b1 = 0;
+    hl_moved = 0;
     // (the instruction's bytes straight from tbuf while three are there)
     uint16_t tl2 = tlen > 2 ? tlen - 2 : 0;
     cur_dir = cur_cart = 0;
@@ -1333,6 +1396,9 @@ __attribute__((noinline)) static void translate_block(void) {
                 b1 = t[1]; b2 = t[2];
             } else { op = rb(pc); b1 = rb(pc + 1); b2 = rb(pc + 2); }
         }
+        // (has an instruction before this one put HL somewhere else: predicted)
+        if (i) hl_moved |= hl_moves(prev_op, prev_b1);
+        prev_op = op; prev_b1 = b1;
         if (far_end) {
             if (i == far_end) {
                 // (the seven instructions done here: their cycles, and
@@ -1486,6 +1552,9 @@ __attribute__((noinline)) static void translate_block(void) {
                     alu_done(y);
                     continue;
                 }
+                // (a table in the ROM or a variable in the cartridge's RAM
+                // that HL points to now: that way first - predicted)
+                uint16_t pdone = !cdone && (!cur_cart || (y != 1 && y != 3)) ? predicted(y, 0, 2) : 0;
                 uint16_t j = range_check(1);
                 if (y == 1 || y == 3) carry_in();
                 E(alu_x86[y] | 2); E(0x87); EW(0xA000);         // op al, [bx - 6000h]
@@ -1509,6 +1578,7 @@ __attribute__((noinline)) static void translate_block(void) {
                 SLOW_ENDS(rdone);
                 if (cdone) SLOW_ENDS(cdone);
                 if (kdone) SLOW_ENDS(kdone);
+                if (pdone) SLOW_ENDS(pdone);
             } else {
                 if (y == 1 || y == 3) carry_in();
                 E(alu_x86[y] | 2); E(0xC0 | R8[z]);              // op al, r

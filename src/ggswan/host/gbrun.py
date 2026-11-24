@@ -822,6 +822,15 @@ if CYCLES and HOT and hot:
         print('  the 20 that cost most (cycles a frame, where, to, end or conditional): ' + ' '.join('%.0f:%05X>%05X:%s' % (n_ / fr_, a_, t_, 'c' if sd_ else 'e') for n_, a_, t_, sd_ in e9[:20]))
         eb_ = sum(n_ for a_, n_ in hot.items() if uc.mem_read(a_, 1)[0] == 0xEB); lahf_ = sum(n_ for a_, n_ in hot.items() if uc.mem_read(a_, 1)[0] == 0x9F and bytes(uc.mem_read(a_ + 1, 2)) == b'\x83\xEF')
         print('  jmp short (EB) %.0f cycles a frame; lahf just before "sub di, n" %.0f' % (eb_ / fr_, lahf_ / fr_))
+        # (the accesses through a pointer, by where they went: the cycles of the instruction that does the
+        # access on each way - "mov es, [drc_segtab]" for the ROM, the first "cmp bh/si" of the range test
+        # for all of them, the call of s_rd/s_rdt/s_wrt for the routines')
+        st_ = syms['drc_segtab'] & 0xFFFF; rs_ = syms.get('drc_ram_seg', 0) & 0xFFFF
+        rom_ = sum(n_ for a_, n_ in hot.items() if bytes(uc.mem_read(a_, 2)) == b'\x8E\x06' and int.from_bytes(uc.mem_read(a_ + 2, 2), 'little') in (st_, st_ + 2))
+        romt_ = sum(n_ for a_, n_ in hot.items() if bytes(uc.mem_read(a_, 3)) in (b'\xF6\xC7\x80', b'\xF7\xC6\x00'))
+        cart_ = sum(n_ for a_, n_ in hot.items() if bytes(uc.mem_read(a_, 2)) == b'\x8E\x06' and int.from_bytes(uc.mem_read(a_ + 2, 2), 'little') == rs_)
+        rng_ = sum(n_ for a_, n_ in hot.items() if bytes(uc.mem_read(a_, 3)) == b'\x80\xFF\xC0' or bytes(uc.mem_read(a_, 4)) == b'\x81\xFE\x00\xC0')
+        print('  through a pointer, cycles a frame: the range test\'s first cmp %.0f (x 1/1.5 = accesses), "test bh, 80h" (not the RAM: ROM?) %.0f, mov es for the ROM %.0f, for the cartridge\'s RAM %.0f' % (rng_ / fr_, romt_ / fr_, rom_ / fr_, cart_ / fr_))
     tab = bytes(psram[0x14].raw)
     blocks = sorted((int.from_bytes(tab[i + 6:i + 8], 'little') >> 12, int.from_bytes(tab[i + 4:i + 6], 'little'),
         int.from_bytes(tab[i:i + 2], 'little'), int.from_bytes(tab[i + 2:i + 4], 'little')) for i in range(0, 8192 * 8, 8) if tab[i + 2] | tab[i + 3])
