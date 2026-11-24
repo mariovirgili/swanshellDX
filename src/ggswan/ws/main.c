@@ -2788,8 +2788,14 @@ static volatile uint8_t vblanks;
 #endif
 // START + Y3 (Y down): the menu, opened by the main loop (menu_run)
 static uint8_t menu_req __attribute__((unused));
+#ifdef GGSWAN_HOST
 GGSWAN_HOST_VISIBLE void read_keys(void) {
     uint16_t k = ws_keypad_scan();
+#else
+// k: the keys read once for the frame (main loop: frame_step), patch 235
+static void read_keys(uint16_t k) {
+#endif
+    uint16_t raw_k __attribute__((unused)) = k;   // (k as read: masked below)
 #if defined(ST_STATES) && !defined(GGSWAN_HOST)
     // START + A, START + B held half a second (38 of the WonderSwan's
     // frames): the state kept, brought back. None of the three keys is
@@ -3024,7 +3030,7 @@ GGSWAN_HOST_VISIBLE void read_keys(void) {
                 else g |= GG_KEY_START;
             } else {
                 if (start_n && start_n < 8 && !st_used) start_tap = 6;
-                if (!(ws_keypad_scan() & WS_KEY_START)) { start_n = 0; st_used = 0; }
+                if (!(raw_k & WS_KEY_START)) { start_n = 0; st_used = 0; }
                 if (start_tap) {
                     start_tap--;
                     g |= GG_KEY_START;
@@ -3200,8 +3206,7 @@ static volatile uint16_t prof_count[PROF_COUNT];
 static void put_value(uint8_t row, uint8_t col, char label, uint32_t v);
 static uint16_t step_keys = 0xFFFF;   // (keys held from the start: not presses)
 static uint8_t step_paused;
-static uint16_t step_pressed(void) {
-    uint16_t k = ws_keypad_scan();
+static uint16_t step_pressed(uint16_t k) {
     uint16_t p = k & ~step_keys;
     step_keys = k;
     return p;
@@ -3211,8 +3216,8 @@ static uint16_t step_pressed(void) {
 // reset: the menu starts again and writes the cartridge RAM, in SRAM, to
 // the game's .sav; the Game Gear has no Y buttons)
 static uint8_t exit_held;
-static void exit_check(void) {
-    if ((ws_keypad_scan() & (WS_KEY_START | WS_KEY_Y1)) != (WS_KEY_START | WS_KEY_Y1)) {
+static void exit_check(uint16_t k) {
+    if ((k & (WS_KEY_START | WS_KEY_Y1)) != (WS_KEY_START | WS_KEY_Y1)) {
         exit_held = 0;
         return;
     }
@@ -3463,13 +3468,15 @@ __attribute__((noinline)) static void state_load(void) {
 #endif
 #undef buf
 
-static void frame_step(void) {
-    exit_check();
-    uint16_t p = step_pressed();
+// k: the keys read once for the frame; back: the keys for read_keys (k,
+// or the last read when it was stopped)
+static uint16_t frame_step(uint16_t k) {
+    exit_check(k);
+    uint16_t p = step_pressed(k);
     if ((p & STEP_PAUSE) && (step_keys & STEP_PAUSE) == STEP_PAUSE)
         step_paused = 1;
     else if (!step_paused)
-        return;
+        return k;
     outportb(WS_SOUND_CH_CTRL_PORT, 0);   // (sound off while stopped)
     for (;;) {
         // the Game Gear frame number (left border, F: last 3 digits)
@@ -3479,7 +3486,7 @@ static void frame_step(void) {
         uint8_t v = vblanks;
         while (vblanks == v)
             __asm__ volatile ("hlt");
-        p = step_pressed();
+        p = step_pressed(ws_keypad_scan());
         if ((p & STEP_PAUSE) && (step_keys & STEP_PAUSE) == STEP_PAUSE) {
             step_paused = 0;   // go on
             break;
@@ -3491,6 +3498,7 @@ static void frame_step(void) {
     ia16_disable_irq();
     frame_credit = FRAME_COST;   // (no catching up)
     ia16_enable_irq();
+    return step_keys;
 }
 
 /*
@@ -4408,8 +4416,7 @@ int main(void) {
         frame_credit -= FRAME_COST;
         ia16_enable_irq();
         prof_phase = PROF_OTHER;
-        frame_step();
-        read_keys();
+        read_keys(frame_step(ws_keypad_scan()));   // (the keys read once a frame)
         if (menu_req) {
             menu_req = 0;
             menu_run();
