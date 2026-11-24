@@ -226,6 +226,52 @@ static void text_hex(const char __far *label, uint32_t v) {
     text_print(buf);
 }
 
+// the game's name: the file's, without the folders and the extension,
+// on two lines at most (26 characters each)
+static void text_title(const char *path) {
+    const char *name = path;
+    for (const char *q = path; *q; q++)
+        if (*q == '/') name = q + 1;
+    uint16_t len = 0, dot = 0;
+    while (name[len]) {
+        if (name[len] == '.') dot = len;
+        len++;
+    }
+    if (dot) len = dot;
+    char line[27];
+    for (uint8_t l = 0; l < 2 && len; l++) {
+        uint8_t n = len > 26 ? 26 : (uint8_t) len;
+        for (uint8_t i = 0; i < n; i++) line[i] = name[i];
+        line[n] = 0;
+        text_print(line);
+        name += n;
+        len -= n;
+    }
+}
+
+// a size in KB (rounded up), in decimal
+static void text_kb(const char __far *label, uint32_t bytes) {
+    char t[28];
+    uint8_t n = 0;
+    while (*label && n < 18)
+        t[n++] = *(label++);
+    t[n++] = ' ';
+    uint32_t kb = (bytes + 1023) >> 10;
+    char d[8];
+    uint8_t k = 0;
+    do {
+        d[k++] = '0' + (uint8_t) (kb % 10);
+        kb /= 10;
+    } while (kb && k < 7);
+    while (k)
+        t[n++] = d[--k];
+    t[n++] = ' ';
+    t[n++] = 'K';
+    t[n++] = 'B';
+    t[n] = 0;
+    text_print(t);
+}
+
 static void fail(const char __far *what, uint32_t code) {
     if (text_y > 15) text_y = 15;   // (both lines on screen)
     text_print("ERROR");
@@ -2979,7 +3025,7 @@ static uint16_t load_rom(const char *path) {
     if (result != FR_OK)
         fail("OPEN", result);
     uint32_t size = f_size(&fp);
-    text_hex("SIZE", size);
+    text_kb("SIZE", size);
     if (size > GG_ROM_MAX || size < 0x400)
         fail("ROM SIZE", size);
 #ifdef GGSWAN_SF7000
@@ -4138,7 +4184,7 @@ int main(void) {
         }
         rom_path[i] = 0;
     }
-    text_print(rom_path);
+    text_title(rom_path);
     if (!rom_path[0])
         fail("NO PATH", 0);
 

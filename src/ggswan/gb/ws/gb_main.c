@@ -155,6 +155,52 @@ static void text_hex(const char __far *label, uint32_t v) {
     }
 }
 
+// the game's name: the file's, without the folders and the extension,
+// on two lines at most (26 characters each)
+static void text_title(const char *path) {
+    const char *name = path;
+    for (const char *q = path; *q; q++)
+        if (*q == '/') name = q + 1;
+    uint16_t len = 0, dot = 0;
+    while (name[len]) {
+        if (name[len] == '.') dot = len;
+        len++;
+    }
+    if (dot) len = dot;
+    char line[27];
+    for (uint8_t l = 0; l < 2 && len; l++) {
+        uint8_t n = len > 26 ? 26 : (uint8_t) len;
+        for (uint8_t i = 0; i < n; i++) line[i] = name[i];
+        line[n] = 0;
+        text_print(line);
+        name += n;
+        len -= n;
+    }
+}
+
+// a size in KB (rounded up), in decimal, where text_hex puts its value
+static void text_kb(const char __far *label, uint32_t bytes) {
+    char t[12];
+    uint32_t kb = (bytes + 1023) >> 10;
+    char d[8];
+    uint8_t k = 0, n = 0;
+    do {
+        d[k++] = '0' + (uint8_t) (kb % 10);
+        kb /= 10;
+    } while (kb && k < 7);
+    while (k)
+        t[n++] = d[--k];
+    t[n++] = ' ';
+    t[n++] = 'K';
+    t[n++] = 'B';
+    t[n] = 0;
+    if (text_row < 17) {
+        text_put(text_row, 1, label);
+        text_put(text_row, 16, t);
+        text_row += 2;
+    }
+}
+
 // back to the menu, as the other plugins
 static void leave(void) {
     ia16_disable_irq();
@@ -433,7 +479,7 @@ static void load_rom(void) {
     int16_t result = f_open(&fp, rom_path, FA_READ | FA_OPEN_EXISTING);
     if (result != FR_OK) fail("OPEN", result);
     uint32_t size = f_size(&fp);
-    text_hex("SIZE", size);
+    text_kb("SIZE", size);
 
     // FatFs must run with the RAM window on SRAM (it uses the IPC bank):
     // 8 KiB at a time into the internal RAM (6000h, the Game Boy's work
@@ -752,6 +798,7 @@ int main(void) {
         rom_path[i] = 0;
     }
     if (!rom_path[0]) fail("NO PATH", 0);
+    text_title(rom_path);
     int16_t result = f_mount(&fs, "", 1);
     if (result != FR_OK) fail("MOUNT", result);
     load_rom();
