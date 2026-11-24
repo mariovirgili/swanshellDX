@@ -150,6 +150,21 @@ static const uint8_t r8x[8] = {     5, 1, 6, 2, 7, 3, 0, 0 };
 // Z80 pair index (BC DE HL SP) -> x86 16-bit register
 static const uint8_t r16x[4] = { X_CX, X_DX, X_BX, X_BP };
 
+// (the cold tail: see cold_emit_all)
+#define MAX_COLD 8
+enum { COLD_WRITE = 1, COLD_IX_LD, COLD_IX_ALU, COLD_IX_BIT, COLD_IX_WR, COLD_PV };
+typedef struct {
+    uint8_t *jpos;       // rel8 byte of the JAE jump to this cold stub
+    uint16_t resume_off; // code-segment offset to jmp_near back to
+    uint8_t kind;        // COLD_*
+    uint8_t a, b, imm;   // kind-specific fields
+    int8_t d;            // IX/IY displacement (or hl_es keep for COLD_WRITE)
+} cold_t;
+static cold_t cold[MAX_COLD];
+static uint8_t cold_n, cold_off, cold_fail;
+static void cold_add(uint8_t *jpos, uint16_t resume_off, uint8_t kind,
+                     uint8_t a, uint8_t b, int8_t d, uint8_t imm);
+
 /* === Flag state === */
 
 enum { K_AH = 0, K_ADD, K_SUB, K_AND, K_OR, K_INC, K_DEC, K_CARRY };
@@ -167,7 +182,13 @@ static void materialize_need(uint8_t need) {
     case K_ADD: case K_INC: case K_SUB: case K_DEC: {
         uint8_t mask = (fkind == K_SUB || fkind == K_DEC) ? 0xD3 : 0xD1;
         B(0x9F);                         // lahf
-        if (need & FP) {
+        if ((need & FP) && !cold_off && cold_n < MAX_COLD) {
+            // P/V = overflow: no overflow (the common case) falls through,
+            // the overflow sets P/V in the cold tail
+            uint8_t *j = jcc8(0x70);     // jo cold
+            B(0x80); B(0xE4); B(mask);   // and ah, mask (P/V = 0)
+            cold_add(j, here(), COLD_PV, mask, 0, 0, 0);
+        } else if (need & FP) {
             // P/V = overflow
             B(0x70); B(0x05);            // jo +5
             B(0x80); B(0xE4); B(mask);   // and ah, mask (P/V = 0)
@@ -400,17 +421,6 @@ static void helper(uint8_t op) {
  * If a long block's jump to the cold tail would exceed rel8 (+127 bytes),
  * drc_translate() retries generation once with cold_off = 1 (inline paths).
  */
-#define MAX_COLD 8
-enum { COLD_WRITE = 1, COLD_IX_LD, COLD_IX_ALU, COLD_IX_BIT, COLD_IX_WR };
-typedef struct {
-    uint8_t *jpos;       // rel8 byte of the JAE jump to this cold stub
-    uint16_t resume_off; // code-segment offset to jmp_near back to
-    uint8_t kind;        // COLD_*
-    uint8_t a, b, imm;   // kind-specific fields
-    int8_t d;            // IX/IY displacement (or hl_es keep for COLD_WRITE)
-} cold_t;
-static cold_t cold[MAX_COLD];
-static uint8_t cold_n, cold_off, cold_fail;
 
 static void cold_add(uint8_t *jpos, uint16_t resume_off, uint8_t kind,
                      uint8_t a, uint8_t b, int8_t d, uint8_t imm) {
@@ -466,6 +476,10 @@ static void cold_emit_all(void) {
             if (c->a == 1 || c->a == 3) B(0x9E);           // sahf (CF = Z80 C)
             B(0x26); B(alu_x86[c->a] + 2); B(0x04);        // op al, es:[si]
             B(0x07);                                       // pop es
+            break;
+        case COLD_PV:
+            B(0x80); B(0xE4); B(c->a);                     // and ah, mask
+            B(0x80); B(0xCC); B(0x04);                     // or ah, 4 (P/V = 1)
             break;
         case COLD_IX_BIT:
             ix_far(c->d);
