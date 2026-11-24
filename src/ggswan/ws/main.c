@@ -2676,6 +2676,9 @@ static uint8_t step_paused;   // (frame by frame: below)
  * priority, or priority; as Y1 (Y up) held at the start chooses).
  */
 static uint8_t stats_hide __attribute__((unused));
+// the profiler's FPS value only (the menu's PROFILER: FPS, patch 227):
+// the FPS and the frameskip under it, nothing else
+static uint8_t fps_only __attribute__((unused));
 static __attribute__((unused)) void stats_toggle(void) {
 #ifndef GGSWAN_HOST
 #if defined(GGSWAN_SG1000)
@@ -3501,6 +3504,18 @@ static uint8_t menu_on(uint8_t item) {
     return 0;
 }
 
+// the profiler: 0 off, 1 on (all of it), 2 the FPS only
+static uint8_t prof_level(void) {
+    return !menu_on(MI_PROFILER) ? 0 : fps_only ? 2 : 1;
+}
+static void prof_level_set(uint8_t l) {
+    if (menu_on(MI_PROFILER))
+        stats_toggle();
+    fps_only = l == 2;
+    if (l)
+        stats_toggle();
+}
+
 static void menu_change(uint8_t item, uint8_t back) {
     switch (item) {
     case MI_FRAMESKIP:
@@ -3529,7 +3544,14 @@ static void menu_change(uint8_t item, uint8_t back) {
 #elif defined(GGSWAN_SMS)
     case MI_STRETCH: gg_squeeze ^= 1; break;
 #endif
-    case MI_PROFILER: stats_toggle(); break;
+    case MI_PROFILER: {
+        // OFF -> FPS -> ON -> OFF (X4 (X left) the other way); switched
+        // off and on again so that screen 2 is cleared in between
+        uint8_t l = prof_level();
+        l = back ? (l == 0 ? 1 : l == 2 ? 0 : 2) : (l == 0 ? 2 : l == 2 ? 1 : 0);
+        prof_level_set(l);
+        break;
+    }
     }
     // (stats_toggle -> screen2_mode sets the scroll of screen 2: the
     // game's with the front tiles on, which moved the menu's text)
@@ -3601,6 +3623,9 @@ static void menu_draw(uint8_t page, uint8_t sel) {
             menu_text(row, 22, t);
         } else if (it[i] == MI_SCOPE) {
             menu_text(row + 1, 4, cfg_game ? "THIS GAME" : "THE PLUGIN (ALL GAMES)");
+        } else if (it[i] == MI_PROFILER) {
+            uint8_t l = prof_level();
+            menu_text(row, 22, l == 0 ? "OFF" : l == 2 ? "FPS" : "ON");
         } else if (it[i] == MI_SOUND) {
             menu_text(row, 22, snd_mute ? "OFF" : "ON");
         } else if (it[i] >= MI_STRETCH && it[i] <= MI_SPRITES)
@@ -3611,8 +3636,8 @@ static void menu_draw(uint8_t page, uint8_t sel) {
     // carries the game's tiles in front of the sprites: with it on,
     // those are not drawn)
     if (page == MP_VIDEO) {
-        menu_text(11, 2, "PROFILER ON: SPRITES IN");
-        menu_text(12, 2, "FRONT OF ALL THE TILES");
+        menu_text(11, 2, "PROFILER ON/FPS: SPRITES");
+        menu_text(12, 2, "IN FRONT OF ALL THE TILES");
     }
 #endif
     menu_text(16, 2, page == MP_MAIN ? "A: OPEN  B: CLOSE" : "A: CHANGE  B: BACK");
@@ -3677,7 +3702,7 @@ static void cfg_get(struct cfg *c) {
     c->volume = snd_vol;
     c->mute = snd_mute;
     c->stretch = menu_on(MI_STRETCH);
-    c->profiler = menu_on(MI_PROFILER);
+    c->profiler = prof_level();
     c->sprites = menu_on(MI_SPRITES);
 }
 static void cfg_set(const struct cfg *c) {
@@ -3688,7 +3713,7 @@ static void cfg_set(const struct cfg *c) {
     snd_volume_set();
     // (the switches through the menu's own code: what they also do)
     if (menu_on(MI_STRETCH) != c->stretch) menu_change(MI_STRETCH, 0);
-    if (menu_on(MI_PROFILER) != c->profiler) menu_change(MI_PROFILER, 0);
+    if (prof_level() != c->profiler) prof_level_set(c->profiler);
     if (menu_on(MI_SPRITES) != c->sprites) menu_change(MI_SPRITES, 0);
 }
 static void cfg_defaults(void) {
@@ -3697,7 +3722,7 @@ static void cfg_defaults(void) {
 static uint8_t cfg_valid(const struct cfg *c) {
     return c->magic[0] == 'G' && c->magic[1] == 'C' && c->version == CFG_VERSION
         && c->frameskip <= 5 && c->volume <= 8 && c->mute <= 1
-        && c->stretch <= 1 && c->profiler <= 1 && c->sprites <= 1;
+        && c->stretch <= 1 && c->profiler <= 2 && c->sprites <= 1;
 }
 
 // the game's file: the ROM's path with ".cfg", put there and taken away
@@ -3960,7 +3985,7 @@ static void show_profile(void) {
         return;
     if (total == 0)
         total = 1;
-    for (uint8_t i = 0; i < PROF_IDLE; i++) {
+    for (uint8_t i = 0; i < PROF_IDLE && !fps_only; i++) {   // (FPS only: the counts started again)
         uint32_t pct = (uint32_t) prof_count[i] * 100 / total;
         if (pct > 99) pct = 99;
         char t[5];
@@ -3983,7 +4008,8 @@ static void show_profile(void) {
 static void show_fps(uint8_t fps) {
     put_text(1, 0, "FPS");
     put_value(2, 0, ' ', fps);
-    put_value(0, 24, 'P', GGSWAN_PATCH);   // the patch number, top right
+    if (!fps_only)
+        put_value(0, 24, 'P', GGSWAN_PATCH);   // the patch number, top right
     if (diag_slot0)
         put_value(3, 0, 'Z', diag_slot0);  // (see diag_slot0)
 #ifdef ST_STATES
@@ -3997,7 +4023,7 @@ static void show_fps(uint8_t fps) {
     } else {
         put_text(3, 0, "    ");
     }
-    if (!show_stats)
+    if (!show_stats || fps_only)
         return;
     // per second: T translations; D returns to the dispatcher, helpers
     // W (write) O (out) I (in) S (interpreted step), N interpreted
