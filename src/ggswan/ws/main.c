@@ -636,7 +636,7 @@ static void log_present(void) {
     }
     if (!drc_st.defer)
         return;
-    uint16_t f = irq_save();
+    // (called from video_present with interrupts already off on the device)
     log_commit_pending();
     if (drc_st.log_top != log_start) {
         pend_top = drc_st.log_top;
@@ -651,7 +651,6 @@ static void log_present(void) {
             fprintf(stderr, "LOGSZ %u\n", (unsigned) (pend_top - pend_start));
 #endif
     }
-    irq_restore(f);
 #ifdef GGSWAN_HOST
     // (no WS raster on the PC: at once; with GGSWAN_LATE_COMMIT the PC
     // tests commit it later, from drc_z80_run, as the interrupt would)
@@ -1347,6 +1346,23 @@ static void splits_convert(void) {
     // status bar at the top), scroll 0 from line 0 and the value that
     // holds at line 16 from there
     static uint8_t pl_line[MAX_SPLITS + 1], pl_val[MAX_SPLITS + 1];
+    if (!view_sq && !(gg.vdp.reg[0] & 0x40)) {
+        cv_line[0] = 0;
+        cv_val[0] = rec_val[0] + dx;
+        cv_sq = 0;
+        for (uint8_t i = 1; i < rec_n; i++) {
+            uint8_t y = rec_line[i];
+            if (y <= vy) {
+                cv_val[0] = rec_val[i] + dx;
+            } else if ((uint8_t) (y - vy) < GG_VIEW_H) {
+                cv_line[n] = y - vy;
+                cv_val[n] = rec_val[i] + dx;
+                n++;
+            }
+        }
+        cv_n = n;
+        return;
+    }
     uint8_t pn = 1;
     pl_val[0] = rec_val[0];
     if (gg.vdp.reg[0] & 0x40) {
@@ -1422,18 +1438,24 @@ static void splits_prepare(void) {
     splits_convert();
 #endif
 #ifndef GGSWAN_HOST
+#ifdef GGSWAN_SMS
+    if (cv_sq) {
+        for (uint8_t i = 0; i < SPL_N; i++) {
+            pend_line[i] = SPL_LINE[i];
+            pend_val[i] = SPL_VAL[i];
+            pend_y[i] = cv_y[i];
+        }
+    } else
+#endif
     for (uint8_t i = 0; i < SPL_N; i++) {
         pend_line[i] = SPL_LINE[i];
         pend_val[i] = SPL_VAL[i];
-#ifdef GGSWAN_SMS
-        pend_y[i] = cv_y[i];
-#endif
     }
 #endif
     prep_n = SPL_N;
     if (rec_n > diag_splits)
         diag_splits = rec_n;
-    if (rec_n > 1) {
+    if (diag_mode && rec_n > 1) {
         diag_split_line = rec_line[1];
         diag_regs = (gg.vdp.reg[0] << 8) | gg.vdp.reg[10];
         // (Sonic: D2DC the line-interrupt line, D241 its state)
@@ -1921,11 +1943,10 @@ static void sprites_publish(void) {
     if (!spr_ready)
         return;
     spr_ready = 0;
-    uint16_t f = irq_save();
+    // (called from video_present with interrupts already off on the device)
     outportb(0x04, spr_port04);
     outportb(0x05, 0);        // first sprite
     outportb(0x06, spr_count);   // sprite count
-    irq_restore(f);
 }
 
 /*
@@ -2083,11 +2104,14 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
 #endif
     prof_phase = PROF_VIDEO;
     const uint8_t *reg = gg.vdp.reg;
-    uint8_t vp_start = inportb(WS_DISPLAY_LINE_PORT);
-    vp_mark = vp_start;
+    uint8_t vp_start = 0;
+    if (diag_mode) {
+        vp_start = inportb(WS_DISPLAY_LINE_PORT);
+        vp_mark = vp_start;
+    }
     gg_platform_psg_flush();   // (the frame's PSG writes, queued)
     pcm_frame();
-    vp_lap(VP_PSG);
+    if (diag_mode) vp_lap(VP_PSG);
 
 #ifdef GGSWAN_SMS
     {
@@ -2169,11 +2193,11 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
 #ifdef GGSWAN_HOST
     outportb(0x11, next_vy);   // (the PC tests have no WS raster)
 #endif
-    vp_lap(VP_MAP);
+    if (diag_mode) vp_lap(VP_MAP);
     // the sprite table first (built, not given to the WS yet)
     if (drc_st.sprites_dirty)
         build_sprites();
-    vp_lap(VP_SPR);
+    if (diag_mode) vp_lap(VP_SPR);
     // this frame's VRAM writes (at the end of the WS screen) and its
     // sprite table (the WS copies it there) together, both for the same WS
     // frame: never on the last lines of the screen, where the sprite table
@@ -2224,10 +2248,10 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
     rec_n = 1;
     thin_f = 0;
     drc_st.hs_last = gg.vdp.reg[8];
-    vp_lap(VP_LOG);
+    if (diag_mode) vp_lap(VP_LOG);
     if (!(gg.frame & 7))
         update_backdrop();
-    vp_lap(VP_BACK);
+    if (diag_mode) vp_lap(VP_BACK);
 
     // display on: at the start of the frame or now (games such as Sonic
     // turn it off in the frame interrupt while they fill the VRAM, and on
@@ -2244,8 +2268,10 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
 #ifdef GGSWAN_HOST
     frame_waiting = 1;
 #endif
-    vp_mark = vp_start;
-    vp_lap(VP_ALL);
+    if (diag_mode) {
+        vp_mark = vp_start;
+        vp_lap(VP_ALL);
+    }
     prof_phase = PROF_OTHER;
 }
 #endif   // (not GGSWAN_SG1000)
