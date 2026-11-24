@@ -3074,36 +3074,48 @@ static uint16_t load_rom(const char *path) {
         fail("ROM SIZE", size);
 #endif
 
-    // FatFs must run with the RAM window on SRAM (it uses the IPC bank),
-    // so read 8 KiB at a time into IRAM ($8000, the future Game Gear RAM)
-    // and copy it to PSRAM through the RAM window.
-    uint8_t *buf = (uint8_t*) GG_RAM_ADDR;
+    // Straight into the PSRAM, through the RAM window in flash mode, 32 KiB
+    // per f_read: FatFs keeps its buffers in IRAM and only uses the IPC
+    // bank when the card is mounted, and libnile reads whole sectors to
+    // 1000:xxxx on PSRAM with LODSW (and GDMA in color mode), like
+    // swanshell's f_read_rom_banked. Then FFh up to the end of the bank.
     uint32_t done = 0;
     uint32_t total = (size + 0xFFFF) & ~0xFFFFUL;
+    outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_ENABLE);
     while (done < total) {
-        unsigned int br = 0;
-        if (done < size) {
-            result = f_read(&fp, buf, 0x2000, &br);
-            if (result != FR_OK)
-                fail("READ", result);
-        }
-        if (br < 0x2000)
-            memset(buf + br, 0xFF, 0x2000 - br);
-        outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_ENABLE);
         outportw(WS_CART_EXTBANK_RAM_PORT, LOAD_BANK + (done >> 16));
-        _fmemcpy(MK_FP(0x1000, (uint16_t) done), buf, 0x2000);
-        outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_DISABLE);
-        done += 0x2000;
+        uint16_t n = 0x8000 - ((uint16_t) done & 0x7FFF);
+        void __far *dst = MK_FP(0x1000, (uint16_t) done);
+        if (done < size) {
+            unsigned int br = 0;
+            if (size - done < n)
+                n = size - done;
+            result = f_read(&fp, dst, n, &br);
+            if (result != FR_OK || br != n) {
+                outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_DISABLE);
+                fail("READ", result != FR_OK ? (uint32_t) result : done + br);
+            }
+        } else {
+            _fmemset(dst, 0xFF, n);
+        }
+        done += n;
     }
     f_close(&fp);
 
-    // check: the last 8 KiB read must be visible through ROM window 0
-    outportw(WS_CART_EXTBANK_ROM0_PORT, LOAD_BANK + ((done - 0x2000) >> 16));
+    // check: the last 8 KiB, seen through the RAM window, must be the same
+    // through ROM window 0 (the same PSRAM bank, not the SRAM)
     {
+        uint16_t bank = LOAD_BANK + ((done - 0x2000) >> 16);
+        outportw(WS_CART_EXTBANK_RAM_PORT, bank);
+        outportw(WS_CART_EXTBANK_ROM0_PORT, bank);
         const uint8_t __far *chk = MK_FP(0x2000, (uint16_t) (done - 0x2000));
-        for (uint16_t i = 0; i < 0x2000; i++)
-            if (chk[i] != buf[i])
-                fail("PSRAM MAP", done);
+        const uint8_t __far *ram = MK_FP(0x1000, (uint16_t) (done - 0x2000));
+        uint16_t i = 0;
+        while (i < 0x2000 && chk[i] == ram[i])
+            i++;
+        outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_DISABLE);
+        if (i < 0x2000)
+            fail("PSRAM MAP", done);
     }
 
     uint16_t banks16 = (size + 0x3FFF) >> 14;
@@ -4386,8 +4398,9 @@ int main(void) {
         }
     }
 
-    // give time to read the text
-    for (uint16_t i = 0; i < 60; i++) {
+    // no fixed wait: the text stays while a key is held (the keys that
+    // choose the CPU modes above, or any other one to read it)
+    while (ws_keypad_scan()) {
         while (inportb(WS_DISPLAY_LINE_PORT) != 144) {}
         while (inportb(WS_DISPLAY_LINE_PORT) == 144) {}
     }
