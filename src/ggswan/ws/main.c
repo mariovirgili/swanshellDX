@@ -3833,20 +3833,24 @@ static uint8_t cfg_rom_path(uint8_t on) {
     return 0;
 }
 
-// the card's driver moves the cartridge windows: all of them back after
-static uint16_t cfg_win[3];
-static uint8_t cfg_flash;
+// the card's driver moves the cartridge windows: all of them back after,
+// from what the plugin knows (as a state brought back does). Patches
+// 226-236 read the ports before and wrote them back: the console does
+// not read the flash/PSRAM port back (the comment at ram_window_set),
+// and slot 2's ROM bank ended up on the SRAM after every save of the
+// settings - wrong level data (Mickey through the floor), wrong
+// graphics, games stopping (Gio's test, smsswan, Land of Illusion);
+// the emulator reads it back, gbswan has it 0 anyway
 static void cfg_io_begin(void) {
-    cfg_win[0] = inportw(WS_CART_EXTBANK_ROM0_PORT);
-    cfg_win[1] = inportw(WS_CART_EXTBANK_ROM1_PORT);
-    cfg_win[2] = inportw(WS_CART_EXTBANK_RAM_PORT);
-    cfg_flash = inportb(WS_CART_BANK_FLASH_PORT);
 }
 static void cfg_io_end(void) {
-    outportw(WS_CART_EXTBANK_ROM0_PORT, cfg_win[0]);
-    outportw(WS_CART_EXTBANK_ROM1_PORT, cfg_win[1]);
-    outportb(WS_CART_BANK_FLASH_PORT, cfg_flash);
-    outportw(WS_CART_EXTBANK_RAM_PORT, cfg_win[2]);
+#ifdef GGSWAN_SF7000
+    outportw(WS_CART_EXTBANK_ROM0_PORT, SG_TABLE_BANK);   // (the VRAM: sg_video.inc)
+#else
+    outportw(WS_CART_EXTBANK_ROM0_PORT, GG_PSRAM_FIRST_BANK + (drc_st.keys[1] >> 2));
+    outportw(WS_CART_EXTBANK_ROM1_PORT, GG_PSRAM_FIRST_BANK + (drc_st.keys[2] >> 2));
+#endif
+    ws_ram_window_restore();
 }
 
 static uint8_t cfg_read_file(const char *path, struct cfg *c) {
