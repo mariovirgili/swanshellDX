@@ -424,12 +424,16 @@ static void gg_diag_vbl(void) {
 }
 
 // cycles run since the start of the frame
+static inline uint16_t pos_from_left(int32_t left) {
+    int32_t p = frame_given - left;
+    if ((uint32_t) p <= 0xFFFFu)
+        return (uint16_t) p;
+    return p < 0 ? 0 : 0xFFFF;
+}
+
 static uint16_t frame_pos(void) {
     int32_t left = gg_cpu_left ? gg_cpu_left() : z80.cycles;
-    int32_t p = frame_given - left;
-    if (p < 0) return 0;
-    if (p > 0xFFFF) return 0xFFFF;
-    return (uint16_t) p;
+    return pos_from_left(left);
 }
 
 uint16_t gg_current_line(void) {
@@ -883,11 +887,16 @@ static int32_t event_step(uint16_t pos) {
 
 int32_t gg_line_event(int32_t left) {
     // (frame_pos with the cycles left given)
-    int32_t p = frame_given - left;
-    uint16_t pos = p < 0 ? 0 : p > 0xFFFF ? 0xFFFF : (uint16_t) p;
+    uint16_t pos = pos_from_left(left);
     // only the lines of the view (the frame presented at line 168, the
     // frame interrupt and the end of the frame stay in gg_run_frame)
-    if (gg_every_line || pos >= (uint16_t) (GG_PRESENT_LINE * (unsigned) GG_CYCLES_PER_LINE))
+#ifdef GGSWAN_SMS
+    uint16_t lim = gg.vdp.active == 192 ? (uint16_t) (192u * GG_CYCLES_PER_LINE)
+                                        : (uint16_t) (224u * GG_CYCLES_PER_LINE);
+#else
+    uint16_t lim = (uint16_t) (GG_PRESENT_LINE * (unsigned) GG_CYCLES_PER_LINE);
+#endif
+    if (gg_every_line || pos >= lim)
         return -1;
     return event_step(pos);
 }
@@ -942,10 +951,12 @@ void gg_run_frame(void) {
 #endif
     set_started(0);
     // (left = z80.cycles, so the frame starts frame_carry cycles in)
-    frame_given = (int32_t) frame_carry + (gg_cpu_left ? gg_cpu_left() : z80.cycles);
+    // between CPU runs in_block is always 0, so cycles left is z80.cycles
+    frame_given = (int32_t) frame_carry + z80.cycles;
+    uint16_t pos;
     if (gg_every_line) {
         while (1) {
-            uint16_t pos = frame_pos();
+            pos = pos_from_left(z80.cycles);
             // start the lines the CPU has reached
             while (started < GG_LINES && (uint16_t) (started * GG_CYCLES_PER_LINE) <= pos) {
                 vdp_line(started);
@@ -964,12 +975,12 @@ void gg_run_frame(void) {
         }
     } else {
         int32_t want;
-        while ((want = event_step(frame_pos())) >= 0) {
+        while ((want = event_step(pos = pos_from_left(z80.cycles))) >= 0) {
             z80_break = 0;
             gg_cpu_run(want);
         }
     }
-    frame_carry = frame_pos() - GG_FRAME_CYCLES;
+    frame_carry = pos - GG_FRAME_CYCLES;
     {
         // (at most 100 lines at once; the rest is forgiven)
         uint16_t d = gg.vdp.irq_debt;
