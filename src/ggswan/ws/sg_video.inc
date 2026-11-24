@@ -272,21 +272,21 @@ static inline uint16_t sg_key(uint8_t row, uint8_t name) {
 // the tile of a slot from the VRAM
 static void sg_convert(uint16_t slot, uint16_t key) {
     uint16_t *t = (uint16_t*) TILE_PTR(sg_slot_tile(slot));
-    uint8_t p[8], c[8];
     diag_commit++;
 #ifndef GGSWAN_HOST
     if (sg_m == SG_MODE_G2) {
         sg_conv_ct = (uint16_t) (0xC000u + sg_ct + ((key & sg_cmask) << 3));
-        sg_conv_g2_asm((uint16_t) t, (uint16_t) (0xC000u + sg_pg + ((key & sg_pmask) << 3)));
+        sg_conv_g2_asm((uint16_t) (uintptr_t) t, (uint16_t) (0xC000u + sg_pg + ((key & sg_pmask) << 3)));
         return;
     }
     if (sg_m == SG_MODE_G1) {
         sg_conv_lk = sg_vr[(sg_ct + (key >> 3)) & 0x3FFF];
-        sg_conv_g1_asm((uint16_t) t, (uint16_t) (0xC000u + ((sg_pg + (key << 3)) & 0x3FFF)));
+        sg_conv_g1_asm((uint16_t) (uintptr_t) t, (uint16_t) (0xC000u + ((sg_pg + (key << 3)) & 0x3FFF)));
         return;
     }
 #endif
     if (sg_m == SG_MODE_G2) {
+        uint8_t p[8], c[8];
         _fmemcpy(p, sg_vr + sg_pg + ((key & sg_pmask) << 3), 8);
         _fmemcpy(c, sg_vr + sg_ct + ((key & sg_cmask) << 3), 8);
         for (uint8_t r = 0; r < 8; r++) {
@@ -296,6 +296,7 @@ static void sg_convert(uint16_t slot, uint16_t key) {
             *t++ = (pp & sg_plane_hi[k >> 4]) | (~pp & sg_plane_hi[k & 15]);
         }
     } else if (sg_m == SG_MODE_G1) {
+        uint8_t p[8];
         _fmemcpy(p, sg_vr + ((sg_pg + (key << 3)) & 0x3FFF), 8);
         uint8_t k = sg_vr[(sg_ct + (key >> 3)) & 0x3FFF];
         uint16_t fl = sg_plane_lo[k >> 4], fh = sg_plane_hi[k >> 4];
@@ -306,6 +307,7 @@ static void sg_convert(uint16_t slot, uint16_t key) {
             *t++ = (pp & fh) | (~pp & bh);
         }
     } else {
+        uint8_t p[8];
         // multicolor: two bytes of the pattern, 4 rows each, a color for
         // the left 4 pixels and one for the right
         _fmemcpy(p, sg_vr + ((sg_pg + ((key & 0xFF) << 3) + ((key >> 8) << 1)) & 0x3FFF), 2);
@@ -505,6 +507,382 @@ static void sg_unit_tiles(uint16_t a) {
         break;
     }
 }
+
+#ifndef GGSWAN_HOST
+_Static_assert(SG_NSLOT_LO == 352 && SG_NSLOT == 558 && SG_DONE_MAX == 256
+               && SG_DIRTY_ADDR == 0xFA00 && SG_PAGE_ADDR == 0xD900,
+               "sg_dirty_tiles_asm: fixed offsets");
+
+// V30MZ dirty-tile pass for SG_MODE_G2 and SG_MODE_G1 (requires sg_tab_open).
+// Keeps DS = 0x0000 (IRAM) and ES = 0x1000 (SG_TABLE_BANK), switching ES = 0x2000
+// (sg_vr) only while converting a referenced tile.
+__attribute__((noinline)) static void sg_dirty_tiles_asm(void) {
+    __asm__ volatile (
+        "pushw %%bp\n\t"
+        "pushw %%bx\n\t"
+        "pushw %%cx\n\t"
+        "pushw %%dx\n\t"
+        "pushw %%si\n\t"
+        "pushw %%di\n\t"
+        "pushw %%es\n\t"
+        "cld\n\t"
+        "movw $0x1000, %%ax\n\t"
+        "movw %%ax, %%es\n\t"
+
+        "xorw %%cx, %%cx\n\t"                 /* CX = pg (0..31) */
+    "1:\n\t"                                  /* .page_loop */
+        "movw %%cx, %%bx\n\t"
+        "cmpb $0, 0xD900(%%bx)\n\t"           /* sg_page[pg] */
+        "je 9f\n\t"                           /* .next_page */
+        "movw %%cx, %%ax\n\t"
+        "shlw $9, %%ax\n\t"                   /* AX = pa = pg << 9 */
+
+        "cmpb $%c[mode_g2], %[sg_m]\n\t"
+        "jne 2f\n\t"
+        "movw %%ax, %%dx\n\t"
+        "subw %[sg_pg], %%dx\n\t"
+        "cmpw $0x1800, %%dx\n\t"
+        "jb 3f\n\t"
+        "movw %%ax, %%dx\n\t"
+        "subw %[sg_ct], %%dx\n\t"
+        "cmpw $0x1800, %%dx\n\t"
+        "jae 9f\n\t"
+        "jmp 3f\n\t"
+    "2:\n\t"                                  /* SG_MODE_G1 */
+        "movw %%ax, %%dx\n\t"
+        "subw %[sg_pg], %%dx\n\t"
+        "cmpw $0x0800, %%dx\n\t"
+        "jb 3f\n\t"
+        "movw %[sg_ct], %%bx\n\t"
+        "shrw $9, %%bx\n\t"
+        "cmpw %%bx, %%cx\n\t"
+        "jne 9f\n\t"
+
+    "3:\n\t"                                  /* .scan_units: AX = pg << 9 */
+        "pushw %%cx\n\t"                      /* save pg */
+        "movw %%cx, %%si\n\t"
+        "shlw $5, %%si\n\t"
+        "addw $0xFA00, %%si\n\t"              /* SI = &sg_dirty[pg << 5] */
+        "xorw %%dx, %%dx\n\t"                 /* DX = u (0..31) */
+    "4:\n\t"                                  /* .unit_loop */
+        "pushw %%ax\n\t"                       /* (Claude: LODSB overwrote AL, a's low byte) */
+        "lodsb\n\t"
+        "testb %%al, %%al\n\t"
+        "popw %%ax\n\t"                        /* AX = a = (pg << 9) + (u << 4) */
+        "jz 8f\n\t"                           /* .next_unit */
+        "pushw %%ax\n\t"                      /* [sp+4] = a */
+        "pushw %%dx\n\t"                      /* [sp+2] = u */
+        "pushw %%si\n\t"                      /* [sp+0] = dirty ptr */
+
+        "cmpb $%c[mode_g2], %[sg_m]\n\t"
+        "jne 6f\n\t"                          /* .g1_unit */
+
+        /* --- G2 unit (a and a + 8) --- */
+        "movw %%ax, %%dx\n\t"
+        "subw %[sg_pg], %%dx\n\t"
+        "cmpw $0x1800, %%dx\n\t"
+        "jae 5f\n\t"                          /* .g2_check_ct */
+        "shrw $3, %%dx\n\t"                   /* DX = ch */
+        "movw %[sg_pmask], %%bx\n\t"
+        "andw %[sg_kmask], %%bx\n\t"
+        "cmpw $0x03FF, %%bx\n\t"
+        "jne 10f\n\t"
+        "movw %%dx, %%ax\n\t"
+        "call 20f\n\t"                        /* key_dirty(ch) */
+        "movw %%dx, %%ax\n\t"
+        "incw %%ax\n\t"
+        "call 20f\n\t"                        /* key_dirty(ch + 1) */
+        "jmp 5f\n\t"
+    "10:\n\t"
+        "movw %[sg_pmask], %%cx\n\t"
+        "call 15f\n\t"                        /* g2_masked(ch) */
+        "incw %%dx\n\t"
+        "call 15f\n\t"                        /* g2_masked(ch + 1) */
+
+    "5:\n\t"                                  /* .g2_check_ct */
+        "movw %%sp, %%bx\n\t"
+        "movw 4(%%bx), %%dx\n\t"              /* DX = a */
+        "subw %[sg_ct], %%dx\n\t"
+        "cmpw $0x1800, %%dx\n\t"
+        "jae 7f\n\t"                          /* .unit_done */
+        "shrw $3, %%dx\n\t"                   /* DX = ch */
+        "movw %[sg_cmask], %%bx\n\t"
+        "andw %[sg_kmask], %%bx\n\t"
+        "cmpw $0x03FF, %%bx\n\t"
+        "jne 11f\n\t"
+        "movw %%dx, %%ax\n\t"
+        "call 20f\n\t"                        /* key_dirty(ch) */
+        "movw %%dx, %%ax\n\t"
+        "incw %%ax\n\t"
+        "call 20f\n\t"                        /* key_dirty(ch + 1) */
+        "jmp 7f\n\t"
+    "11:\n\t"
+        "movw %[sg_cmask], %%cx\n\t"
+        "call 15f\n\t"                        /* g2_masked(ch) */
+        "incw %%dx\n\t"
+        "call 15f\n\t"                        /* g2_masked(ch + 1) */
+        "jmp 7f\n\t"
+
+        /* --- G1 unit (a and a + 8) --- */
+    "6:\n\t"                                  /* .g1_unit */
+        "movw %%ax, %%dx\n\t"
+        "subw %[sg_pg], %%dx\n\t"
+        "cmpw $0x0800, %%dx\n\t"
+        "jae 12f\n\t"
+        "shrw $3, %%dx\n\t"                   /* DX = ch */
+        "movw %%dx, %%ax\n\t"
+        "call 20f\n\t"                        /* key_dirty(ch) */
+        "movw %%dx, %%ax\n\t"
+        "incw %%ax\n\t"
+        "call 20f\n\t"                        /* key_dirty(ch + 1) */
+    "12:\n\t"
+        "movw %%sp, %%bx\n\t"
+        "movw 4(%%bx), %%ax\n\t"              /* AX = a */
+        "subw %[sg_ct], %%ax\n\t"
+        "cmpw $32, %%ax\n\t"
+        "jae 7f\n\t"
+        "shlw $3, %%ax\n\t"                   /* AX = k_start (0 or 128) */
+        "movw $128, %%cx\n\t"
+    "13:\n\t"
+        "pushw %%ax\n\t"
+        "pushw %%cx\n\t"
+        "call 20f\n\t"
+        "popw %%cx\n\t"
+        "popw %%ax\n\t"
+        "incw %%ax\n\t"
+        "loop 13b\n\t"
+
+    "7:\n\t"                                  /* .unit_done */
+        "popw %%si\n\t"
+        "popw %%dx\n\t"
+        "popw %%ax\n\t"
+    "8:\n\t"                                  /* .next_unit */
+        "addw $16, %%ax\n\t"
+        "incw %%dx\n\t"
+        "cmpw $32, %%dx\n\t"
+        "jb 4b\n\t"
+        "popw %%cx\n\t"                       /* restore pg */
+    "9:\n\t"                                  /* .next_page */
+        "incw %%cx\n\t"
+        "cmpw $32, %%cx\n\t"
+        "jb 1b\n\t"
+
+        /* Clear bit 2 (0x02) of sg_slot_fl for converted slots */
+        "movw %[sg_done_n], %%cx\n\t"
+        "jcxz 32f\n\t"
+        "cmpw $256, %%cx\n\t"
+        "ja 31f\n\t"
+        "xorw %%si, %%si\n\t"
+    "30:\n\t"
+        "movw %%es:0x2800(%%si), %%bx\n\t"    /* sg_done[i] */
+        "andb $0xFD, %%es:0x2000(%%bx)\n\t"   /* sg_slot_fl[s] &= ~2 */
+        "addw $2, %%si\n\t"
+        "loop 30b\n\t"
+        "jmp 32f\n\t"
+    "31:\n\t"
+        "movw $558, %%cx\n\t"
+        "xorw %%bx, %%bx\n\t"
+    "33:\n\t"
+        "andb $0xFD, %%es:0x2000(%%bx)\n\t"
+        "incw %%bx\n\t"
+        "loop 33b\n\t"
+    "32:\n\t"
+        "jmp 99f\n\t"
+
+        /* --- Helper 15: G2 masked thirds (DX = ch, CX = pmask/cmask) --- */
+    "15:\n\t"
+        "xorw %%di, %%di\n\t"                 /* DI = t (0x000, 0x100, 0x200) */
+    "16:\n\t"
+        "movw %%dx, %%ax\n\t"
+        "xorb %%ah, %%ah\n\t"
+        "orw %%di, %%ax\n\t"
+        "andw %[sg_kmask], %%ax\n\t"          /* AX = k */
+        "movw %%ax, %%bx\n\t"
+        "andw %%cx, %%bx\n\t"
+        "cmpw %%dx, %%bx\n\t"
+        "jne 17f\n\t"
+        "pushw %%cx\n\t"
+        "pushw %%dx\n\t"
+        "pushw %%di\n\t"
+        "call 20f\n\t"
+        "popw %%di\n\t"
+        "popw %%dx\n\t"
+        "popw %%cx\n\t"
+    "17:\n\t"
+        "addw $0x0100, %%di\n\t"
+        "cmpw $0x0300, %%di\n\t"
+        "jb 16b\n\t"
+        "ret\n\t"
+
+        /* --- Helper 20: key_dirty(AX = key), ES = 0x1000, DS = 0x0000 --- */
+    "20:\n\t"
+        "pushw %%dx\n\t"                       /* (Claude: the callers keep ch in DX) */
+        "movw %%ax, %%bx\n\t"
+        "shlw $1, %%bx\n\t"
+        "movw %%es:(%%bx), %%bx\n\t"          /* BX = s = sg_slot_of[key] */
+        "cmpw $0xFFFF, %%bx\n\t"
+        "je 29f\n\t"
+        "testb $2, %%es:0x2000(%%bx)\n\t"     /* sg_slot_fl[s] & 2 */
+        "jnz 29f\n\t"
+        "shlw $1, %%bx\n\t"
+        "cmpw $0, %%es:0x1000(%%bx)\n\t"      /* sg_slot_ref[s] */
+        "je 28f\n\t"
+        "shrw $1, %%bx\n\t"                   /* BX = s */
+
+        /* Convert slot BX with key AX into IRAM tile (DS:DI) */
+        "pushw %%bx\n\t"
+        "movw %%bx, %%di\n\t"
+        "shlw $5, %%di\n\t"
+        "addw $0x5400, %%di\n\t"              /* TILE_ADDR(160 + s) */
+        "cmpw $352, %%bx\n\t"
+        "jb 21f\n\t"
+        "addw $0x2600, %%di\n\t"              /* TILE_ADDR(816 - 352 + s) */
+    "21:\n\t"
+        "movw $0x2000, %%dx\n\t"
+        "movw %%dx, %%es\n\t"                 /* ES = 0x2000 (sg_vr) */
+        "cmpb $%c[mode_g2], %[sg_m]\n\t"
+        "jne 23f\n\t"                         /* G1 */
+
+        /* G2 8-row converter */
+        "movw %%ax, %%si\n\t"
+        "andw %[sg_pmask], %%si\n\t"
+        "shlw $3, %%si\n\t"
+        "addw %[sg_pg], %%si\n\t"
+        "addw $0xC000, %%si\n\t"              /* SI = pg_off */
+        "andw %[sg_cmask], %%ax\n\t"
+        "shlw $3, %%ax\n\t"
+        "addw %[sg_ct], %%ax\n\t"
+        "addw $0xC000, %%ax\n\t"
+        "subw %%si, %%ax\n\t"
+        "movw %%ax, %%bp\n\t"                 /* BP = ct_off - pg_off */
+        "movw $8, %%cx\n\t"
+    "22:\n\t"
+        "movb %%es:(%%bp,%%si), %%bl\n\t"
+        ".byte 0x26\n\t"
+        "lodsb\n\t"
+        "movb %%al, %%ah\n\t"
+        "movw %%ax, %%dx\n\t"
+        "notw %%dx\n\t"
+        "pushw %%bx\n\t"                       /* (Claude: the color kept: AND 000Fh cleared BH) */
+        "andw $0x000F, %%bx\n\t"
+        "shlw $2, %%bx\n\t"
+        "movw %c[plane4](%%bx), %%ax\n\t"
+        "andw %%dx, %%ax\n\t"
+        "movw %%ax, (%%di)\n\t"
+        "movw %c[plane4]+2(%%bx), %%ax\n\t"
+        "andw %%dx, %%ax\n\t"
+        "movw %%ax, 2(%%di)\n\t"
+        "notw %%dx\n\t"
+        "popw %%bx\n\t"
+        "shrb $4, %%bl\n\t"
+        "xorb %%bh, %%bh\n\t"
+        "shlw $2, %%bx\n\t"
+        "movw %c[plane4](%%bx), %%ax\n\t"
+        "andw %%dx, %%ax\n\t"
+        "orw %%ax, (%%di)\n\t"
+        "movw %c[plane4]+2(%%bx), %%ax\n\t"
+        "andw %%dx, %%ax\n\t"
+        "orw %%ax, 2(%%di)\n\t"
+        "addw $4, %%di\n\t"
+        "loop 22b\n\t"
+        "jmp 25f\n\t"
+
+        /* G1 8-row converter */
+    "23:\n\t"
+        "movw %%ax, %%si\n\t"
+        "shlw $3, %%si\n\t"
+        "addw %[sg_pg], %%si\n\t"
+        "andw $0x3FFF, %%si\n\t"
+        "addw $0xC000, %%si\n\t"              /* SI = pg_off */
+        "movw %%ax, %%bx\n\t"
+        "shrw $3, %%bx\n\t"
+        "addw %[sg_ct], %%bx\n\t"
+        "andw $0x3FFF, %%bx\n\t"
+        "movb %%es:0xC000(%%bx), %%dl\n\t"    /* DL = color byte */
+        "movb %%dl, %%bl\n\t"
+        "andw $0x000F, %%bx\n\t"
+        "shlw $2, %%bx\n\t"
+        "movw %c[plane4](%%bx), %%cx\n\t"     /* CX = bl */
+        "movw %c[plane4]+2(%%bx), %%bp\n\t"   /* BP = bh */
+        "movb %%dl, %%bl\n\t"
+        "shrb $4, %%bl\n\t"
+        "xorb %%bh, %%bh\n\t"
+        "shlw $2, %%bx\n\t"
+        "movw %c[plane4]+2(%%bx), %%dx\n\t"   /* DX = fh */
+        "movw %c[plane4](%%bx), %%bx\n\t"     /* BX = fl */
+        "movw $8, %%ax\n\t"
+    "24:\n\t"
+        "pushw %%ax\n\t"
+        ".byte 0x26\n\t"
+        "lodsb\n\t"
+        "movb %%al, %%ah\n\t"
+        "pushw %%ax\n\t"
+        "andw %%bx, %%ax\n\t"
+        "movw %%ax, (%%di)\n\t"
+        "popw %%ax\n\t"
+        "pushw %%ax\n\t"
+        "andw %%dx, %%ax\n\t"
+        "movw %%ax, 2(%%di)\n\t"
+        "popw %%ax\n\t"
+        "notw %%ax\n\t"
+        "pushw %%ax\n\t"
+        "andw %%cx, %%ax\n\t"
+        "orw %%ax, (%%di)\n\t"
+        "popw %%ax\n\t"
+        "andw %%bp, %%ax\n\t"
+        "orw %%ax, 2(%%di)\n\t"
+        "addw $4, %%di\n\t"
+        "popw %%ax\n\t"
+        "decw %%ax\n\t"
+        "jnz 24b\n\t"
+
+    "25:\n\t"
+        "movw $0x1000, %%dx\n\t"
+        "movw %%dx, %%es\n\t"                 /* restore ES = 0x1000 */
+        "popw %%bx\n\t"                       /* restore BX = s */
+        "orb $2, %%es:0x2000(%%bx)\n\t"       /* sg_slot_fl[s] |= 2 */
+        "movw %[sg_done_n], %%di\n\t"
+        "cmpw $256, %%di\n\t"
+        "jae 26f\n\t"
+        "shlw $1, %%di\n\t"
+        "movw %%bx, %%es:0x2800(%%di)\n\t"    /* sg_done[sg_done_n] = s */
+    "26:\n\t"
+        "incw %[sg_done_n]\n\t"
+        "incw %[diag_commit]\n\t"
+        "popw %%dx\n\t"
+        "ret\n\t"
+
+    "28:\n\t"                                 /* unreferenced: BX = s * 2, AX = key */
+        "movw $0xFFFF, %%es:0x0800(%%bx)\n\t" /* sg_slot_key[s] = SG_NONE */
+        "movw %%ax, %%bx\n\t"
+        "shlw $1, %%bx\n\t"
+        "movw $0xFFFF, %%es:(%%bx)\n\t"       /* sg_slot_of[key] = SG_NONE */
+    "29:\n\t"
+        "popw %%dx\n\t"
+        "ret\n\t"
+
+    "99:\n\t"
+        "popw %%es\n\t"
+        "popw %%di\n\t"
+        "popw %%si\n\t"
+        "popw %%dx\n\t"
+        "popw %%cx\n\t"
+        "popw %%bx\n\t"
+        "popw %%bp\n\t"
+        : [sg_done_n] "+m" (sg_done_n),
+          [diag_commit] "+m" (diag_commit)
+        : [sg_m] "m" (sg_m),
+          [sg_pg] "m" (sg_pg),
+          [sg_ct] "m" (sg_ct),
+          [sg_pmask] "m" (sg_pmask),
+          [sg_cmask] "m" (sg_cmask),
+          [sg_kmask] "m" (sg_kmask),
+          [plane4] "i" (sg_plane4),
+          [mode_g2] "i" (SG_MODE_G2)
+        : "ax", "cc", "memory"
+    );
+}
+#endif
 
 // the registers: what changed since the screen was made (1: the tiles are
 // no longer what they were, everything again)
@@ -1080,6 +1458,11 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
         // the tiles written, then the names (a name's new slot is drawn
         // with the patterns as they are now)
         sg_done_n = 0;
+#ifndef GGSWAN_HOST
+        if (sg_m == SG_MODE_G2 || sg_m == SG_MODE_G1) {
+            sg_dirty_tiles_asm();
+        } else
+#endif
         for (uint8_t pg = 0; pg < 32; pg++) {
             if (!sg_page[pg])
                 continue;
@@ -1103,12 +1486,17 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
                     sg_unit_tiles(a + 8);
                 }
         }
+#ifndef GGSWAN_HOST
+        if (sg_m != SG_MODE_G2 && sg_m != SG_MODE_G1)
+#endif
+        {
         if (sg_done_n > SG_DONE_MAX) {
             for (uint16_t i = 0; i < SG_NSLOT; i++)
                 sg_slot_fl[i] &= ~2;
         } else {
             for (uint16_t i = 0; i < sg_done_n; i++)
                 sg_slot_fl[sg_done[i]] &= ~2;
+        }
         }
     }
     if (redo) {
