@@ -979,13 +979,9 @@ int32_t gg_line_event(int32_t left) {
     uint16_t pos = pos_from_left(left);
     // only the lines of the view (the frame presented at line 168, the
     // frame interrupt and the end of the frame stay in gg_run_frame)
-#ifdef GGSWAN_SMS
-    uint16_t lim = gg.vdp.active == 192 ? (uint16_t) (192u * GG_CYCLES_PER_LINE)
-                                        : (uint16_t) (224u * GG_CYCLES_PER_LINE);
-#else
-    uint16_t lim = (uint16_t) (GG_PRESENT_LINE * (unsigned) GG_CYCLES_PER_LINE);
-#endif
-    if (gg_every_line || pos >= lim)
+    if (pos >= present_cycles())
+        return -1;
+    if (gg_every_line)
         return -1;
     return event_step(pos);
 }
@@ -1021,6 +1017,29 @@ int16_t gg_fast_line(int16_t left) {
     return want - left;
 }
 
+// Cold PC-test mode (never executed on the WonderSwan): kept out of line so
+// gg_run_frame stays small with no stack frame or ES spill.
+static __attribute__((noinline)) uint16_t run_frame_every_line(void) {
+    while (1) {
+        uint16_t pos = pos_from_left(z80.cycles);
+        // start the lines the CPU has reached
+        while (started < GG_LINES && (uint16_t) (started * GG_CYCLES_PER_LINE) <= pos) {
+            vdp_line(started);
+            gg_platform_line(started);
+            set_started(started + 1);
+        }
+        if (started >= GG_LINES && pos >= GG_FRAME_CYCLES)
+            return pos;
+        uint16_t e = next_event(started);
+        int32_t want = (int32_t) e * GG_CYCLES_PER_LINE - frame_given;
+        if (want < 0)
+            want = 0;
+        frame_given += want;
+        z80_break = 0;
+        gg_cpu_run(want);
+    }
+}
+
 void gg_run_frame(void) {
 #if defined(GGSWAN_SMS) || defined(GGSWAN_SG1000)
     // the Pause button (GG_KEY_START in gg.keys): a non-maskable interrupt
@@ -1041,32 +1060,19 @@ void gg_run_frame(void) {
     set_started(0);
     // (left = z80.cycles, so the frame starts frame_carry cycles in)
     // between CPU runs in_block is always 0, so cycles left is z80.cycles
-    frame_given = (int32_t) frame_carry + z80.cycles;
-    uint16_t pos;
+    // (the first position is frame_carry itself: frame_given - z80.cycles)
+    uint16_t pos = frame_carry;
+    frame_given = (int32_t) pos + z80.cycles;
     if (gg_every_line) {
-        while (1) {
-            pos = pos_from_left(z80.cycles);
-            // start the lines the CPU has reached
-            while (started < GG_LINES && (uint16_t) (started * GG_CYCLES_PER_LINE) <= pos) {
-                vdp_line(started);
-                gg_platform_line(started);
-                set_started(started + 1);
-            }
-            if (started >= GG_LINES && pos >= GG_FRAME_CYCLES)
-                break;
-            uint16_t e = next_event(started);
-            int32_t want = (int32_t) e * GG_CYCLES_PER_LINE - frame_given;
-            if (want < 0)
-                want = 0;
-            frame_given += want;
-            z80_break = 0;
-            gg_cpu_run(want);
-        }
+        pos = run_frame_every_line();
     } else {
-        int32_t want;
-        while ((want = event_step(pos = pos_from_left(z80.cycles))) >= 0) {
+        for (;;) {
+            int32_t want = event_step(pos);
+            if (want < 0)
+                break;
             z80_break = 0;
             gg_cpu_run(want);
+            pos = pos_from_left(z80.cycles);
         }
     }
     frame_carry = pos - GG_FRAME_CYCLES;
