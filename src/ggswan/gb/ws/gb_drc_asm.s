@@ -520,13 +520,40 @@ s_ly_e:
 // LY and STAT from the time (gbf_hw.c: gbf_io_read), the LCD on: the
 // frame's cycle now is gbf_ev_pos - gbf_cyc, 114 to a line
 // (the cycles left are in DI, as translated code has them)
+// Fast pos -> (AL = line, AH = cycle in line) using self-healing cache
+// (gbf_lc_line, gbf_lc_pos); preserves DH, clobbers DL and SI.
+.macro POS_TO_LINE lbl
+    mov si, ax
+    sub ax, [gbf_lc_pos]
+    cmp ax, 114
+    jb .L\lbl\()_same
+    cmp ax, 228
+    jb .L\lbl\()_next
+    mov ax, si
+    mov dl, 114
+    div dl
+    mov [gbf_lc_line], al
+    push ax
+    mov ah, 114
+    mul ah
+    mov [gbf_lc_pos], ax
+    pop ax
+    jmp .L\lbl\()_done
+.L\lbl\()_next:
+    sub al, 114
+    inc byte ptr [gbf_lc_line]
+    add word ptr [gbf_lc_pos], 114
+.L\lbl\()_same:
+    mov ah, al
+    mov al, [gbf_lc_line]
+.L\lbl\()_done:
+.endm
 s_ly:
     push dx
     mov dh, ah
     mov ax, [gbf_ev_pos]
     sub ax, di
-    mov dl, 114
-    div dl                      // AL = the line, AH = the cycle in it
+    POS_TO_LINE ly
     cmp al, 153
     jne 1f
     test ah, ah
@@ -541,8 +568,7 @@ s_stat:
     push ax
     mov ax, [gbf_ev_pos]
     sub ax, di
-    mov dl, 114
-    div dl                      // AL = the line, AH = the cycle in it
+    POS_TO_LINE st
     // the usual case: a line's cycle from 1 on, not line 153: the mode
     // from a table, LYC compared with the line
     test ah, ah
@@ -669,30 +695,28 @@ wait_ends:
 // time to the first cycle of another mode is taken off the count first,
 // so the loop goes round once. The modes of a line: 0 at its first
 // cycle, 2 from 1, 3 from 21, 0 from 64; the vertical blank is mode 1.
+// Called in STUB_KEEP (cycles left in DI on entry and exit).
 s_wait_stat:
-    pop di
-    inc di
-    push di
+    pop si
+    inc si
+    push si
     cmp byte ptr [gb + GB_LCD_ON], 0
     jne 1f
     mov si, 0xFF41
-    mov di, [gbf_cyc]           // (s_rd wants them in DI)
     jmp s_rd
 1:
     push bx
     push cx
     push dx
-    mov bl, cs:[di - 1]         // the modes it goes round in
-    mov di, ax
+    mov bl, cs:[si - 1]         // the modes it goes round in
+    push ax                     // save A and flags on stack (DI stays cycles)
     mov ax, [gbf_ev_pos]
-    sub ax, [gbf_cyc]
-    mov si, ax                  // the frame's cycle
-    mov dl, 114
-    div dl                      // AL = the line, AH = the cycle in it
+    sub ax, di
+    POS_TO_LINE wst             // AL = line, AH = cycle in line, SI = frame's cycle
     // In a line of the picture but the last: where the wait ends is in
     // a table, by the modes and the part of the line this is
     cmp al, 143
-    jae 0f
+    jae .Lwst_slow
     mov cl, bl
     xor bh, bh
     shl bx, 2
@@ -710,24 +734,26 @@ s_wait_stat:
     cmp dh, 0xFE
     jb 1f
     mov bl, cl
-    jne 0f                      // (FFh: no mode of a line ends it)
+    jne .Lwst_slow              // (FFh: no mode of a line ends it)
     mov dh, ah                  // (FEh: it ends here)
 1:
     mov bl, dh
     sub bl, ah
     xor bh, bh
-    cmp word ptr [gbf_cyc], 0
-    jle wst_plain
-    cmp bx, [gbf_cyc]
+    test di, di
+    jle .Lwst_plain_di
+    cmp bx, di
     jl 1f
-    mov word ptr [gbf_cyc], 0
-    jmp wst_plain
+    xor di, di
+    jmp .Lwst_plain_di
 1:
-    sub [gbf_cyc], bx
+    sub di, bx
     cmp dh, 114
     jb 1f
     sub dh, 114
     inc al
+    mov [gbf_lc_line], al
+    add word ptr [gbf_lc_pos], 114
 1:
     mov dl, al
     mov bl, dh
@@ -738,7 +764,29 @@ s_wait_stat:
     mov dl, 0xFF
 1:
     mov dh, cs:[bx + stat_modes - drc_stubs]
-    jmp 8f
+    mov al, [0x9F41]
+    and al, 0x78
+    or al, 0x80
+    or al, dh
+    cmp dl, [0x9F45]
+    jne 1f
+    or al, 4
+1:
+    pop dx                      // DH = old AH
+    mov ah, dh
+    pop dx
+    pop cx
+    pop bx
+    ret
+.Lwst_plain_di:
+    pop ax
+    pop dx
+    pop cx
+    pop bx
+    jmp s_stat
+.Lwst_slow:
+    mov [gbf_cyc], di
+    pop di                      // DI = old AX (rest of slow path uses gbf_cyc)
 0:
     xor cx, cx                  // cycles passed over
     cmp al, 144
@@ -855,6 +903,7 @@ wst_skip:
     and di, 0xFF00
     xor ah, ah
     or ax, di
+    mov di, [gbf_cyc]
     pop dx
     pop cx
     pop bx
@@ -951,8 +1000,7 @@ s_vreg:
     je 1f
     mov ax, [gbf_ev_pos]
     sub ax, [gbf_cyc]
-    mov dl, 114
-    div dl
+    POS_TO_LINE vr
     mov dl, 0
     cmp al, 144
     jae 1f

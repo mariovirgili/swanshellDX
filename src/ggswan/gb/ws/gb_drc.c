@@ -47,6 +47,8 @@ uint8_t drc_mbc_and, drc_mbc_z1, drc_p1_tab[4];
 uint16_t drc_mbc_top, drc_mbc_lo, drc_mbc_or, drc_mbc_hi, drc_bank_mask;
 uint8_t drc_ramg;
 uint16_t drc_ram_seg;
+uint16_t gbf_lc_pos;        // cached gbf_lc_line * 114 for fast pos -> (line, cyc) in gb_drc_asm.s
+uint8_t gbf_lc_line;
 uint16_t drc_blocks, drc_flushes, drc_cold_fails;
 
 /* ---- the blocks' table and the code ---- */
@@ -558,7 +560,7 @@ static void cyc_load(void) { E(0x8B); E(0x3E); EW(ADDR(gbf_cyc)); }     // mov d
     || (st) == ST_BANKX)
 #define STUB_KEEP(st) ((st) == ST_RD || (st) == ST_RDT || (st) == ST_WRT || (st) == ST_WRV || (st) == ST_POP \
     || (st) == ST_INC_HL || (st) == ST_DEC_HL || (st) == ST_DAA || (st) == ST_P1 || (st) == ST_BANK0 \
-    || (st) == ST_STAT || (st) == ST_LY || (st) == ST_EXIT_DYN || (st) == ST_EXIT_DYN_F)
+    || (st) == ST_STAT || (st) == ST_LY || (st) == ST_WAIT_STAT || (st) == ST_EXIT_DYN || (st) == ST_EXIT_DYN_F)
 static void call_stub(uint8_t st) {
     es_ram = 0;
     if (!STUB_KEEP(st)) cyc_store();
@@ -1053,7 +1055,6 @@ static void io_read(uint8_t n) {
         // (the read of a loop that waits for a mode: the wait is done there)
         call_stub(ST_WAIT_STAT);
         E(cur_wait);
-        cyc_load();
         return;
     }
     if (n == GB_STAT || n == GB_LY) {
