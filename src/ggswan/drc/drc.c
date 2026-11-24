@@ -151,10 +151,11 @@ static const uint8_t r8x[8] = {     5, 1, 6, 2, 7, 3, 0, 0 };
 static const uint8_t r16x[4] = { X_CX, X_DX, X_BX, X_BP };
 
 // (the cold tail: see cold_emit_all)
-#define MAX_COLD 8
-enum { COLD_WRITE = 1, COLD_IX_LD, COLD_IX_ALU, COLD_IX_BIT, COLD_IX_WR, COLD_PV };
+#define MAX_COLD 16
+enum { COLD_WRITE = 1, COLD_IX_LD, COLD_IX_ALU, COLD_IX_BIT, COLD_IX_WR, COLD_PV, COLD_SEG_HL, COLD_CRAM, COLD_PSG, COLD_STEP };
 typedef struct {
     uint8_t *jpos;       // rel8 byte of the JAE jump to this cold stub
+    uint8_t *jpos2;      // (COLD_STEP: the second jump, or 0)
     uint16_t resume_off; // code-segment offset to jmp_near back to
     uint8_t kind;        // COLD_*
     uint8_t a, b, imm;   // kind-specific fields
@@ -162,6 +163,9 @@ typedef struct {
 } cold_t;
 static cold_t cold[MAX_COLD];
 static uint8_t cold_n, cold_off, cold_fail;
+static uint8_t cold_emitting;   // (cold_emit_all: no new cold stubs)
+// a free cold slot (else: the inline form)
+#define COLD_FREE() (!cold_off && !cold_emitting && cold_n < MAX_COLD)
 static void cold_add(uint8_t *jpos, uint16_t resume_off, uint8_t kind,
                      uint8_t a, uint8_t b, int8_t d, uint8_t imm);
 
@@ -182,7 +186,7 @@ static void materialize_need(uint8_t need) {
     case K_ADD: case K_INC: case K_SUB: case K_DEC: {
         uint8_t mask = (fkind == K_SUB || fkind == K_DEC) ? 0xD3 : 0xD1;
         B(0x9F);                         // lahf
-        if ((need & FP) && !cold_off && cold_n < MAX_COLD) {
+        if ((need & FP) && COLD_FREE()) {
             // P/V = overflow: no overflow (the common case) falls through,
             // the overflow sets P/V in the cold tail
             uint8_t *j = jcc8(0x70);     // jo cold
@@ -380,6 +384,13 @@ static void seg_hl(uint8_t live) {
         // after INC HL (LD E,(HL) / INC HL / LD D,(HL), everywhere): the
         // same slot unless HL has just entered the next 8 KiB
         B(0xF7); B(0xC3); W(0x1FFF);     // test bx, 1FFFh
+        if (COLD_FREE()) {
+            // the next 8 KiB (rare): the segment in the cold tail
+            uint8_t *j = jcc8(0x74);     // jz cold
+            cold_add(j, here(), COLD_SEG_HL, 0, 0, 0, 0);
+            hl_es = 1;
+            return;
+        }
         B(0x75); B(12);                  // jnz +12 (the same)
     }
     B(0x89); B(0xDE);                    // mov si, bx
@@ -430,6 +441,7 @@ static void cold_add(uint8_t *jpos, uint16_t resume_off, uint8_t kind,
     }
     cold_t *c = &cold[cold_n++];
     c->jpos = jpos;
+    c->jpos2 = 0;
     c->resume_off = resume_off;
     c->kind = kind;
     c->a = a;
@@ -438,18 +450,34 @@ static void cold_add(uint8_t *jpos, uint16_t resume_off, uint8_t kind,
     c->imm = imm;
 }
 
+// The interpreter for one instruction (not work RAM: rare) in the cold
+// tail, reached by the two jumps of mem_check; 0: no room, inline
+static int step_cold(uint8_t *j1, uint8_t *j2, uint16_t pc) {
+    if (!COLD_FREE() || !j1) return 0;
+    cold_add(j1, here(), COLD_STEP, (uint8_t) pc, (uint8_t) (pc >> 8), 0, 0);
+    cold[cold_n - 1].jpos2 = j2;
+    hl_es = 0;   // (as after the helper)
+    return 1;
+}
+
 static void ix_far(int8_t d);
 static const uint8_t alu_x86[8];
 
 static void cold_emit_all(void) {
     fkind = K_AH;
+    cold_emitting = 1;
     for (uint8_t i = 0; i < cold_n; i++) {
         const cold_t *c = &cold[i];
         if (o + 48 >= o_limit || (uint16_t) (o - c->jpos - 1) > 127) {
             cold_fail = 1;
             return;
         }
+        if (c->jpos2 && (uint16_t) (o - c->jpos2 - 1) > 127) {
+            cold_fail = 1;
+            return;
+        }
         *c->jpos = (uint8_t) (o - c->jpos - 1);
+        if (c->jpos2) *c->jpos2 = (uint8_t) (o - c->jpos2 - 1);
         switch (c->kind) {
         case COLD_WRITE:
             if (c->b == 0xFF) { B(0xC6); B(0x06); W(SA(val)); B(c->imm); }
@@ -476,6 +504,24 @@ static void cold_emit_all(void) {
             if (c->a == 1 || c->a == 3) B(0x9E);           // sahf (CF = Z80 C)
             B(0x26); B(alu_x86[c->a] + 2); B(0x04);        // op al, es:[si]
             B(0x07);                                       // pop es
+            break;
+        case COLD_SEG_HL:
+            B(0x89); B(0xDE);                              // mov si, bx
+            B(0xC1); B(0xC6); B(0x04);                     // rol si, 4
+            B(0x83); B(0xE6); B(0x0E);                     // and si, 14
+            B(0x8E); B(0x84); W(SA(segtab));               // mov es, [si + segtab]
+            break;
+        case COLD_CRAM:
+            B(0x88); B(0x06 | (c->a << 3)); W(SA(val));    // mov [val], src
+            call_near(env->cram_off);
+            break;
+        case COLD_STEP:
+            B(0xC7); B(0x06); W(SA(arg)); W(c->a | (c->b << 8));
+            B(0xC6); B(0x06); W(SA(val)); B(1);
+            helper(DRC_H_STEP);
+            break;
+        case COLD_PSG:
+            helper(DRC_H_PSG);
             break;
         case COLD_PV:
             B(0x80); B(0xE4); B(c->a);                     // and ah, mask
@@ -843,7 +889,14 @@ static void read_const16(uint16_t addr, uint8_t dst) {
 static void vram_fast(uint8_t src, uint8_t **slow1, uint8_t inl) {
     B(0x80); B(0x3E); W(VA(code)); B(3);                 // cmp byte [code], 3
     uint8_t *cram_end = 0;
-    if (env->cram_off) {
+    int8_t cram_cold = -1;
+    if (env->cram_off && inl && COLD_FREE()) {
+        // CRAM (rare: palettes): the routine in the cold tail
+        uint8_t *j = jcc8(0x74);                         // je cold
+        cram_cold = (int8_t) cold_n;
+        cold_add(j, 0, COLD_CRAM, src, 0, 0, 0);         // (resume: at the end)
+        *slow1 = 0;
+    } else if (env->cram_off) {
         // CRAM: the routine (no slow path left)
         uint8_t *not_cram = jcc8(0x75);                  // jne
         B(0x88); B(0x06 | (src << 3)); W(SA(val));       // mov [val], src
@@ -915,6 +968,7 @@ static void vram_fast(uint8_t src, uint8_t **slow1, uint8_t inl) {
         B(0x89); B(0x36); W(VA(addr));                   // mov [addr], si
         B(0xC6); B(0x06); W(VA(latch_full)); B(0);       // mov byte [latch_full], 0
         land8(cram_end);
+        if (cram_cold >= 0) cold[cram_cold].resume_off = here();
         return;
     }
     B(0x88); B(0x84 | (src << 3)); W(env->vram_addr);    // mov [si + vram], src
@@ -937,6 +991,7 @@ static void vram_fast(uint8_t src, uint8_t **slow1, uint8_t inl) {
     B(0x89); B(0x36); W(VA(addr));                       // mov [addr], si
     B(0xC6); B(0x06); W(VA(latch_full)); B(0);           // mov byte [latch_full], 0
     land8(cram_end);
+    if (cram_cold >= 0) cold[cram_cold].resume_off = here();
 }
 
 /*
@@ -3331,12 +3386,14 @@ static int emit1(int i) {
         uint8_t *j2, *j1 = mem_check(X_BX, &j2);
         FLAT_ES(); B(0x80); B(0x87 | (set ? 0x08 : 0x20)); W(env->ram_delta); B(imm);
         B(0x83); B(0x2E); W(SA(cycles)); B(15);
-        uint8_t *j3 = jcc8(0xEB);
-        land8(j1); land8(j2);
-        B(0xC7); B(0x06); W(SA(arg)); W(I->pc);
-        B(0xC6); B(0x06); W(SA(val)); B(1);
-        helper(DRC_H_STEP);
-        land8(j3);
+        if (!step_cold(j1, j2, I->pc)) {
+            uint8_t *j3 = jcc8(0xEB);
+            land8(j1); land8(j2);
+            B(0xC7); B(0x06); W(SA(arg)); W(I->pc);
+            B(0xC6); B(0x06); W(SA(val)); B(1);
+            helper(DRC_H_STEP);
+            land8(j3);
+        }
         hl_es = 0;
         return 1;
     }
@@ -3849,12 +3906,14 @@ static int emit1(int i) {
             uint8_t *j2, *j1 = mem_check(X_SI, &j2);
             FLAT_ES(); B(0x80); B(0x84 | (set ? 0x08 : 0x20)); W(env->ram_delta); B(imm);
             B(0x83); B(0x2E); W(SA(cycles)); B(23);
-            uint8_t *j3 = jcc8(0xEB);
-            land8(j1); land8(j2);
-            B(0xC7); B(0x06); W(SA(arg)); W(I->pc);
-            B(0xC6); B(0x06); W(SA(val)); B(1);
-            helper(DRC_H_STEP);
-            land8(j3);
+            if (!step_cold(j1, j2, I->pc)) {
+                uint8_t *j3 = jcc8(0xEB);
+                land8(j1); land8(j2);
+                B(0xC7); B(0x06); W(SA(arg)); W(I->pc);
+                B(0xC6); B(0x06); W(SA(val)); B(1);
+                helper(DRC_H_STEP);
+                land8(j3);
+            }
             return 1;
         }
         switch (op) {
@@ -3936,12 +3995,14 @@ static int emit1(int i) {
             fkind = dec ? K_DEC : K_INC; cf_valid = 1;
             materialize();
             B(0x83); B(0x2E); W(SA(cycles)); B(23);
-            uint8_t *j3 = jcc8(0xEB);
-            land8(j1); land8(j2);
-            B(0xC7); B(0x06); W(SA(arg)); W(I->pc);
-            B(0xC6); B(0x06); W(SA(val)); B(1);
-            helper(DRC_H_STEP);
-            land8(j3);
+            if (!step_cold(j1, j2, I->pc)) {
+                uint8_t *j3 = jcc8(0xEB);
+                land8(j1); land8(j2);
+                B(0xC7); B(0x06); W(SA(arg)); W(I->pc);
+                B(0xC6); B(0x06); W(SA(val)); B(1);
+                helper(DRC_H_STEP);
+                land8(j3);
+            }
             fkind = K_AH;
             return 1;
         }
@@ -4115,6 +4176,16 @@ static int emit1(int i) {
                     return 1;
                 }
                 if (y == 3) { branch_to(target, 12); return 1; }   // JR
+                if (target == block_pc) {
+                    // a loop: going on (the common case) falls through
+                    uint8_t *j = jcond((y - 4) ^ 1);
+                    uint8_t save_kind = fkind;
+                    branch_to(target, 12);
+                    land8(j);
+                    fkind = save_kind;
+                    exit_const(next, 7);
+                    return 1;
+                }
                 uint8_t *j = jcond(y - 4);
                 // not taken
                 uint8_t save_kind = fkind;
@@ -4238,12 +4309,14 @@ static int emit1(int i) {
                 fkind = dec ? K_DEC : K_INC; cf_valid = 1;
                 materialize();
                 B(0x83); B(0x2E); W(SA(cycles)); B(11);
-                uint8_t *j3 = jcc8(0xEB);
-                land8(j1); land8(j2);
-                B(0xC7); B(0x06); W(SA(arg)); W(I->pc);
-                B(0xC6); B(0x06); W(SA(val)); B(1);
-                helper(DRC_H_STEP);
-                land8(j3);
+                if (!step_cold(j1, j2, I->pc)) {
+                    uint8_t *j3 = jcc8(0xEB);
+                    land8(j1); land8(j2);
+                    B(0xC7); B(0x06); W(SA(arg)); W(I->pc);
+                    B(0xC6); B(0x06); W(SA(val)); B(1);
+                    helper(DRC_H_STEP);
+                    land8(j3);
+                }
                 fkind = K_AH;
                 return 1;
             }
@@ -4351,6 +4424,16 @@ static int emit1(int i) {
             cyc += 10;
             return 1;
         case 2: {   // JP cc,nn
+            if (I->nn == block_pc) {
+                // a loop: going on (the common case) falls through
+                uint8_t *j = jcond(y ^ 1);
+                uint8_t save_kind = fkind;
+                branch_to(I->nn, 10);
+                land8(j);
+                fkind = save_kind;
+                exit_const(next, 10);
+                return 1;
+            }
             uint8_t *j = jcond(y);
             uint8_t save_kind = fkind;
             exit_const(next, 10);
@@ -4382,9 +4465,17 @@ static int emit1(int i) {
                     B(0x46);                             // inc si
                     B(0x89); B(0x36); W(SA(psg_n));      // mov [psg_n], si
                     B(0x81); B(0xFE); W(DRC_PSG_Q);      // cmp si, DRC_PSG_Q
-                    uint8_t *room = jcc8(0x72);          // jb room
-                    helper(DRC_H_PSG);
-                    land8(room);
+                    if (COLD_FREE()) {
+                        // full (once in DRC_PSG_Q writes): the helper in
+                        // the cold tail
+                        uint8_t *full = jcc8(0x73);      // jae cold
+                        cold_add(full, here(), COLD_PSG, 0, 0, 0, 0);
+                        hl_es = 0;                       // (as after helper)
+                    } else {
+                        uint8_t *room = jcc8(0x72);      // jb room
+                        helper(DRC_H_PSG);
+                        land8(room);
+                    }
                     cyc += 11;
                     return 1;
                 }
@@ -4404,6 +4495,11 @@ static int emit1(int i) {
 #endif
                 if (env->vdp_addr && (I->nn & 0xC1) == 0x80) {
                     vram_fast(X_AX, &s1, 3);
+                    if (!s1) {
+                        // (no slow path: the helper below is never reached)
+                        cyc += 11;
+                        return 1;
+                    }
                     done = jcc8(0xEB);
                     land8(s1);
                 } else if (env->ctl_off && (I->nn & 0xC1) == 0x81) {
@@ -4942,7 +5038,7 @@ retry_gen:
     block_start_off = out_off; block_pc = pc;
     fkind = K_AH; cf_valid = 0; hl_es = 0; cyc = 0;
     force_nolink = 0;
-    cold_n = 0; cold_fail = 0;
+    cold_n = 0; cold_fail = 0; cold_emitting = 0;
     idle_block = is_idle(n, pc, ram);
     if (ram) ram_check(pc, end);
     if (long_run) {
