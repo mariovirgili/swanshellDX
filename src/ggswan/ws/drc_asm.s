@@ -167,6 +167,92 @@ sg_line_entry:
     pop ax
     jmp line_irq_slow
 
+    // uint8_t sg_nt_span_asm(uint16_t *map_ptr, const uint8_t *names)
+    // Fast path for sg_cell() over a horizontal span while SG_TABLE_BANK is
+    // mapped at 0x1000. sg_nt_par[0] = (row_or_hi << 8) | len, [1] = mask.
+    // Returns 0 when all cells hit in sg_slot_of, else the remaining count
+    // starting at the first unallocated key (handled by C sg_cell).
+    .global sg_nt_span_asm
+sg_nt_span_asm:
+    push bx
+    push cx
+    push si
+    push di
+    push bp
+    push es
+    mov di, ax
+    mov si, dx
+    mov ax, 0x1000
+    mov es, ax
+    mov dx, word ptr [sg_nt_par]            // DL = len, DH = row_or_hi
+    mov cx, word ptr [sg_nt_par + 2]        // CX = row_mask
+    test dl, dl
+    jz .Lsnt_done
+.Lsnt_loop:
+    mov al, byte ptr [si]
+    mov ah, dh
+    and ax, cx                              // AX = key (0..1023)
+    mov bx, ax
+    shl bx, 1
+    mov bx, word ptr es:[bx]                // BX = s = sg_slot_of[key]
+    cmp bx, 0xFFFF                          // SG_NONE?
+    je .Lsnt_done
+    mov ax, bx
+    cmp ax, 352                             // SG_NSLOT_LO
+    jb 1f
+    add ax, 0x1FD0                          // 0x2000 + SG_BG_HIGH - SG_NSLOT_LO - 512
+    jmp 2f
+1:
+    add ax, 160                             // SG_BG_FIRST
+2:
+    mov bp, word ptr [di]                   // BP = old map1 entry
+    cmp ax, bp
+    je .Lsnt_next
+    mov word ptr [di], ax
+    shl bx, 1
+    inc word ptr es:[bx + 0x1000]           // sg_slot_ref[s]++
+    cmp bp, 0x21FF                          // SG_BLANK?
+    je .Lsnt_next
+    test bp, 0x2000
+    jz 3f
+    sub bp, 0x1FD0
+    jmp 4f
+3:
+    sub bp, 160
+4:
+    mov bx, bp                              // BX = old_s
+    shl bx, 1
+    dec word ptr es:[bx + 0x1000]           // --sg_slot_ref[old_s]
+    jnz .Lsnt_next
+    test byte ptr es:[bp + 0x2000], 1       // sg_slot_fl[old_s] & 1
+    jnz .Lsnt_next
+    or byte ptr es:[bp + 0x2000], 1
+    mov ax, word ptr [sg_ring_head]
+    add ax, word ptr [sg_ring_n]
+    cmp ax, 558                             // SG_NSLOT
+    jb 5f
+    sub ax, 558
+5:
+    mov bx, ax
+    shl bx, 1
+    mov word ptr es:[bx + 0x1800], bp       // sg_ring[at] = old_s
+    inc word ptr [sg_ring_n]
+.Lsnt_next:
+    add di, 2
+    inc si
+    dec dl
+    jnz .Lsnt_loop
+.Lsnt_done:
+    xor ah, ah
+    mov al, dl
+    pop es
+    pop bp
+    pop di
+    pop si
+    pop cx
+    pop bx
+    IA16_RET
+
     // void sg_conv_g2_asm(uint16_t dst, uint16_t pg_off)
     // Converts an 8x8 Graphics II tile directly from sg_vr (0x2000:pg_off
     // and 0x2000:[sg_conv_ct]) into WS 4bpp tile IRAM at DS:dst. Caches the

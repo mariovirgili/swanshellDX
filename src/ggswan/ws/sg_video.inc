@@ -151,7 +151,7 @@ static inline void sg_tab_close(void) {
 #define sg_page ((uint8_t*) IRAM(SG_PAGE_ADDR))
 #define sg_any (*(uint8_t*) IRAM(SG_ANY_ADDR))
 
-static uint16_t sg_ring_head, sg_ring_n;
+uint16_t sg_ring_head, sg_ring_n;
 static uint16_t sg_done_n;         // slots drawn in this pass
 static uint8_t sg_starved;             // a character found no slot
 // the tables as the screen was made with (sg_tables)
@@ -389,6 +389,36 @@ static void sg_cell(uint8_t row, uint8_t col, uint8_t name) {
         sg_unref(sg_entry_slot(old));
 }
 
+#ifndef GGSWAN_HOST
+_Static_assert(SG_BG_FIRST == 160 && SG_NSLOT_LO == 352 && SG_NSLOT == 558
+               && SG_BLANK == 0x21FF, "drc_asm.s: sg_nt_span_asm constants");
+uint16_t sg_nt_par[2];   // [0]: lo=len, hi=row_or_hi; [1]: row_mask
+uint8_t sg_nt_span_asm(uint16_t *map_ptr, const uint8_t *names);
+#endif
+
+// Update a contiguous horizontal span of characters in row (requires sg_tab_open).
+static void sg_nt_span(uint8_t row, uint8_t col, const uint8_t *names, uint8_t len) {
+#ifndef GGSWAN_HOST
+    uint8_t or_hi = sg_m == SG_MODE_G2 ? (row >> 3) : sg_m == SG_MODE_MC ? (row & 3) : 0;
+    uint16_t mask = sg_m == SG_MODE_G2 ? sg_kmask : sg_m == SG_MODE_MC ? 0x03FF : 0x00FF;
+    uint16_t *mp = &map1[(uint16_t) row * 32 + col];
+    sg_nt_par[1] = mask;
+    while (len) {
+        sg_nt_par[0] = (uint16_t) len | ((uint16_t) or_hi << 8);
+        uint8_t rem = sg_nt_span_asm(mp, names);
+        if (!rem)
+            return;
+        uint8_t done = len - rem;
+        sg_cell(row, col + done, names[done]);
+        done++;
+        col += done; mp += done; names += done; len -= done;
+    }
+#else
+    for (uint8_t k = 0; k < len; k++)
+        sg_cell(row, col + k, names[k]);
+#endif
+}
+
 // the characters of the view, all of them (the view moved to other
 // characters, the tables changed, a character had found no slot)
 static void sg_relayout(void) {
@@ -410,8 +440,7 @@ static void sg_relayout(void) {
     }
     for (uint8_t row = sg_r0; row <= sg_r1; row++) {
         _fmemcpy(names, sg_vr + ((sg_nt + row * 32) & 0x3FFF), 32);
-        for (uint8_t col = sg_c0; col <= sg_c1; col++)
-            sg_cell(row, col, names[col]);
+        sg_nt_span(row, sg_c0, names + sg_c0, (uint8_t) (sg_c1 - sg_c0 + 1));
     }
 }
 
@@ -1096,9 +1125,9 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
                 if (row < sg_r0 || row > sg_r1 || col + 15 < sg_c0 || col > sg_c1)
                     continue;
                 _fmemcpy(names, sg_vr + sg_nt + cell, 16);
-                for (uint8_t k = 0; k < 16; k++)
-                    if (col + k >= sg_c0 && col + k <= sg_c1)
-                        sg_cell(row, col + k, names[k]);
+                uint8_t k0 = col < sg_c0 ? (uint8_t) (sg_c0 - col) : 0;
+                uint8_t k1 = col + 15 > sg_c1 ? (uint8_t) (sg_c1 - col) : 15;
+                sg_nt_span(row, (uint8_t) (col + k0), names + k0, (uint8_t) (k1 - k0 + 1));
             }
         }
     }
