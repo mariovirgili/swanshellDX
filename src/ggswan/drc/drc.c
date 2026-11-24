@@ -3140,6 +3140,17 @@ static int emit1(int i) {
         }
         if (op < 0x80) {
             // BIT b,r / BIT b,(HL)
+            if (!env->no_fast && !(live_out[i] & (FALL & ~FZ))) {
+                // only Z is read after it (BIT + JR/JP Z/NZ): TEST sets
+                // x86 ZF = Z80 Z directly, no AH bit-twiddling or branch
+                clobber(0);
+                if (r == 6) seg_hl(0);
+                if (r == 6) { B(0x26); B(0xF6); B(0x07); B(1 << b); }
+                else { B(0xF6); B(0xC0 | xr); B(1 << b); }
+                fkind = K_OR; cf_valid = 0;
+                cyc += r == 6 ? 12 : 8;
+                return 1;
+            }
             need_ah(live);
             if (r == 6) seg_hl(live);
             B(0x80); B(0xE4); B(0x01);           // and ah, 1
