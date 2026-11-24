@@ -208,21 +208,40 @@ static void link_patch(uint16_t seg, uint16_t link, uint16_t target_seg, uint16_
 // target_seg:target (or, a target that can not be linked from its slot,
 // FFFFh into the compare: DYN every time); returns 0 if it is not one
 static uint8_t ic_link(uint16_t seg, uint16_t link, uint16_t pc, uint16_t target_seg,
-                       uint16_t target) {
-    const uint8_t __far *x = MK_FP(seg, link + 11);
+                       uint16_t target, uint8_t bank) {
+    const uint8_t __far *x = MK_FP(seg, link + 15);
     uint16_t ic = env.state_addr + offsetof(drc_state_t, ic);
     if (x[0] != 0xC6 || x[1] != 0x06 || x[2] != (uint8_t) ic || x[3] != (uint8_t) (ic >> 8))
         return 0;
-    const uint8_t __far *c = MK_FP(seg, link - 14);
     uint8_t slot = x[4] - 1;
-    uint8_t ok = pc < 0xC000 && ((pc >> 14) == 0 || (pc >> 14) == slot);
+#ifdef GGSWAN_SF7000
+    uint8_t lform = 0;
+    uint8_t ok = 1;
+    (void) bank;
+#else
+    uint8_t lform = (slot == 0);
+    uint8_t ok = lform ? (pc < 0x8000) : (pc < 0xC000 && ((pc >> 14) == 0 || (pc >> 14) == slot));
+#endif
+    uint16_t cmp_off = lform ? (uint16_t) (link - 21) : (uint16_t) (link - 14);
+    const uint8_t __far *c = MK_FP(seg, cmp_off);
     uint16_t v = ok ? pc : 0xFFFF;
     uint8_t cmp[4] = { 0x81, (uint8_t) (0xF8 | (c[1] & 7)), (uint8_t) v, (uint8_t) (v >> 8) };
     outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_ENABLE);
     outportw(WS_CART_EXTBANK_RAM_PORT, code_bank + ((seg - DRC_CODE_SEG) >> 12));
-    uint8_t __far *dst = MK_FP(0x1000, link - 14);
+    uint8_t __far *dst = MK_FP(0x1000, cmp_off);
     for (uint8_t i = 0; i < 4; i++)
         dst[i] = cmp[i];
+#ifndef GGSWAN_SF7000
+    if (lform && ok && pc >= 0x4000) {
+        // check slot 1's bank before following the link (D is at link + 23,
+        // jne ends at link - 8 -> rel8 = 31)
+        uint16_t k2 = env.state_addr + offsetof(drc_state_t, keys) + 2;
+        uint8_t chk[7] = { 0x80, 0x3E, (uint8_t) k2, (uint8_t) (k2 >> 8), bank, 0x75, 31 };
+        uint8_t __far *gd = MK_FP(0x1000, link - 15);
+        for (uint8_t i = 0; i < 7; i++)
+            gd[i] = chk[i];
+    }
+#endif
     ws_ram_window_restore();
 #ifdef GGSWAN_HOST
     host_code_changed();
@@ -1912,7 +1931,7 @@ int32_t drc_z80_run(int32_t cycles) {
             // short; an unlinked one has "jmp X" (EBh) at L)
             const uint8_t __far *g = MK_FP(pending_seg, pending_link - 2);
             if (g[0] == 0x7E) {
-                if (g[2] == 0xEB && !ic_link(pending_seg, pending_link, pc, drc_entry[1], off))
+                if (g[2] == 0xEB && !ic_link(pending_seg, pending_link, pc, drc_entry[1], off, bank))
                     link_patch(pending_seg, pending_link, drc_entry[1], off, 0, bank);
             } else if (g[0] == 0x75) {
                 link_patch(pending_seg, pending_link, drc_entry[1], off, 1, bank);

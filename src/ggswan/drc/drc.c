@@ -310,20 +310,30 @@ static void exit_reg(uint8_t reg16, uint16_t extra) {
          * into the compare and links the jump, or writes FFFFh (never
          * equal) for a target that can not be linked from here. The
          * layout is fixed: the runtime finds the compare at L - 14 and
-         * recognizes these exits by the MOV BYTE [ic] at X + 6.
+         * (or L - 21 for slot 0, which leaves 7 bytes at L - 15 for an
+         * optional slot 1 bank check) and recognizes these exits by the
+         * MOV BYTE [ic] at X + 10 (after MOV [pc], reg).
          */
-        B(0x89); B(0x06 | (reg16 << 3)); W(ZA(pc));          // mov [pc], reg
+        uint8_t lform = !FLAT && (block_pc >> 14) == 0;
         B(0x39); B(0xC0 | (reg16 << 3) | reg16);             // cmp reg, reg (later: cmp reg, target)
         B(0x90); B(0x90);
         uint8_t *d = jcc8(0x75);                             // jne D
+        if (lform) {
+            // 7-byte slot for "cmp byte [keys + 2], bank; jne D" when
+            // returning from slot 0 into slot 1; skipped otherwise
+            B(0xEB); B(0x05);
+            B(0x90); B(0x90); B(0x90); B(0x90); B(0x90);
+        }
         B(0x81); B(0x2E); W(SA(cycles)); W(cyc + extra);     // sub word [cycles], n
         B(0x7E); B(5);                                       // jle X
         uint16_t l = here();
         B(0xEB); B(3); B(0x90); B(0x90); B(0x90);            // L: jmp X until linked
-        B(0xC7); B(0x06); W(SA(link)); W(l);                 // X: mov [link], L
+        B(0x89); B(0x06 | (reg16 << 3)); W(ZA(pc));          // X: mov [pc], reg
+        B(0xC7); B(0x06); W(SA(link)); W(l);                 // mov [link], L
         B(0xC6); B(0x06); W(SA(ic)); B(1 + (block_pc >> 14));   // mov byte [ic], slot + 1
         jmp_near(env->exit_off);
         land8(d);
+        B(0x89); B(0x06 | (reg16 << 3)); W(ZA(pc));          // D: mov [pc], reg
         sub_cycles(cyc + extra);                             // D:
         jmp_near(env->dyn_off);                              // look the next block up
         return;
