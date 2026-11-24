@@ -3432,11 +3432,7 @@ static const char __far *menu_label(uint8_t item) {
     case MI_PAGE_STATES: return "STATES";
     case MI_PAGE_ABOUT: return "ABOUT";
     case MI_STRETCH: return "STRETCH";
-#ifdef GGSWAN_SMS
-    case MI_PROFILER: return "PROFILER (NO PRIORITY)";
-#else
     case MI_PROFILER: return "PROFILER";
-#endif
     case MI_SPRITES: return "SPRITE LIMIT";
     case MI_SAVE: return "SAVE";
     case MI_LOAD: return "LOAD";
@@ -3466,7 +3462,7 @@ static void menu_draw(uint8_t page, uint8_t sel) {
         pb[k] = 0;
         menu_text(6, 2, pb);
         menu_text(8, 2, "CREATED BY CLAUDE");
-        menu_text(9, 2, "WITH GIO-74");
+        menu_text(10, 2, "WITH GIO-74");
         menu_text(16, 2, "B: BACK");
         return;
     }
@@ -3474,11 +3470,19 @@ static void menu_draw(uint8_t page, uint8_t sel) {
     for (uint8_t i = 0; i < n; i++) {
         uint8_t row = 4 + i * 2;
         if (i == sel)
-            menu_text(row, 1, "-");
+            menu_text(row, 1, ">");
         menu_text(row, 3, menu_label(it[i]));
         if (it[i] >= MI_STRETCH && it[i] <= MI_SPRITES)
             menu_text(row, 22, menu_on(it[i]) ? "ON" : "OFF");
     }
+#ifdef GGSWAN_SMS
+    // (smsswan: screen 2 carries the game's tiles in front of the sprites
+    // in the games that have them, and then the profiler has no room)
+    if (page == MP_VIDEO && drc_st.prio_on) {
+        menu_text(11, 2, "PROFILER NOT SHOWN IN");
+        menu_text(12, 2, "GAMES WITH FRONT TILES");
+    }
+#endif
     menu_text(16, 2, page == MP_MAIN ? "A: OPEN  B: CLOSE" : "A: CHANGE  B: BACK");
 }
 
@@ -3495,7 +3499,7 @@ static void menu_screen2_back(void) {
         map2[i] = WS_PRIO_BLANK;
 #ifdef GGSWAN_SF7000
     if (kb_open)
-        kb_draw();
+        kb_show(1);   // (its glyphs back too)
 #endif
 #else
     screen2_mode(drc_st.prio_on);
@@ -3505,7 +3509,14 @@ static void menu_screen2_back(void) {
 static void menu_run(void) {
     uint8_t ctrl = inportb(WS_DISPLAY_CTRL_PORT), back = inportb(0x01);
     uint8_t s2x = inportb(0x12), s2y = inportb(0x13);
+    // the line interrupt off: it writes the scroll of screen 2 as well
+    // (the splits; the squeezed picture: a Y step every 3 lines), which
+    // moved and squeezed the menu's text (Gio's test of patch 220: rows
+    // missing, letters cut, the title and the cursor there or not)
+    uint8_t ints = inportb(WS_INT_ENABLE_PORT);
+    ws_int_disable(WS_INT_ENABLE_LINE_MATCH);
     outportb(WS_SOUND_CH_CTRL_PORT, 0);           // (sound off while it is open)
+    font_load();   // (sfswan's keyboard puts its own glyphs there)
     menu_blank = font_entry(' ');
     outportb(0x12, 0);
     outportb(0x13, 0);
@@ -3563,6 +3574,8 @@ static void menu_run(void) {
     outportb(0x13, s2y);
     outportb(0x01, back);
     outportb(WS_DISPLAY_CTRL_PORT, ctrl);
+    ws_int_ack(WS_INT_ACK_LINE_MATCH);   // (one latched while it was off)
+    outportb(WS_INT_ENABLE_PORT, ints);
     step_keys = 0xFFFF;
     psg_noise_freq();   // (the channels on again)
     ia16_disable_irq();

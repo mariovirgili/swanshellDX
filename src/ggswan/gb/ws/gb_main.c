@@ -108,7 +108,9 @@ static void text_init(void) {
     wait_vblank();
     wait_vblank();
     ws_system_set_mode(WS_MODE_COLOR);
-    for (uint8_t i = 0; i < sizeof(font_data) / 8; i++) {
+    // (the first 44 glyphs, as before: the 4 added for the plugins' menu
+    // would go past the tiles gbswan keeps for its font)
+    for (uint8_t i = 0; i < 44; i++) {
         uint8_t *t = (uint8_t*) 0x2000 + (uint16_t) (FONT_TILE + i) * 16;
         for (uint8_t r = 0; r < 8; r++) {
             t[r * 2] = font_data[i * 8 + r];
