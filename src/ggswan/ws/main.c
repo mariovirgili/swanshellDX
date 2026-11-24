@@ -727,6 +727,58 @@ static inline uint16_t gg_entry(uint8_t row, uint8_t col) {
     return gg_vram[a] | (gg_vram[a + 1] << 8);
 }
 
+#ifndef GGSWAN_HOST
+_Static_assert(WS_PRIO_BLANK == 0x21FF, "map_relayout_row_asm: WS_PRIO_BLANK");
+
+// V30MZ inner row converter for map_relayout() (32 entries, DS = 0x0000).
+// Uses drc_st.nt_flags[8] like put_nt(); no "m" operands, all clobbers explicit.
+static __attribute__((noinline)) void map_relayout_row_prio_asm(const uint8_t *p, uint16_t off) {
+    __asm__ volatile (
+        "cld\n\t"
+        "movw $32, %%cx\n\t"
+    "1:\n\t"
+        "lodsw\n\t"
+        "movb %%ah, %%dl\n\t"
+        "movb %%ah, %%bl\n\t"
+        "xorb %%bh, %%bh\n\t"
+        "andb $0x0E, %%bl\n\t"
+        "andw $0x01FF, %%ax\n\t"
+        "orw %c[ntf](%%bx), %%ax\n\t"
+        "movw %%ax, %c[m1](%%di)\n\t"
+        "testb $0x10, %%dl\n\t"
+        "jnz 2f\n\t"
+        "movw $0x21FF, %%ax\n\t"
+    "2:\n\t"
+        "movw %%ax, %c[m2](%%di)\n\t"
+        "addw $2, %%di\n\t"
+        "loop 1b\n\t"
+        : "+S" (p), "+D" (off)
+        : [ntf] "i" (drc_st.nt_flags), [m1] "i" (map1), [m2] "i" (map2)
+        : "ax", "bx", "cx", "dx", "cc", "memory"
+    );
+}
+
+static __attribute__((noinline)) void map_relayout_row_plain_asm(const uint8_t *p, uint16_t off) {
+    __asm__ volatile (
+        "cld\n\t"
+        "movw $32, %%cx\n\t"
+    "1:\n\t"
+        "lodsw\n\t"
+        "movb %%ah, %%bl\n\t"
+        "xorb %%bh, %%bh\n\t"
+        "andb $0x0E, %%bl\n\t"
+        "andw $0x01FF, %%ax\n\t"
+        "orw %c[ntf](%%bx), %%ax\n\t"
+        "movw %%ax, %c[m1](%%di)\n\t"
+        "addw $2, %%di\n\t"
+        "loop 1b\n\t"
+        : "+S" (p), "+D" (off)
+        : [ntf] "i" (drc_st.nt_flags), [m1] "i" (map1)
+        : "ax", "bx", "cx", "cc", "memory"
+    );
+}
+#endif
+
 /*
  * The Game Gear map has 28 rows, the WS map 32. map1 holds the 32
  * consecutive Game Gear rows map_top .. map_top + 31 (wrapping at 28): WS
@@ -752,6 +804,12 @@ static void map_relayout(uint8_t top, uint8_t first) {
         uint8_t r = v % NT_H;
         // (a name table row does not wrap in VRAM: 3800h + 27 * 64 at most)
         const uint8_t *p = gg_vram + nt_base + r * 64;
+#ifndef GGSWAN_HOST
+        if (drc_st.prio_on)
+            map_relayout_row_prio_asm(p, (uint16_t) w << 6);
+        else
+            map_relayout_row_plain_asm(p, (uint16_t) w << 6);
+#else
         uint16_t *m = map1 + w * 32;
         if (drc_st.prio_on) {
             uint16_t *m2 = map2 + w * 32;
@@ -764,6 +822,7 @@ static void map_relayout(uint8_t top, uint8_t first) {
             for (uint8_t c = 0; c < 32; c++, p += 2)
                 *m++ = conv_entry(p[0] | (p[1] << 8));
         }
+#endif
     }
 }
 
@@ -1364,9 +1423,156 @@ static void splits_commit(void) {
  * Color 0 is looked for in two of the tile's eight rows (as it is in VRAM:
  * deferred writes not yet there are not seen, until the next time).
  */
+#ifndef GGSWAN_HOST
+_Static_assert(GG_VIEW_H == 144 && (GG_VIEW_W == 160 || GG_VIEW_W == 224),
+               "update_backdrop_asm: view dimensions");
+
+// V30MZ inner loops for update_backdrop() (9 rows x 10/14 cols, DS = 0x0000).
+// No "m" operands; all modified registers in outputs or clobbers; ES/BP untouched.
+static __attribute__((noinline)) void update_backdrop_asm(uint16_t top16, uint16_t left_off) {
+    __asm__ volatile (
+        /* In: AX = top (0..NT_H-1), DX = left_off ((left & 31) * 2, 0..62) */
+        "pushw %%ax\n\t"                      /* [sp+2] = top for Pass 2 */
+        "pushw %%dx\n\t"                      /* [sp+0] = left_off for Pass 2 */
+        "movw %%dx, %%di\n\t"                 /* DI = left_off (constant in Pass 1) */
+        "xorb %%dl, %%dl\n\t"                 /* DL = n1 = 0 */
+        "movb $9, %%dh\n\t"                   /* DH = 9 rows */
+    "1:\n\t"
+        "movb %%al, %%cl\n\t"
+        "xorb %%ch, %%ch\n\t"
+        "shlw $6, %%cx\n\t"                   /* CX = row * 64 */
+        "movw %c[ntb], %%si\n\t"
+        "addw $0x4000, %%si\n\t"
+        "addw %%cx, %%si\n\t"                 /* SI = 0x4000 + nt_base + row * 64 */
+        "movw %%di, %%bx\n\t"                 /* BX = left_off */
+        "movw $%c[cols], %%cx\n\t"
+    "2:\n\t"
+        "testb $0x08, 1(%%bx,%%si)\n\t"       /* (e >> 11) & 1 */
+        "jz 3f\n\t"
+        "incb %%dl\n\t"                       /* n1++ */
+    "3:\n\t"
+        "addw $4, %%bx\n\t"
+        "andw $0x003E, %%bx\n\t"
+        "loop 2b\n\t"
+        "addb $2, %%al\n\t"                   /* row += 2 */
+#ifdef GGSWAN_SMS
+        "cmpb %c[nth], %%al\n\t"
+        "jb 4f\n\t"
+        "subb %c[nth], %%al\n\t"
+#else
+        "cmpb $28, %%al\n\t"
+        "jb 4f\n\t"
+        "subb $28, %%al\n\t"
+#endif
+    "4:\n\t"
+        "decb %%dh\n\t"
+        "jnz 1b\n\t"
+
+        "testb %%dl, %%dl\n\t"
+        "jz 10f\n\t"                          /* all pal 0 */
+        "cmpb $%c[total], %%dl\n\t"
+        "jne 20f\n\t"                         /* mixed palettes -> Pass 2 */
+        "addw $4, %%sp\n\t"
+        "movb $1, %c[bpal]\n\t"
+        "jmp 99f\n\t"
+    "10:\n\t"
+        "addw $4, %%sp\n\t"
+        "movb $0, %c[bpal]\n\t"
+        "jmp 99f\n\t"
+
+        /* Pass 2: count tiles that contain color 0 in row 1 (t[4..7]) or row 5 (t[20..23]) */
+    "20:\n\t"
+        "popw %%bx\n\t"                       /* BX = left_off */
+        "popw %%ax\n\t"                       /* AL = top */
+        "xorw %%dx, %%dx\n\t"                 /* DL = n[0] = 0, DH = n[1] = 0 */
+        "movb $9, %%ah\n\t"                   /* AH = 9 rows */
+    "12:\n\t"
+        "pushw %%ax\n\t"                      /* save row (AL) and rows_left (AH) */
+        "pushw %%bx\n\t"                      /* save left_off */
+        "xorb %%ah, %%ah\n\t"
+        "shlw $6, %%ax\n\t"                   /* AX = row * 64 */
+        "addw %c[ntb], %%ax\n\t"
+        "addw $0x4000, %%ax\n\t"
+        "movw %%ax, %%si\n\t"                 /* SI = 0x4000 + nt_base + row * 64 */
+        "movb $%c[cols], %%cl\n\t"
+    "13:\n\t"
+        "movw (%%bx,%%si), %%di\n\t"          /* DI = e */
+        "movw %%di, %%ax\n\t"
+        "movb %%ah, %%ch\n\t"                 /* CH = e >> 8 (bit 3 = pal) */
+        "andw $0x01FF, %%di\n\t"
+        "shlw $5, %%di\n\t"
+        "addw $0x4000, %%di\n\t"              /* DI = gg_vram + (e & 0x1FF) * 32 */
+        "movw 4(%%di), %%ax\n\t"
+        "orw 6(%%di), %%ax\n\t"
+        "orb %%ah, %%al\n\t"
+        "incb %%al\n\t"
+        "jnz 14f\n\t"                         /* row 1 has color 0 */
+        "movw 20(%%di), %%ax\n\t"
+        "orw 22(%%di), %%ax\n\t"
+        "orb %%ah, %%al\n\t"
+        "incb %%al\n\t"
+        "jz 16f\n\t"                          /* neither row has color 0 */
+    "14:\n\t"
+        "testb $0x08, %%ch\n\t"
+        "jnz 15f\n\t"
+        "incb %%dl\n\t"                       /* n[0]++ */
+        "jmp 16f\n\t"
+    "15:\n\t"
+        "incb %%dh\n\t"                       /* n[1]++ */
+    "16:\n\t"
+        "addw $4, %%bx\n\t"
+        "andw $0x003E, %%bx\n\t"
+        "decb %%cl\n\t"
+        "jnz 13b\n\t"
+
+        "popw %%bx\n\t"                       /* restore left_off */
+        "popw %%ax\n\t"                       /* restore row (AL), rows_left (AH) */
+        "addb $2, %%al\n\t"
+#ifdef GGSWAN_SMS
+        "cmpb %c[nth], %%al\n\t"
+        "jb 17f\n\t"
+        "subb %c[nth], %%al\n\t"
+#else
+        "cmpb $28, %%al\n\t"
+        "jb 17f\n\t"
+        "subb $28, %%al\n\t"
+#endif
+    "17:\n\t"
+        "decb %%ah\n\t"
+        "jnz 12b\n\t"
+
+        "cmpb %%dl, %%dh\n\t"                 /* n[1] vs n[0] */
+        "ja 18f\n\t"
+        "jb 19f\n\t"
+        "jmp 99f\n\t"
+    "18:\n\t"
+        "movb $1, %c[bpal]\n\t"
+        "jmp 99f\n\t"
+    "19:\n\t"
+        "movb $0, %c[bpal]\n\t"
+    "99:\n\t"
+        : "+a" (top16), "+d" (left_off)
+        : [ntb] "i" (&nt_base),
+          [bpal] "i" (&backdrop_palette),
+#ifdef GGSWAN_SMS
+          [nth] "i" (&nt_h),
+#endif
+          [cols] "i" (GG_VIEW_W / 16),
+          [total] "i" (9 * (GG_VIEW_W / 16))
+        : "bx", "cx", "si", "di", "cc", "memory"
+    );
+}
+#endif
+
 static void update_backdrop(void) {
-    uint8_t top = (GG_VIEW_Y + gg.vdp.vscroll_frame) % NT_P >> 3;
+    uint16_t s = GG_VIEW_Y + gg.vdp.vscroll_frame;
+    if (s >= NT_P) s -= NT_P;
+    uint8_t top = (uint8_t) (s >> 3);
     uint8_t left = (GG_VIEW_X - gg.vdp.reg[8]) >> 3;
+#ifndef GGSWAN_HOST
+    update_backdrop_asm(top, (uint16_t) (left & 31) << 1);
+    return;
+#endif
     uint8_t n[2] = { 0, 0 };
     // (every other tile of the view: 18 rows, 20 columns; smsswan 28)
     // First their palettes alone: all of one (most screens), that one,
@@ -1845,7 +2051,8 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
     #define VP_ABOVE 6
 #endif
     // vertical: the Game Gear view starts at row (24 + vscroll) mod 224
-    uint16_t s = (VP_VIEW_Y + gg.vdp.vscroll_frame) % NT_P;
+    uint16_t s = VP_VIEW_Y + gg.vdp.vscroll_frame;
+    if (s >= NT_P) s -= NT_P;
     uint16_t vy = s;
     while (vy < map_top * 8u)
         vy += NT_P;   // (virtual rows: the same Game Gear row 28 later)

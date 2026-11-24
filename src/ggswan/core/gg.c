@@ -689,8 +689,14 @@ static void vdp_lines(uint16_t from, uint16_t to) {
         uint16_t k = a_end - from;
         if (k > c) {
             gg.vdp.line_pending = 1;
-            k -= c + 1;   // lines after the reload
-            c = r - (uint8_t) (k % ((uint16_t) r + 1));
+            if (to <= GG_ACTIVE + 1) {
+                if (r == 0) {
+                    c = 0;
+                } else {
+                    k -= c + 1;   // lines after the reload
+                    c = r - (uint8_t) (k <= r ? k : k % ((uint16_t) r + 1));
+                }
+            }
         } else {
             c -= (uint8_t) k;
         }
@@ -800,7 +806,8 @@ static int32_t event_step(uint16_t pos) {
         return -1;
     uint16_t e = next_event(started);
     // (cycles already given but not run yet, after an early stop, count)
-    int32_t want = (int32_t) e * GG_CYCLES_PER_LINE - frame_given;
+    // e <= GG_LINES (262), so e * 228 <= 59736 fits uint16_t (avoids 32-bit __mulsi3)
+    int32_t want = (int32_t) (uint16_t) (e * (uint16_t) GG_CYCLES_PER_LINE) - frame_given;
     if (want < 0)
         want = 0;
     frame_given += want;
