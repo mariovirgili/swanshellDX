@@ -1382,11 +1382,19 @@ GGSWAN_HOST_VISIBLE void video_init(void) {
 
 // the frame is shown as it is at the end of the picture (line 192)
 GGSWAN_HOST_VISIBLE void video_present(void);
+static void pcm_frame(void);   // (the frame's samples: below)
 void gg_platform_frame_end(void) {
+    if (frame_skip_now()) {
+        // a frame left out: its sound only (the pages written stay dirty
+        // for the next frame shown, the sprites too)
+        prof_phase = PROF_VIDEO;
+        gg_platform_psg_flush();
+        pcm_frame();
+        prof_phase = PROF_OTHER;
+        return;
+    }
     video_present();
 }
-
-static void pcm_frame(void);   // (the frame's samples: below)
 
 GGSWAN_HOST_VISIBLE void video_present(void) {
 #ifndef GGSWAN_HOST

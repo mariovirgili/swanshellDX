@@ -105,6 +105,14 @@ static char rom_path[ROM_PATH_SIZE];
 
 #include "font.inc"
 
+// frameskip (the menu's VIDEO, patch 223): 1 for a frame whose end-of-frame
+// video work is left out (gg_platform_frame_end)
+#ifdef GGSWAN_HOST
+static inline uint8_t frame_skip_now(void) { return 0; }   // (the PC tests: every frame)
+#else
+static uint8_t frame_skip_now(void);
+#endif
+
 #ifdef GGSWAN_SF7000
 #include "sf7000.h"
 #ifndef GGSWAN_HOST
@@ -1986,11 +1994,26 @@ GGSWAN_HOST_VISIBLE void video_init(void) {
 // Sailor Moon S change), the last sprites still had the old table and
 // Gomez the old tiles, in pieces.
 GGSWAN_HOST_VISIBLE void video_present(void);
+static void pcm_frame(void);   // (the frame's samples: below)
 void gg_platform_frame_end(void) {
+    if (frame_skip_now()) {
+        // a frame left out: its sound, and the scroll splits recorded
+        // again from the next frame. The rest waits for the next frame
+        // shown: the VRAM log goes on filling (written at once if full),
+        // the palette and the sprite table stay dirty, the scroll is the
+        // next frame's
+        prof_phase = PROF_VIDEO;
+        gg_platform_psg_flush();
+        pcm_frame();
+        rec_val[0] = 16 - gg.vdp.reg[8];
+        rec_n = 1;
+        thin_f = 0;
+        drc_st.hs_last = gg.vdp.reg[8];
+        prof_phase = PROF_OTHER;
+        return;
+    }
     video_present();
 }
-
-static void pcm_frame(void);   // (the frame's samples: below)
 
 GGSWAN_HOST_VISIBLE void video_present(void) {
 #ifndef GGSWAN_HOST
@@ -3038,6 +3061,31 @@ static volatile uint8_t vblanks;
 #define FRAME_EARN 5992
 #define FRAME_COST 7547
 static volatile uint16_t frame_credit;
+
+/*
+ * Frameskip (the menu's VIDEO): fs_mode 0 off, 1 AUTO (a frame left out
+ * when the next one is already due: the emulation behind the Game Gear's
+ * time; never more than 5 in a row), 2-5: 1, 2, 3, 5 frames left out
+ * after each one shown. The CPU and the sound run every frame; only the
+ * end-of-frame video work (VI) is left out, so the game sees nothing.
+ */
+static uint8_t fs_mode, fs_run;
+static const uint8_t fs_n[6] = { 0, 5, 1, 2, 3, 5 };
+#ifndef GGSWAN_HOST
+static uint8_t frame_skip_now(void) {
+    if (fs_mode) {
+        uint8_t skip = fs_run < fs_n[fs_mode];
+        if (fs_mode == 1 && frame_credit < FRAME_COST)
+            skip = 0;
+        if (skip) {
+            fs_run++;
+            return 1;
+        }
+    }
+    fs_run = 0;
+    return 0;
+}
+#endif
 static volatile uint16_t prof_count[PROF_COUNT];
 
 #ifndef GGSWAN_HOST
@@ -3356,7 +3404,7 @@ static uint16_t font_entry(char c);
 #define MENU_W 28
 enum { MP_MAIN, MP_VIDEO, MP_STATES, MP_ABOUT };
 enum { MI_NONE, MI_PAGE_VIDEO, MI_PAGE_STATES, MI_PAGE_ABOUT,
-       MI_STRETCH, MI_PROFILER, MI_SPRITES, MI_SAVE, MI_LOAD };
+       MI_FRAMESKIP, MI_STRETCH, MI_PROFILER, MI_SPRITES, MI_SAVE, MI_LOAD };
 
 static uint16_t menu_blank;
 static void menu_text(uint8_t row, uint8_t col, const char __far *t) {
@@ -3380,6 +3428,7 @@ static uint8_t menu_items(uint8_t page, uint8_t *it) {
         it[n++] = MI_PAGE_ABOUT;
         break;
     case MP_VIDEO:
+        it[n++] = MI_FRAMESKIP;
 #if defined(GGSWAN_SMS) || defined(GGSWAN_SG1000)
         it[n++] = MI_STRETCH;
 #endif
@@ -3414,8 +3463,12 @@ static uint8_t menu_on(uint8_t item) {
     return 0;
 }
 
-static void menu_change(uint8_t item) {
+static void menu_change(uint8_t item, uint8_t back) {
     switch (item) {
+    case MI_FRAMESKIP:
+        fs_mode = back ? (fs_mode ? fs_mode - 1 : 5) : (fs_mode < 5 ? fs_mode + 1 : 0);
+        fs_run = 0;
+        break;
 #if defined(GGSWAN_SG1000)
     case MI_STRETCH: sg_squeeze ^= 1; break;
     case MI_SPRITES: sg_limit ^= 1; sg_spr_dirty = 2; break;
@@ -3435,6 +3488,7 @@ static const char __far *menu_label(uint8_t item) {
     case MI_PAGE_VIDEO: return "VIDEO";
     case MI_PAGE_STATES: return "STATES";
     case MI_PAGE_ABOUT: return "ABOUT";
+    case MI_FRAMESKIP: return "FRAMESKIP";
     case MI_STRETCH: return "STRETCH";
     case MI_PROFILER: return "PROFILER";
     case MI_SPRITES: return "SPRITE LIMIT";
@@ -3476,7 +3530,13 @@ static void menu_draw(uint8_t page, uint8_t sel) {
         if (i == sel)
             menu_text(row, 1, ">");
         menu_text(row, 3, menu_label(it[i]));
-        if (it[i] >= MI_STRETCH && it[i] <= MI_SPRITES)
+        if (it[i] == MI_FRAMESKIP) {
+            static const char __far fs_names[] = "OFF\0AUTO\0001\0002\0003\0005";
+            const char __far *v = fs_names;
+            for (uint8_t k = fs_mode; k; k--)
+                while (*v++) {}
+            menu_text(row, 22, v);
+        } else if (it[i] >= MI_STRETCH && it[i] <= MI_SPRITES)
             menu_text(row, 22, menu_on(it[i]) ? "ON" : "OFF");
     }
 #ifdef GGSWAN_SMS
@@ -3564,7 +3624,7 @@ static void menu_run(void) {
                 break;
 #endif
             } else {
-                menu_change(item);
+                menu_change(item, (p & WS_KEY_X4) != 0);
             }
         } else {
             continue;
