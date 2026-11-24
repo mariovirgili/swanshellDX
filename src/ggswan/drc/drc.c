@@ -152,7 +152,7 @@ static const uint8_t r16x[4] = { X_CX, X_DX, X_BX, X_BP };
 
 // (the cold tail: see cold_emit_all)
 #define MAX_COLD 16
-enum { COLD_WRITE = 1, COLD_IX_LD, COLD_IX_ALU, COLD_IX_BIT, COLD_IX_WR, COLD_PV, COLD_SEG_HL, COLD_CRAM, COLD_PSG, COLD_STEP };
+enum { COLD_WRITE = 1, COLD_IX_LD, COLD_IX_ALU, COLD_IX_BIT, COLD_IX_WR, COLD_PV, COLD_SEG_HL, COLD_CRAM, COLD_PSG, COLD_STEP, COLD_HELPER, COLD_EI_EXIT };
 typedef struct {
     uint8_t *jpos;       // rel8 byte of the JAE jump to this cold stub
     uint8_t *jpos2;      // (COLD_STEP: the second jump, or 0)
@@ -520,6 +520,18 @@ static void cold_emit_all(void) {
             B(0xC6); B(0x06); W(SA(val)); B(1);
             helper(DRC_H_STEP);
             break;
+        case COLD_HELPER:
+            helper(c->a);
+            break;
+        case COLD_EI_EXIT:
+            // EI with an interrupt waiting: out, the runtime takes it after
+            // the next instruction (a: cycles, resume_off: next; no return)
+            B(0xC6); B(0x06); W(ZA(ei_pending)); B(1);
+            sub_cycles(c->a | (c->b << 8));
+            B(0xC7); B(0x06); W(ZA(pc)); W(c->resume_off);
+            set_link(0);
+            jmp_near(env->exit_off);
+            continue;
         case COLD_PSG:
             helper(DRC_H_PSG);
             break;
@@ -2719,7 +2731,8 @@ static void decode(uint16_t pc, ins_t *I) {
         case 0x36:                                                    // LD (IX+d),n
             I->d = (int8_t) rd(pc + 2); I->nn = rd(pc + 3); I->len = 4; return;
         case 0x34: case 0x35:                                         // INC/DEC (IX+d)
-            I->d = (int8_t) rd(pc + 2); I->len = 3; return;
+            I->d = (int8_t) rd(pc + 2); I->len = 3;
+            I->fwrite = FS | FZ | FH | FP | FN; I->fread = FC; return;   // (as INC/DEC (HL))
         }
         if ((op2 >= 0x46 && op2 <= 0x7E && (op2 & 7) == 6 && op2 != 0x76)    // LD r,(IX+d)
             || (op2 >= 0x70 && op2 <= 0x77 && op2 != 0x76)) {              // LD (IX+d),r
@@ -3072,6 +3085,11 @@ static void push_imm(uint16_t value) {
 // helper, which makes the flags; CF = 0: AH = the last byte): the flags of
 // the last OUTI, S and Z from B, N from bit 7 of the byte, only when live
 static void run_flags(uint8_t h, int live) {
+    if (!live && COLD_FREE()) {
+        cold_add(jcc8(0x72), here(), COLD_HELPER, h, 0, 0, 0);   // jc cold
+        hl_es = 0;                                       // (as after the helper)
+        return;
+    }
     if (!live) {
         uint8_t *done = jcc8(0x73);                      // jnc done
         helper(h);                                       // the OUTIs left (CRAM, other ports)
@@ -3085,6 +3103,12 @@ static void run_flags(uint8_t h, int live) {
     B(0x80); B(0xE4); B(0xC0);                           // and ah, C0h
     B(0xF6); B(0x06); W(SA(val)); B(0x80);               // test byte [val], 80h
     B(0x74); B(0x03); B(0x80); B(0xCC); B(0x02);         // jz +3; or ah, 2
+    if (COLD_FREE()) {
+        // the OUTIs left (rare): the helper in the cold tail
+        cold_add(slow, here(), COLD_HELPER, h, 0, 0, 0);
+        hl_es = 0;
+        return;
+    }
     uint8_t *done = jcc8(0xEB);                          // jmp done
     land8(slow);
     helper(h);                                           // the OUTIs left (CRAM, other ports)
@@ -3637,17 +3661,34 @@ static int emit1(int i) {
         case 0x42: case 0x52: case 0x62: case 0x72:     // SBC HL,rr
         case 0x4A: case 0x5A: case 0x6A: case 0x7A: {   // ADC HL,rr
             uint8_t rr = (op >> 4) & 3, sbc = !(op & 8);
-            materialize();
-            B(0x9E);                                         // sahf (CF = C)
-            B(0x89); B(0xDE);                                // mov si, bx
+            need_cf();                                       // (CF = C)
+            if (!env->no_fast && !(live_out[i] & FH)) {
+                // H not read: x86 SBB / ADC gives S, Z, overflow (P/V), C
+                // as the Z80's; the flags stay in x86 flags (Gemini)
+                B(sbc ? 0x19 : 0x11); B(0xC3 | (r16x[rr] << 3));  // sbb/adc bx, rr
+                fkind = sbc ? K_SUB : K_ADD; cf_valid = 1; hl_es = 0;
+                cyc += 15;
+                return 1;
+            }
+            if (rr != 2) { B(0x89); B(0xDE); }               // mov si, bx
             B(sbc ? 0x19 : 0x11); B(0xC3 | (r16x[rr] << 3));  // sbb/adc bx, rr
-            B(0x9F);                                         // lahf (S Z C)
-            B(0x70); B(0x05);                                // jo +5
-            B(0x80); B(0xE4); B(0xC1);                       // and ah, C1h (V = 0)
-            B(0xEB); B(0x06);                                // jmp +6
-            B(0x80); B(0xE4); B(0xC1);                       // and ah, C1h
-            B(0x80); B(0xCC); B(0x04);                       // or ah, 4 (V = 1)
-            if (sbc) { B(0x80); B(0xCC); B(0x02); }          // N
+            {
+                uint8_t mask = sbc ? 0xC3 : 0xC1;            // (lahf: bit 1 = 1, N = sbc)
+                B(0x9F);                                     // lahf (S Z C)
+                if ((live_out[i] & FP) && COLD_FREE()) {
+                    uint8_t *j = jcc8(0x70);                 // jo cold
+                    B(0x80); B(0xE4); B(mask);               // and ah, mask (V = 0)
+                    cold_add(j, here(), COLD_PV, mask, 0, 0, 0);
+                } else if (live_out[i] & FP) {
+                    B(0x70); B(0x05);                        // jo +5
+                    B(0x80); B(0xE4); B(mask);               // and ah, mask (V = 0)
+                    B(0xEB); B(0x06);                        // jmp +6
+                    B(0x80); B(0xE4); B(mask);               // and ah, mask
+                    B(0x80); B(0xCC); B(0x04);               // or ah, 4 (V = 1)
+                } else {
+                    B(0x80); B(0xE4); B(mask);               // and ah, mask (V not read)
+                }
+            }
             if (rr == 2) {
                 B(0xF7); B(0xC3); W(0x1000);                 // test bx, 1000h
             } else {
@@ -3709,9 +3750,14 @@ static int emit1(int i) {
             B(0xBF); W(I->count);                            // mov di, k
             B(0xBE); W(I->pc);                               // mov si, pc
             call_near(op == 0xA0 ? env->ldi_off : env->ldi_off + DRC_LDD_DELTA);
-            uint8_t *done = jcc8(0x73);                      // jnc done
-            helper(DRC_H_STEP);                              // the LDIs left
-            land8(done);
+            if (COLD_FREE()) {
+                // the LDIs left (not work RAM: rare): the cold tail
+                cold_add(jcc8(0x72), here(), COLD_HELPER, DRC_H_STEP, 0, 0, 0);
+            } else {
+                uint8_t *done = jcc8(0x73);                  // jnc done
+                helper(DRC_H_STEP);                          // the LDIs left
+                land8(done);
+            }
             fkind = K_AH; hl_es = 0;
             cyc += 16 * I->count;
             return 1;
@@ -3965,21 +4011,33 @@ static int emit1(int i) {
             return 1;
         case 0x09: case 0x19: case 0x29: case 0x39: {   // ADD IX,rr
             uint8_t rr = (op >> 4) & 3;
+            if (!env->no_fast && !(live_out[i] & (FS | FZ | FP | FH | FN))) {
+                // only C read afterwards: in place (Gemini)
+                clobber(0);
+                if (rr == 2) { B(0xD1); B(0x26); W(ixa); }                // shl word [ix], 1
+                else { B(0x01); B(0x06 | (r16x[rr] << 3)); W(ixa); }      // add [ix], rr
+                fkind = K_CARRY; cf_valid = 1;
+                cyc += 15;
+                return 1;
+            }
+            uint8_t hl = (live_out[i] & FH) != 0;        // (H read afterwards)
             need_ah(live);
             B(0x8B); B(0x3E); W(ixa);                    // mov di, [ix]
             B(0x80); B(0xE4); B(0xC4);                   // and ah, C4h
-            B(0x89); B(0xFE);                            // mov si, di
+            if (hl) { B(0x89); B(0xFE); }                // mov si, di
             if (rr == 2) { B(0x01); B(0xFF); }           // add di, di
             else { B(0x01); B(0xC7 | (r16x[rr] << 3)); } // add di, rr
             B(0x80); B(0xD4); B(0x00);                   // adc ah, 0
-            if (rr == 2) {
-                B(0xF7); B(0xC6); W(0x0800);             // test si, 0800h
-            } else {
-                B(0x31); B(0xC6 | (r16x[rr] << 3));      // xor si, rr
-                B(0x31); B(0xFE);                        // xor si, di
-                B(0xF7); B(0xC6); W(0x1000);
+            if (hl) {
+                if (rr == 2) {
+                    B(0xF7); B(0xC6); W(0x0800);         // test si, 0800h
+                } else {
+                    B(0x31); B(0xC6 | (r16x[rr] << 3));  // xor si, rr
+                    B(0x31); B(0xFE);                    // xor si, di
+                    B(0xF7); B(0xC6); W(0x1000);
+                }
+                B(0x74); B(0x03); B(0x80); B(0xCC); B(0x10);
             }
-            B(0x74); B(0x03); B(0x80); B(0xCC); B(0x10);
             B(0x89); B(0x3E); W(ixa);
             fkind = K_AH;
             cyc += 15;
@@ -4206,19 +4264,22 @@ static int emit1(int i) {
                     cyc += 11;
                     return 1;
                 }
+                uint8_t hl = (live_out[i] & FH) != 0;      // (H read afterwards)
                 need_ah(live);
                 B(0x80); B(0xE4); B(0xC4);
-                B(0x89); B(0xDE);                          // mov si, bx
+                if (hl) { B(0x89); B(0xDE); }              // mov si, bx
                 B(0x01); B(0xC3 | (r16x[rr] << 3));        // add bx, rr
                 B(0x80); B(0xD4); B(0x00);
-                if (rr == 2) {
-                    B(0xF7); B(0xC6); W(0x0800);
-                } else {
-                    B(0x31); B(0xC6 | (r16x[rr] << 3));
-                    B(0x31); B(0xDE);
-                    B(0xF7); B(0xC6); W(0x1000);
+                if (hl) {
+                    if (rr == 2) {
+                        B(0xF7); B(0xC6); W(0x0800);
+                    } else {
+                        B(0x31); B(0xC6 | (r16x[rr] << 3));
+                        B(0x31); B(0xDE);
+                        B(0xF7); B(0xC6); W(0x1000);
+                    }
+                    B(0x74); B(0x03); B(0x80); B(0xCC); B(0x10);
                 }
-                B(0x74); B(0x03); B(0x80); B(0xCC); B(0x10);
                 fkind = K_AH;
                 cyc += 11;
                 return 1;
@@ -4496,7 +4557,9 @@ static int emit1(int i) {
                 if (env->vdp_addr && (I->nn & 0xC1) == 0x80) {
                     vram_fast(X_AX, &s1, 3);
                     if (!s1) {
-                        // (no slow path: the helper below is never reached)
+                        // (no slow path: the helper below is never reached;
+                        // the routines may call helpers: ES as after one)
+                        hl_es = 0;
                         cyc += 11;
                         return 1;
                     }
@@ -4642,12 +4705,18 @@ static int emit1(int i) {
                 cyc += 4;
                 materialize();
                 B(0x80); B(0x3E); W(ZA(irq)); B(0);       // cmp byte [irq], 0
-                uint8_t *go = jcc8(0x74);                 // je go
-                B(0xC6); B(0x06); W(ZA(ei_pending)); B(1);
-                force_nolink = 1;
-                exit_const(next, 0);
-                force_nolink = 0;
-                land8(go);
+                if (COLD_FREE() && !(idle_block == 3 && next == idle_target)) {
+                    // (no interrupt waiting: the common case falls through)
+                    cold_add(jcc8(0x75), next, COLD_EI_EXIT,
+                             (uint8_t) cyc, (uint8_t) (cyc >> 8), 0, 0);
+                } else {
+                    uint8_t *go = jcc8(0x74);             // je go
+                    B(0xC6); B(0x06); W(ZA(ei_pending)); B(1);
+                    force_nolink = 1;
+                    exit_const(next, 0);
+                    force_nolink = 0;
+                    land8(go);
+                }
                 fkind = K_AH;
                 return 1;
             }
