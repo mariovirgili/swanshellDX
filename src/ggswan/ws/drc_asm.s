@@ -166,6 +166,182 @@ sg_line_entry:
     pop cx
     pop ax
     jmp line_irq_slow
+
+    // void sg_conv_g2_asm(uint16_t dst, uint16_t pg_off)
+    // Converts an 8x8 Graphics II tile directly from sg_vr (0x2000:pg_off
+    // and 0x2000:[sg_conv_ct]) into WS 4bpp tile IRAM at DS:dst. Caches the
+    // last color byte across consecutive rows.
+    .global sg_conv_g2_asm
+sg_conv_g2_asm:
+    push bx
+    push cx
+    push si
+    push di
+    push bp
+    push es
+    mov di, ax
+    mov si, dx
+    mov bx, word ptr [sg_conv_ct]
+    mov ax, 0x2000
+    mov es, ax
+    mov byte ptr [sg_conv_cnt], 8
+    mov al, byte ptr es:[bx]
+    jmp .Lg2_newcol
+.Lg2_loop:
+    mov al, byte ptr es:[bx]
+    cmp al, byte ptr [sg_conv_lk]
+    je .Lg2_samecol
+.Lg2_newcol:
+    mov byte ptr [sg_conv_lk], al
+    push bx
+    xor ah, ah
+    mov bx, ax
+    and bx, 0x000F
+    shl bx, 2
+    mov dx, word ptr [sg_plane4 + bx]       // DX = bl
+    mov bp, word ptr [sg_plane4 + bx + 2]   // BP = bh
+    mov bx, ax
+    and bx, 0x00F0
+    shr bx, 2
+    mov cx, word ptr [sg_plane4 + bx]       // CX = fl
+    xor cx, dx                              // CX = fl ^ bl
+    mov ax, word ptr [sg_plane4 + bx + 2]   // AX = fh
+    xor ax, bp                              // AX = fh ^ bh
+    mov word ptr [sg_conv_xhi], ax
+    pop bx
+.Lg2_samecol:
+    inc bx
+    mov al, byte ptr es:[si]
+    inc si
+    mov ah, al
+    push ax
+    and ax, cx
+    xor ax, dx
+    mov word ptr [di], ax
+    pop ax
+    and ax, word ptr [sg_conv_xhi]
+    xor ax, bp
+    mov word ptr [di + 2], ax
+    add di, 4
+    dec byte ptr [sg_conv_cnt]
+    jnz .Lg2_loop
+    pop es
+    pop bp
+    pop di
+    pop si
+    pop cx
+    pop bx
+    IA16_RET
+
+    // void sg_conv_g1_asm(uint16_t dst, uint16_t pg_off)
+    // Graphics I tile: single color byte in [sg_conv_lk] for all 8 rows.
+    .global sg_conv_g1_asm
+sg_conv_g1_asm:
+    push bx
+    push cx
+    push si
+    push di
+    push bp
+    push es
+    mov di, ax
+    mov si, dx
+    xor ax, ax
+    mov al, byte ptr [sg_conv_lk]
+    mov bx, ax
+    and bx, 0x000F
+    shl bx, 2
+    mov dx, word ptr [sg_plane4 + bx]       // DX = bl
+    mov bp, word ptr [sg_plane4 + bx + 2]   // BP = bh
+    mov bx, ax
+    and bx, 0x00F0
+    shr bx, 2
+    mov cx, word ptr [sg_plane4 + bx]       // CX = fl
+    xor cx, dx                              // CX = fl ^ bl
+    mov ax, word ptr [sg_plane4 + bx + 2]   // AX = fh
+    xor ax, bp                              // AX = fh ^ bh
+    mov word ptr [sg_conv_xhi], ax
+    mov ax, 0x2000
+    mov es, ax
+    mov bl, 8
+.Lg1_loop:
+    mov al, byte ptr es:[si]
+    inc si
+    mov ah, al
+    push ax
+    and ax, cx
+    xor ax, dx
+    mov word ptr [di], ax
+    pop ax
+    and ax, word ptr [sg_conv_xhi]
+    xor ax, bp
+    mov word ptr [di + 2], ax
+    add di, 4
+    dec bl
+    jnz .Lg1_loop
+    pop es
+    pop bp
+    pop di
+    pop si
+    pop cx
+    pop bx
+    IA16_RET
+
+    // uint16_t sg_kind_conv_asm(uint16_t dst, uint16_t src_off)
+    // Converts 1 (8x8) or 4 (16x16) unmagnified sprite pieces directly from
+    // 0x2000:src_off into WS tile IRAM, returning the empty-tile bitmask.
+    .global sg_kind_conv_asm
+sg_kind_conv_asm:
+    push bx
+    push cx
+    push si
+    push di
+    push bp
+    push es
+    mov di, ax
+    mov si, dx
+    xor bx, bx
+    mov bl, byte ptr [sg_conv_lk]
+    shl bx, 2
+    mov cx, word ptr [sg_plane4 + bx]       // CX = lo
+    mov dx, word ptr [sg_plane4 + bx + 2]   // DX = hi
+    mov ax, 0x2000
+    mov es, ax
+    xor bx, bx                              // BL = empty mask, BH = piece bit
+    mov bh, 1
+.Lsk_piece:
+    push bx
+    xor bl, bl                              // BL = OR of the 8 pattern bytes
+    mov bh, 8
+.Lsk_row:
+    mov al, byte ptr es:[si]
+    inc si
+    or bl, al
+    mov ah, al
+    mov bp, ax
+    and ax, cx
+    mov word ptr [di], ax
+    and bp, dx
+    mov word ptr [di + 2], bp
+    add di, 4
+    dec bh
+    jnz .Lsk_row
+    test bl, bl
+    pop bx
+    jnz .Lsk_notempty
+    or bl, bh
+.Lsk_notempty:
+    shl bh, 1
+    dec byte ptr [sg_conv_cnt]
+    jnz .Lsk_piece
+    xor ah, ah
+    mov al, bl
+    pop es
+    pop bp
+    pop di
+    pop si
+    pop cx
+    pop bx
+    IA16_RET
 #endif
 
 #ifndef GGSWAN_SG1000   // (sgswan: sg_line_entry and line_irq_slow, sg_video.inc)

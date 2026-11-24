@@ -194,6 +194,20 @@ static const uint16_t sg_plane_hi[16] = {
     0x0000, 0x0000, 0x0000, 0x0000, 0x00FF, 0x00FF, 0x00FF, 0x00FF,
     0xFF00, 0xFF00, 0xFF00, 0xFF00, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF
 };
+#ifndef GGSWAN_HOST
+// interleaved { lo, hi } words per color 0..15 for drc_asm.s tile converters
+const uint16_t sg_plane4[32] = {
+    0x0000, 0x0000,  0x00FF, 0x0000,  0xFF00, 0x0000,  0xFFFF, 0x0000,
+    0x0000, 0x00FF,  0x00FF, 0x00FF,  0xFF00, 0x00FF,  0xFFFF, 0x00FF,
+    0x0000, 0xFF00,  0x00FF, 0xFF00,  0xFF00, 0xFF00,  0xFFFF, 0xFF00,
+    0x0000, 0xFFFF,  0x00FF, 0xFFFF,  0xFF00, 0xFFFF,  0xFFFF, 0xFFFF
+};
+uint16_t sg_conv_ct, sg_conv_xhi;
+uint8_t sg_conv_lk, sg_conv_cnt;
+void sg_conv_g2_asm(uint16_t dst, uint16_t pg_off);
+void sg_conv_g1_asm(uint16_t dst, uint16_t pg_off);
+uint16_t sg_kind_conv_asm(uint16_t dst, uint16_t src_off);
+#endif
 // 4 pixels twice as wide
 static const uint8_t sg_wide[16] = {
     0x00, 0x03, 0x0C, 0x0F, 0x30, 0x33, 0x3C, 0x3F,
@@ -260,6 +274,18 @@ static void sg_convert(uint16_t slot, uint16_t key) {
     uint16_t *t = (uint16_t*) TILE_PTR(sg_slot_tile(slot));
     uint8_t p[8], c[8];
     diag_commit++;
+#ifndef GGSWAN_HOST
+    if (sg_m == SG_MODE_G2) {
+        sg_conv_ct = (uint16_t) (0xC000u + sg_ct + ((key & sg_cmask) << 3));
+        sg_conv_g2_asm((uint16_t) t, (uint16_t) (0xC000u + sg_pg + ((key & sg_pmask) << 3)));
+        return;
+    }
+    if (sg_m == SG_MODE_G1) {
+        sg_conv_lk = sg_vr[(sg_ct + (key >> 3)) & 0x3FFF];
+        sg_conv_g1_asm((uint16_t) t, (uint16_t) (0xC000u + ((sg_pg + (key << 3)) & 0x3FFF)));
+        return;
+    }
+#endif
     if (sg_m == SG_MODE_G2) {
         _fmemcpy(p, sg_vr + sg_pg + ((key & sg_pmask) << 3), 8);
         _fmemcpy(c, sg_vr + sg_ct + ((key & sg_cmask) << 3), 8);
@@ -618,6 +644,33 @@ static void sg_kind_convert(uint8_t kind, uint16_t key, uint32_t mask) {
     uint16_t lo = sg_plane_lo[key >> 12], hi = sg_plane_hi[key >> 12];
     uint16_t *t = (uint16_t*) TILE_PTR((uint16_t) kind * pieces * (sg_mag ? 4 : 1));
     uint16_t *t0 = t;
+#ifndef GGSWAN_HOST
+    if (!sg_mag) {
+        diag_commit += pieces;
+        sg_conv_lk = (uint8_t) (key >> 12);
+        sg_conv_cnt = pieces;
+        uint16_t empty = sg_kind_conv_asm((uint16_t) t, (uint16_t) (0xC000u + (((key & 0x7FF) << 3) & 0x3FFF)));
+        if (mask) {
+            empty = 0;
+            uint16_t bit = 1;
+            for (uint8_t q = 0; q < pieces; q++, t0 += 16, bit <<= 1) {
+                uint8_t m = (uint8_t) (mask >> ((q & 1) * 8));
+                for (uint8_t r = 0; m; r++, m >>= 1)
+                    if (m & 1) {
+                        t0[r * 2] = 0;
+                        t0[r * 2 + 1] = 0;
+                    }
+                uint16_t any = 0;
+                for (uint8_t r = 0; r < 16; r++)
+                    any |= t0[r];
+                if (!any)
+                    empty |= bit;
+            }
+        }
+        sg_kind_empty[kind] = empty;
+        return;
+    }
+#endif
     _fmemcpy(src, sg_vr + (((key & 0x7FF) << 3) & 0x3FFF), pieces * 8);
     diag_commit += pieces;
     for (uint8_t q = 0; q < pieces; q++) {
