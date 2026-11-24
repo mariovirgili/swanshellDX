@@ -165,6 +165,23 @@ static void code_write(uint16_t off, const uint8_t *src, uint16_t len) {
 // guarded exit (to another slot) also gets the bank it is valid for
 static void link_patch(uint16_t seg, uint16_t link, uint16_t target_seg, uint16_t target,
                        uint8_t guard, uint8_t bank) {
+    if (!guard && target_seg == seg) {
+        int16_t near8 = (int16_t) (target - link);
+        const uint8_t __far *g = MK_FP(seg, link - 2);
+        if (g[0] == 0x7E && near8 >= -128 && near8 <= 127) {
+            uint8_t j4[4] = { 0x7F, (uint8_t) near8, 0xEB, 0x03 };
+            outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_ENABLE);
+            outportw(WS_CART_EXTBANK_RAM_PORT, code_bank + ((seg - DRC_CODE_SEG) >> 12));
+            uint8_t __far *dst = MK_FP(0x1000, link - 2);
+            for (uint8_t i = 0; i < 4; i++)
+                dst[i] = j4[i];
+            ws_ram_window_restore();
+#ifdef GGSWAN_HOST
+            host_code_changed();
+#endif
+            return;
+        }
+    }
     uint8_t j[5];
     if (target_seg == seg) {
         uint16_t rel = target - (link + 3);
@@ -1869,11 +1886,15 @@ int32_t drc_z80_run(int32_t cycles) {
         // the previous block can jump straight here from now on
         if (pending_link && !drc_no_links) {
             // (a guarded exit has "cmp byte [key], bank; jne X" just before
-            // L; any other has "jle X" there: see drc.c)
+            // L; any other has "jle X" there, or "jg target" once linked
+            // short; an unlinked one has "jmp X" (EBh) at L)
             const uint8_t __far *g = MK_FP(pending_seg, pending_link - 2);
-            if (g[0] != 0x7E || !ic_link(pending_seg, pending_link, pc, drc_entry[1], off))
-                link_patch(pending_seg, pending_link, drc_entry[1], off,
-                           g[0] == 0x75, bank);
+            if (g[0] == 0x7E) {
+                if (g[2] == 0xEB && !ic_link(pending_seg, pending_link, pc, drc_entry[1], off))
+                    link_patch(pending_seg, pending_link, drc_entry[1], off, 0, bank);
+            } else if (g[0] == 0x75) {
+                link_patch(pending_seg, pending_link, drc_entry[1], off, 1, bank);
+            }
         }
         pending_link = 0;
         int16_t start = z80.cycles > 30000 ? 30000 : (int16_t) z80.cycles;
