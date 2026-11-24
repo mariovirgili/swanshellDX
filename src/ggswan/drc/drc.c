@@ -392,6 +392,92 @@ static void helper(uint8_t op) {
 }
 
 /*
+ * Cold tail (out-of-line slow paths placed after the block's final exit):
+ * on the real V30MZ a taken branch costs 4-5 cycles while a not-taken one
+ * costs 1. Moving the rare slow paths of work-RAM writes and (IX+d)/(IY+d)
+ * accesses past the end of the block makes the common work-RAM case fall
+ * straight through with zero taken branches and keeps hot code compact.
+ * If a long block's jump to the cold tail would exceed rel8 (+127 bytes),
+ * drc_translate() retries generation once with cold_off = 1 (inline paths).
+ */
+#define MAX_COLD 8
+enum { COLD_WRITE = 1, COLD_IX_LD, COLD_IX_ALU, COLD_IX_BIT, COLD_IX_WR };
+typedef struct {
+    uint8_t *jpos;       // rel8 byte of the JAE jump to this cold stub
+    uint16_t resume_off; // code-segment offset to jmp_near back to
+    uint8_t kind;        // COLD_*
+    uint8_t a, b, imm;   // kind-specific fields
+    int8_t d;            // IX/IY displacement (or hl_es keep for COLD_WRITE)
+} cold_t;
+static cold_t cold[MAX_COLD];
+static uint8_t cold_n, cold_off, cold_fail;
+
+static void cold_add(uint8_t *jpos, uint16_t resume_off, uint8_t kind,
+                     uint8_t a, uint8_t b, int8_t d, uint8_t imm) {
+    if (cold_n >= MAX_COLD) {
+        cold_fail = 1;
+        return;
+    }
+    cold_t *c = &cold[cold_n++];
+    c->jpos = jpos;
+    c->resume_off = resume_off;
+    c->kind = kind;
+    c->a = a;
+    c->b = b;
+    c->d = d;
+    c->imm = imm;
+}
+
+static void ix_far(int8_t d);
+static const uint8_t alu_x86[8];
+
+static void cold_emit_all(void) {
+    fkind = K_AH;
+    for (uint8_t i = 0; i < cold_n; i++) {
+        const cold_t *c = &cold[i];
+        if (o + 48 >= o_limit || (uint16_t) (o - c->jpos - 1) > 127) {
+            cold_fail = 1;
+            return;
+        }
+        *c->jpos = (uint8_t) (o - c->jpos - 1);
+        switch (c->kind) {
+        case COLD_WRITE:
+            if (c->b == 0xFF) { B(0xC6); B(0x06); W(SA(val)); B(c->imm); }
+            else { B(0x88); B(0x06 | (c->b << 3)); W(SA(val)); }
+            B(0x89); B(0x06 | (c->a << 3)); W(SA(arg));
+            helper(DRC_H_WRITE);
+            if (c->d) seg_hl(0);
+            break;
+        case COLD_IX_WR:
+            if (c->d) { B(0x8D); B(0x74); B((uint8_t) c->d); }
+            if (c->a == 0xFF) { B(0xC6); B(0x06); W(SA(val)); B(c->imm); }
+            else { B(0x88); B(0x06 | (c->a << 3)); W(SA(val)); }
+            B(0x89); B(0x36); W(SA(arg));
+            helper(DRC_H_WRITE);
+            if (c->b) seg_hl(0);
+            break;
+        case COLD_IX_LD:
+            ix_far(c->d);
+            B(0x26); B(0x8A); B(0x04 | (c->a << 3));       // mov r, es:[si]
+            B(0x07);                                       // pop es
+            break;
+        case COLD_IX_ALU:
+            ix_far(c->d);
+            if (c->a == 1 || c->a == 3) B(0x9E);           // sahf (CF = Z80 C)
+            B(0x26); B(alu_x86[c->a] + 2); B(0x04);        // op al, es:[si]
+            B(0x07);                                       // pop es
+            break;
+        case COLD_IX_BIT:
+            ix_far(c->d);
+            B(0x26); B(0xF6); B(0x04); B(1 << c->a);       // test byte es:[si], mask
+            B(0x07);                                       // pop es
+            break;
+        }
+        jmp_near(c->resume_off);
+    }
+}
+
+/*
  * (IX + d) and (IY + d) in work RAM, where the games keep what they reach
  * this way (Sonic's objects: a fifth of its blocks start with DD or FD):
  * SI = IX, one comparison that holds for any d (IX - 128 and IX + 127
@@ -406,6 +492,14 @@ static uint8_t *ix_ram(uint8_t pre, uint8_t live) {
     B(0x8D); B(0xBC); W((uint16_t) (0u - 0xC080u));        // lea di, [si - C080h]
     B(0x81); B(0xFF); W(0x1F00);                           // cmp di, 1F00h
     return jcc8(0x72);                                     // jb direct
+}
+
+static uint8_t *ix_ram_cold(uint8_t pre, uint8_t live) {
+    clobber(live);
+    B(0x8B); B(0x36); W(pre == 0xDD ? ZA(ixl) : ZA(iyl));   // mov si, [ix]
+    B(0x8D); B(0xBC); W((uint16_t) (0u - 0xC080u));        // lea di, [si - C080h]
+    B(0x81); B(0xFF); W(0x1F00);                           // cmp di, 1F00h
+    return jcc8(0x73);                                     // jae cold
 }
 
 // the other case of a read: ES for SI + d, kept for HL (PUSH and POP)
@@ -504,6 +598,14 @@ static void ix_write(uint8_t pre, int8_t d, uint8_t src, uint8_t imm, uint8_t li
     }
     uint8_t keep = hl_es == 1;
     uint16_t disp = (uint16_t) (d + (int16_t) env->ram_delta);
+    if (!cold_off) {
+        uint8_t *j = ix_ram_cold(pre, live);
+        if (src == 0xFF) { B(0xC6); B(0x84); W(disp); B(imm); }
+        else { B(0x88); B(0x84 | (src << 3)); W(disp); }
+        cold_add(j, here(), COLD_IX_WR, src, keep, d, imm);
+        hl_es = keep;
+        return;
+    }
     uint8_t *f = ix_ram(pre, live);
     if (d) { B(0x8D); B(0x74); B((uint8_t) d); }           // lea si, [si + d]
     if (src == 0xFF) { B(0xC6); B(0x06); W(SA(val)); B(imm); }
@@ -545,6 +647,15 @@ static void write_byte(uint8_t addr_reg, uint8_t src, uint8_t imm, uint8_t live)
         if (addr_reg == X_BX) { B(0x8D); B(0xB7); W(0x4000); }          // lea si, [bx + 4000h]
         else { B(0x8D); B(0xBC); W(0x4000); }                           // lea di, [si + 4000h]
         B(0x81); B(addr_reg == X_BX ? 0xFE : 0xFF); W(0x2000);          // cmp si / di, 2000h
+        if (!cold_off) {
+            uint8_t *slow = jcc8(0x73);                                 // jae cold
+            uint8_t m = addr_reg == X_BX ? 0x84 : 0x85;
+            if (src == 0xFF) { B(0xC6); B(m); W(d); B(imm); }
+            else { B(0x88); B(m | (src << 3)); W(d); }
+            cold_add(slow, here(), COLD_WRITE, addr_reg, src, (int8_t) keep, imm);
+            hl_es = keep;
+            return;
+        }
         uint8_t *fast = jcc8(0x72);                                     // jb fast
         if (src == 0xFF) { B(0xC6); B(0x06); W(SA(val)); B(imm); }
         else { B(0x88); B(0x06 | (src << 3)); W(SA(val)); }
@@ -3675,17 +3786,24 @@ static int emit1(int i) {
         if (I->cb) {
             uint8_t b = (op >> 3) & 7;
             if (op < 0x80) {   // BIT b,(IX+d)
-                need_ah(live);
-                if (env->no_fast || FLAT) {
-                    ix_addr(I->pre, I->d);
-                    seg_si(live);
-                    B(0x80); B(0xE4); B(0x01);
-                    B(0x80); B(0xCC); B(0x10);
-                    B(0x26); B(0xF6); B(0x04); B(1 << b);
+                uint8_t z_only = !env->no_fast && !(live_out[i] & (FALL & ~FZ));
+                if (z_only) {
+                    clobber(0);
                 } else {
+                    need_ah(live);
                     B(0x80); B(0xE4); B(0x01);               // and ah, 1
                     B(0x80); B(0xCC); B(0x10);               // or ah, 10h
-                    uint8_t *f = ix_ram(I->pre, live);
+                }
+                if (env->no_fast || FLAT) {
+                    ix_addr(I->pre, I->d);
+                    seg_si(0);
+                    B(0x26); B(0xF6); B(0x04); B(1 << b);
+                } else if (!cold_off) {
+                    uint8_t *j = ix_ram_cold(I->pre, 0);
+                    B(0xF6); B(0x84); W((uint16_t) (I->d + (int16_t) env->ram_delta)); B(1 << b);
+                    cold_add(j, here(), COLD_IX_BIT, b, 0, I->d, 0);
+                } else {
+                    uint8_t *f = ix_ram(I->pre, 0);
                     ix_far(I->d);
                     B(0x26); B(0xF6); B(0x04); B(1 << b);    // test byte es:[si], mask
                     B(0x07);                                 // pop es
@@ -3693,6 +3811,11 @@ static int emit1(int i) {
                     land8(f);
                     FLAT_ES(); B(0xF6); B(0x84); W((uint16_t) (I->d + (int16_t) env->ram_delta)); B(1 << b);
                     land8(done);
+                }
+                if (z_only) {
+                    fkind = K_OR; cf_valid = 0;
+                    cyc += 20;
+                    return 1;
                 }
                 if (b == 7) {
                     B(0x75); B(0x05); B(0x80); B(0xCC); B(0x44); B(0xEB); B(0x03);
@@ -3832,6 +3955,10 @@ static int emit1(int i) {
                 ix_addr(I->pre, I->d);
                 seg_si(live);
                 B(0x26); B(0x8A); B(0x04 | (dst << 3));
+            } else if (!cold_off) {
+                uint8_t *j = ix_ram_cold(I->pre, live);
+                B(0x8A); B(0x84 | (dst << 3)); W((uint16_t) (I->d + (int16_t) env->ram_delta));
+                cold_add(j, here(), COLD_IX_LD, dst, 0, I->d, 0);
             } else {
                 uint8_t *f = ix_ram(I->pre, live);
                 ix_far(I->d);
@@ -3874,6 +4001,11 @@ static int emit1(int i) {
                 seg_si(live);
                 if (y == 1 || y == 3) need_cf();
                 B(0x26); B(alu_x86[y] + 2); B(0x04);
+            } else if (!cold_off) {
+                uint8_t *j = ix_ram_cold(I->pre, live);
+                if (y == 1 || y == 3) need_cf();
+                B(alu_x86[y] + 2); B(0x84); W((uint16_t) (I->d + (int16_t) env->ram_delta));
+                cold_add(j, here(), COLD_IX_ALU, y, 0, I->d, 0);
             } else {
                 // (POP ES and the jump leave the operation's flags alone)
                 uint8_t *f = ix_ram(I->pre, live);
@@ -4790,10 +4922,13 @@ int drc_translate(const drc_env_t *e, uint16_t pc, uint8_t *out,
     }
 
     // generate
+    cold_off = env->no_fast;
+retry_gen:
     o = o_start = out; o_base = out_off; o_limit = out + out_max;
     block_start_off = out_off; block_pc = pc;
     fkind = K_AH; cf_valid = 0; hl_es = 0; cyc = 0;
     force_nolink = 0;
+    cold_n = 0; cold_fail = 0;
     idle_block = is_idle(n, pc, ram);
     if (ram) ram_check(pc, end);
     if (long_run) {
@@ -4855,6 +4990,15 @@ int drc_translate(const drc_env_t *e, uint16_t pc, uint8_t *out,
         exit_const(t, 0);
     }
 done:
+    if (cold_n && !cold_fail)
+        cold_emit_all();
+    if (cold_fail) {
+        if (!cold_off) {
+            cold_off = 1;
+            goto retry_gen;
+        }
+        return 0;
+    }
 #ifdef GGSWAN_SF7000
     // (what the interpreter runs where it is, is not translated code)
     if (env->mark)
