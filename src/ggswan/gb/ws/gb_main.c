@@ -777,7 +777,7 @@ void gb_frame_keys(void) {
 #define MENU_KEEP ((uint16_t*) 0x9000)  // (18 rows of 32: free internal RAM)
 enum { MP_MAIN, MP_VIDEO, MP_AUDIO, MP_STATES, MP_OPTIONS, MP_ABOUT };
 enum { MI_PAGE_VIDEO = 1, MI_PAGE_AUDIO, MI_PAGE_STATES, MI_PAGE_OPTIONS, MI_PAGE_ABOUT,
-       MI_PROFILER, MI_VOLUME, MI_SOUND, MI_SAVE, MI_LOAD, MI_SCOPE, MI_DEFAULTS };
+       MI_FRAMESKIP, MI_PROFILER, MI_VOLUME, MI_SOUND, MI_SAVE, MI_LOAD, MI_SCOPE, MI_DEFAULTS };
 static uint8_t cfg_game;
 
 static void menu_put(uint8_t row, uint8_t col, const char __far *t) {
@@ -799,7 +799,7 @@ static uint8_t menu_items(uint8_t page, uint8_t *it) {
         it[n++] = MI_PAGE_VIDEO; it[n++] = MI_PAGE_AUDIO; it[n++] = MI_PAGE_STATES;
         it[n++] = MI_PAGE_OPTIONS; it[n++] = MI_PAGE_ABOUT;
         break;
-    case MP_VIDEO: it[n++] = MI_PROFILER; break;
+    case MP_VIDEO: it[n++] = MI_FRAMESKIP; it[n++] = MI_PROFILER; break;
     case MP_AUDIO: it[n++] = MI_VOLUME; it[n++] = MI_SOUND; break;
     case MP_STATES: it[n++] = MI_SAVE; it[n++] = MI_LOAD; break;
     case MP_OPTIONS: it[n++] = MI_SCOPE; it[n++] = MI_DEFAULTS; break;
@@ -813,6 +813,7 @@ static const char __far *menu_label(uint8_t item) {
     case MI_PAGE_STATES: return "STATES";
     case MI_PAGE_OPTIONS: return "OPTIONS";
     case MI_PAGE_ABOUT: return "ABOUT";
+    case MI_FRAMESKIP: return "FRAMESKIP";
     case MI_PROFILER: return "PROFILER";
     case MI_VOLUME: return "VOLUME";
     case MI_SOUND: return "SOUND";
@@ -846,11 +847,13 @@ static uint8_t cfg_game_saved;
 static void cfg_get(struct cfg *c) {
     memset(c, 0, sizeof(*c));
     c->magic[0] = 'G'; c->magic[1] = 'C'; c->version = CFG_VERSION;
+    c->frameskip = gbv_fs_mode;
     c->volume = gb_snd_vol;
     c->mute = gb_snd_mute;
     c->profiler = prof_level();
 }
 static void cfg_set(const struct cfg *c) {
+    gbv_fs_mode = c->frameskip;
     gb_snd_vol = c->volume;
     gb_snd_mute = c->mute;
     if (prof_level() != c->profiler) prof_level_set(c->profiler);
@@ -863,7 +866,7 @@ static void cfg_defaults(void) {
 }
 static uint8_t cfg_valid(const struct cfg *c) {
     return c->magic[0] == 'G' && c->magic[1] == 'C' && c->version == CFG_VERSION
-        && c->volume <= 8 && c->mute <= 1 && c->profiler <= 2;
+        && c->frameskip <= 5 && c->volume <= 8 && c->mute <= 1 && c->profiler <= 2;
 }
 // rom_path is the state's (.st0, state_path): its extension made "cfg"
 // and back again
@@ -975,6 +978,14 @@ static void menu_draw(uint8_t page, uint8_t sel) {
         if (i == sel) menu_put(row, 1, ">");
         menu_put(row, 3, menu_label(it[i]));
         switch (it[i]) {
+        case MI_FRAMESKIP: {
+            static const char __far names[] = "OFF\0AUTO\0001\0002\0003\0005";
+            const char __far *v = names;
+            for (uint8_t k = gbv_fs_mode; k; k--)
+                while (*v++) {}
+            menu_put(row, 22, v);
+            break;
+        }
         case MI_PROFILER: {
             uint8_t l = prof_level();
             menu_put(row, 22, l == 0 ? "OFF" : l == 2 ? "FPS" : "ON");
@@ -994,6 +1005,9 @@ static void menu_draw(uint8_t page, uint8_t sel) {
 
 static void menu_change(uint8_t item, uint8_t back) {
     switch (item) {
+    case MI_FRAMESKIP:
+        gbv_fs_mode = back ? (gbv_fs_mode ? gbv_fs_mode - 1 : 5) : (gbv_fs_mode < 5 ? gbv_fs_mode + 1 : 0);
+        break;
     case MI_PROFILER: {
         uint8_t l = prof_level();
         l = back ? (l == 0 ? 1 : l == 2 ? 0 : 2) : (l == 0 ? 2 : l == 2 ? 1 : 0);
@@ -1019,6 +1033,10 @@ static void menu_run(void) {
     // the picture as the game had it: screen 1's map, the line interrupt
     for (uint16_t i = 0; i < 18 * 32; i++) MENU_KEEP[i] = SCR1_MAP[i];
     uint8_t ints = inportb(WS_INT_ENABLE_PORT);
+    // (the backdrop is set once, gbv_reset: not in the lists the vertical
+    // blank shows again. Left on the menu's black, the Game Boy's white -
+    // its color 0, shown through - was black: Gio's test of patch 229)
+    uint8_t backdrop = inportb(0x01);
     ia16_disable_irq();
     gbv_menu = 1;
     outportb(WS_INT_ENABLE_PORT, ints & ~WS_INT_ENABLE_LINE_MATCH);
@@ -1079,6 +1097,7 @@ static void menu_run(void) {
         for (uint8_t c = 0; c < 4; c++)
             SCR1_MAP[r * 32 + c] = 0x2000 | 511 | (1 << 9);
     ia16_disable_irq();
+    outportb(0x01, backdrop);
     ws_int_ack(WS_INT_ACK_LINE_MATCH);
     outportb(WS_INT_ENABLE_PORT, ints);
     gbv_menu = 0;

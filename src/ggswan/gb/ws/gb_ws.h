@@ -17,7 +17,8 @@ void gb_frame_keys(void);       // gb_main.c: the keys, once a frame (and the wa
 extern volatile uint16_t gbv_vblanks;
 void gbv_stats_toggle(void);
 uint8_t gbv_stats_shown(void);  // the figures on (gbv_stats_toggle)
-extern uint8_t gbv_fps_only;    // the figures: the FPS only (the menu's PROFILER: FPS)
+extern uint8_t gbv_fps_only;
+extern uint8_t gbv_fs_mode;     // frameskip: 0 off, 1 AUTO, 2-5: 1, 2, 3, 5 frames (the menu's VIDEO)    // the figures: the FPS only (the menu's PROFILER: FPS)
 extern volatile uint8_t gbv_menu;   // the menu open: the vertical blank only counts
 extern uint8_t gb_snd_vol, gb_snd_mute;   // the menu's AUDIO (gb_sound.c)
 void gbv_note(const char __far *t);

@@ -259,6 +259,8 @@ static void tq_frame(void) {
 // the menu open (gb_main.c): the screen is the menu's, the lists wait
 volatile uint8_t gbv_menu;
 uint8_t gbv_fps_only;
+uint8_t gbv_fs_mode;                // (frameskip: fs_skip, below)
+static uint8_t fs_run, fs_max;
 
 void gb_vblank_irq(void) {
     gbv_vblanks++;
@@ -564,8 +566,14 @@ static void stats_show(void) {
     stat_put(0, "FPS");
     stat_num(1, (uint32_t) stats_frames * 7547 / ((uint32_t) total * 100), 0);
     stats_frames = 0;
-    if (gbv_fps_only)
+    if (gbv_fps_only) {
+        if (gbv_fs_mode) {          // (the frameskip under the FPS)
+            stat_put(2, gbv_fs_mode == 1 ? "FSKA" : "FSK");
+            stat_num(3, fs_max, 0);
+            fs_max = 0;
+        }
         return;
+    }
     for (uint8_t i = 0; i < GB_PHASES; i++) {
         stat_put(2 + i * 2, names[i]);
         stat_num(3 + i * 2, n[i] * 100 / total, 0);
@@ -574,8 +582,38 @@ static void stats_show(void) {
     stat_num(13, drc_blocks, 1);
     stat_put(14, "FLS");
     stat_num(15, drc_flushes, 0);
-    stat_put(16, "PAT");                // the patch this build is
-    stat_num(17, GGSWAN_PATCH, 0);
+    if (gbv_fs_mode) {                  // the frameskip instead of the patch
+        stat_put(16, gbv_fs_mode == 1 ? "FSKA" : "FSK");
+        stat_num(17, fs_max, 0);
+        fs_max = 0;
+    } else {
+        stat_put(16, "PAT");            // the patch this build is
+        stat_num(17, GGSWAN_PATCH, 0);
+    }
+}
+
+/* ---- frameskip (the menu's VIDEO, patch 230) ----
+   A frame left out: its list, sprites and palettes are not made, the WS
+   goes on showing the last ones (the patterns and maps are written as
+   the game writes them, as always). The Game Boy runs every frame, its
+   sound and its time too. AUTO: left out when the frame ends after the
+   next one's time (behind), 5 in a row at most. The patterns kept a frame
+   late (tq_*) meet a list not made as two sets waiting: written at once,
+   as when two frames end in one WS frame (gbv_line0). */
+static const uint8_t __far fs_n[6] = { 0, 5, 1, 2, 3, 5 };
+static uint8_t fs_skip(void) {
+    if (gbv_fs_mode) {
+        uint8_t skip = fs_run < fs_n[gbv_fs_mode];
+        if (gbv_fs_mode == 1 && (int16_t) (gbv_now_lines() - (uint16_t) (next_at + 201)) < 0)
+            skip = 0;       // (on time: shown)
+        if (skip) {
+            fs_run++;
+            return 1;
+        }
+    }
+    if (fs_run > fs_max) fs_max = fs_run;
+    fs_run = 0;
+    return 0;
 }
 
 // wait for the next Game Boy frame's time (gbrun.py leaves this function's
@@ -603,6 +641,12 @@ void gbv_frame(void) {
     // be seen, and the scroll would jump two steps. It is shown at the next
     // vertical blank; this only waits when two frames end inside one
     // WonderSwan frame)
+    uint8_t skip = fs_skip();
+    if (skip) {
+        tq_frame();
+        oam_kept = 0;       // (the OAM kept is the frame's: sprites())
+        goto shown;
+    }
     gb_phase = GB_PHASE_IDLE;
     while (list_ready)
         ia16_halt();
@@ -634,6 +678,7 @@ void gbv_frame(void) {
         if (e > l && (uint8_t) (e - l) < 60 && (uint8_t) (e - l + 2) > spr_lines) spr_lines = e - l + 2;
     }
     palettes();
+shown:
     gb_sound_frame();
     if (note_left && !--note_left && !stats_on) stat_put(0, "");
     if (stats_on) {
