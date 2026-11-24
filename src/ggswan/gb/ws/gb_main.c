@@ -631,7 +631,7 @@ static void state_load(void) {
 }
 
 void gb_frame_keys(void) {
-    uint16_t k = ws_keypad_scan();
+    uint16_t k0 = ws_keypad_scan(), k = k0;
     if (st_wait) {
         if (k & (WS_KEY_START | WS_KEY_A | WS_KEY_B)) k &= ~(WS_KEY_START | WS_KEY_A | WS_KEY_B);
         else st_wait = 0;
@@ -678,7 +678,7 @@ void gb_frame_keys(void) {
         }
     } else {
         if (start_n && start_n < 8 && !start_used) start_tap = 6;
-        if (!(ws_keypad_scan() & WS_KEY_START)) { start_n = 0; start_used = 0; }
+        if (!(k0 & WS_KEY_START)) { start_n = 0; start_used = 0; }
         if (start_tap) {
             start_tap--;
             k |= WS_KEY_START;

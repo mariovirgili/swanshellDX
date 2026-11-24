@@ -350,7 +350,7 @@ void gbv_reg(uint8_t reg, uint8_t v) {
     }
 }
 
-static const uint16_t __far shades[4] = { 0xFFF, 0xAAA, 0x555, 0x000 };
+static const uint16_t shades[4] = { 0xFFF, 0xAAA, 0x555, 0x000 };
 
 #define BASE_BORDER 0x08        // (port 07h's low half: screen 1 at 4000h)
 static uint8_t *out;
@@ -443,14 +443,22 @@ static void make_list(void) {
 
 // the sprites' palettes (the background's is in the lists: it may change
 // at a line)
+static uint8_t last_obp0, last_obp1, obp_valid;
 static void palettes(void) {
     uint8_t p;
     p = gb_io[GB_OBP0];
-    for (uint8_t i = 1; i < 4; i++)
-        WS_DISPLAY_COLOR_MEM(12)[i] = shades[(p >> (i * 2)) & 3];
+    if (!obp_valid || p != last_obp0) {
+        last_obp0 = p;
+        for (uint8_t i = 1; i < 4; i++)
+            WS_DISPLAY_COLOR_MEM(12)[i] = shades[(p >> (i * 2)) & 3];
+    }
     p = gb_io[GB_OBP1];
-    for (uint8_t i = 1; i < 4; i++)
-        WS_DISPLAY_COLOR_MEM(13)[i] = shades[(p >> (i * 2)) & 3];
+    if (!obp_valid || p != last_obp1) {
+        last_obp1 = p;
+        for (uint8_t i = 1; i < 4; i++)
+            WS_DISPLAY_COLOR_MEM(13)[i] = shades[(p >> (i * 2)) & 3];
+    }
+    obp_valid = 1;
 }
 
 // the Game Boy's sprites as the WonderSwan's: leftmost first (the same X:
@@ -581,8 +589,10 @@ void gbv_frame(void) {
     // be seen, and the scroll would jump two steps. It is shown at the next
     // vertical blank; this only waits when two frames end inside one
     // WonderSwan frame)
+    gb_phase = GB_PHASE_IDLE;
     while (list_ready)
         ia16_halt();
+    gb_phase = GB_PHASE_VIDEO;
     tq_frame();
     make_list();
     // The WonderSwan takes the sprites' table for the next frame at line
@@ -598,8 +608,10 @@ void gbv_frame(void) {
         uint8_t l = inportb(0x02);
         if (l < 144 && (uint8_t) (l + spr_lines) >= 142) {
             uint16_t v = gbv_vblanks;
+            gb_phase = GB_PHASE_IDLE;
             while (gbv_vblanks == v)
                 ia16_halt();
+            gb_phase = GB_PHASE_VIDEO;
             l = inportb(0x02);
         }
         sprites();
@@ -653,6 +665,7 @@ void gbv_reset(void) {
     outportb(WS_SCR2_WIN_X2_PORT, GB_X0 + 159); outportb(WS_SCR2_WIN_Y2_PORT, 143);
     outportb(WS_SPR_WIN_X1_PORT, GB_X0); outportb(WS_SPR_WIN_Y1_PORT, 0);
     outportb(WS_SPR_WIN_X2_PORT, GB_X0 + 159); outportb(WS_SPR_WIN_Y2_PORT, 143);
+    obp_valid = 0;
     palettes();
     raw_first();
     make_list();

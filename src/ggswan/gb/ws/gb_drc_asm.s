@@ -381,13 +381,13 @@ s_exit_evdone:
     mov byte ptr [gb + GB_HALTED], 0
     dec word ptr [gbf_cyc]
 s_exit_irq:
+    cmp byte ptr [gb + GB_IME], 0
+    je .Ls_exit_noirq
     mov di, ax
     mov al, [0x9FFF]
     and al, [0x9F0F]
     and al, 0x1F
     jz s_exit_none
-    cmp byte ptr [gb + GB_IME], 0
-    je s_exit_none
     cmp bp, 0xC002
     jb s_exit_c
     cmp bp, 0xE000
@@ -418,6 +418,7 @@ s_exit_irq:
     jmp s_lookup
 s_exit_none:
     mov ax, di
+.Ls_exit_noirq:
     mov si, [gb + GB_PC]
     mov di, [gbf_cyc]
     jmp s_lookup

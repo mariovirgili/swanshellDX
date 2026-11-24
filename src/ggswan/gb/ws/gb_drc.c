@@ -1432,8 +1432,9 @@ __attribute__((noinline)) static void translate_block(void) {
                 if (cur_cart) {
                     // (ADC and SBC take C from AH, which the test would
                     // lose: the usual way for those)
-                    if (y != 1 && y != 3 && cart_sure) {
+                    if (cart_sure) {
                         sure_es();
+                        if (y == 1 || y == 3) carry_in();
                         E(alu_x86[y] | 2); E(0x06); EW(cur_cart);
                         alu_done(y);
                         continue;
@@ -1481,6 +1482,13 @@ __attribute__((noinline)) static void translate_block(void) {
                 if (y == 1 || y == 3) carry_in();
                 E(0x26); E(alu_x86[y] | 2); E(0x07);            // op al, es:[bx]
                 uint16_t rdone = rom_else(rj);
+                uint16_t kdone = 0;
+                if (drc_cartp && !cdone) {
+                    uint16_t k = cartp_open(1);
+                    if (y == 1 || y == 3) carry_in();
+                    E(0x26); E(alu_x86[y] | 2); E(0x07);
+                    kdone = cartp_else(k);
+                }
                 E(0x89); E(0xDE);
                 call_stub(ST_RDT);
                 if (y == 1 || y == 3) carry_in();
@@ -1488,6 +1496,7 @@ __attribute__((noinline)) static void translate_block(void) {
                 SLOW_ENDS(done);
                 SLOW_ENDS(rdone);
                 if (cdone) SLOW_ENDS(cdone);
+                if (kdone) SLOW_ENDS(kdone);
             } else {
                 if (y == 1 || y == 3) carry_in();
                 E(alu_x86[y] | 2); E(0xC0 | R8[z]);              // op al, r
