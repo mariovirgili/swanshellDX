@@ -3978,8 +3978,14 @@ static void menu_run(void) {
             } else {
                 if (item == MI_DEFAULTS && !(p & WS_KEY_A))
                     continue;   // (an action: A only)
+                // (the item sees prio_on as the plugin has it; the
+                // profiler switches it: taken again after, then 0 again.
+                // Patch 236 took it again without putting it back first:
+                // any other item left it 0 for good - the profiler on by
+                // itself in smsswan and stuck there, Gio's test)
+                drc_st.prio_on = prio;
                 menu_change(item, (p & WS_KEY_X4) != 0);
-                prio = drc_st.prio_on;      // (the profiler switches it)
+                prio = drc_st.prio_on;
                 drc_st.prio_on = 0;
             }
         } else {
