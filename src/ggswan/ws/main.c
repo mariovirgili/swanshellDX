@@ -2665,6 +2665,8 @@ static uint8_t st_req, st_held, st_wait, st_t0, st_note;
 static uint8_t st_used;          // START was held with A or B: not a Start or a Pause for the game when it is let go
 static volatile uint8_t vblanks;
 #endif
+// START + Y3 (Y down): the menu, opened by the main loop (menu_run)
+static uint8_t menu_req __attribute__((unused));
 GGSWAN_HOST_VISIBLE void read_keys(void) {
     uint16_t k = ws_keypad_scan();
 #if defined(ST_STATES) && !defined(GGSWAN_HOST)
@@ -2753,7 +2755,7 @@ GGSWAN_HOST_VISIBLE void read_keys(void) {
             if (!start_held) { start_held = 1; start_y = 0; start_y3 = 0; start_sq = 0; start_st = 0; }
             if (k & WS_KEY_Y1) start_y = 1;
             if (k & WS_KEY_Y3) {
-                if (!start_sq) sg_squeeze ^= 1;
+                if (!start_sq) menu_req = 1;   // (the squeeze: in the menu's VIDEO)
                 start_sq = 1;
                 start_y = 1;
             } else {
@@ -2798,9 +2800,10 @@ GGSWAN_HOST_VISIBLE void read_keys(void) {
         if (k & WS_KEY_START) {
             if (!start_held) { start_held = 1; start_y1 = 0; start_y3 = 0; start_st = 0; }
             if (k & WS_KEY_Y1) start_y1 = 1;
-            // START + Y3 (Y down): the whole picture squeezed, or the view
+            // START + Y3 (Y down): the menu (the whole picture squeezed,
+            // or the view, is now in its VIDEO page)
             if (k & WS_KEY_Y3) {
-                if (!start_y3) gg_squeeze ^= 1;
+                if (!start_y3) menu_req = 1;
                 start_y3 = 1;
                 start_y1 = 1;   // (no Pause for the game)
             } else {
@@ -2845,10 +2848,10 @@ GGSWAN_HOST_VISIBLE void read_keys(void) {
             } else {
                 start_y3 = 0;
             }
-            // START + Y3 (Y down): the whole picture squeezed, or the view
-            // (sg_video.inc), as smsswan's
+            // START + Y3 (Y down): the menu (the whole picture squeezed,
+            // or the view, sg_video.inc, is now in its VIDEO page)
             if (k & WS_KEY_Y3) {
-                if (!start_sq) sg_squeeze ^= 1;
+                if (!start_sq) menu_req = 1;
                 start_sq = 1;
                 start_y1 = 1;   // (no Pause for the game)
             } else {
@@ -2875,12 +2878,20 @@ GGSWAN_HOST_VISIBLE void read_keys(void) {
     // (ggswan: START is the game's Start, as it is held. With Y4 (Y left)
     // held first it is not sent: START + Y4 hides and shows the numbers)
     {
-        static uint8_t start_st;
-        if ((k & (WS_KEY_START | WS_KEY_Y4)) == (WS_KEY_START | WS_KEY_Y4)) {
+        static uint8_t start_st, start_menu;
+        if ((k & (WS_KEY_START | WS_KEY_Y3)) == (WS_KEY_START | WS_KEY_Y3)) {
+            // START + Y3 (Y down): the menu
+            if (!start_menu) menu_req = 1;
+            start_menu = 1;
+#if defined(ST_STATES) && !defined(GGSWAN_HOST)
+            st_used = 1;   // (no Start for the game when START is let go)
+#endif
+        } else if ((k & (WS_KEY_START | WS_KEY_Y4)) == (WS_KEY_START | WS_KEY_Y4)) {
             if (!start_st) stats_toggle();
             start_st = 1;
         } else {
             start_st = 0;
+            start_menu = 0;
 #if defined(ST_STATES) && !defined(GGSWAN_HOST)
             // START reaches the game after 8 frames of it alone (pressed
             // with A or B a moment later it would have paused the game
@@ -3331,6 +3342,233 @@ static void frame_step(void) {
     frame_credit = FRAME_COST;   // (no catching up)
     ia16_enable_irq();
 }
+
+/*
+ * The menu (START + Y3 (Y down), patch 219): the game stopped while it is
+ * open - the CPU, the frames, the sound - and screen 2 alone on the
+ * display, with the menu on it. Closed, screen 2 is made again as the
+ * plugin has it (screen2_mode, or blank) and the game goes on from the
+ * cycle it stopped at: nothing of the machine changes, only the settings.
+ * X1 (X up) / X3 (X down): the line; X4 (X left) / X2 (X right) or A:
+ * change it; A: into a page; B: back, or closed (also START + Y3 again).
+ */
+static uint16_t font_entry(char c);
+#define MENU_W 28
+enum { MP_MAIN, MP_VIDEO, MP_STATES, MP_ABOUT };
+enum { MI_NONE, MI_PAGE_VIDEO, MI_PAGE_STATES, MI_PAGE_ABOUT,
+       MI_STRETCH, MI_PROFILER, MI_SPRITES, MI_SAVE, MI_LOAD };
+
+static uint16_t menu_blank;
+static void menu_text(uint8_t row, uint8_t col, const char __far *t) {
+    while (*t && col < MENU_W)
+        map2[row * 32 + col++] = font_entry(*(t++));
+}
+static void menu_clear(void) {
+    for (uint16_t i = 0; i < 32 * 32; i++)
+        map2[i] = menu_blank;
+}
+
+// the lines of a page (MI_*), 0 at the end
+static uint8_t menu_items(uint8_t page, uint8_t *it) {
+    uint8_t n = 0;
+    switch (page) {
+    case MP_MAIN:
+        it[n++] = MI_PAGE_VIDEO;
+#ifdef ST_STATES
+        it[n++] = MI_PAGE_STATES;
+#endif
+        it[n++] = MI_PAGE_ABOUT;
+        break;
+    case MP_VIDEO:
+#if defined(GGSWAN_SMS) || defined(GGSWAN_SG1000)
+        it[n++] = MI_STRETCH;
+#endif
+        it[n++] = MI_PROFILER;
+#ifdef GGSWAN_SG1000
+        it[n++] = MI_SPRITES;
+#endif
+        break;
+#ifdef ST_STATES
+    case MP_STATES:
+        it[n++] = MI_SAVE;
+        it[n++] = MI_LOAD;
+        break;
+#endif
+    }
+    return n;
+}
+
+static uint8_t menu_on(uint8_t item) {
+    switch (item) {
+#if defined(GGSWAN_SG1000)
+    case MI_STRETCH: return sg_squeeze;
+    case MI_PROFILER: return sg_diag;
+    case MI_SPRITES: return sg_limit;
+#elif defined(GGSWAN_SMS)
+    case MI_STRETCH: return gg_squeeze;
+    case MI_PROFILER: return !prio_wanted;
+#else
+    case MI_PROFILER: return !stats_hide;
+#endif
+    }
+    return 0;
+}
+
+static void menu_change(uint8_t item) {
+    switch (item) {
+#if defined(GGSWAN_SG1000)
+    case MI_STRETCH: sg_squeeze ^= 1; break;
+    case MI_SPRITES: sg_limit ^= 1; sg_spr_dirty = 2; break;
+#elif defined(GGSWAN_SMS)
+    case MI_STRETCH: gg_squeeze ^= 1; break;
+#endif
+    case MI_PROFILER: stats_toggle(); break;
+    }
+}
+
+static const char __far *menu_label(uint8_t item) {
+    switch (item) {
+    case MI_PAGE_VIDEO: return "VIDEO";
+    case MI_PAGE_STATES: return "STATES";
+    case MI_PAGE_ABOUT: return "ABOUT";
+    case MI_STRETCH: return "STRETCH";
+#ifdef GGSWAN_SMS
+    case MI_PROFILER: return "PROFILER (NO PRIORITY)";
+#else
+    case MI_PROFILER: return "PROFILER";
+#endif
+    case MI_SPRITES: return "SPRITE LIMIT";
+    case MI_SAVE: return "SAVE";
+    case MI_LOAD: return "LOAD";
+    }
+    return "";
+}
+
+static void menu_draw(uint8_t page, uint8_t sel) {
+    uint8_t it[8];
+    menu_clear();
+    menu_text(1, 2, page == MP_VIDEO ? "VIDEO" : page == MP_STATES ? "STATES" : page == MP_ABOUT ? "ABOUT" : "MENU");
+    if (page == MP_ABOUT) {
+#ifdef GGSWAN_SF7000
+        menu_text(4, 2, "SFSWAN - SC-3000 + SF-7000");
+#elif defined(GGSWAN_SG1000)
+        menu_text(4, 2, "SGSWAN - SG-1000");
+#elif defined(GGSWAN_SMS)
+        menu_text(4, 2, "SMSSWAN - MASTER SYSTEM");
+#else
+        menu_text(4, 2, "GGSWAN - GAME GEAR");
+#endif
+        char pb[10] = "PATCH ";
+        uint8_t v = GGSWAN_PATCH, k = 6;
+        if (v >= 100) pb[k++] = '0' + v / 100;
+        if (v >= 10) pb[k++] = '0' + (v / 10) % 10;
+        pb[k++] = '0' + v % 10;
+        pb[k] = 0;
+        menu_text(6, 2, pb);
+        menu_text(8, 2, "CREATED BY CLAUDE");
+        menu_text(9, 2, "WITH GIO-74");
+        menu_text(16, 2, "B: BACK");
+        return;
+    }
+    uint8_t n = menu_items(page, it);
+    for (uint8_t i = 0; i < n; i++) {
+        uint8_t row = 4 + i * 2;
+        if (i == sel)
+            menu_text(row, 1, "-");
+        menu_text(row, 3, menu_label(it[i]));
+        if (it[i] >= MI_STRETCH && it[i] <= MI_SPRITES)
+            menu_text(row, 22, menu_on(it[i]) ? "ON" : "OFF");
+    }
+    menu_text(16, 2, page == MP_MAIN ? "A: OPEN  B: CLOSE" : "A: CHANGE  B: BACK");
+}
+
+static void menu_wait_frame(void) {
+    uint8_t v = vblanks;   // (a WS frame, as frame_step waits)
+    while (vblanks == v)
+        __asm__ volatile ("hlt");
+}
+
+// screen 2 as the plugin has it (the menu wrote all of it)
+static void menu_screen2_back(void) {
+#if defined(GGSWAN_SG1000)
+    for (uint16_t i = 0; i < 32 * 32; i++)
+        map2[i] = WS_PRIO_BLANK;
+#ifdef GGSWAN_SF7000
+    if (kb_open)
+        kb_draw();
+#endif
+#else
+    screen2_mode(drc_st.prio_on);
+#endif
+}
+
+static void menu_run(void) {
+    uint8_t ctrl = inportb(WS_DISPLAY_CTRL_PORT), back = inportb(0x01);
+    uint8_t s2x = inportb(0x12), s2y = inportb(0x13);
+    outportb(WS_SOUND_CH_CTRL_PORT, 0);           // (sound off while it is open)
+    menu_blank = font_entry(' ');
+    outportb(0x12, 0);
+    outportb(0x13, 0);
+    outportb(0x01, (FONT_PALETTE << 4) | 2);      // (the backdrop: the font's black)
+    uint8_t page = MP_MAIN, sel = 0, main_sel = 0, it[8];
+    menu_draw(page, sel);
+    outportb(WS_DISPLAY_CTRL_PORT, 0x02);         // screen 2 alone
+    uint16_t held = ws_keypad_scan();             // (START + Y3 still held: not presses)
+    for (;;) {
+        menu_wait_frame();
+        uint16_t k = ws_keypad_scan(), p = k & ~held;
+        held = k;
+        if ((k & (WS_KEY_START | WS_KEY_Y3)) == (WS_KEY_START | WS_KEY_Y3) && (p & (WS_KEY_START | WS_KEY_Y3)))
+            break;
+        uint8_t n = menu_items(page, it);
+        if (p & WS_KEY_B) {
+            if (page == MP_MAIN)
+                break;
+            page = MP_MAIN;
+            sel = main_sel;
+        } else if ((p & WS_KEY_X1) && sel) {
+            sel--;
+        } else if ((p & WS_KEY_X3) && sel + 1 < n) {
+            sel++;
+        } else if (p & (WS_KEY_A | WS_KEY_X2 | WS_KEY_X4)) {
+            if (page == MP_ABOUT || !n)
+                continue;
+            uint8_t item = it[sel];
+            if (item == MI_PAGE_VIDEO || item == MI_PAGE_STATES || item == MI_PAGE_ABOUT) {
+                if (!(p & WS_KEY_A))
+                    continue;
+                main_sel = sel;
+                page = item == MI_PAGE_VIDEO ? MP_VIDEO : item == MI_PAGE_STATES ? MP_STATES : MP_ABOUT;
+                sel = 0;
+#ifdef ST_STATES
+            } else if (item == MI_SAVE || item == MI_LOAD) {
+                if (!(p & WS_KEY_A))
+                    continue;
+                st_req = item == MI_SAVE ? 1 : 2;   // (done by the main loop, the menu closed)
+                break;
+#endif
+            } else {
+                menu_change(item);
+            }
+        } else {
+            continue;
+        }
+        menu_draw(page, sel);
+    }
+    // closed: the keys let go first (none of them reaches the game)
+    while (ws_keypad_scan())
+        menu_wait_frame();
+    menu_screen2_back();
+    outportb(0x12, s2x);
+    outportb(0x13, s2y);
+    outportb(0x01, back);
+    outportb(WS_DISPLAY_CTRL_PORT, ctrl);
+    step_keys = 0xFFFF;
+    psg_noise_freq();   // (the channels on again)
+    ia16_disable_irq();
+    frame_credit = FRAME_COST;   // (no catching up)
+    ia16_enable_irq();
+}
 #endif
 static volatile uint16_t prof_total;
 
@@ -3731,6 +3969,10 @@ int main(void) {
         prof_phase = PROF_OTHER;
         frame_step();
         read_keys();
+        if (menu_req) {
+            menu_req = 0;
+            menu_run();
+        }
 #ifdef ST_STATES
         if (st_req) {
             uint8_t r = st_req;
