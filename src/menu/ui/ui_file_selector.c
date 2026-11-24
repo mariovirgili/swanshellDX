@@ -950,6 +950,82 @@ static bool ui_file_selector_is_game(const char *ext) {
         || !strcasecmp(ext, s_file_ext_bps));
 }
 
+/* "Last directory" (Settings: Initial path) also puts the cursor on the
+ * last file opened: its whole path is written to /NILESWAN/LASTFILE.TXT
+ * when it is opened (whatever it is: ROM, plugin game, music, text), and
+ * the first listing after the menu starts is that file's directory, the
+ * file selected. (SAVE.INI's Path= did the directory alone, and only for
+ * what goes through the save data code.) */
+static bool last_file_checked;
+static char last_file_name[FF_LFN_BUF + 1];
+
+static void ui_file_selector_note_last(const char *name) {
+    if (!(settings.file_flags & SETTING_FILE_OPEN_LAST_DIRECTORY))
+        return;
+    if (!favorites_full_path(status_path, sizeof(status_path), name))
+        return;
+    char p[24];
+    strcpy(p, s_path_last_file);
+    FIL f;
+    if (f_open(&f, p, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK)
+        return;
+    UINT bw;
+    f_write(&f, status_path, strlen(status_path), &bw);
+    f_close(&f);
+}
+
+// (the first listing only) buf: FF_LFN_BUF + 1 bytes
+static void ui_file_selector_restore_last(char *buf) {
+    last_file_name[0] = 0;
+    if (!(settings.file_flags & SETTING_FILE_OPEN_LAST_DIRECTORY))
+        return;
+    char p[24];
+    strcpy(p, s_path_last_file);
+    FIL f;
+    if (f_open(&f, p, FA_OPEN_EXISTING | FA_READ) != FR_OK)
+        return;
+    UINT br = 0;
+    f_read(&f, buf, FF_LFN_BUF, &br);
+    f_close(&f);
+    buf[br] = 0;
+    char *slash = NULL;
+    for (char *q = buf; *q; q++)
+        if (*q == '/')
+            slash = q;
+    if (slash == NULL || !slash[1])
+        return;
+    strcpy(last_file_name, slash + 1);
+    // the directory: "/" for a file at the root
+    if (slash == buf)
+        slash[1] = 0;
+    else
+        *slash = 0;
+    if (f_chdir(buf) != FR_OK)
+        last_file_name[0] = 0;
+}
+
+// the listing just made: the cursor on the last file opened, if it is there
+static void ui_file_selector_select_last(ui_selector_config_t *config) {
+    for (uint16_t i = 0; i < config->count; i++) {
+        file_selector_entry_t __far *fno = ui_file_selector_open_fno(i);
+        const char __far *a = fno->fno.fname;
+        const char *b = last_file_name;
+        while (*a && *b) {
+            char x = *a, y = *b;
+            if (x >= 'a' && x <= 'z') x -= 32;
+            if (y >= 'a' && y <= 'z') y -= 32;
+            if (x != y) break;
+            a++;
+            b++;
+        }
+        if (!*a && !*b) {
+            config->offset = i;
+            break;
+        }
+    }
+    last_file_name[0] = 0;
+}
+
 // Remember a ROM or patch that is about to be launched (name in the
 // current directory): Recent list and statistics.
 static void ui_file_selector_note_recent(const char *name, const char *ext) {
@@ -1324,6 +1400,11 @@ void ui_file_selector(void) {
         path_depth[path_depth_pos] = config.offset
 
 rescan_directory:
+    if (!last_file_checked) {
+        last_file_checked = true;
+        if (listing_list == FAVORITES_LIST_NONE)
+            ui_file_selector_restore_last(strbuf);
+    }
     ui_icons_recover();
     config.draw = ui_file_selector_draw;
     config.status_text = ui_file_selector_status_text;
@@ -1434,6 +1515,8 @@ rescan_directory:
         // (the remembered selection already counts the special entries)
         if (path_depth_pos == 0 && settings.favorites_mode == SETTING_FAVORITES_FILE_LIST)
             ui_file_selector_add_special_entries(&config.count);
+        if (last_file_name[0])
+            ui_file_selector_select_last(&config);
     }
     if (listing_from_index)
         ui_draw_titlebar_right(lang_keys[LK_UI_FILE_SELECTOR_INDEX_TAG]);
@@ -1513,6 +1596,7 @@ handle_a:
                     goto rescan_directory;
                 } else {
                     ui_file_selector_track_position(config.offset, config.count);
+                    ui_file_selector_note_last(strbuf);
                     int16_t result = launch_router_file(strbuf, ext, 0);
                     ui_file_selector_apply_menu_music(strbuf);
                     // VGM player: next/previous/random track (keys or end of track)

@@ -77,6 +77,9 @@ DEFINE_STRING(s_file_ext_state, ".st0");
 DEFINE_STRING(s_file_ext_cfg, ".cfg");
 
 DEFINE_STRING(s_path_save_ini, "/NILESWAN/SAVE.INI");
+// the last file opened from the file browser, its whole path ("Last
+// directory": the browser opens there with the cursor on it)
+DEFINE_STRING(s_path_last_file, "/NILESWAN/LASTFILE.TXT");
 DEFINE_STRING(s_path_config_ini, "/NILESWAN/CONFIG.INI");
 DEFINE_STRING(s_path_wallpaper_bmp, "/NILESWAN/WALLPAPER.BMP");
 DEFINE_STRING(s_path_wallpapers_dir, "/NILESWAN/WALLPAPERS");
