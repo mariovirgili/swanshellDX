@@ -3070,6 +3070,8 @@ static volatile uint16_t frame_credit;
  * end-of-frame video work (VI) is left out, so the game sees nothing.
  */
 static uint8_t fs_mode, fs_run;
+// (the most frames left out in a row since the profiler last showed it)
+static uint8_t fs_max;
 static const uint8_t fs_n[6] = { 0, 5, 1, 2, 3, 5 };
 #ifndef GGSWAN_HOST
 static uint8_t frame_skip_now(void) {
@@ -3082,6 +3084,8 @@ static uint8_t frame_skip_now(void) {
             return 1;
         }
     }
+    if (fs_run > fs_max)
+        fs_max = fs_run;
     fs_run = 0;
     return 0;
 }
@@ -3744,6 +3748,17 @@ static void show_fps(uint8_t fps) {
     put_value(0, 24, 'P', GGSWAN_PATCH);   // the patch number, top right
     if (diag_slot0)
         put_value(3, 0, 'Z', diag_slot0);  // (see diag_slot0)
+#ifdef ST_STATES
+    else if (st_note) {}                   // (the state saved / loaded note)
+#endif
+    else if (fs_mode) {
+        // frameskip under the FPS: A (AUTO) or F (fixed), and the most
+        // frames left out in a row in the last second
+        put_value(3, 0, fs_mode == 1 ? 'A' : 'F', fs_max);
+        fs_max = 0;
+    } else {
+        put_text(3, 0, "    ");
+    }
     if (!show_stats)
         return;
     // per second: T translations; D returns to the dispatcher, helpers
