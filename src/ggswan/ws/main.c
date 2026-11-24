@@ -3918,12 +3918,20 @@ static void cfg_store(void) {
 static void menu_run(void) {
     uint8_t ctrl = inportb(WS_DISPLAY_CTRL_PORT), back = inportb(0x01);
     uint8_t s2x = inportb(0x12), s2y = inportb(0x13);
-    // the line interrupt off: it writes the scroll of screen 2 as well
-    // (the splits; the squeezed picture: a Y step every 3 lines), which
-    // moved and squeezed the menu's text (Gio's test of patch 220: rows
-    // missing, letters cut, the title and the cursor there or not)
-    uint8_t ints = inportb(WS_INT_ENABLE_PORT);
-    ws_int_disable(WS_INT_ENABLE_LINE_MATCH);
+    /*
+     * The line interrupt writes the scroll of screen 2 too while the
+     * game's front tiles are on (drc_st.prio_on: the splits, smsswan's
+     * squeezed picture), which moved and squeezed the menu's text (Gio's
+     * test of patch 220). Patches 221-235 turned the interrupt off while
+     * the menu was open: on the console it did not come back, and its end
+     * of the screen is what lets the next frame be presented
+     * (frame_waiting): the game stopped after the menu (Gio's test,
+     * ggswan, smsswan, sgswan; not gbswan, whose vertical blank sets it
+     * up again every frame). Now it runs as always, with prio_on 0 while
+     * the menu is open, so it leaves screen 2 alone.
+     */
+    uint8_t prio = drc_st.prio_on;
+    drc_st.prio_on = 0;
     outportb(WS_SOUND_CH_CTRL_PORT, 0);           // (sound off while it is open)
     font_load();   // (sfswan's keyboard puts its own glyphs there)
     menu_blank = font_entry(' ');
@@ -3971,6 +3979,8 @@ static void menu_run(void) {
                 if (item == MI_DEFAULTS && !(p & WS_KEY_A))
                     continue;   // (an action: A only)
                 menu_change(item, (p & WS_KEY_X4) != 0);
+                prio = drc_st.prio_on;      // (the profiler switches it)
+                drc_st.prio_on = 0;
             }
         } else {
             continue;
@@ -3980,6 +3990,7 @@ static void menu_run(void) {
     // closed: the keys let go first (none of them reaches the game)
     while (ws_keypad_scan())
         menu_wait_frame();
+    drc_st.prio_on = prio;
     menu_screen2_back();
 #if defined(GGSWAN_SG1000)
     outportb(0x12, s2x);
@@ -3993,8 +4004,6 @@ static void menu_run(void) {
     outportb(0x01, back);
     outportb(WS_DISPLAY_CTRL_PORT, ctrl);
     cfg_store();   // (the settings to the card, if changed)
-    ws_int_ack(WS_INT_ACK_LINE_MATCH);   // (one latched while it was off)
-    outportb(WS_INT_ENABLE_PORT, ints);
     step_keys = 0xFFFF;
     psg_noise_freq();   // (the channels on again)
     for (uint8_t ch = 0; ch < 4; ch++)
