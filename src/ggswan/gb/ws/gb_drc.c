@@ -436,13 +436,6 @@ static void clob(void) {
     if (fl && live) mat();
     else if (fl) { fl = 0; /* (not needed: AH is as wrong as they are) */ }
 }
-// the flags into the V30MZ's (for a conditional jump)
-static void to_flags(void) {
-    if (fl) return;
-    E(0x9E);                                    // sahf
-    fl = 1;
-    hfix = 0;
-}
 // C into CF, before an instruction that takes it or keeps it (the rest of
 // the V30MZ's flags are then that instruction's)
 static void carry_in(void) {
@@ -1238,7 +1231,8 @@ static void pop16(uint8_t r) {
 // Z NC C) holds; returns where its distance goes
 static uint16_t unless(uint8_t c) {
     static const uint8_t __far inv[4] = { 0x74, 0x75, 0x72, 0x73 };     // jz, jnz, jc, jnc
-    to_flags();
+    // SAHF does not modify AH: if fl == 0, AH already holds valid flags so keep fl = 0
+    if (!fl) E(0x9E);
     E(inv[c]); E(0);
     return code_top;
 }
@@ -1604,13 +1598,15 @@ __attribute__((noinline)) static void translate_block(void) {
                 break;
             }
             case 4: case 5:
+            {
+                uint8_t nl = i + 1 < n_ins ? i_live[i + 1] : FALL;
                 if (y == 6 && cur_dir) {
-                    carry_in();
+                    if (nl & FC) carry_in();
                     E(0xFE); E(z == 4 ? 0x06 : 0x0E); EW(cur_dir);     // inc / dec byte [..]
                     fl = 1;
                     hfix = 0;
                 } else if (y == 6 && cur_cls == 1 && !cur_cart) {
-                    carry_in();
+                    if (nl & FC) carry_in();
                     E(0xFE); E(z == 4 ? 0x87 : 0x8F); EW(0xA000);       // inc / dec byte [bx - 6000h]
                     fl = 1;
                     hfix = 0;
@@ -1619,19 +1615,20 @@ __attribute__((noinline)) static void translate_block(void) {
                     nflush();
                     call_stub(z == 4 ? ST_INC_HL : ST_DEC_HL);
                     EW(next);
-                } else if (!((i + 1 < n_ins ? i_live[i + 1] : FALL) & (FZ | FH))) {
+                } else if (!(nl & (FZ | FH))) {
                     // Z and H set again before anything reads them: the
                     // V30MZ's inc / dec and nothing else - it leaves CF
                     // alone, and AH (C, when the flags are there)
                     E(0xFE); E((z == 4 ? 0xC0 : 0xC8) | R8[y]);
                 } else {
-                    carry_in();
+                    if (nl & FC) carry_in();
                     E(0xFE); E((z == 4 ? 0xC0 : 0xC8) | R8[y]);
                     fl = 1;
                     hfix = 0;
                 }
                 nst = z == 5;
                 break;
+            }
             case 6:
                 if (y == 6) write_from(0xFF, b1, 1, next);
                 else if (operand(pc + 1, 1)) { E(0x8A); E(0x06 | R8[y] << 3); EW(pc + 1 - 0x6000); }       // mov r, [n]
@@ -1639,11 +1636,17 @@ __attribute__((noinline)) static void translate_block(void) {
                 break;
             default:
                 if (y < 4) {                                    // RLCA RRCA RLA RRA
+                    uint8_t nl = i + 1 < n_ins ? i_live[i + 1] : FALL;
                     if (y >= 2) carry_in();
                     E(0xD0); E(0xC0 | y << 3);
-                    E(0x9F);
-                    E(0x80); E(0xE4); E(0x01);                  // lahf; and ah, 1
-                    fl = 0;
+                    if (!(nl & (FZ | FH))) {
+                        fl = 1;
+                        hfix = 0;
+                    } else {
+                        E(0x9F);
+                        E(0x80); E(0xE4); E(0x01);              // lahf; and ah, 1
+                        fl = 0;
+                    }
                     nst = 0;
                 } else if (y == 4) {                            // DAA
                     mat();
@@ -1932,15 +1935,16 @@ __attribute__((noinline)) static void translate_block(void) {
                     SLOW_ENDS(done);
                     fl = 0;
                 } else if (cx == 0) {
+                    uint8_t nl = i + 1 < n_ins ? i_live[i + 1] : FALL;
                     switch (cy) {
                     case 0: case 1:                             // RLC, RRC
                         E(0xD0); E(0xC0 | cy << 3 | r);
-                        E(0xFE); E(0xC0 | r); E(0xFE); E(0xC8 | r);    // inc r; dec r: ZF, CF kept
+                        if (nl & FZ) { E(0xFE); E(0xC0 | r); E(0xFE); E(0xC8 | r); }
                         break;
                     case 2: case 3:                             // RL, RR
                         carry_in();
                         E(0xD0); E(0xC0 | cy << 3 | r);
-                        E(0xFE); E(0xC0 | r); E(0xFE); E(0xC8 | r);
+                        if (nl & FZ) { E(0xFE); E(0xC0 | r); E(0xFE); E(0xC8 | r); }
                         break;
                     case 4: E(0xD0); E(0xE0 | r); break;        // SLA
                     case 5: E(0xD0); E(0xF8 | r); break;        // SRA
@@ -1954,6 +1958,14 @@ __attribute__((noinline)) static void translate_block(void) {
                     hfix = 1;
                     nst = 0;
                 } else if (cx == 1) {                           // BIT: Z, H set, C kept
+                    uint8_t nl = i + 1 < n_ins ? i_live[i + 1] : FALL;
+                    if (!(nl & FC)) {
+                        E(0xF6); E(0xC0 | r); E(1 << cy);       // test r, m
+                        fl = 1;
+                        hfix = 2;
+                        nst = 0;
+                        break;
+                    }
                     mat();
                     E(0x80); E(0xE4); E(0x01);
                     E(0x80); E(0xCC); E(0x10);
