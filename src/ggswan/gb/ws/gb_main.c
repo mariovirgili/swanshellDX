@@ -619,6 +619,7 @@ static void state_load(void) {
     _fmemcpy(MK_FP(0x1000, 0), MK_FP(ST_SEG2, 0), 0x8000);
     gbf_plat_map();
     gbd_flush();
+    gb_sound_resync();          // (its record of the sound ports is the saved one: write them all again)
     st_req = 0;
     st_held = 2;
     st_wait = 1;

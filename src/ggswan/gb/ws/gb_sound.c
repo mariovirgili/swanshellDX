@@ -43,13 +43,32 @@ static uint8_t duty_set[2];             // the duty WS channels 1 and 2 have the
 static uint8_t seq_step;
 static uint16_t seq_acc;
 static uint8_t sweep_timer, sweep_on;
+static uint8_t last_wave[16], wave_ok, last_ctrl, short_mode;
+static uint16_t last_freq[4], last_vol[4];     // (FFFFh: not written yet - no byte is)
 
-static const uint8_t __far reg4[4] = { 0x14, 0x19, 0x1E, 0x23 };
-static const uint8_t __far reg2[4] = { 0x12, 0x17, 0x1C, 0x21 };
-static const uint8_t __far reg1[4] = { 0x11, 0x16, 0x1B, 0x20 };
+static const uint8_t reg4[4] = { 0x14, 0x19, 0x1E, 0x23 };
+static const uint8_t reg2[4] = { 0x12, 0x17, 0x1C, 0x21 };
+static const uint8_t reg1[4] = { 0x11, 0x16, 0x1B, 0x20 };
+
+// Exact 16x16->32 multiply by 375 and right-shift (avoids 32-bit __mulsi3)
+static inline uint16_t mul375_shr9(uint16_t v) {
+    uint16_t lo, hi;
+    __asm__ ("mulw %2" : "=a" (lo), "=d" (hi) : "r" ((uint16_t) 375), "0" (v));
+    return (uint16_t) ((hi << 7) | (lo >> 9));
+}
+static inline uint16_t mul375_shr8(uint16_t v) {
+    uint16_t lo, hi;
+    __asm__ ("mulw %2" : "=a" (lo), "=d" (hi) : "r" ((uint16_t) 375), "0" (v));
+    return (uint16_t) ((hi << 8) | (lo >> 8));
+}
+static inline uint16_t mul375_shr6(uint16_t v) {
+    uint16_t lo, hi;
+    __asm__ ("mulw %2" : "=a" (lo), "=d" (hi) : "r" ((uint16_t) 375), "0" (v));
+    return (uint16_t) ((hi << 10) | (lo >> 6));
+}
 
 static void set_duty(uint8_t c, uint8_t duty) {
-    static const uint8_t __far high[4] = { 4, 8, 16, 24 };     // of 32: 12.5%, 25%, 50%, 75%
+    static const uint8_t high[4] = { 4, 8, 16, 24 };     // of 32: 12.5%, 25%, 50%, 75%
     if (duty_set[c] == duty) return;
     duty_set[c] = duty;
     uint8_t *w = WAVES + c * 16;
@@ -116,6 +135,47 @@ static void step(void) {
     }
 }
 
+// Full 8-step sequencer cycle at once (4 length ticks, 2 sweep ticks, 1 envelope tick):
+// every frame adds 8572 to seq_acc, so 8 full steps always run plus at most 1 extra.
+static void step8(void) {
+    for (uint8_t c = 0; c < 4; c++) {
+        if ((NR(reg4[c]) & 0x40) && ch[c].length) {
+            if (ch[c].length <= 4) { ch[c].length = 0; ch[c].on = 0; }
+            else ch[c].length -= 4;
+        }
+    }
+    if (sweep_on && ch[0].on) {
+        uint8_t sp = (NR(0x10) >> 4) & 7;
+        if (sp) {
+            for (uint8_t k = 0; k < 2 && ch[0].on; k++) {
+                if (sweep_timer) sweep_timer--;
+                if (!sweep_timer) {
+                    sweep_timer = sp;
+                    uint16_t f = sweep_next();
+                    if (f > 2047) {
+                        ch[0].on = 0;
+                    } else if (NR(0x10) & 7) {
+                        NR(0x13) = f & 0xFF;
+                        NR(0x14) = (NR(0x14) & 0xF8) | (f >> 8);
+                    }
+                }
+            }
+        }
+    }
+    for (uint8_t c = 0; c < 4; c++) {
+        if (c == 2) continue;
+        uint8_t e = NR(reg2[c]);
+        uint8_t p = e & 7;
+        if (!p) continue;
+        if (ch[c].env_timer) ch[c].env_timer--;
+        if (!ch[c].env_timer) {
+            ch[c].env_timer = p;
+            if ((e & 8) && ch[c].vol < 15) ch[c].vol++;
+            else if (!(e & 8) && ch[c].vol) ch[c].vol--;
+        }
+    }
+}
+
 // a volume (0-15) to the WS's left and right, by NR51's bits for the channel
 static uint8_t pan(uint8_t c, uint8_t v) {
     uint8_t p = NR(0x25);
@@ -125,7 +185,10 @@ static uint8_t pan(uint8_t c, uint8_t v) {
 void gb_sound_frame(void) {
     if (!(NR(0x26) & 0x80)) {
         // the sound off
-        outportb(WS_SOUND_CH_CTRL_PORT, 0);
+        if (last_ctrl) {
+            last_ctrl = 0;
+            outportb(WS_SOUND_CH_CTRL_PORT, 0);
+        }
         for (uint8_t c = 0; c < 4; c++) ch[c].on = 0;
         NR(0x26) &= 0x80;
         gbf_trig = 0;
@@ -140,8 +203,9 @@ void gb_sound_frame(void) {
         if (c == 2 ? !(NR(0x1A) & 0x80) : !(NR(reg2[c]) & 0xF8)) ch[c].on = 0;
     }
     gbf_trig = 0;
-    seq_acc += 8572;
-    while (seq_acc >= 1000) {
+    step8();
+    seq_acc += 572;
+    if (seq_acc >= 1000) {
         seq_acc -= 1000;
         step();
     }
@@ -153,26 +217,46 @@ void gb_sound_frame(void) {
         if (!ch[c].on) continue;
         uint8_t r3 = c ? 0x18 : 0x13;
         uint16_t x = NR(r3) | (uint16_t) (NR(r3 + 1) & 7) << 8;
-        uint16_t per = (uint32_t) (2048 - x) * 375 >> 9;
+        uint16_t per = mul375_shr9(2048 - x);
         if (per < 2) continue;                  // (above what can be heard)
         set_duty(c, NR(reg1[c]) >> 6);
-        outportw(c ? WS_SOUND_FREQ_CH2_PORT : WS_SOUND_FREQ_CH1_PORT, 2048 - per);
-        outportb(c ? WS_SOUND_VOL_CH2_PORT : WS_SOUND_VOL_CH1_PORT, pan(c, ch[c].vol));
+        uint16_t wf = 2048 - per;
+        if (wf != last_freq[c]) {
+            last_freq[c] = wf;
+            outportw(c ? WS_SOUND_FREQ_CH2_PORT : WS_SOUND_FREQ_CH1_PORT, wf);
+        }
+        uint8_t wv = pan(c, ch[c].vol);
+        if (wv != last_vol[c]) {
+            last_vol[c] = wv;
+            outportb(c ? WS_SOUND_VOL_CH2_PORT : WS_SOUND_VOL_CH1_PORT, wv);
+        }
         ctrl |= 1 << c;
     }
     // the wave: 65536 / (2048 - x) Hz: 2048 - n = (2048 - x) * 375 / 256
     if (ch[2].on) {
         uint16_t x = NR(0x1D) | (uint16_t) (NR(0x1E) & 7) << 8;
-        uint32_t per = (uint32_t) (2048 - x) * 375 >> 8;
+        uint16_t per = mul375_shr8(2048 - x);
         uint8_t lvl = (NR(0x1C) >> 5) & 3;
         if (per >= 2 && per <= 2047 && lvl) {
             // (the Game Boy's first sample is the high half of a byte, the WS's the low)
-            for (uint8_t i = 0; i < 16; i++) {
-                uint8_t b = NR(0x30 + i);
-                WAVES[32 + i] = b << 4 | b >> 4;
+            if (!wave_ok || memcmp(last_wave, &NR(0x30), 16) != 0) {
+                wave_ok = 1;
+                memcpy(last_wave, &NR(0x30), 16);
+                for (uint8_t i = 0; i < 16; i++) {
+                    uint8_t b = last_wave[i];
+                    WAVES[32 + i] = (uint8_t) (b << 4 | b >> 4);
+                }
             }
-            outportw(WS_SOUND_FREQ_CH3_PORT, 2048 - (uint16_t) per);
-            outportb(WS_SOUND_VOL_CH3_PORT, pan(2, lvl == 1 ? 15 : lvl == 2 ? 7 : 3));
+            uint16_t wf = 2048 - per;
+            if (wf != last_freq[2]) {
+                last_freq[2] = wf;
+                outportw(WS_SOUND_FREQ_CH3_PORT, wf);
+            }
+            uint8_t wv = pan(2, lvl == 1 ? 15 : lvl == 2 ? 7 : 3);
+            if (wv != last_vol[2]) {
+                last_vol[2] = wv;
+                outportb(WS_SOUND_VOL_CH3_PORT, wv);
+            }
             ctrl |= 4;
         }
     }
@@ -181,22 +265,43 @@ void gb_sound_frame(void) {
     if (ch[3].on) {
         uint8_t p = NR(0x22);
         uint8_t d = (p & 7) ? (p & 7) * 2 : 1, s = p >> 4;
-        uint32_t per = s < 14 ? ((uint32_t) d << s) * 375 >> 6 : 2047;
+        uint16_t per = s >= 9 ? 2047 : mul375_shr6((uint16_t) d << s);
         if (per < 1) per = 1;
         if (per > 2047) per = 2047;
-        static uint8_t short_mode = 0xFF;
         if (short_mode != (p & 8)) {
             short_mode = p & 8;
             outportb(WS_SOUND_NOISE_CTRL_PORT, (short_mode ? WS_SOUND_NOISE_CTRL_LENGTH_254 : WS_SOUND_NOISE_CTRL_LENGTH_32767)
                 | WS_SOUND_NOISE_CTRL_ENABLE | WS_SOUND_NOISE_CTRL_RESET);
         }
-        outportw(WS_SOUND_FREQ_CH4_PORT, 2048 - (uint16_t) per);
-        outportb(WS_SOUND_VOL_CH4_PORT, pan(3, ch[3].vol));
+        uint16_t wf = 2048 - per;
+        if (wf != last_freq[3]) {
+            last_freq[3] = wf;
+            outportw(WS_SOUND_FREQ_CH4_PORT, wf);
+        }
+        uint8_t wv = pan(3, ch[3].vol);
+        if (wv != last_vol[3]) {
+            last_vol[3] = wv;
+            outportb(WS_SOUND_VOL_CH4_PORT, wv);
+        }
         ctrl |= 0x88;
     }
-    outportb(WS_SOUND_CH_CTRL_PORT, ctrl);
+    if (ctrl != last_ctrl) {
+        last_ctrl = ctrl;
+        outportb(WS_SOUND_CH_CTRL_PORT, ctrl);
+    }
     // NR52's low bits: the channels playing
     NR(0x26) = (NR(0x26) & 0x80) | ch[0].on | ch[1].on << 1 | ch[2].on << 2 | ch[3].on << 3;
+}
+
+// the ports as last written are remembered so that only changes are written
+// (gb_sound_frame); after a state is loaded that record is the saved one
+void gb_sound_resync(void) {
+    memset(last_vol, 0xFF, sizeof(last_vol));
+    memset(last_freq, 0xFF, sizeof(last_freq));
+    wave_ok = 0;
+    last_ctrl = 0xFF;
+    short_mode = 0xFF;
+    duty_set[0] = duty_set[1] = 0xFF;
 }
 
 void gb_sound_init(void) {
@@ -205,6 +310,11 @@ void gb_sound_init(void) {
     duty_set[0] = duty_set[1] = 0xFF;
     seq_step = 0;
     seq_acc = 0;
+    wave_ok = 0;
+    memset(last_vol, 0xFF, sizeof(last_vol));
+    memset(last_freq, 0xFF, sizeof(last_freq));
+    last_ctrl = 0;
+    short_mode = 0xFF;
     outportb(WS_SOUND_CH_CTRL_PORT, 0);
     outportb(WS_SOUND_WAVE_BASE_PORT, 0x0FC0 >> 6);
     outportb(WS_SOUND_OUT_CTRL_PORT, WS_SOUND_OUT_CTRL_HEADPHONE_ENABLE

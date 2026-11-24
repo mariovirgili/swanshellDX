@@ -20,6 +20,7 @@ void gbv_note(const char __far *t);
 uint16_t gbv_now_lines(void);
 void gb_sound_init(void);       // gb_sound.c
 void gb_sound_frame(void);
+void gb_sound_resync(void);     // after a state is loaded: the ports written again at the next frame
 // what the plugin is doing (the figures on the screen)
 #define GB_PHASE_RUN   0    // translated code, its routines, what they call
 #define GB_PHASE_DISP  1    // the dispatcher, the events, the interpreter's steps
