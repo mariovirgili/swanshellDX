@@ -1715,7 +1715,467 @@ static void check_end(uint16_t pc, int16_t used) {
 #define PUSH_PC(sp) do { gg_ram[(sp) & 0x1FFF] = (uint8_t) z80.pc; gg_ram[((sp) + 1) & 0x1FFF] = z80.pc >> 8; } while (0)
 #endif
 
+#ifndef GGSWAN_HOST
+_Static_assert(HASH_SIZE == 8192 && T_PC == 0 && T_OFF == 0x4000
+               && T_BANK == 0x8000 && T_CODE == 0xA000, "G3 asm: table layout");
+_Static_assert(DRC_TABLE_SEG == 0xA000 && DRC_CODE_SEG == 0x4000, "G3 asm: segments");
+_Static_assert(RAM_KEY == 0xFE && DRC_NOT_TRANSLATED == 1, "G3 asm: keys");
+_Static_assert(PROF_CODE == 1 && PROF_DISPATCH == 2, "G3 asm: prof_phase");
+#ifdef GGSWAN_SG1000
+_Static_assert(L0_ADDR == 0xF200 && L0_MASK == 0x07F8, "G3 asm: L0 constants");
+#define DRC_L0_ADDR_S "0xF200"
+#define DRC_L0_P2_S   "0xF202"
+#define DRC_L0_P3_S   "0xF203"
+#define DRC_L0_P4_S   "0xF204"
+#define DRC_L0_P6_S   "0xF206"
+#define DRC_L0_MASK_S "$0x07F8"
+#else
+_Static_assert(L0_ADDR == 0xD000 && L0_MASK == 0x0FF8, "G3 asm: L0 constants");
+#define DRC_L0_ADDR_S "0xD000"
+#define DRC_L0_P2_S   "0xD002"
+#define DRC_L0_P3_S   "0xD003"
+#define DRC_L0_P4_S   "0xD004"
+#define DRC_L0_P6_S   "0xD006"
+#define DRC_L0_MASK_S "$0x0FF8"
+#endif
+
+// V30MZ fast path for drc_fast_reentry() when drc_st.cycles > 0.
+// All variables addressed via absolute symbols ("i" / %c) and all modified
+// registers listed in clobbers (no hidden base-register aliasing).
+// Returns 1 on L0 hit (drc_entry[0..1] filled), 0 on miss/exit, 2 if map_pend != 0.
+static __attribute__((noinline)) uint8_t drc_fast_reentry_l0_asm(void) {
+    uint8_t ret;
+    __asm__ volatile (
+        "movb %c[reason], %%al\n\t"
+        "orb %c[no_fast], %%al\n\t"
+        "orb %c[chk], %%al\n\t"
+        "orb %c[brk], %%al\n\t"
+        "orb %c[flreq], %%al\n\t"
+        "orb %c[ram_fail], %%al\n\t"
+        "orb %c[rem], %%al\n\t"
+        "orb %c[z_eip], %%al\n\t"
+        "orb %c[z_hlt], %%al\n\t"
+        "jnz 8f\n\t"
+        "cmpb $0, %c[mpend]\n\t"
+        "jne 7f\n\t"
+        "cmpb $0, %c[z_irq]\n\t"
+        "jnz 10f\n\t"
+    "1:\n\t"
+#ifndef GGSWAN_SF7000
+        "movw %c[z_sp], %%ax\n\t"
+        "subw $0xC002, %%ax\n\t"
+        "cmpw $0x1FFE, %%ax\n\t"
+        "ja 8f\n\t"
+#endif
+        "movw %c[link], %%bx\n\t"
+        "testw %%bx, %%bx\n\t"
+        "jnz 11f\n\t"
+    "3:\n\t"
+        "movw %c[z_pc], %%ax\n\t"
+#ifdef GGSWAN_SF7000
+        "xorb %%dl, %%dl\n\t"
+#else
+        "cmpw $0x8000, %%ax\n\t"
+        "jae 12f\n\t"
+    "4:\n\t"
+        "movw %%ax, %%bx\n\t"
+        "rolw $2, %%bx\n\t"
+        "andw $3, %%bx\n\t"
+        "movb %c[keys]+1(%%bx), %%dl\n\t"
+#endif
+        "movw %%ax, %%bx\n\t"
+        "shlw $3, %%bx\n\t"
+        "andw " DRC_L0_MASK_S ", %%bx\n\t"
+        "cmpw %%ax, " DRC_L0_ADDR_S "(%%bx)\n\t"
+        "jne 8f\n\t"
+        "cmpb %%dl, " DRC_L0_P2_S "(%%bx)\n\t"
+        "jne 8f\n\t"
+        "movw " DRC_L0_P4_S "(%%bx), %%ax\n\t"
+        "movw %%ax, %c[ent]\n\t"
+        "movw " DRC_L0_P6_S "(%%bx), %%ax\n\t"
+        "movw %%ax, %c[ent]+2\n\t"
+        "movb $1, %%al\n\t"
+        "jmp 9f\n\t"
+
+    "8:\n\t"
+        "xorb %%al, %%al\n\t"
+        "jmp 9f\n\t"
+    "7:\n\t"
+        "movb $2, %%al\n\t"
+        "jmp 9f\n\t"
+
+    "10:\n\t"
+        "cmpb $0, %c[z_iff1]\n\t"
+        "jnz 8b\n\t"
+        "jmp 1b\n\t"
+    "11:\n\t"
+        "cmpb $0, %c[no_links]\n\t"
+        "jnz 8b\n\t"
+        "pushw %%es\n\t"
+        "movw %c[cseg], %%ax\n\t"
+        "movw %%ax, %%es\n\t"
+        "cmpb $0x75, %%es:-2(%%bx)\n\t"
+        "jne 13f\n\t"
+        "cmpb $0xFF, %%es:-3(%%bx)\n\t"
+        "je 13f\n\t"
+        "popw %%es\n\t"
+        "jmp 3b\n\t"
+    "13:\n\t"
+        "popw %%es\n\t"
+        "jmp 8b\n\t"
+#ifndef GGSWAN_SF7000
+    "12:\n\t"
+        "cmpw $0xC000, %%ax\n\t"
+        "jae 8b\n\t"
+        "testb $0x08, %c[keys]\n\t"
+        "jnz 8b\n\t"
+        "jmp 4b\n\t"
+#endif
+    "9:\n\t"
+        : [ret] "=a" (ret)
+        : [reason] "i" (&drc_st.reason),
+          [no_fast] "i" (&drc_no_fast),
+          [chk] "i" (&drc_check),
+          [brk] "i" (&z80_break),
+          [flreq] "i" (&drc_flush_request),
+          [ram_fail] "i" (&drc_st.ram_fail),
+          [rem] "i" (&remapped),
+          [z_eip] "i" (&z80.ei_pending),
+          [z_hlt] "i" (&z80.halted),
+          [mpend] "i" (&drc_st.map_pend),
+          [z_irq] "i" (&z80.irq),
+          [z_iff1] "i" (&z80.iff1),
+          [link] "i" (&drc_st.link),
+          [no_links] "i" (&drc_no_links),
+          [cseg] "i" (&drc_st.cur_seg),
+          [z_pc] "i" (&z80.pc),
+#ifndef GGSWAN_SF7000
+          [z_sp] "i" (&z80.sp),
+          [keys] "i" (drc_st.keys),
+#endif
+          [ent] "i" (drc_entry)
+        : "bx", "dx", "cc", "memory"
+    );
+    return ret;
+}
+
+// V30MZ fast lookup for drc_z80_run() when z80.cycles > 0 && !z80_break.
+// Checks rare states, pending_link (already linked = no-op), L0 hit, then 4-way
+// PSRAM table scan. Updates drc_entry[1], L0, fast38, clears ei_pending and
+// pending_link. Returns block offset (>= CACHE_START) or 0 to fall back to C.
+static __attribute__((noinline)) uint16_t drc_lookup_asm(void) {
+    uint16_t ret;
+    __asm__ volatile (
+        "movb %c[flreq], %%al\n\t"
+        "orb %c[z_hlt], %%al\n\t"
+        "orb %c[chk], %%al\n\t"
+#ifdef GGSWAN_SF7000
+        "orb %c[sf_rom], %%al\n\t"
+#endif
+        "jnz 8f\n\t"
+        "cmpb $0, %c[z_irq]\n\t"
+        "jnz 9f\n\t"
+    "1:\n\t"
+#ifndef GGSWAN_SF7000
+        "movw %c[z_sp], %%ax\n\t"
+        "subw $0xC002, %%ax\n\t"
+        "cmpw $0x1FFE, %%ax\n\t"
+        "ja 8f\n\t"
+#endif
+        "movw %c[plink], %%bx\n\t"
+        "testw %%bx, %%bx\n\t"
+        "jnz 10f\n\t"
+    "2:\n\t"
+        "movw %c[z_pc], %%ax\n\t"
+#ifdef GGSWAN_SF7000
+        "xorb %%dl, %%dl\n\t"
+#else
+        "cmpw $0x8000, %%ax\n\t"
+        "jae 19f\n\t"
+    "3:\n\t"
+        "movw %%ax, %%bx\n\t"
+        "rolw $2, %%bx\n\t"
+        "andw $3, %%bx\n\t"
+        "movb %c[keys]+1(%%bx), %%dl\n\t"
+    "4:\n\t"
+#endif
+        "movw %%ax, %%bx\n\t"
+        "shlw $3, %%bx\n\t"
+        "andw " DRC_L0_MASK_S ", %%bx\n\t"
+        "cmpw %%ax, " DRC_L0_ADDR_S "(%%bx)\n\t"
+        "jne 29f\n\t"
+        "cmpb %%dl, " DRC_L0_P2_S "(%%bx)\n\t"
+        "jne 29f\n\t"
+        "movw " DRC_L0_P4_S "(%%bx), %%si\n\t"
+        "movw " DRC_L0_P6_S "(%%bx), %%cx\n\t"
+        "movw %%cx, %c[ent]+2\n\t"
+    "5:\n\t"
+        "movb $0, %c[z_eip]\n\t"
+        "movw $0, %c[plink]\n\t"
+        "cmpw $0x0038, %%ax\n\t"
+        "je 25f\n\t"
+    "6:\n\t"
+        "movw %%si, %%ax\n\t"
+        "jmp 99f\n\t"
+
+    "8:\n\t"
+        "xorw %%ax, %%ax\n\t"
+        "jmp 99f\n\t"
+    "29:\n\t"
+        "jmp 20f\n\t"
+#ifndef GGSWAN_SF7000
+    "19:\n\t"
+        "jmp 12f\n\t"
+#endif
+    "9:\n\t"
+        "cmpb $0, %c[z_iff1]\n\t"
+        "jnz 8b\n\t"
+        "jmp 1b\n\t"
+    "10:\n\t"
+        "cmpb $0, %c[no_links]\n\t"
+        "jz 14f\n\t"
+        "jmp 2b\n\t"
+    "14:\n\t"
+        "pushw %%es\n\t"
+        "movw %c[pseg], %%ax\n\t"
+        "movw %%ax, %%es\n\t"
+        "movb %%es:-2(%%bx), %%al\n\t"
+        "cmpb $0x75, %%al\n\t"
+        "je 11f\n\t"
+        "cmpb $0x7E, %%al\n\t"
+        "jne 15f\n\t"
+        "cmpb $0xEB, %%es:(%%bx)\n\t"
+        "je 11f\n\t"
+    "15:\n\t"
+        "popw %%es\n\t"
+        "jmp 2b\n\t"
+    "11:\n\t"
+        "popw %%es\n\t"
+        "jmp 8b\n\t"
+    "25:\n\t"
+        "movw %%si, %c[f38]\n\t"
+        "movw %%cx, %c[f38]+2\n\t"
+        "movb %%dl, %c[f38_b]\n\t"
+        "jmp 6b\n\t"
+#ifndef GGSWAN_SF7000
+    "12:\n\t"
+        "cmpw $0xC000, %%ax\n\t"
+        "jae 13f\n\t"
+        "testb $0x08, %c[keys]\n\t"
+        "jnz 8b\n\t"
+        "jmp 3b\n\t"
+    "13:\n\t"
+        "cmpw $0xDFC0, %%ax\n\t"
+        "jae 8b\n\t"
+        "movb $0xFE, %%dl\n\t"
+        "jmp 4b\n\t"
+#endif
+    "20:\n\t"                                  /* L0 miss: 4-way PSRAM scan (AX=pc, DL=bank) */
+        "movb %%dl, %%bl\n\t"
+        "xorb %%bh, %%bh\n\t"
+        "shlw $5, %%bx\n\t"
+        "xorw %%ax, %%bx\n\t"
+        "movw %%ax, %%si\n\t"
+        "shrw $9, %%si\n\t"
+        "xorw %%si, %%bx\n\t"
+        "andw $0x1FFC, %%bx\n\t"
+        "pushw %%es\n\t"
+        "movw $0xA000, %%di\n\t"
+        "movw %%di, %%es\n\t"
+        "movw %%bx, %%si\n\t"
+        "shlw $1, %%si\n\t"
+        "movw $4, %%cx\n\t"
+    "21:\n\t"
+        "movw %%es:0x4000(%%si), %%di\n\t"
+        "testw %%di, %%di\n\t"
+        "jz 22f\n\t"
+        "cmpw %%ax, %%es:(%%si)\n\t"
+        "jne 22f\n\t"
+        "cmpb %%dl, %%es:0x8000(%%bx)\n\t"
+        "je 23f\n\t"
+    "22:\n\t"
+        "incw %%bx\n\t"
+        "addw $2, %%si\n\t"
+        "loop 21b\n\t"
+        "popw %%es\n\t"
+        "jmp 8b\n\t"
+    "23:\n\t"
+        "cmpw $1, %%di\n\t"
+        "jne 24f\n\t"
+        "popw %%es\n\t"
+        "jmp 8b\n\t"
+    "24:\n\t"
+        "movb %%es:0xA000(%%bx), %%ch\n\t"
+        "popw %%es\n\t"
+        "shlb $4, %%ch\n\t"
+        "addb $0x40, %%ch\n\t"
+        "xorb %%cl, %%cl\n\t"
+        "movw %%cx, %c[ent]+2\n\t"
+        "movw %%ax, %%bx\n\t"
+        "shlw $3, %%bx\n\t"
+        "andw " DRC_L0_MASK_S ", %%bx\n\t"
+        "movw %%ax, " DRC_L0_ADDR_S "(%%bx)\n\t"
+        "movb %%dl, " DRC_L0_P2_S "(%%bx)\n\t"
+        "movb $0, " DRC_L0_P3_S "(%%bx)\n\t"
+        "movw %%di, " DRC_L0_P4_S "(%%bx)\n\t"
+        "movw %%cx, " DRC_L0_P6_S "(%%bx)\n\t"
+        "movw %%di, %%si\n\t"
+        "jmp 5b\n\t"
+    "99:\n\t"
+        : [ret] "=a" (ret)
+        : [flreq] "i" (&drc_flush_request),
+          [z_hlt] "i" (&z80.halted),
+          [chk] "i" (&drc_check),
+          [z_irq] "i" (&z80.irq),
+          [z_iff1] "i" (&z80.iff1),
+          [z_pc] "i" (&z80.pc),
+          [plink] "i" (&pending_link),
+          [pseg] "i" (&pending_seg),
+          [no_links] "i" (&drc_no_links),
+          [z_eip] "i" (&z80.ei_pending),
+          [ent] "i" (drc_entry),
+          [f38] "i" (drc_st.fast38),
+          [f38_b] "i" (&fast38_bank)
+#ifdef GGSWAN_SF7000
+          , [sf_rom] "i" (&sf.rom_on)
+#else
+          , [z_sp] "i" (&z80.sp),
+          [keys] "i" (drc_st.keys)
+#endif
+        : "bx", "cx", "dx", "si", "di", "cc", "memory"
+    );
+    return ret;
+}
+
+// V30MZ pre-block cycle/state setup when z80.cycles > 0 and drc_check/z80_break/flush are 0.
+static inline __attribute__((always_inline)) void drc_enter_setup_asm(void) {
+    __asm__ volatile (
+        "movw %c[z_cyc], %%ax\n\t"
+        "movw %c[z_cyc]+2, %%dx\n\t"
+        "testw %%dx, %%dx\n\t"
+        "jnz 1f\n\t"
+        "cmpw $30000, %%ax\n\t"
+        "ja 1f\n\t"
+        "movw %%ax, %c[st_cyc]\n\t"
+        "movw %%ax, %c[bstart]\n\t"
+        "movw $0, %c[lbase]\n\t"
+#ifdef GGSWAN_SG1000
+        "movb $1, %c[fl_off]\n\t"
+#else
+        "movb %c[no_fast], %%al\n\t"
+        "orb %c[ev_line], %%al\n\t"
+        "negb %%al\n\t"
+        "sbbb %%al, %%al\n\t"
+        "negb %%al\n\t"
+        "movb %%al, %c[fl_off]\n\t"
+#endif
+        "jmp 2f\n\t"
+    "1:\n\t"
+        "movw $30000, %c[st_cyc]\n\t"
+        "movw $30000, %c[bstart]\n\t"
+        "subw $30000, %%ax\n\t"
+        "sbbw $0, %%dx\n\t"
+        "movw %%ax, %c[lbase]\n\t"
+#ifdef GGSWAN_SG1000
+        "movb $1, %c[fl_off]\n\t"
+#else
+        "testw %%dx, %%dx\n\t"
+        "jnz 3f\n\t"
+        "cmpw $30000, %%ax\n\t"
+        "ja 3f\n\t"
+        "movb %c[no_fast], %%al\n\t"
+        "orb %c[ev_line], %%al\n\t"
+        "negb %%al\n\t"
+        "sbbb %%al, %%al\n\t"
+        "negb %%al\n\t"
+        "movb %%al, %c[fl_off]\n\t"
+        "jmp 2f\n\t"
+    "3:\n\t"
+        "movb $1, %c[fl_off]\n\t"
+#endif
+    "2:\n\t"
+        "movb $1, %c[in_blk]\n\t"
+        "movb $1, %c[prof]\n\t"
+        :
+        : [z_cyc] "i" (&z80.cycles),
+          [st_cyc] "i" (&drc_st.cycles),
+          [bstart] "i" (&block_start),
+          [lbase] "i" (&drc_st.left_base),
+          [fl_off] "i" (&drc_st.fl_off),
+          [in_blk] "i" (&in_block),
+          [prof] "i" (&prof_phase)
+#ifndef GGSWAN_SG1000
+          , [no_fast] "i" (&drc_no_fast),
+          [ev_line] "i" (&gg_every_line)
+#endif
+        : "ax", "dx", "cc", "memory"
+    );
+}
+
+// V30MZ fast post-block accounting after drc_enter().
+// Returns 1 if handled (common case), 0 to fall back to C slow path.
+static __attribute__((noinline)) uint8_t drc_dispatch_post_asm(void) {
+    uint8_t ret;
+    __asm__ volatile (
+        "movb %c[reason], %%al\n\t"
+        "orb %c[mpend], %%al\n\t"
+        "orb %c[ram_fail], %%al\n\t"
+        "orb %c[rem], %%al\n\t"
+        "orb %c[chk], %%al\n\t"
+        "jnz 8f\n\t"
+        "movw %c[cseg], %%dx\n\t"
+        "movw %%dx, %c[ent]+2\n\t"
+        "movb $2, %c[prof]\n\t"
+        "movb $0, %c[in_blk]\n\t"
+        "movw %c[link], %%ax\n\t"
+        "testw %%ax, %%ax\n\t"
+        "jz 1f\n\t"
+        "movw %%ax, %c[plink]\n\t"
+        "movw %%dx, %c[pseg]\n\t"
+    "2:\n\t"
+        "addw $1, %c[s_disp]\n\t"
+        "adcw $0, %c[s_disp]+2\n\t"
+        "movw %c[bstart], %%ax\n\t"
+        "subw %c[st_cyc], %%ax\n\t"
+        "cwd\n\t"
+        "subw %%ax, %c[z_cyc]\n\t"
+        "sbbw %%dx, %c[z_cyc]+2\n\t"
+        "movb $1, %%al\n\t"
+        "jmp 9f\n\t"
+    "1:\n\t"
+        "addw $1, %c[s_nolk]\n\t"
+        "adcw $0, %c[s_nolk]+2\n\t"
+        "jmp 2b\n\t"
+    "8:\n\t"
+        "xorb %%al, %%al\n\t"
+    "9:\n\t"
+        : [ret] "=a" (ret)
+        : [reason] "i" (&drc_st.reason),
+          [mpend] "i" (&drc_st.map_pend),
+          [ram_fail] "i" (&drc_st.ram_fail),
+          [rem] "i" (&remapped),
+          [chk] "i" (&drc_check),
+          [cseg] "i" (&drc_st.cur_seg),
+          [link] "i" (&drc_st.link),
+          [bstart] "i" (&block_start),
+          [st_cyc] "i" (&drc_st.cycles),
+          [ent] "i" (drc_entry),
+          [prof] "i" (&prof_phase),
+          [in_blk] "i" (&in_block),
+          [plink] "i" (&pending_link),
+          [pseg] "i" (&pending_seg),
+          [s_nolk] "i" (&drc_stat_nolink),
+          [s_disp] "i" (&drc_stat_dispatch),
+          [z_cyc] "i" (&z80.cycles)
+        : "dx", "cc", "memory"
+    );
+    return ret;
+}
+
+static __attribute__((noinline)) uint8_t drc_fast_reentry_slow(void) {
+#else
 uint8_t drc_fast_reentry(void) {
+#endif
 #ifdef GGSWAN_SF7000
     if (sf.rom_on)
         return 0;   // (the IPL: the interpreter's)
@@ -1807,6 +2267,32 @@ uint8_t drc_fast_reentry(void) {
     return 1;
 }
 
+#ifndef GGSWAN_HOST
+uint8_t drc_fast_reentry(void) {
+#ifdef GGSWAN_SF7000
+    if (sf.rom_on)
+        return 0;
+#endif
+    if (drc_st.cycles <= 0) {
+#ifndef GGSWAN_SG1000
+        // When !fl_off, STUB_LINE already ran the exact same fast-line check and bailed.
+        if (drc_st.fl_off && !drc_no_fast && !drc_st.reason && !drc_check
+            && !z80_break && !drc_flush_request && !drc_st.ram_fail && !remapped)
+            return drc_fast_reentry_slow();
+#endif
+        return 0;
+    }
+    uint8_t r = drc_fast_reentry_l0_asm();
+    if (r == 1) {
+        drc_stat_dispatch++;
+        drc_stat_nolink++;
+        drc_stat_quick++;
+        return 1;
+    }
+    return r == 2 ? drc_fast_reentry_slow() : 0;
+}
+#endif
+
 int32_t drc_z80_run(int32_t cycles) {
 #ifdef GGSWAN_HOST
     { extern void host_late_commit(void); host_late_commit(); }
@@ -1821,7 +2307,12 @@ int32_t drc_z80_run(int32_t cycles) {
     // IN from 00h and DCh in the generated code (z80_in's values)
     drc_st.keys_in[0] = ((gg.keys & GG_KEY_START) ? 0x00 : 0x80) | 0x40;
     drc_st.keys_in[1] = ~(gg.keys & 0x3F);
+    const uint16_t __far *const tw = MK_FP(DRC_TABLE_SEG, 0);
+    const uint8_t __far *const tb = (const uint8_t __far*) tw;
     for (;;) {
+        uint16_t pc = 0;
+        int16_t start = 0;
+        uint32_t io_before = 0;
         if (z80.cycles <= 0 || z80_break) {
             // out of cycles, or the timing to plan again (z80_break): the
             // next event without going back to the frame loop (the same
@@ -1835,7 +2326,23 @@ int32_t drc_z80_run(int32_t cycles) {
             z80.cycles += want;
             continue;
         }
-        uint16_t pc = z80.pc;
+#ifndef GGSWAN_HOST
+        {
+            uint16_t fast_off = drc_lookup_asm();
+            if (fast_off) {
+                drc_enter_setup_asm();
+#ifdef GGSWAN_SF7000
+                sf_port_a_plan(block_start);
+#endif
+                drc_enter(fast_off);
+                if (drc_dispatch_post_asm())
+                    continue;
+                start = block_start;
+                goto post_block_slow;
+            }
+        }
+#endif
+        pc = z80.pc;
         if (drc_flush_request) { drc_flush_request = 0; flush(); }
         if (z80.halted) {
             pending_link = 0;
@@ -1896,8 +2403,6 @@ int32_t drc_z80_run(int32_t cycles) {
         // L0 first (internal RAM, the same one DYN uses): pc, bank,
         // offset, code segment
         uint16_t *l0 = (uint16_t*) IRAM(L0_ENTRY(pc));
-        const uint16_t __far *tw = MK_FP(DRC_TABLE_SEG, 0);
-        const uint8_t __far *tb = (const uint8_t __far*) tw;
         uint16_t h = h0, off = 0;
         uint8_t i;
         if (l0[0] == pc && (uint8_t) l0[1] == bank) {
@@ -1949,7 +2454,7 @@ int32_t drc_z80_run(int32_t cycles) {
             }
         }
         pending_link = 0;
-        int16_t start = z80.cycles > 30000 ? 30000 : (int16_t) z80.cycles;
+        start = z80.cycles > 30000 ? 30000 : (int16_t) z80.cycles;
         drc_st.cycles = start;
         block_start = start;
         // the line routine at the exits (LINE stub): left = left_base +
@@ -1961,7 +2466,6 @@ int32_t drc_z80_run(int32_t cycles) {
 #ifdef GGSWAN_SG1000
         drc_st.fl_off = 1;   // (no line interrupts: nothing for the routine)
 #endif
-        uint32_t io_before = 0;
         if (drc_check) {
             io_before = drc_stat_helper[1] + drc_stat_helper[2] + drc_stat_helper[3] + drc_stat_helper[4];
             check_begin();
@@ -1975,6 +2479,9 @@ int32_t drc_z80_run(int32_t cycles) {
 #endif
         prof_phase = PROF_CODE;
         drc_enter(off);
+#ifndef GGSWAN_HOST
+    post_block_slow:
+#endif
         while (drc_st.reason) {
             drc_entry[1] = drc_st.cur_seg;   // (blocks may jump far)
             drc_helper();
