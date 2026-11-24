@@ -599,11 +599,13 @@ static uint8_t sg_kind_live[SG_KINDS];   // on the screen in this frame
 // WonderSwan: it has 128 sprites, and a magnified 16x16 one takes 16)
 static uint16_t sg_kind_empty[SG_KINDS];
 static uint8_t sg_kind_max;              // how many fit (the tiles each takes)
+static uint8_t sg_kind_rover;            // rotating eviction cursor (avoids thrashing)
 
 static void sg_kinds_reset(void) {
     uint8_t tiles = (sg_big ? 4 : 1) * (sg_mag ? 4 : 1);
     // (no more than 40: each sprite looks for its kind among them)
     sg_kind_max = SG_SPR_TILES / tiles > SG_KINDS ? SG_KINDS : SG_SPR_TILES / tiles;
+    sg_kind_rover = 0;
     for (uint8_t k = 0; k < sg_kind_max; k++)
         sg_kind_key[k] = SG_NONE;
 }
@@ -681,21 +683,50 @@ static void build_sprites(void) {
     memset(sg_kind_live, 0, sg_kind_max);
     uint32_t hid[32];
     uint8_t lim = sg_limit && sg_m != 4 && sg_sprite_hidden(sat, hid);
+    // Pass 1: mark every kind already in cache that is visible in this frame,
+    // so pass 2 never evicts a kind still needed by a later sprite in the SAT
+    // (prevents domino cache thrashing when sg_kind_max slots are full).
+    // vis_k[i]: 0..sg_kind_max-1 = hit, 0xFF = miss (allocate in pass 2), 0xFE = skipped.
+    uint8_t vis_k[32];
+    uint8_t n_sat = 0;
+    if (sg_m != 4) {
+        int16_t max_y = sg_sq ? GG_ACTIVE_LINES : GG_VIEW_H;
+        for (; n_sat < 32; n_sat++) {
+            const uint8_t *e = sat + n_sat * 4;
+            if (e[0] == 0xD0)
+                break;
+            uint8_t color = e[3] & 0x0F;
+            if (!color) { vis_k[n_sat] = 0xFE; continue; }
+            int16_t y = (e[0] > 0xE0 ? (int16_t) e[0] - 256 : e[0]) + 1 - sg_vy;
+            int16_t x = (int16_t) e[1] - ((e[3] & 0x80) ? 32 : 0) - sg_vx;
+            if (y <= -side || y >= max_y || x <= -side || x >= GG_VIEW_W) {
+                vis_k[n_sat] = 0xFE;
+                continue;
+            }
+            uint16_t key = ((sg_spg >> 3) + (sg_big ? e[2] & 0xFC : e[2])) | ((uint16_t) color << 12);
+            uint8_t hit = 0xFF;
+            if (!lim) {
+                for (uint8_t k = 0; k < sg_kind_max; k++)
+                    if (sg_kind_key[k] == key) { hit = k; break; }
+            } else {
+                uint32_t mask = hid[n_sat];
+                for (uint8_t k = 0; k < sg_kind_max; k++)
+                    if (sg_kind_key[k] == key && sg_kind_mask[k] == mask) { hit = k; break; }
+            }
+            if (hit != 0xFF)
+                sg_kind_live[hit] = 1;
+            vis_k[n_sat] = hit;
+        }
+    }
     // (no sprites with the display off or in text mode)
-    for (uint8_t i = 0; i < 32 && sg_m != 4 && s < end; i++) {
-        const uint8_t *e = sat + i * 4;
-        if (e[0] == 0xD0)
-            break;
-        uint8_t color = e[3] & 0x0F;
-        if (!color)
+    for (uint8_t i = 0; i < n_sat && s < end; i++) {
+        if (vis_k[i] == 0xFE)
             continue;
+        const uint8_t *e = sat + i * 4;
+        uint8_t color = e[3] & 0x0F;
         // (the top left pixel in the picture: sg_sprite, gg.h) in the view
         int16_t y = (e[0] > 0xE0 ? (int16_t) e[0] - 256 : e[0]) + 1 - sg_vy;
         int16_t x = (int16_t) e[1] - ((e[3] & 0x80) ? 32 : 0) - sg_vx;
-        // (the whole picture: sg_vy is 0, y a line of its 192)
-        if (y <= -side || y >= (sg_sq ? GG_ACTIVE_LINES : GG_VIEW_H) || x <= -side || x >= GG_VIEW_W)
-            continue;
-        uint16_t key = ((sg_spg >> 3) + (sg_big ? e[2] & 0xFC : e[2])) | ((uint16_t) color << 12);
         // the lines the chip leaves out (the fifth on them, or later):
         // all the ones it has in the picture: no sprite
         uint32_t mask = lim ? hid[i] : 0;
@@ -708,42 +739,51 @@ static void build_sprites(void) {
             if (mask == all)
                 continue;
         }
-        // its kind: there already, or an empty place, or the place of
-        // one not on the screen (so far)
-        uint8_t k, spare, dead;
-    find:
-        k = 0; spare = 0xFF; dead = 0xFF;
-        for (; k < sg_kind_max; k++) {
-            if (sg_kind_key[k] == key && sg_kind_mask[k] == mask)
-                break;
-            if (sg_kind_key[k] == SG_NONE) {
-                if (spare == 0xFF)
+        uint8_t k = vis_k[i];
+        if (k == 0xFF) {
+            uint16_t key = ((sg_spg >> 3) + (sg_big ? e[2] & 0xFC : e[2])) | ((uint16_t) color << 12);
+            uint8_t spare, dead;
+        find:
+            k = 0; spare = 0xFF; dead = 0xFF;
+            for (; k < sg_kind_max; k++) {
+                if (sg_kind_key[k] == key && (!lim || sg_kind_mask[k] == mask))
+                    break;
+                if (sg_kind_key[k] == SG_NONE && spare == 0xFF)
                     spare = k;
-            } else if (dead == 0xFF && !sg_kind_live[k]) {
-                dead = k;
             }
-        }
-        if (k == sg_kind_max) {
-            if (spare == 0xFF)
-                spare = dead;
-            if (spare == 0xFF) {
-                // more kinds than tiles for them: one with lines left
-                // out is drawn whole, if that kind is there
-                if (mask) {
-#ifdef GGSWAN_HOST
-                    if (getenv("GGSWAN_LIMIT_LOG")) fprintf(stderr, "frame %lu: sprite %d drawn whole (no kind left)\n", (unsigned long) gg.frame, i);
-#endif
-                    mask = 0;
-                    goto find;
+            if (k == sg_kind_max) {
+                if (spare == 0xFF) {
+                    // evict a kind not used in this frame, advancing rover
+                    uint8_t r = sg_kind_rover;
+                    for (uint8_t n = 0; n < sg_kind_max; n++) {
+                        if (!sg_kind_live[r]) { dead = r; break; }
+                        if (++r >= sg_kind_max) r = 0;
+                    }
+                    spare = dead;
+                    if (spare != 0xFF) {
+                        sg_kind_rover = spare + 1;
+                        if (sg_kind_rover >= sg_kind_max) sg_kind_rover = 0;
+                    }
                 }
-                continue;
+                if (spare == 0xFF) {
+                    // more kinds than tiles for them: one with lines left
+                    // out is drawn whole, if that kind is there
+                    if (mask) {
+#ifdef GGSWAN_HOST
+                        if (getenv("GGSWAN_LIMIT_LOG")) fprintf(stderr, "frame %lu: sprite %d drawn whole (no kind left)\n", (unsigned long) gg.frame, i);
+#endif
+                        mask = 0;
+                        goto find;
+                    }
+                    continue;
+                }
+                k = spare;
+                sg_kind_key[k] = key;
+                sg_kind_mask[k] = mask;
+                sg_kind_convert(k, key, mask);
+                sg_kind_live[k] = 1;
             }
-            k = spare;
-            sg_kind_key[k] = key;
-            sg_kind_mask[k] = mask;
-            sg_kind_convert(k, key, mask);
         }
-        sg_kind_live[k] = 1;
         uint16_t tile = (uint16_t) k * pieces * sub;
         uint16_t empty = sg_kind_empty[k];
         for (uint8_t q = 0; q < pieces; q++) {
@@ -961,6 +1001,18 @@ GGSWAN_HOST_VISIBLE void video_present(void) {
         for (uint8_t pg = 0; pg < 32; pg++) {
             if (!sg_page[pg])
                 continue;
+            // skip pages that overlap neither the pattern nor color tables
+            // (e.g. name table, SAT, sprite patterns)
+            uint16_t pa = (uint16_t) pg << 9;
+            if (sg_m == SG_MODE_G2) {
+                if ((uint16_t) (pa - sg_pg) >= 0x1800 && (uint16_t) (pa - sg_ct) >= 0x1800)
+                    continue;
+            } else if (sg_m == SG_MODE_G1) {
+                if ((uint16_t) (pa - sg_pg) >= 0x800 && pg != (sg_ct >> 9))
+                    continue;
+            } else if ((uint16_t) (pa - sg_pg) >= 0x800) {
+                continue;
+            }
             const uint8_t *d = sg_dirty + ((uint16_t) pg << 5);
             for (uint8_t u = 0; u < 32; u++)
                 if (d[u]) {
