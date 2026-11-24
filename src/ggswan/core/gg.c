@@ -684,17 +684,23 @@ static void vdp_lines(uint16_t from, uint16_t to) {
     uint8_t c = gg.vdp.line_counter, r = gg.vdp.reg[10];
     // lines 0-192: the counter counts down, reloading (and requesting an
     // interrupt) on the line after it reached 0
-    uint16_t a_end = to < GG_ACTIVE + 1 ? to : GG_ACTIVE + 1;
+    uint16_t act1 = GG_ACTIVE + 1;
+    uint16_t a_end = to < act1 ? to : act1;
     if (from < a_end) {
         uint16_t k = a_end - from;
         if (k > c) {
             gg.vdp.line_pending = 1;
-            if (to <= GG_ACTIVE + 1) {
+            if (to <= act1) {
                 if (r == 0) {
                     c = 0;
                 } else {
                     k -= c + 1;   // lines after the reload
-                    c = r - (uint8_t) (k <= r ? k : k % ((uint16_t) r + 1));
+                    if (k <= r) {
+                        c = r - (uint8_t) k;
+                    } else {
+                        k -= (uint16_t) r + 1;
+                        c = r - (uint8_t) (k <= r ? k : k % ((uint16_t) r + 1));
+                    }
                 }
             }
         } else {
@@ -702,7 +708,7 @@ static void vdp_lines(uint16_t from, uint16_t to) {
         }
     }
     // the other lines reload it
-    if (to > GG_ACTIVE + 1)
+    if (to > act1)
         c = r;
     gg.vdp.line_counter = c;
     // frame interrupt
@@ -747,12 +753,48 @@ static inline void set_started(uint16_t s) {
     gg.vdp.line_pos = s * (uint16_t) GG_CYCLES_PER_LINE;
 }
 
+// cycles from start of frame to GG_PRESENT_LINE without runtime multiply
+static inline uint16_t present_cycles(void) {
+#ifdef GGSWAN_SMS
+    return gg.vdp.active == 192 ? (uint16_t) (192u * GG_CYCLES_PER_LINE)
+                                : (uint16_t) (224u * GG_CYCLES_PER_LINE);
+#else
+    return (uint16_t) (GG_PRESENT_LINE * (unsigned) GG_CYCLES_PER_LINE);
+#endif
+}
+
+#ifdef GGSWAN_SMS
+#define GG_VBL_DELTA_CYCLES GG_CYCLES_PER_LINE
+#else
+#define GG_VBL_DELTA_CYCLES ((uint16_t) ((GG_VBL_LINE - GG_PRESENT_LINE) * (unsigned) GG_CYCLES_PER_LINE))
+#endif
+
 // One step of the frame loop below without the per-line mode, at frame
 // position pos: start the lines the CPU has reached, then the cycles to run
 // up to the next event (or -1: the end of the frame, left to gg_run_frame)
 static int32_t event_step(uint16_t pos) {
-    uint16_t reached = pos / GG_CYCLES_PER_LINE + 1;
-    if (reached > GG_LINES) reached = GG_LINES;
+    uint16_t st = started;
+    uint16_t st_pos = gg.vdp.line_pos;
+    uint16_t act = GG_ACTIVE;
+    uint16_t pres = GG_PRESENT_LINE;
+    uint16_t ppos = present_cycles();
+    uint16_t reached, reached_pos;
+    if (pos >= GG_FRAME_CYCLES) {
+        reached = GG_LINES;
+        reached_pos = GG_FRAME_CYCLES;
+    } else if (pos < st_pos) {
+        reached = st;
+        reached_pos = st_pos;
+    } else if ((uint16_t) (pos - st_pos) < GG_CYCLES_PER_LINE) {
+        reached = st + 1;
+        reached_pos = st_pos + GG_CYCLES_PER_LINE;
+    } else if (pos >= ppos && (uint16_t) (pos - ppos) < GG_CYCLES_PER_LINE) {
+        reached = pres + 1;
+        reached_pos = ppos + GG_CYCLES_PER_LINE;
+    } else {
+        reached = pos / GG_CYCLES_PER_LINE + 1;
+        reached_pos = reached * (uint16_t) GG_CYCLES_PER_LINE;
+    }
     /*
      * A line interrupt taken late (the recompiler stops only
      * between blocks: a long one, an LDIR or OUTI run in one go, ends lines
@@ -773,23 +815,29 @@ static int32_t event_step(uint16_t pos) {
      * them on the Game Gear too).
      */
     if (GG_LINE_IRQ && z80.iff1 && !gg.vdp.line_pending
-            && started <= GG_ACTIVE) {
-        uint16_t l1 = started + gg.vdp.line_counter;   // the line that requests it
+            && st <= act) {
+        uint16_t l1 = st + gg.vdp.line_counter;   // the line that requests it
         uint16_t at = l1 * (uint16_t) GG_CYCLES_PER_LINE;
-        if (l1 <= GG_ACTIVE && pos >= at && pos - at >= GG_IRQ_LATE) {
+        if (l1 <= act && pos >= at && pos - at >= GG_IRQ_LATE) {
             frame_given -= pos - at;
             gg.vdp.irq_debt += pos - at;
             pos = at;
             reached = l1 + 1;
+            reached_pos = at + GG_CYCLES_PER_LINE;
         }
     }
-    vdp_lines(started, reached);
-    if (reached > started) set_started(reached);
+    if (reached > st) {
+        vdp_lines(st, reached);
+        st = reached;
+        started = reached;
+        gg.vdp.line_pos = reached_pos;
+    }
+#if !defined(GGSWAN_SMS) && !defined(GGSWAN_SG1000)
     // the cycles not counted above are taken back below the view, where
     // nothing is shown (after the frame was presented, up to line 192: the
     // frame interrupt stays on time); what is left, at the end of the frame
-    if (gg.vdp.irq_debt && started > GG_PRESENT_LINE && started <= GG_ACTIVE) {
-        uint16_t lim = GG_ACTIVE * (uint16_t) GG_CYCLES_PER_LINE;
+    if (gg.vdp.irq_debt && st > pres && st <= act) {
+        uint16_t lim = act * (uint16_t) GG_CYCLES_PER_LINE;
         if (pos < lim) {
             uint16_t t = lim - pos;
             if (t > gg.vdp.irq_debt)
@@ -798,19 +846,38 @@ static int32_t event_step(uint16_t pos) {
             frame_given += t;
             pos += t;
             reached = pos / GG_CYCLES_PER_LINE + 1;
-            vdp_lines(started, reached);
-            if (reached > started) set_started(reached);
+            if (reached > st) {
+                vdp_lines(st, reached);
+                st = reached;
+                set_started(reached);
+            }
         }
     }
-    if (started >= GG_LINES && pos >= GG_FRAME_CYCLES)
+#endif
+    if (st >= GG_LINES && pos >= GG_FRAME_CYCLES)
         return -1;
-    uint16_t e = next_event(started);
+    uint16_t vbl = GG_VBL_LINE;
+    uint16_t e, target;
+    if (st <= pres) {
+        e = pres;
+        target = ppos;
+    } else if (st <= vbl) {
+        e = vbl;
+        target = ppos + GG_VBL_DELTA_CYCLES;
+    } else {
+        e = GG_LINES;
+        target = GG_FRAME_CYCLES;
+    }
+    if (GG_LINE_IRQ && st <= act) {
+        uint16_t u = st + gg.vdp.line_counter;
+        if (u < e)
+            target = u * (uint16_t) GG_CYCLES_PER_LINE;
+    }
     // (cycles already given but not run yet, after an early stop, count)
-    // e <= GG_LINES (262), so e * 228 <= 59736 fits uint16_t (avoids 32-bit __mulsi3)
-    int32_t want = (int32_t) (uint16_t) (e * (uint16_t) GG_CYCLES_PER_LINE) - frame_given;
-    if (want < 0)
-        want = 0;
-    frame_given += want;
+    int32_t want = (int32_t) target - frame_given;
+    if (want <= 0)
+        return 0;
+    frame_given = target;
     return want;
 }
 
