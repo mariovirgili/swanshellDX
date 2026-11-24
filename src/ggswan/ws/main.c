@@ -3424,6 +3424,10 @@ static void menu_change(uint8_t item) {
 #endif
     case MI_PROFILER: stats_toggle(); break;
     }
+    // (stats_toggle -> screen2_mode sets the scroll of screen 2: the
+    // game's with the front tiles on, which moved the menu's text)
+    outportb(0x12, 0);
+    outportb(0x13, 0);
 }
 
 static const char __far *menu_label(uint8_t item) {
@@ -3476,11 +3480,12 @@ static void menu_draw(uint8_t page, uint8_t sel) {
             menu_text(row, 22, menu_on(it[i]) ? "ON" : "OFF");
     }
 #ifdef GGSWAN_SMS
-    // (smsswan: screen 2 carries the game's tiles in front of the sprites
-    // in the games that have them, and then the profiler has no room)
-    if (page == MP_VIDEO && drc_st.prio_on) {
-        menu_text(11, 2, "PROFILER NOT SHOWN IN");
-        menu_text(12, 2, "GAMES WITH FRONT TILES");
+    // (smsswan: the profiler is written on screen 2, which otherwise
+    // carries the game's tiles in front of the sprites: with it on,
+    // those are not drawn)
+    if (page == MP_VIDEO) {
+        menu_text(11, 2, "PROFILER ON: SPRITES IN");
+        menu_text(12, 2, "FRONT OF ALL THE TILES");
     }
 #endif
     menu_text(16, 2, page == MP_MAIN ? "A: OPEN  B: CLOSE" : "A: CHANGE  B: BACK");
@@ -3570,8 +3575,15 @@ static void menu_run(void) {
     while (ws_keypad_scan())
         menu_wait_frame();
     menu_screen2_back();
+#if defined(GGSWAN_SG1000)
     outportb(0x12, s2x);
     outportb(0x13, s2y);
+#else
+    // (screen2_mode set it: the game's scroll with the front tiles on, 0
+    // without. The one saved at the opening was wrong after the profiler
+    // switched in the menu: the profiler's text shifted, Gio's test)
+    (void) s2x; (void) s2y;
+#endif
     outportb(0x01, back);
     outportb(WS_DISPLAY_CTRL_PORT, ctrl);
     ws_int_ack(WS_INT_ACK_LINE_MATCH);   // (one latched while it was off)
