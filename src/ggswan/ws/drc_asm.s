@@ -135,10 +135,11 @@ sg_line_entry:
     in al, 0x02                         // (the line being drawn)
     cmp al, 143
     jae 9f
-    inc al
-    xor ah, ah
-    mov cl, 3
-    div cl                              // al = k
+    // k = (l + 1) / 3 == ((l + 2) * 85) >> 8, exact for l in 0..142
+    add al, 2
+    mov cl, 85
+    mul cl
+    mov al, ah                          // al = k
     out 0x11, al
     mov ah, al
     add al, al

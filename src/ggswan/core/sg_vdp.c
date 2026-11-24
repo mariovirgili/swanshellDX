@@ -268,11 +268,19 @@ static uint8_t sg_sprite_status_now(void) {
             }
             // the columns of a that are in the picture (0-255)
             int16_t ax = sx[ia];
-            uint32_t clip = 0xFFFFFFFFul;
-            if (ax < 0)
-                clip >>= -ax;
-            if (ax + 32 > 256)
-                clip &= ax >= 256 ? 0 : 0xFFFFFFFFul << (ax + 32 - 256);
+            uint16_t clip16 = 0xFFFFu;
+            uint32_t clip32 = 0xFFFFFFFFul;
+            if (mag == 1) {
+                if (ax < 0)
+                    clip16 >>= -ax;
+                if (ax + 16 > 256)
+                    clip16 &= ax >= 256 ? 0 : (uint16_t) (0xFFFFu << (ax + 16 - 256));
+            } else {
+                if (ax < 0)
+                    clip32 >>= -ax;
+                if (ax + 32 > 256)
+                    clip32 &= ax >= 256 ? 0 : 0xFFFFFFFFul << (ax + 32 - 256);
+            }
             int16_t y0 = yi > sy[j] ? yi : sy[j];
             int16_t y1 = (yi < sy[j] ? yi : sy[j]) + side;
             if (y0 < 0) y0 = 0;
@@ -320,9 +328,14 @@ static uint8_t sg_sprite_status_now(void) {
                             continue;
                     }
                 }
-                uint8_t ra = (uint8_t) (y - sy[ia]) / mag, rb = (uint8_t) (y - sy[ib]) / mag;
-                if (row_bits(rows[ia][ra], mag) & (row_bits(rows[ib][rb], mag) >> dx) & clip)
-                    return status | 0x20;
+                if (mag == 1) {
+                    if (rows[ia][y - sy[ia]] & (rows[ib][y - sy[ib]] >> dx) & clip16)
+                        return status | 0x20;
+                } else {
+                    uint8_t ra = (uint8_t) (y - sy[ia]) >> 1, rb = (uint8_t) (y - sy[ib]) >> 1;
+                    if (row_bits(rows[ia][ra], 2) & (row_bits(rows[ib][rb], 2) >> dx) & clip32)
+                        return status | 0x20;
+                }
             }
         }
     }
