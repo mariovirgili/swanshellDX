@@ -2264,6 +2264,25 @@ static uint8_t pcm_out_host[2 * PCM_OUT_MAX];
 #define psg_tone psg_st.tone
 static uint8_t psg_stereo = 0xFF;
 
+/*
+ * The menu's AUDIO (patch 225): snd_vol 0-8 (8: as the table, the
+ * default), snd_mute. vol_table is psg_volume_table times snd_vol / 8,
+ * 0 with the sound off; the voice (samples) has two steps, half and
+ * full.
+ */
+static uint8_t snd_vol = 8, snd_mute;
+static uint8_t vol_table[16] = {
+    15, 12, 10, 8, 6, 4, 3, 2, 2, 2, 1, 1, 1, 1, 0, 0
+};
+static uint8_t voice_vol = WS_SOUND_VOICE_VOL_LEFT_FULL | WS_SOUND_VOICE_VOL_RIGHT_FULL;
+static void psg_volume(uint8_t ch);
+static __attribute__((unused)) void snd_volume_set(void) {
+    uint8_t v = snd_mute ? 0 : snd_vol;
+    for (uint8_t i = 0; i < 16; i++)
+        vol_table[i] = (uint8_t) ((psg_volume_table[i] * v + 4) >> 3);
+    voice_vol = !v ? 0 : v <= 5 ? 0x08 | 0x02 : WS_SOUND_VOICE_VOL_LEFT_FULL | WS_SOUND_VOICE_VOL_RIGHT_FULL;
+}
+
 static void psg_volume(uint8_t ch) {
     if (voice_on && ch < 3) {
         // (channel 2's volume port is the voice's sample now)
@@ -2271,7 +2290,7 @@ static void psg_volume(uint8_t ch) {
             outportb(0x88 + ch, 0);
         return;
     }
-    outportb(0x88 + ch, psg_volume_table[psg_vol[ch]] * ((psg_stereo >> ch) & 0x11));
+    outportb(0x88 + ch, vol_table[psg_vol[ch]] * ((psg_stereo >> ch) & 0x11));
 }
 
 static uint8_t noise_slow;   // channel 4's wave: one pulse in 32 samples
@@ -2405,7 +2424,7 @@ static void pcm_frame(void) {
     }
     if (!voice_on) {
         voice_on = 1;
-        outportb(WS_SOUND_VOICE_VOL_PORT, WS_SOUND_VOICE_VOL_LEFT_FULL | WS_SOUND_VOICE_VOL_RIGHT_FULL);
+        outportb(WS_SOUND_VOICE_VOL_PORT, voice_vol);
         psg_dirty |= 0x87;   // tone channels quiet, the voice on
         psg_output();
     }
@@ -3406,9 +3425,10 @@ static void frame_step(void) {
  */
 static uint16_t font_entry(char c);
 #define MENU_W 28
-enum { MP_MAIN, MP_VIDEO, MP_STATES, MP_ABOUT };
-enum { MI_NONE, MI_PAGE_VIDEO, MI_PAGE_STATES, MI_PAGE_ABOUT,
-       MI_FRAMESKIP, MI_STRETCH, MI_PROFILER, MI_SPRITES, MI_SAVE, MI_LOAD };
+enum { MP_MAIN, MP_VIDEO, MP_AUDIO, MP_STATES, MP_ABOUT };
+enum { MI_NONE, MI_PAGE_VIDEO, MI_PAGE_AUDIO, MI_PAGE_STATES, MI_PAGE_ABOUT,
+       MI_FRAMESKIP, MI_STRETCH, MI_PROFILER, MI_SPRITES, MI_SAVE, MI_LOAD,
+       MI_VOLUME, MI_SOUND };
 
 static uint16_t menu_blank;
 static void menu_text(uint8_t row, uint8_t col, const char __far *t) {
@@ -3426,6 +3446,7 @@ static uint8_t menu_items(uint8_t page, uint8_t *it) {
     switch (page) {
     case MP_MAIN:
         it[n++] = MI_PAGE_VIDEO;
+        it[n++] = MI_PAGE_AUDIO;
 #ifdef ST_STATES
         it[n++] = MI_PAGE_STATES;
 #endif
@@ -3440,6 +3461,10 @@ static uint8_t menu_items(uint8_t page, uint8_t *it) {
 #ifdef GGSWAN_SG1000
         it[n++] = MI_SPRITES;
 #endif
+        break;
+    case MP_AUDIO:
+        it[n++] = MI_VOLUME;
+        it[n++] = MI_SOUND;
         break;
 #ifdef ST_STATES
     case MP_STATES:
@@ -3473,6 +3498,16 @@ static void menu_change(uint8_t item, uint8_t back) {
         fs_mode = back ? (fs_mode ? fs_mode - 1 : 5) : (fs_mode < 5 ? fs_mode + 1 : 0);
         fs_run = 0;
         break;
+    case MI_VOLUME:
+        // (X2 (X right) and A louder, X4 (X left) softer: no wrapping)
+        if (back) { if (snd_vol) snd_vol--; }
+        else if (snd_vol < 8) snd_vol++;
+        snd_volume_set();
+        break;
+    case MI_SOUND:
+        snd_mute ^= 1;
+        snd_volume_set();
+        break;
 #if defined(GGSWAN_SG1000)
     case MI_STRETCH: sg_squeeze ^= 1; break;
     case MI_SPRITES: sg_limit ^= 1; sg_spr_dirty = 2; break;
@@ -3490,6 +3525,9 @@ static void menu_change(uint8_t item, uint8_t back) {
 static const char __far *menu_label(uint8_t item) {
     switch (item) {
     case MI_PAGE_VIDEO: return "VIDEO";
+    case MI_PAGE_AUDIO: return "AUDIO";
+    case MI_VOLUME: return "VOLUME";
+    case MI_SOUND: return "SOUND";
     case MI_PAGE_STATES: return "STATES";
     case MI_PAGE_ABOUT: return "ABOUT";
     case MI_FRAMESKIP: return "FRAMESKIP";
@@ -3505,7 +3543,7 @@ static const char __far *menu_label(uint8_t item) {
 static void menu_draw(uint8_t page, uint8_t sel) {
     uint8_t it[8];
     menu_clear();
-    menu_text(1, 2, page == MP_VIDEO ? "VIDEO" : page == MP_STATES ? "STATES" : page == MP_ABOUT ? "ABOUT" : "MENU");
+    menu_text(1, 2, page == MP_VIDEO ? "VIDEO" : page == MP_AUDIO ? "AUDIO" : page == MP_STATES ? "STATES" : page == MP_ABOUT ? "ABOUT" : "MENU");
     if (page == MP_ABOUT) {
 #ifdef GGSWAN_SF7000
         menu_text(4, 2, "SFSWAN - SC-3000 + SF-7000");
@@ -3540,6 +3578,11 @@ static void menu_draw(uint8_t page, uint8_t sel) {
             for (uint8_t k = fs_mode; k; k--)
                 while (*v++) {}
             menu_text(row, 22, v);
+        } else if (it[i] == MI_VOLUME) {
+            char t[4] = { (char) ('0' + snd_vol), '/', '8', 0 };
+            menu_text(row, 22, t);
+        } else if (it[i] == MI_SOUND) {
+            menu_text(row, 22, snd_mute ? "OFF" : "ON");
         } else if (it[i] >= MI_STRETCH && it[i] <= MI_SPRITES)
             menu_text(row, 22, menu_on(it[i]) ? "ON" : "OFF");
     }
@@ -3614,11 +3657,11 @@ static void menu_run(void) {
             if (page == MP_ABOUT || !n)
                 continue;
             uint8_t item = it[sel];
-            if (item == MI_PAGE_VIDEO || item == MI_PAGE_STATES || item == MI_PAGE_ABOUT) {
+            if (item == MI_PAGE_VIDEO || item == MI_PAGE_AUDIO || item == MI_PAGE_STATES || item == MI_PAGE_ABOUT) {
                 if (!(p & WS_KEY_A))
                     continue;
                 main_sel = sel;
-                page = item == MI_PAGE_VIDEO ? MP_VIDEO : item == MI_PAGE_STATES ? MP_STATES : MP_ABOUT;
+                page = item == MI_PAGE_VIDEO ? MP_VIDEO : item == MI_PAGE_AUDIO ? MP_AUDIO : item == MI_PAGE_STATES ? MP_STATES : MP_ABOUT;
                 sel = 0;
 #ifdef ST_STATES
             } else if (item == MI_SAVE || item == MI_LOAD) {
@@ -3654,6 +3697,10 @@ static void menu_run(void) {
     outportb(WS_INT_ENABLE_PORT, ints);
     step_keys = 0xFFFF;
     psg_noise_freq();   // (the channels on again)
+    for (uint8_t ch = 0; ch < 4; ch++)
+        psg_volume(ch);   // (at the menu's volume)
+    if (voice_on)
+        outportb(WS_SOUND_VOICE_VOL_PORT, voice_vol);
     ia16_disable_irq();
     frame_credit = FRAME_COST;   // (no catching up)
     ia16_enable_irq();
