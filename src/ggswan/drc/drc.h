@@ -92,7 +92,8 @@ typedef struct {
     // main.c: the horizontal scroll splits recorded in this frame (here so
     // that the VDP control routine can record them)
     uint8_t rec_n;
-    uint8_t rec_pad[48];  // (the lists were here, 24 entries each: now at
+    uint8_t map_val[2];   // smsswan Codemasters: last bank written to slot 1 / 2
+    uint8_t rec_pad[46];  // (the lists were here, 24 entries each: now at
                           // the end; the offsets after them, which the PC
                           // tools know, stay where they were)
     uint16_t nt_flags[8]; // name table routine: WS bits for the Game Gear
@@ -183,6 +184,7 @@ typedef struct {
     uint8_t no_inline;     // diagnostics: do not inline CALLed routines
     uint8_t no_fast;       // diagnostics: no rep movsb runs, all flags built
                            // by rotates and shifts (patches 31-32 off)
+    uint8_t codemasters;   // smsswan: Codemasters mapper (banks at 0/4000/8000h)
     uint16_t ldi_off;      // routine for runs of LDI (drc_emit_ldi_stub),
                            // LDD's at ldi_off + DRC_LDD_DELTA (0: interpreted)
     // a block already translated starts at pc (in pc's slot, its current

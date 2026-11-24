@@ -584,6 +584,11 @@ static void write_byte(uint8_t addr_reg, uint8_t src, uint8_t imm, uint8_t live)
  * change slot 2, FFFE slot 1, FFFD slot 0.
  */
 static int map_write_safe(uint16_t addr) {
+    if (env->codemasters) {
+        if (addr >= 0xC000 || (addr & 0x3FFF)) return 1;
+        uint8_t slot = addr >> 14;
+        return slot != 0 && slot != (block_pc >> 14);
+    }
     if (addr < 0xFFFC) return 1;
     uint8_t slot = addr == 0xFFFD ? 0 : addr == 0xFFFE ? 1 : 2;
     return slot != 0 && slot != (block_pc >> 14);
@@ -607,15 +612,16 @@ static void write_const(uint16_t addr, uint8_t src, uint8_t live) {
         land8(done);
         return;
     }
-    if (addr >= 0xC000 && addr < 0xE000) {
+    if (addr >= 0xC000 && (addr < 0xE000 || env->codemasters)) {
+        uint16_t a = (addr & 0x1FFF) + 0xC000 + env->ram_delta;
         if (src == X_AX) { B(0xA2); }
         else { B(0x88); B(0x06 | (src << 3)); }
-        W(addr + env->ram_delta);
+        W(a);
         return;
     }
     clobber(live);
     uint8_t *same = 0;
-    if (addr >= 0xFFFD && env->psg_queue) {
+    if (!env->codemasters && addr >= 0xFFFD && env->psg_queue) {
         // a bank register written with the bank it maps already (a
         // quarter of the mapper writes in Super Monaco GP II, Aladdin,
         // Shinobi): the RAM mirror only, no helper. drc_st.keys[1..3]: the
@@ -632,10 +638,16 @@ static void write_const(uint16_t addr, uint8_t src, uint8_t live) {
         B(0x88); B(0x06 | (src << 3)); W((addr & 0x1FFF) + 0xC000 + env->ram_delta);   // mirror
         same = jcc8(0xEB);                           // jmp done
         land8(other); land8(diff);
+    } else if (env->codemasters && (addr == 0x4000 || addr == 0x8000) && env->psg_queue) {
+        uint8_t k = 1 + (addr >> 14);                // keys[2] (slot 1) or keys[3] (slot 2)
+        B(0x3A); B(0x06 | (src << 3)); W(SA(keys) + k);   // cmp r8, [keys + k]
+        same = jcc8(0x74);                           // je done (same bank already mapped)
     }
     B(0x88); B(0x06 | (src << 3)); W(SA(val));
     uint8_t *mapped = 0;
-    uint16_t map_off = addr == 0xFFFE ? env->map1_off : addr == 0xFFFF ? env->map2_off : 0;
+    uint16_t map_off = env->codemasters
+        ? (addr == 0x4000 ? env->map1_off : addr == 0x8000 ? env->map2_off : 0)
+        : (addr == 0xFFFE ? env->map1_off : addr == 0xFFFF ? env->map2_off : 0);
     if (map_off && map_write_safe(addr)) {
         // another slot's bank (not slot 0, not the block's own): the
         // routine maps it (drc_rt.c), the C side later; carry: the helper
@@ -643,7 +655,10 @@ static void write_const(uint16_t addr, uint8_t src, uint8_t live) {
         mapped = jcc8(0x73);                         // jnc done
     }
     B(0xC7); B(0x06); W(SA(arg)); W(addr);
-    helper(addr >= 0xFFFC && map_write_safe(addr) ? DRC_H_WRITE_MAP : DRC_H_WRITE);
+    uint8_t is_map = env->codemasters
+        ? (addr < 0xC000 && !(addr & 0x3FFF))
+        : (addr >= 0xFFFC);
+    helper(is_map && map_write_safe(addr) ? DRC_H_WRITE_MAP : DRC_H_WRITE);
     land8(mapped);
     land8(same);
 }
@@ -2581,10 +2596,10 @@ static void decode(uint16_t pc, ins_t *I) {
             if (y >= 4) { I->nn = rd(pc + 1) | (rd(pc + 2) << 8); I->len = 3;
                           if (y == 4 || y == 6) {
                               // LD (nn),HL / LD (nn),A: a mapper write ends the block
-                              if (I->nn >= 0xFFFC - (y == 4)) I->term = T_END_AFTER;
+                              if (!env->codemasters && I->nn >= 0xFFFC - (y == 4)) I->term = T_END_AFTER;
 #ifdef GGSWAN_SMS
                               // (the Codemasters mapper's: 0000h, 4000h, 8000h)
-                              if (!(I->nn & 0x3FFF) && I->nn < 0xC000) I->term = T_END_AFTER;
+                              if (env->codemasters && !(I->nn & 0x3FFF) && I->nn < 0xC000) I->term = T_END_AFTER;
 #endif
                           } }
             return;

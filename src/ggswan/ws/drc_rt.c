@@ -716,7 +716,7 @@ static uint16_t put_cram(uint8_t *stub, uint16_t at) {
  * carry set, the helper. A helper each was ~10 a frame in Sonic, ~6 in
  * Super Monaco GP II (FFFF). Returns the end.
  */
-static uint16_t put_map(uint8_t *stub, uint16_t at, uint16_t *map2) {
+static uint16_t put_map(uint8_t *stub, uint16_t at, uint16_t *map2, uint8_t cm) {
     uint8_t *p = stub + at;
     uint16_t a;
 #define PB(x) (*p++ = (x))
@@ -731,7 +731,11 @@ static uint16_t put_map(uint8_t *stub, uint16_t at, uint16_t *map2) {
         }
         PB(0x50);                                            // push ax
         PB(0xA0); PW(S_(val));                               // mov al, [val]
-        PB(0xA2); PW((uint16_t) (0x1FFD + slot + 0xC000 + env.ram_delta));   // mirror
+        if (cm) {
+            PB(0xA2); PW(S_(map_val) + slot - 1);            // mov [map_val + slot - 1], al
+        } else {
+            PB(0xA2); PW((uint16_t) (0x1FFD + slot + 0xC000 + env.ram_delta));   // mirror
+        }
         PB(0x80); PB(0x0E); PW(S_(map_pend)); PB(slot == 1 ? 4 : 8);   // or byte [map_pend], bit
         PB(0x22); PB(0x06); PW(S_(rom_mask));                // and al, [rom_mask]
         PB(0xA2); PW(S_(keys) + 1 + slot);                   // mov [keys + 1 + slot], al
@@ -771,7 +775,8 @@ void drc_rt_rom_banks(uint16_t b) {
     // (not with a Codemasters cartridge, whose banks are written at 0000h,
     // 4000h and 8000h: FFFEh and FFFFh are plain RAM there, and these
     // routines would map a bank for a byte stored in them)
-    if (!drc_no_fast && b && b <= 256 && !(b & (b - 1)) && !gg.codemasters
+    env.codemasters = gg.codemasters;
+    if (!drc_no_fast && b && b <= 256 && !(b & (b - 1))
 #ifdef GGSWAN_SG1000
         && 0   // (no mapper: FFFCh-FFFFh are RAM)
 #endif
@@ -779,6 +784,16 @@ void drc_rt_rom_banks(uint16_t b) {
         && !getenv("GGSWAN_NOMAP")
 #endif
         ) {
+#ifdef GGSWAN_SMS
+        if (gg.codemasters) {
+            // rewrite STUB_MAP across the code banks so it saves into
+            // drc_st.map_val instead of Sega's work RAM mirror (FFFE/FFFF)
+            uint8_t *stub = (uint8_t*) IRAM(BUF_ADDR);
+            uint16_t map_end = put_map(stub, STUB_MAP, &map2_at, 1);
+            for (uint8_t i = 0; i < DRC_CODE_BANKS; i++)
+                psram_write(i, STUB_MAP, stub + STUB_MAP, map_end - STUB_MAP);
+        }
+#endif
         env.map1_off = STUB_MAP;
         env.map2_off = map2_at;
     }
@@ -792,6 +807,13 @@ static void drc_map_sync(void) {
     if (!p)
         return;
     drc_st.map_pend = 0;
+#ifdef GGSWAN_SMS
+    if (gg.codemasters) {
+        if (p & 4) z80_write(0x4000, drc_st.map_val[0]);
+        if (p & 8) z80_write(0x8000, drc_st.map_val[1]);
+        return;
+    }
+#endif
     if (p & 4)
         z80_write(0xFFFE, gg_ram[0x1FFE]);
     if (p & 8)
@@ -1048,7 +1070,7 @@ void drc_rt_init(uint16_t bank) {
 #endif
         uint16_t cram_end = put_cram(stub, STUB_CRAM);
         {
-            uint16_t map_end = put_map(stub, STUB_MAP, &map2_at);
+            uint16_t map_end = put_map(stub, STUB_MAP, &map2_at, 0);
 #ifdef GGSWAN_HOST
             if (map_end > STUB_VCNT) { printf("MAP stub: no room (%X)\n", map_end); exit(1); }
             if (getenv("GGSWAN_STUBS")) printf("MAP stubs end %X\n", map_end);
