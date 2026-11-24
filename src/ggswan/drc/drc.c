@@ -3416,18 +3416,21 @@ static int emit1(int i) {
     uint8_t live = (live_out[i] & ~I->fwrite) | I->fread;
     uint8_t op = I->op;
     uint16_t next = I->pc + I->len;
+#ifdef GGSWAN_SF7000
     flat_next = next;
+#endif
 
-    if (I->trace == 1) {   // the block goes on at the target
-        cyc += op == 0x18 ? 12 : 10;
-        return 1;
-    }
-    if (I->trace == 2) {   // CALL nn, routine inline: push the return address
-        push_imm(next);
-        cyc += 17;
-        return 1;
-    }
-    if (I->trace == 3) {   // its RET: go on inline if it returns to the CALL
+    if (I->trace) {
+        if (I->trace == 1) {   // the block goes on at the target
+            cyc += op == 0x18 ? 12 : 10;
+            return 1;
+        }
+        if (I->trace == 2) {   // CALL nn, routine inline: push the return address
+            push_imm(next);
+            cyc += 17;
+            return 1;
+        }
+        // I->trace == 3: its RET: go on inline if it returns to the CALL
         materialize();
         FLAT_ES(); B(0x8B); B(0xB6); W(env->ram_delta);       // mov si, [bp+d]
         B(0x8D); B(0x6E); B(0x02);                 // lea bp, [bp+2]
@@ -3459,6 +3462,9 @@ static int emit1(int i) {
         if (I->term == T_END_AFTER) { force_nolink = 1; exit_const(next, 0); }
         return 1;
     }
+
+    if (!I->pre)
+        goto unprefixed;
 
     if (I->pre == 0xCB) {
         uint8_t r = op & 7, b = (op >> 3) & 7;
@@ -4296,6 +4302,7 @@ static int emit1(int i) {
         return 0;
     }
 
+unprefixed:;
     uint8_t x = op >> 6, y = (op >> 3) & 7, z = op & 7;
     switch (x) {
     case 1: {   // LD r,r'
@@ -5098,10 +5105,18 @@ int drc_translate(const drc_env_t *e, uint16_t pc, uint8_t *out,
     int n = 0;
     uint16_t p = pc;
     // every instruction fits in 96 bytes of x86 code: stop early enough
-    int max_n = (out_max - 128) / 96;
-    if (max_n > MAX_INSTR) max_n = MAX_INSTR;
+    int max_n;
+    if (out_max >= 128 + MAX_INSTR * 96) {
+        max_n = MAX_INSTR;
+    } else if (out_max <= 128) {
+        max_n = 0;
+    } else {
+        uint16_t q = (uint16_t) (out_max - 128) >> 5;
+        max_n = (int) ((uint16_t) (q * 171u) >> 9);
+    }
     uint8_t inlined = 0;
     int c_known = -1;   // C as set by LD C,n earlier in the block (-1: not known)
+    ins_t *K = ins;
     while (n < max_n) {
         // stay inside the block's 16 KiB slot (or slot 0, through a jump)
         if (n && ((p ^ pc) & 0xC000) && !(p < 0x4000 && !ram)) break;
@@ -5111,118 +5126,134 @@ int drc_translate(const drc_env_t *e, uint16_t pc, uint8_t *out,
         // x4 routine (0720-0950h) entered at 221 different points, each a
         // new block of 48 instructions: 60% of all it translated
         if (n >= 8 && !ram && env->known_start && env->known_start(p)) break;
-        decode(p, &ins[n]);
-        ins[n].dyn = 0;
-        ins[n].trace = 0;
+        decode(p, K);
+        K->dyn = 0;
+        K->trace = 0;
 #ifdef GGSWAN_SF7000
-        if (env->smc && env->smc(p, ins[n].len)) {
+        if (env->smc && env->smc(p, K->len)) {
             // sfswan: a byte of it gets written by the program: the
             // interpreter's, in the block if it is a plain one (each LDI
             // or OUTI of a run one step), else between blocks
-            if (ins[n].term != T_NONE)
+            if (K->term != T_NONE)
                 break;
-            ins[n].step = 1;
-            ins[n].dyn = 2;
+            K->step = 1;
+            K->dyn = 2;
         }
 #endif
-        if (ram && n == 0 && ins[0].pre == 0xED && ins[0].op == 0xA3 && ins[0].count > RAM_BLOCK_MAX / 2
-            && !env->no_fast) {
-            // a block in RAM made only of a run of OUTIs (Aladdin's
-            // unrolled VRAM upload at C6FF-C7F8, entered at any of them):
-            // the whole run, its bytes checked by one REPE SCASW
-            // (ram_check) instead of one compare per OUTI; the block ends
-            // after it. The same as the blocks of 12 OUTIs it replaces
-            // (translate): whole pieces of 12 unless the run ends here (64:
-            // more may follow), none starting from DFC0 (interpreted)
-            uint8_t k = ins[0].count;
-            if (k == 64) k = 60;
-            uint16_t pieces = (uint16_t) ((0xDFC0 - pc + 23) / 24);
-            if (pieces < 6 && k > 12 * pieces) k = (uint8_t) (12 * pieces);
-            ins[0].count = k;
-            ins[0].len = k * 2;
-            long_run = k > RAM_BLOCK_MAX / 2;
-            n = 1;
-            p += ins[0].len;
-            break;
-        }
-        if (ram && p + ins[n].len - pc > RAM_BLOCK_MAX) {
-            // a run of LDI/OUTI... (up to 128 bytes) longer than a block
-            // in RAM may be (ram_check checks at most RAM_BLOCK_MAX
-            // bytes): only the part that fits, the rest in the next block
-            uint8_t room = (uint8_t) (RAM_BLOCK_MAX - (p - pc));
-            if (ins[n].count > 1 && room >= 2) {
-                ins[n].count = room / 2;
-                ins[n].len = ins[n].count * 2;
-            } else {
+        if (ram) {
+            if (n == 0 && K->pre == 0xED && K->op == 0xA3 && K->count > RAM_BLOCK_MAX / 2
+                && !env->no_fast) {
+                // a block in RAM made only of a run of OUTIs (Aladdin's
+                // unrolled VRAM upload at C6FF-C7F8, entered at any of them):
+                // the whole run, its bytes checked by one REPE SCASW
+                // (ram_check) instead of one compare per OUTI; the block ends
+                // after it. The same as the blocks of 12 OUTIs it replaces
+                // (translate): whole pieces of 12 unless the run ends here (64:
+                // more may follow), none starting from DFC0 (interpreted)
+                uint8_t k = K->count;
+                if (k == 64) k = 60;
+                uint16_t pieces = (uint16_t) ((0xDFC0 - pc + 23) / 24);
+                if (pieces < 6 && k > 12 * pieces) k = (uint8_t) (12 * pieces);
+                K->count = k;
+                K->len = k * 2;
+                long_run = k > RAM_BLOCK_MAX / 2;
+                n = 1;
+                p += K->len;
                 break;
             }
+            if (p + K->len - pc > RAM_BLOCK_MAX) {
+                // a run of LDI/OUTI... (up to 128 bytes) longer than a block
+                // in RAM may be (ram_check checks at most RAM_BLOCK_MAX
+                // bytes): only the part that fits, the rest in the next block
+                uint8_t room = (uint8_t) (RAM_BLOCK_MAX - (p - pc));
+                if (K->count > 1 && room >= 2) {
+                    K->count = room / 2;
+                    K->len = K->count * 2;
+                } else {
+                    break;
+                }
+            }
         }
-        {
-            // IN r,(C) with C known (LD C,n, then only instructions that
-            // leave C alone): the VDP data port natively, as IN A,(n)
-            // (Aladdin reads VRAM with LD C,BEh / IN C,(C): a step each,
-            // ~3 a frame). d = 1 marks it (emit).
-            ins_t *K = &ins[n];
-            if (K->pre == 0xED && (K->op & 0xC7) == 0x40 && K->op != 0x70 && c_known >= 0
+        // IN r,(C) with C known (LD C,n, then only instructions that
+        // leave C alone): the VDP data port natively, as IN A,(n)
+        // (Aladdin reads VRAM with LD C,BEh / IN C,(C): a step each,
+        // ~3 a frame). d = 1 marks it (emit).
+        if (c_known >= 0) {
+            if (K->pre == 0xED && (K->op & 0xC7) == 0x40 && K->op != 0x70
                 && (c_known & 0xC1) == 0x80 && env->vdp_addr && env->ctl_off && !env->no_fast) {
                 K->step = 0; K->count = 0; K->nn = (uint16_t) c_known; K->d = 1;
                 K->fwrite = FALL & ~FC; K->fread = FC;
             }
-            if (K->pre == 0 && K->op == 0x0E) c_known = K->nn;
-            else if (K->pre == 0 && K->op == 0x01) c_known = K->nn & 0xFF;
-            else if (!(K->pre == 0 && (K->op == 0x00 || K->op == 0xF3 || K->op == 0xD5 || K->op == 0xE5
-                                         || K->op == 0xF5 || K->op == 0xC5 || K->op == 0xD1 || K->op == 0xE1
-                                         || K->op == 0xF1)))
+            if (K->pre != 0)
                 c_known = -1;
+            else if (K->op == 0x0E) c_known = K->nn;
+            else if (K->op == 0x01) c_known = K->nn & 0xFF;
+            else if (K->op != 0x00 && K->op != 0xF3 && K->op != 0xD5 && K->op != 0xE5
+                     && K->op != 0xF5 && K->op != 0xC5 && K->op != 0xD1 && K->op != 0xE1
+                     && K->op != 0xF1)
+                c_known = -1;
+        } else if (K->pre == 0 && (K->op == 0x0E || K->op == 0x01)) {
+            c_known = K->nn & 0xFF;
         }
-        if (ins[n].term == T_STOP) break;
-        p += ins[n].len;
+        if (K->term == T_STOP) break;
+        p += K->len;
         n++;
-        const ins_t *J = &ins[n - 1];
-        if (!ram && !env->no_trace && J->pre == 0 && (J->op == 0xC3 || J->op == 0x18) && n < max_n - 1) {
-            // JP nn / JR e: go on at the target, unless it leaves slot 0 and
-            // the block's slot, or is already in the block (a loop)
-            uint16_t t = J->op == 0xC3 ? J->nn : (uint16_t) (J->pc + 2 + (int8_t) J->nn);
-            int seen = t >= 0xC000 || ((t ^ pc) & 0xC000 && t >= 0x4000);
-            for (int k = 0; k < n && !seen; k++)
-                if (ins[k].pc == t) seen = 1;
-            if (!seen) {
-                ins[n - 1].term = T_NONE;
-                ins[n - 1].trace = 1;
-                p = t;
-                continue;
+        if (K->term == T_NONE) {
+            K++;
+            continue;
+        }
+        if (K->term == T_END_AFTER) break;
+        // K->term == T_END
+        if (!ram && K->pre == 0) {
+            if (!env->no_trace && (K->op == 0xC3 || K->op == 0x18) && n < max_n - 1) {
+                // JP nn / JR e: go on at the target, unless it leaves slot 0 and
+                // the block's slot, or is already in the block (a loop)
+                uint16_t t = K->op == 0xC3 ? K->nn : (uint16_t) (K->pc + 2 + (int8_t) K->nn);
+                int seen = t >= 0xC000 || ((t ^ pc) & 0xC000 && t >= 0x4000);
+                if (!seen) {
+                    for (const ins_t *S = ins; S <= K; S++)
+                        if (S->pc == t) { seen = 1; break; }
+                }
+                if (!seen) {
+                    K->term = T_NONE;
+                    K->trace = 1;
+                    p = t;
+                    K++;
+                    continue;
+                }
+            }
+            if (!env->no_inline && K->op == 0xCD && !inlined && n + CALL_INLINE_MAX + 2 < max_n
+                && !(((K->nn ^ pc) & 0xC000) && K->nn >= 0x4000) && K->nn < 0xC000) {
+                // CALL nn to a short routine (no jumps out of it, ends with RET):
+                // its instructions follow inline (once per block)
+                uint16_t q = K->nn;
+                ins_t *C = K + 1;
+                int k, ok = 0;
+                for (k = 0; k <= CALL_INLINE_MAX; k++, C++) {
+                    if (((q ^ pc) & 0xC000) && q >= 0x4000) break;
+                    decode(q, C);
+                    C->dyn = 0;
+                    C->trace = 0;
+                    if (C->pre == 0 && C->op == 0xC9) { ok = 1; break; }
+                    if (C->term != T_NONE || C->step) break;
+                    q += C->len;
+                }
+                if (ok) {
+                    inlined = 1;
+                    K->term = T_NONE;
+                    K->trace = 2;
+                    C->term = T_NONE;
+                    C->trace = 3;
+                    C->nn = K->pc + 3;
+                    C->fread = FALL;   // (the flags are needed if it does not return here)
+                    n += k + 1;
+                    p = K->pc + 3;
+                    K = C + 1;
+                    continue;
+                }
             }
         }
-        if (!ram && !env->no_inline && J->pre == 0 && J->op == 0xCD && !inlined && n + CALL_INLINE_MAX + 2 < max_n
-            && !(((J->nn ^ pc) & 0xC000) && J->nn >= 0x4000) && J->nn < 0xC000) {
-            // CALL nn to a short routine (no jumps out of it, ends with RET):
-            // its instructions follow inline (once per block)
-            uint16_t q = J->nn;
-            int k, ok = 0;
-            for (k = 0; k <= CALL_INLINE_MAX; k++) {
-                if (((q ^ pc) & 0xC000) && q >= 0x4000) break;
-                decode(q, &ins[n + k]);
-                ins[n + k].dyn = 0;
-                ins[n + k].trace = 0;
-                if (ins[n + k].pre == 0 && ins[n + k].op == 0xC9) { ok = 1; break; }
-                if (ins[n + k].term != T_NONE || ins[n + k].step) break;
-                q += ins[n + k].len;
-            }
-            if (ok) {
-                inlined = 1;
-                ins[n - 1].term = T_NONE;
-                ins[n - 1].trace = 2;
-                ins_t *R = &ins[n + k];
-                R->term = T_NONE;
-                R->trace = 3;
-                R->nn = J->pc + 3;
-                R->fread = FALL;   // (the flags are needed if it does not return here)
-                n += k + 1;
-                p = J->pc + 3;
-                continue;
-            }
-        }
-        if (J->term == T_END || J->term == T_END_AFTER) break;
+        break;
     }
     if (n == 0) return 0;
     uint16_t end = p;
@@ -5238,6 +5269,7 @@ int drc_translate(const drc_env_t *e, uint16_t pc, uint8_t *out,
     }
 
     // generate
+    idle_block = is_idle(n, pc, ram);
     cold_off = env->no_fast;
 retry_gen:
     o = o_start = out; o_base = out_off; o_limit = out + out_max;
@@ -5245,7 +5277,6 @@ retry_gen:
     fkind = K_AH; cf_valid = 0; hl_es = 0; cyc = 0;
     force_nolink = 0;
     cold_n = 0; cold_fail = 0; cold_emitting = 0;
-    idle_block = is_idle(n, pc, ram);
     if (ram) ram_check(pc, end);
     if (long_run) {
         // the blocks of 12 OUTIs this one replaces would each have ended the
@@ -5280,26 +5311,33 @@ retry_gen:
             helper(DRC_H_VWAIT);
         }
     }
-    for (i = 0; i < n; i++) {
-        uint16_t row = row_at(i, n);
-        if (row) {
-            if (!emit_row(i, row))
+    {
+        const ins_t *I = ins;
+        for (i = 0; i < n; i++, I++) {
+            if (I->pre == 0xED && I->op == 0xA3) {
+                uint16_t row = row_at(i, n);
+                if (row) {
+                    if (!emit_row(i, row))
+                        return 0;
+                    i++;
+                    I++;
+                    continue;
+                }
+                int g = pairs_at(i, n);
+                if (g) {
+                    if (!emit_pairs(i, g))
+                        return 0;
+                    i += 5 * g - 1;
+                    I += 5 * g - 1;
+                    continue;
+                }
+            }
+            // emit() can only refuse an instruction that decode() accepted by
+            // mistake: the liveness analysis assumed it, so give up entirely
+            if (!emit(i))
                 return 0;
-            i++;
-            continue;
+            if (I->term == T_END || I->term == T_END_AFTER) { i++; goto done; }
         }
-        int g = pairs_at(i, n);
-        if (g) {
-            if (!emit_pairs(i, g))
-                return 0;
-            i += 5 * g - 1;
-            continue;
-        }
-        // emit() can only refuse an instruction that decode() accepted by
-        // mistake: the liveness analysis assumed it, so give up entirely
-        if (!emit(i))
-            return 0;
-        if (ins[i].term == T_END || ins[i].term == T_END_AFTER) { i++; goto done; }
     }
     if (i == 0) return 0;
     // fell off the end: continue at the next instruction (or the target
