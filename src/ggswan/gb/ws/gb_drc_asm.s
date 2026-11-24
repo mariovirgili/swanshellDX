@@ -1476,6 +1476,7 @@ s_wrt:
     mov al, [drc_tmp]
     mov [si - 0x6000], al
     pop ax
+.Lwrt_ret_di:
     pop si
     add si, 2
     jmp si
@@ -1511,14 +1512,27 @@ wrt_pat_late:
 wrt_rest:
     cmp si, 0xC000
     jae wrt_high
-    mov [gbf_cyc], di
     cmp si, 0xA000
     jae wrt_cart                // (a program with its variables in the cartridge's RAM)
     cmp si, 0x8000
-    jb 1f
-    mov di, ax                  // (9800h-9FFFh: the maps)
+    jb .Lwrt_low
+    // (9800h-9FFFh: the maps; DI preserved without touching gbf_cyc)
+    push ax
     mov al, [drc_tmp]
-    jmp wrt_map
+    mov [si - 0x6000], al
+    mov ah, 0x08                // palette 4
+    sub si, 0x9800
+    shl si, 1
+    mov [si + 0x4800], ax       // (the map for LCDC bit 4 set)
+    cmp al, 0x80
+    jae .Lwrt_mhi
+    inc ah                      // (bit 4 clear: 0-127 are the patterns from 9000h)
+.Lwrt_mhi:
+    mov [si + 0x1000], ax
+    pop ax
+    pop si
+    add si, 2
+    jmp si
 wrt_high:
     cmp si, 0xFE00
     jae 3f
@@ -1538,30 +1552,26 @@ wrt_high:
     add si, 2
     mov di, [gbf_cyc]
     jmp si
-1:
-    cmp si, 0x8000
-    jb 6f
-    cmp si, 0xA000
-    jae 5f
-    // the video memory; from 9800h, the WonderSwan's map entry too
-    mov di, ax
+.Lwrt_low:
+    // (0000h-1FFFh RAM enable no-op handled with DI still in register: Race Drivin')
+    cmp si, 0x2000
+    jae .Lwrt_mbc_save
+    cmp byte ptr [drc_ramg], 0
+    je .Lwrt_mbc_save
+    push ax
     mov al, [drc_tmp]
-    cmp si, 0x9800
-    jb wrt_pat
-wrt_map:
-    mov [si - 0x6000], al
-    mov ah, 0x08                // palette 4
-    sub si, 0x9800
-    shl si, 1
-    mov [si + 0x4800], ax       // (the map for LCDC bit 4 set)
-    cmp al, 0x80
-    jae 7f
-    inc ah                      // (bit 4 clear: 0-127 are the patterns from 9000h)
-7:
-    mov [si + 0x1000], ax
-4:
-    mov ax, di
-    jmp 9b
+    and al, 15
+    cmp al, 10
+    mov al, 1
+    jne .Lwrt_rg0
+    inc al
+.Lwrt_rg0:
+    cmp al, [drc_ramg]
+    pop ax
+    je .Lwrt_ret_di
+.Lwrt_mbc_save:
+    mov [gbf_cyc], di
+    jmp 6f
 3:
     cmp si, 0xFF80
     jb 8f
@@ -1572,7 +1582,6 @@ wrt_map:
 8:
     cmp si, 0xFF00
     jb 2b                       // the OAM
-    mov [gbf_cyc], di
     // an I/O register written through a pointer: the sound's (FF10h-
     // FF3Fh) are kept as written, with a channel's start remembered
     // (gbf_hw.c: gbf_trig), and SCY, SCX, BGP, OBP0, OBP1, WY, WX
@@ -1580,10 +1589,10 @@ wrt_map:
     // (Batman's sound routine writes nine registers a frame this way,
     // some 200 cycles each through gbd_write.)
     cmp si, 0xFF10
-    jb 6f
+    jb .Lwrt_io_save
     cmp si, 0xFF40
     jae wrt_vsame
-    mov di, ax
+    push ax
     mov al, [drc_tmp]
     mov [si - 0x6000], al
     test al, 0x80
@@ -1603,8 +1612,11 @@ wrt_map:
 wrt_trig:
     or [gbf_trig], al
 wrt_snd_done:
-    mov ax, di
-    jmp 9b
+    pop ax
+    jmp .Lwrt_ret_di
+.Lwrt_io_save:
+    mov [gbf_cyc], di
+    jmp 6f
 // a pattern's byte (8000h-97FFh). gb_video.c is told where (gbv_pw_last:
 // is the program rewriting the patterns of sprites on the screen?), and
 // when it has found so the byte goes to the tile's copy that is shown a
@@ -1743,21 +1755,25 @@ wrt_lyc:
     jmp s_exit
 wrt_vsame:
     cmp si, 0xFF45
-    je wrt_lyc
+    jne .Lwrt_vs0
+    mov [gbf_cyc], di
+    jmp wrt_lyc
+.Lwrt_vs0:
     cmp si, 0xFF42
-    jb 6f
+    jb .Lwrt_io_save
     cmp si, 0xFF4C
-    jae 6f
+    jae .Lwrt_io_save
     cmp si, 0xFF44
     jb 1f
     cmp si, 0xFF47
-    jb 6f
+    jb .Lwrt_io_save
 1:
-    mov di, ax
+    push ax
     mov al, [drc_tmp]
     cmp al, [si - 0x6000]
-    mov ax, di
-    je 9b
+    pop ax
+    je .Lwrt_ret_di
+    mov [gbf_cyc], di
 6:
     // the write that changes the second ROM area's bank, here (2000h up
     // to MBC1's and MBC3's 3FFFh or MBC5's 2FFFh; gb_main.c: gbf_plat_map)
@@ -1861,17 +1877,18 @@ wrt_cart:
     // the cartridge's RAM
     cmp byte ptr [drc_ram_ok], 1
     jb 8f
-    ja 9b                       // (none, or disabled: lost)
+    ja .Lwrt_ret_di             // (none, or disabled: lost)
     mov es, [drc_ram_seg]
-    mov di, ax
+    push ax
     mov al, [drc_tmp]
     mov es:[si], al
-    mov ax, di
+    pop ax
     dec word ptr [drc_cart_n]
-    jnz 9b
+    jnz .Lwrt_ret_di
     mov byte ptr [drc_cart_req], 1
-    jmp 9b
+    jmp .Lwrt_ret_di
 8:
+    mov [gbf_cyc], di
     call s_cwrite
     jmp 9b
 
