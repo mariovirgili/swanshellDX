@@ -8,6 +8,10 @@ It keeps everything swanshell does and adds emulator plugins for five other
 systems, a way back to the menu from any game, game pictures, menu music and
 a number of menu features.
 
+<p>
+<img src="docs/images/menu-list.png" alt="The file list with a wallpaper and an icon set" width="448">
+</p>
+
 SwanShellDX is **not** the official swanshell: for that, see
 [asiekierka/swanshell](https://github.com/asiekierka/swanshell). Please do not
 report SwanShellDX problems to the swanshell project.
@@ -43,6 +47,19 @@ What they offer:
 - START + Y1 (Y up) back to the menu.
 - On the start screen, the times of the card mount, the ROM read and the
   set-up.
+
+<p>
+<img src="docs/images/plugin-gg.png" alt="Game Gear: Sonic the Hedgehog" width="224">
+<img src="docs/images/plugin-sms.png" alt="Master System: Castle of Illusion" width="224">
+<img src="docs/images/plugin-sg.png" alt="SG-1000: Bank Panic" width="224">
+<img src="docs/images/plugin-gb.png" alt="Game Boy: Batman - Return of the Joker" width="224">
+</p>
+
+The on-screen menu (START + Y3 (Y down)):
+
+<p>
+<img src="docs/images/plugin-menu.png" alt="The plugins' on-screen menu" width="336">
+</p>
 
 The SF-7000 plugin needs a disk with Disk BASIC on it, copied as
 `/NILESWAN/SF7000.SF` (not included).
@@ -93,6 +110,66 @@ own.
   plugin of the selected file.
 - **Other options:** hide the `NILESWAN` folder, hide save files, and a
   low-battery warning at start-up.
+
+Game pictures: the thumbnail in the list, and the viewer (Y3 (Y down), or
+*Images* in the START menu):
+
+<p>
+<img src="docs/images/menu-thumbnail.png" alt="Thumbnail of the selected game" width="336">
+<img src="docs/images/menu-viewer.png" alt="The picture viewer" width="336">
+</p>
+
+The START menu and the Help page with the keys of the selected file's plugin:
+
+<p>
+<img src="docs/images/menu-start.png" alt="The START menu" width="336">
+<img src="docs/images/menu-help.png" alt="Help for the Game Boy plugin" width="336">
+</p>
+
+Theme: wallpapers and icon sets from the card, with a preview:
+
+<p>
+<img src="docs/images/menu-theme.png" alt="Theme settings" width="336">
+<img src="docs/images/menu-wallpaper.png" alt="Choosing a wallpaper" width="336">
+<img src="docs/images/menu-icons.png" alt="Choosing an icon set" width="336">
+</p>
+
+## Tools
+
+Three Windows tools make the files that SwanShellDX reads from the card.
+
+### SwanShell_ImageBuilder
+
+[SwanShell_ImageBuilder](https://github.com/mariovirgili/SwanShell_ImageBuilder)
+takes the game names from your ROM folders and the pictures from your image
+folders (or from the internet), converts them to the format the menu reads
+(224x144 pictures and 112x72 thumbnails, 16 colours) and writes them to
+`/NILESWAN/IMAGES`.
+
+<p>
+<img src="docs/images/tool-imagebuilder.jpg" alt="SwanShell_ImageBuilder" width="640">
+</p>
+
+### SwanShell_RebootPatcher
+
+[SwanShell_RebootPatcher](https://github.com/mariovirgili/SwanShell_RebootPatcher)
+makes the START + Y1 patch files (`.Y1P`) for `/NILESWAN/PATCHES`, checking each
+one in an emulated test. A list of ROMs, from files or folders, is patched in
+one go.
+
+<p>
+<img src="docs/images/tool-patcher.png" alt="SwanShell_RebootPatcher" width="640">
+</p>
+
+### SwanShell_IconEditor
+
+[SwanShell_IconEditor](https://github.com/mariovirgili/SwanShell_IconEditor)
+draws and edits icon sets (`.ICN`) for *Theme > Icons*, with a preview as on the
+console in color and mono, 16x16 and 8x8.
+
+<p>
+<img src="docs/images/tool-iconeditor.png" alt="SwanShell_IconEditor" width="640">
+</p>
 
 ## Installation
 
@@ -149,7 +226,9 @@ Then:
 
 ## License
 
-- `docs/`: CC BY-SA 4.0
+- `docs/`: CC BY-SA 4.0. The screenshots in `docs/images` show games and
+  pictures that belong to their owners; they are there only to show
+  SwanShellDX at work.
 - `src/`: GPLv3
 - Fonts and vendored components: their own licences (see `fonts/`, `vendor/`
   and `docs/license`).
