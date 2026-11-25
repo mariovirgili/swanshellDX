@@ -2236,12 +2236,13 @@ uint16_t drc_emit_vcnt_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) 
 }
 
 /*
- * Routine for IN A,(7Eh) / CP n / JR cc back (vwait in drc_rt.c, at
- * env->vwait_off): skips the 30-cycle turns whose V counter keeps the
- * loop going, updating [cycles] directly without calling the C helper.
- * In: SI = n | (cc << 8). Keeps AX, BX, CX, DX, BP, DS, ES; uses SI, DI
- * and x86 flags. Not plain (fl_off, cycles <= 0, frame_given >= 65536):
- * returns immediately without changing [cycles], matching C vwait().
+ * Routine for IN A,(7Eh) / (CP n | AND A | OR A) / (JR|JP) cc back
+ * (at env->vwait_off): skips in O(1) all T-cycle turns whose V counter
+ * keeps the loop going, stopping before the first turn that changes the
+ * condition or exhausts [cycles] (or would wrap 16-bit pos/left).
+ * In: SI = n | (cc << 8) | (T << 10), where cc = 0..3 (NZ/Z/NC/C) and
+ * T = cycles per taken turn (25, 27, 28, or 30).
+ * Keeps AX, BX, CX, DX, BP, DS, ES; uses SI, DI and x86 flags.
  */
 uint16_t drc_emit_vwait_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) {
     env = e;
@@ -2262,112 +2263,148 @@ uint16_t drc_emit_vwait_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off)
     land8(e1); land8(e2);
     B(0xC3);                                         // early_ret: ret
     land8(go);
-    B(0x50); B(0x53); B(0x51); B(0x52);              // push ax, bx, cx, dx
-    B(0x89); B(0xF3);                                // mov bx, si (BL = n, BH = cc)
+
+    B(0x50); B(0x53); B(0x51); B(0x52); B(0x55);     // push ax, bx, cx, dx, bp
+    B(0x89); B(0xF3);                                // mov bx, si (BL = n, BH = cc | (T << 2))
     B(0x8B); B(0x0E); W(SA(cycles));                 // mov cx, [cycles] (cur_cyc > 0)
     B(0x8B); B(0x3E); W(SA(left_base));              // mov di, [left_base]
-    B(0x01); B(0xCF);                                // add di, cx (di = left_base + cur_cyc)
+    B(0x01); B(0xCF);                                // add di, cx (DI = left = left_base + cur_cyc)
     B(0xA1); W(VA(frame_given));                     // mov ax, [frame_given] (fg)
     B(0x85); B(0xFF);                                // test di, di
     uint8_t *pos_ok = jcc8(0x7E);                    // jle pos_ok
     B(0x39); B(0xC7);                                // cmp di, ax
-    uint8_t *bail0 = jcc8(0x77);                     // ja bail_pop (di > 0 && di > fg: k = 0)
+    uint8_t *bail0 = jcc8(0x77);                     // ja bail (di > 0 && di > fg: k = 0)
     land8(pos_ok);
-    B(0x29); B(0xF8);                                // sub ax, di (pos = fg - di)
+    B(0x29); B(0xF8);                                // sub ax, di (AX = pos = fg - di)
+
+    // BP = max_skip = min(cur_cyc - 1, (uint16_t)(di + 8000h), FFFFh - pos)
+    B(0x89); B(0xCD);                                // mov bp, cx
+    B(0x4D);                                         // dec bp (cur_cyc - 1)
+    B(0x81); B(0xC7); W(0x8000);                     // add di, 8000h (di_room)
+    B(0x39); B(0xFD);                                // cmp bp, di
+    B(0x76); B(0x02); B(0x89); B(0xFD);              // jbe +2; mov bp, di
+    B(0x89); B(0xC7); B(0xF7); B(0xD7);              // mov di, ax; not di (FFFFh - pos)
+    B(0x39); B(0xFD);                                // cmp bp, di
+    B(0x76); B(0x02); B(0x89); B(0xFD);              // jbe +2; mov bp, di
+
+    // DI = pos, SI = line = min(pos / 228, 261), DX = vmax, AL = vcnt(line)
+    B(0x89); B(0xC7);                                // mov di, ax (DI = pos)
     B(0x31); B(0xD2);                                // xor dx, dx
     B(0xBE); W(GG_CYCLES_PER_LINE);                  // mov si, 228
-    B(0xF7); B(0xF6);                                // div si (AX = line, DX = rem)
+    B(0xF7); B(0xF6);                                // div si (AX = pos / 228)
     B(0x3D); W(GG_LINES - 1);                        // cmp ax, 261
-    B(0x76); B(0x03);                                // jbe +3
-    B(0xB8); W(GG_LINES - 1);                        // mov ax, 261
+    B(0x76); B(0x03); B(0xB8); W(GG_LINES - 1);      // jbe +3; mov ax, 261
     B(0x89); B(0xC6);                                // mov si, ax (SI = line)
-
-    uint8_t *loop = o;
-    B(0x89); B(0xF0);                                // mov ax, si
 #ifdef GGSWAN_SMS
-    B(0x3B); B(0x06); W(VA(vcnt_max));               // cmp ax, [vcnt_max] (DAh or EAh)
+    B(0x8B); B(0x16); W(VA(vcnt_max));               // mov dx, [vcnt_max] (DAh or EAh)
 #else
-    B(0x3D); W(0xDA);                                // cmp ax, DAh
+    B(0xBA); W(0xDA);                                // mov dx, DAh
 #endif
-    B(0x76); B(0x03);                                // jbe +3
-    B(0x2D); W(6);                                   // sub ax, 6
-    B(0x84); B(0xFF);                                // test bh, bh
+    B(0x39); B(0xD0);                                // cmp ax, dx
+    B(0x76); B(0x03); B(0x2D); W(6);                 // jbe +3; sub ax, 6 (AL = v)
+
+    // Dispatch on cc = BH & 3 (fast path: cc == 0 JR/JP NZ)
+    B(0x88); B(0xFC);                                // mov ah, bh
+    B(0x80); B(0xE4); B(0x03);                       // and ah, 3
     uint8_t *chk123 = jcc8(0x75);                    // jnz chk123
-    B(0x38); B(0xD8);                                // cmp al, bl (cc == 0: JR NZ)
-    uint8_t *done0 = jcc8(0x74);                     // je done
+    // cc == 0 (NZ): taken iff v != n
+    B(0x38); B(0xD8);                                // cmp al, bl
+    uint8_t *bail1 = jcc8(0x74);                     // je bail (already stopped)
+    B(0x88); B(0xD8);                                // mov al, bl
+    B(0x30); B(0xE4);                                // xor ah, ah (AX = n)
+    B(0x39); B(0xC6);                                // cmp si, ax (line < n ?)
+    uint8_t *nz_s2 = jcc8(0x73);                     // jae nz_seg2
+    B(0x39); B(0xD0);                                // cmp ax, dx (n <= vmax ?)
+    uint8_t *hs0 = jcc8(0x76);                       // jbe have_stop
+    land8(nz_s2);
+    B(0x83); B(0xC0); B(6);                          // add ax, 6 (n + 6)
+    B(0x39); B(0xD0);                                // cmp ax, dx (n + 6 > vmax ?)
+    uint8_t *ns0 = jcc8(0x76);                       // jbe no_stop
+    B(0x39); B(0xF0);                                // cmp ax, si (n + 6 > line ?)
+    uint8_t *hs1 = jcc8(0x77);                       // ja have_stop
+    uint8_t *ns1 = jcc8(0xEB);                       // jmp no_stop
 
-    uint8_t *again = o;
-    B(0x81); B(0xFE); W(GG_LINES - 1);               // cmp si, 261
-    uint8_t *kmax1 = jcc8(0x73);                     // jae clamp_kmax
-    B(0x80); B(0xFA); B(30);                         // cmp dl, 30
-    uint8_t *slow = jcc8(0x73);                      // jae slow_step (iter 0 with rem >= 30)
-    B(0x80); B(0xFA); B(18);                         // cmp dl, 18
-    uint8_t *s240 = jcc8(0x72);                      // jb step_240
-    B(0x80); B(0xEA); B(18);                         // sub dl, 18
-    B(0xB8); W(210);                                 // mov ax, 210 (7 * 30)
-    uint8_t *to_step = jcc8(0xEB);                   // jmp do_step
-    land8(s240);
-    B(0x80); B(0xC2); B(12);                         // add dl, 12
-    B(0xB8); W(240);                                 // mov ax, 240 (8 * 30)
-    uint8_t *do_step = o;
-    land8(to_step);
-    B(0x39); B(0xC1);                                // cmp cx, ax (cur_cyc <= step?)
-    uint8_t *kmax2 = jcc8(0x7E);                     // jle clamp_kmax
-    B(0x29); B(0xC1);                                // sub cx, ax (cur_cyc -= step)
-    B(0x46);                                         // inc si (line++)
-    B(0x29); B(0xC7);                                // sub di, ax (di -= step)
-    VW_JBACK(0x71, loop);                            // jno loop
-    B(0x3B); B(0x3E); W(VA(frame_given));            // cmp di, [frame_given]
-    VW_JBACK(0x76, loop);                            // jbe loop
-
-    uint8_t *done = o;
-    land8(done0);
-    B(0x89); B(0x0E); W(SA(cycles));                 // done: mov [cycles], cx
-    land8(bail0);
-    B(0x5A); B(0x59); B(0x5B); B(0x58);              // bail_pop: pop dx, cx, bx, ax
+    // bail (reachable by short jumps from prologue, cc == 0, and cc == 1..3)
+    land8(bail0); land8(bail1);
+    uint8_t *bail_lbl = o;
+    B(0x5D); B(0x5A); B(0x59); B(0x5B); B(0x58);     // bail: pop bp, dx, cx, bx, ax
     B(0xC3);                                         // ret
 
     // cc == 1 (Z), 2 (NC), 3 (C)
     land8(chk123);
-    B(0x80); B(0xFF); B(2);                          // cmp bh, 2
+    B(0x80); B(0xFC); B(2);                          // cmp ah, 2
     uint8_t *chk_z = jcc8(0x72);                     // jb chk_z (cc == 1)
     uint8_t *chk_nc = jcc8(0x74);                    // je chk_nc (cc == 2)
-    B(0x38); B(0xD8);                                // cmp al, bl (cc == 3: JR C)
-    VW_JBACK(0x72, again);                           // jb again
-    VW_JBACK(0xEB, done);                            // jmp done
+    // cc == 3 (C): taken iff v < n
+    B(0x38); B(0xD8);                                // cmp al, bl
+    VW_JBACK(0x73, bail_lbl);                        // jae bail
+    B(0x88); B(0xD8);                                // mov al, bl
+    B(0x30); B(0xE4);                                // xor ah, ah (AX = n)
+    B(0x39); B(0xD6);                                // cmp si, dx (line <= vmax ?)
+    uint8_t *c_s2 = jcc8(0x77);                      // ja c_seg2
+    B(0x39); B(0xD0);                                // cmp ax, dx (n <= vmax ?)
+    uint8_t *hs2 = jcc8(0x76);                       // jbe have_stop
+    land8(c_s2);
+    B(0x83); B(0xC0); B(6);                          // add ax, 6
+    uint8_t *hs3 = jcc8(0xEB);                       // jmp have_stop
+
+    // cc == 2 (NC): taken iff v >= n
     land8(chk_nc);
-    B(0x38); B(0xD8);                                // cmp al, bl (cc == 2: JR NC)
-    VW_JBACK(0x73, again);                           // jae again
-    VW_JBACK(0xEB, done);                            // jmp done
+    B(0x38); B(0xD8);                                // cmp al, bl
+    VW_JBACK(0x72, bail_lbl);                        // jb bail
+    B(0x39); B(0xD6);                                // cmp si, dx (line <= vmax ?)
+    uint8_t *ns2 = jcc8(0x77);                       // ja no_stop
+    B(0x89); B(0xD0);                                // mov ax, dx (vmax)
+    B(0x83); B(0xE8); B(5);                          // sub ax, 5 (vmax - 5)
+    B(0x38); B(0xD8);                                // cmp al, bl (vmax - 5 < n ?)
+    uint8_t *ns3 = jcc8(0x73);                       // jae no_stop
+    B(0x89); B(0xD0);                                // mov ax, dx
+    B(0x40);                                         // inc ax (vmax + 1)
+    uint8_t *hs4 = jcc8(0xEB);                       // jmp have_stop
+
+    // cc == 1 (Z): taken iff v == n
     land8(chk_z);
-    B(0x38); B(0xD8);                                // cmp al, bl (cc == 1: JR Z)
-    VW_JBACK(0x74, again);                           // je again
-    VW_JBACK(0xEB, done);                            // jmp done
+    B(0x38); B(0xD8);                                // cmp al, bl
+    VW_JBACK(0x75, bail_lbl);                        // jne bail
+    B(0x89); B(0xF0);                                // mov ax, si
+    B(0x40);                                         // inc ax (line + 1)
+    B(0x3D); W(GG_LINES);                            // cmp ax, 262
+    uint8_t *ns4 = jcc8(0x73);                       // jae no_stop
 
-    // clamp_kmax: cur_cyc = ((cur_cyc - 1) % 30) + 1
-    land8(kmax1); land8(kmax2);
-    B(0x89); B(0xC8);                                // mov ax, cx
-    B(0x48);                                         // dec ax
+    // have_stop: AX = stop_line (1..261), DI = pos, BP = max_skip
+    land8(hs0); land8(hs1); land8(hs2); land8(hs3); land8(hs4);
+    B(0x6B); B(0xC0); B(57);                         // imul ax, ax, 57
+    B(0xC1); B(0xE0); B(2);                          // shl ax, 2 (stop_line * 228)
+    B(0x29); B(0xF8);                                // sub ax, di (delta = target_pos - pos)
+    B(0x88); B(0xFB);                                // mov bl, bh
+    B(0xC0); B(0xEB); B(2);                          // shr bl, 2
+    B(0x30); B(0xFF);                                // xor bh, bh (BX = T)
+    B(0x01); B(0xD8);                                // add ax, bx
+    B(0x48);                                         // dec ax (u = delta + T - 1)
+    B(0x89); B(0xC6);                                // mov si, ax (SI = u)
     B(0x31); B(0xD2);                                // xor dx, dx
-    B(0xBE); W(30);                                  // mov si, 30
-    B(0xF7); B(0xF6);                                // div si (DX = (cur_cyc - 1) % 30)
-    B(0x42);                                         // inc dx
-    B(0x89); B(0xD1);                                // mov cx, dx
-    VW_JBACK(0xEB, done);                            // jmp done
+    B(0xF7); B(0xF3);                                // div bx (DX = u % T)
+    B(0x29); B(0xD6);                                // sub si, dx (SI = skip = k * T)
+    B(0x39); B(0xEE);                                // cmp si, bp (skip <= max_skip ?)
+    uint8_t *apply_j = jcc8(0x76);                   // jbe apply_skip
+    uint8_t *clamp_j = jcc8(0xEB);                   // jmp clamp_with_bx
 
-    // slow_step: iter 0 with 30 <= rem <= 227 (DH == 0)
-    land8(slow);
-    B(0xB8); W(257);                                 // mov ax, 257
-    B(0x29); B(0xD0);                                // sub ax, dx (u = 257 - rem)
-    B(0x88); B(0xC2);                                // mov dl, al (u)
-    B(0xB6); B(30);                                  // mov dh, 30
-    B(0xF6); B(0xF6);                                // div dh (AL = dk, AH = r)
-    B(0x28); B(0xE2);                                // sub dl, ah (step = 30 * dk)
-    B(0x88); B(0xD0);                                // mov al, dl
-    B(0xB2); B(29);                                  // mov dl, 29
-    B(0x28); B(0xE2);                                // sub dl, ah (rem_new = 29 - r)
-    B(0x30); B(0xE4);                                // xor ah, ah (AX = step)
-    VW_JBACK(0xEB, do_step);                         // jmp do_step
+    // no_stop: unpack T into BX, then skip floor(max_skip / T) * T
+    land8(ns0); land8(ns1); land8(ns2); land8(ns3); land8(ns4);
+    B(0x88); B(0xFB);                                // mov bl, bh
+    B(0xC0); B(0xEB); B(2);                          // shr bl, 2
+    B(0x30); B(0xFF);                                // xor bh, bh (BX = T)
+    land8(clamp_j);
+    B(0x89); B(0xE8);                                // mov ax, bp (max_skip)
+    B(0x31); B(0xD2);                                // xor dx, dx
+    B(0xF7); B(0xF3);                                // div bx (DX = max_skip % T)
+    B(0x89); B(0xEE);                                // mov si, bp
+    B(0x29); B(0xD6);                                // sub si, dx (SI = floor(max_skip / T) * T)
+    land8(apply_j);
+    B(0x29); B(0xF1);                                // sub cx, si (cur_cyc -= skip)
+    B(0x89); B(0x0E); W(SA(cycles));                 // mov [cycles], cx
+    B(0x5D); B(0x5A); B(0x59); B(0x5B); B(0x58);     // pop bp, dx, cx, bx, ax
+    B(0xC3);                                         // ret
 #undef VW_JBACK
     return (uint16_t) (o - o_start);
 }
@@ -5295,20 +5332,27 @@ retry_gen:
         ins[0].count = k; ins[0].len = k * 2;
     }
     int i;
-    // IN A,(7Eh) / CP n / JR cc back here: waiting for a line (Sonic
-    // Spinball, ~66 polls a frame): the runtime skips the polls whose
-    // result changes nothing, then this one runs as usual
+    // IN A,(7Eh) / (CP n | AND A | OR A) / (JR|JP) cc back here: waiting for
+    // a line (Sonic Spinball, Micro Machines C049): skip the turns whose V
+    // counter keeps the loop going, then run the final turn as usual
     if (n == 3 && env->vcnt_off && !env->no_fast && ins[0].pre == 0 && ins[0].op == 0xDB
-        && (ins[0].nn & 0xC1) == 0x40 && ins[1].pre == 0 && ins[1].op == 0xFE
-        && ins[2].pre == 0 && (ins[2].op & 0xE7) == 0x20
-        && (uint16_t) (ins[2].pc + 2 + (int8_t) ins[2].nn) == ins[0].pc) {
-        uint16_t varg = (uint16_t) (ins[1].nn & 0xFF) | (((ins[2].op >> 3) & 3) << 8);
-        if (env->vwait_off) {
-            B(0xBE); W(varg);                        // mov si, varg
-            call_near(env->vwait_off);
-        } else {
-            B(0xC7); B(0x06); W(SA(arg)); W(varg);
-            helper(DRC_H_VWAIT);
+        && (ins[0].nn & 0xC1) == 0x40
+        && ins[1].pre == 0 && (ins[1].op == 0xFE || ins[1].op == 0xA7 || ins[1].op == 0xB7)
+        && ins[2].pre == 0 && ((ins[2].op & 0xE7) == 0x20 || (ins[2].op & 0xE7) == 0xC2)) {
+        uint8_t is_jr = (ins[2].op & 0xE7) == 0x20;
+        uint16_t tgt = is_jr ? (uint16_t) (ins[2].pc + 2 + (int8_t) ins[2].nn) : ins[2].nn;
+        if (tgt == ins[0].pc) {
+            uint8_t is_cp = ins[1].op == 0xFE;
+            uint8_t step = (uint8_t) (11 + (is_cp ? 7 : 4) + (is_jr ? 12 : 10));
+            uint16_t varg = (uint16_t) (is_cp ? (ins[1].nn & 0xFF) : 0)
+                          | (uint16_t) (((ins[2].op >> 3) & 3) << 8);
+            if (env->vwait_off) {
+                B(0xBE); W((uint16_t) (varg | ((uint16_t) step << 10)));   // mov si, n | (cc << 8) | (step << 10)
+                call_near(env->vwait_off);
+            } else if (step == 30) {
+                B(0xC7); B(0x06); W(SA(arg)); W(varg);
+                helper(DRC_H_VWAIT);
+            }
         }
     }
     {

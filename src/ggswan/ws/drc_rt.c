@@ -55,8 +55,10 @@ uint16_t drc_entry[2];   // far pointer used by drc_enter: offset, segment
 #define STUB_VCNT   0x0BF8   // IN A,(7Eh) (drc_emit_vcnt_stub)
 #define STUB_PAIRS  0x0C48   // OUTI / OUTI / DEC L x 4 repeated (drc.c)
 #define STUB_NT     0x0D20   // a name table byte (put_nt)
-#define STUB_VWAIT  0x1110   // IN A,(7Eh) / CP n / JR cc back (drc.c)
-#define CACHE_START 0x1200
+#define STUB_VWAIT  0x1110   // IN A,(7Eh) / CP n|AND A|OR A / JR|JP cc back (drc.c)
+// (the VWAIT stub is 10Dh bytes since patch 253; only the host build checks
+// that the stubs fit)
+#define CACHE_START 0x1220
 // translation buffer in free IRAM (between the font tiles and the mask tile)
 #ifdef GGSWAN_SG1000
 // sgswan: A600h-BEFFh are tiles there (main.c, sg_video.inc: the Game
