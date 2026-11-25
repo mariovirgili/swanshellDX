@@ -2,3 +2,6 @@ build
 compile_commands.json
 dist
 fonts/build
+# the PC test libraries (src/ggswan/host) and local copies of plugins
+*.so
+*.mio.BIN
