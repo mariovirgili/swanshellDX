@@ -5355,6 +5355,66 @@ retry_gen:
             }
         }
     }
+    // DEC r / JR NZ (or JP NZ) back here: exact delay loop (Castle of
+    // Illusion 06E8: DEC A / JR NZ, 255 turns/frame). Skip k = min((uint8_t)(r - 1),
+    // floor((cycles - 1) / T)) full taken turns so the final turn runs normally
+    // with exact register value, flags, and interrupt timing.
+    if (n == 2 && !env->no_fast && !ins[0].step && !ins[1].step
+        && ins[0].pre == 0 && (ins[0].op & 0xC7) == 0x05 && ins[0].op != 0x35
+        && ins[1].pre == 0 && (ins[1].op == 0x20 || ins[1].op == 0xC2)) {
+        uint8_t is_jr = ins[1].op == 0x20;
+        uint16_t tgt = is_jr ? (uint16_t) (ins[1].pc + 2 + (int8_t) ins[1].nn) : ins[1].nn;
+        if (tgt == ins[0].pc) {
+            uint8_t xr = r8x[(ins[0].op >> 3) & 7];
+            uint8_t r16 = xr & 3;
+            uint8_t hi = xr >= 4;
+            if (is_jr) {
+                // T = 16 cycles/turn (power of two: shift only, no DIV)
+                B(0x8B); B(0x3E); W(SA(cycles));             // mov di, [cycles]
+                B(0x83); B(0xFF); B(16);                     // cmp di, 16
+                uint8_t *done = jcc8(0x7E);                  // jle done (k_max = 0)
+                B(0x4F);                                     // dec di (cycles - 1 >= 16)
+                B(0xC1); B(0xEF); B(4);                      // shr di, 4 (k_max)
+                B(0x89); B(0xC6 | (r16 << 3));               // mov si, r16
+                if (hi) { B(0xC1); B(0xEE); B(8); }          // shr si, 8
+                B(0x4E);                                     // dec si
+                B(0x81); B(0xE6); W(0x00FF);                 // and si, FFh (M = (uint8_t)(r - 1))
+                B(0x39); B(0xFE);                            // cmp si, di
+                B(0x76); B(0x02); B(0x89); B(0xFE);          // jbe +2; mov si, di (k = min(M, k_max))
+                B(0x89); B(0x36); W(SA(arg));                // mov [arg], si
+                B(0x2A); B(0x06 | (xr << 3)); W(SA(arg));    // sub xr, [arg]
+                B(0xC1); B(0xE6); B(4);                      // shl si, 4 (k * 16)
+                B(0x29); B(0x36); W(SA(cycles));             // sub [cycles], si
+                land8(done);
+            } else {
+                // T = 14 cycles/turn: fast path without DIV when M * 14 < cycles
+                B(0x8B); B(0x3E); W(SA(cycles));             // mov di, [cycles]
+                B(0x83); B(0xFF); B(14);                     // cmp di, 14
+                uint8_t *done = jcc8(0x7E);                  // jle done (k_max = 0)
+                B(0x89); B(0xC6 | (r16 << 3));               // mov si, r16
+                if (hi) { B(0xC1); B(0xEE); B(8); }          // shr si, 8
+                B(0x4E);                                     // dec si
+                B(0x81); B(0xE6); W(0x00FF);                 // and si, FFh (M)
+                B(0x6B); B(0xFE); B(14);                     // imul di, si, 14 (M * 14 <= 3570)
+                B(0x39); B(0x3E); W(SA(cycles));             // cmp [cycles], di
+                uint8_t *apply = jcc8(0x7F);                 // jg apply (M * 14 < cycles: k = M)
+                B(0x50); B(0x52);                            // push ax; push dx
+                B(0xA1); W(SA(cycles));                      // mov ax, [cycles]
+                B(0x48);                                     // dec ax (cycles - 1 >= 14)
+                B(0x31); B(0xD2);                            // xor dx, dx
+                B(0xBE); W(14);                              // mov si, 14
+                B(0xF7); B(0xF6);                            // div si (AX = k_max)
+                B(0x89); B(0xC6);                            // mov si, ax (k = k_max)
+                B(0x6B); B(0xFE); B(14);                     // imul di, si, 14 (k * 14)
+                B(0x5A); B(0x58);                            // pop dx; pop ax
+                land8(apply);
+                B(0x89); B(0x36); W(SA(arg));                // mov [arg], si
+                B(0x2A); B(0x06 | (xr << 3)); W(SA(arg));    // sub xr, [arg]
+                B(0x29); B(0x3E); W(SA(cycles));             // sub [cycles], di
+                land8(done);
+            }
+        }
+    }
     {
         const ins_t *I = ins;
         for (i = 0; i < n; i++, I++) {
