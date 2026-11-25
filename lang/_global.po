@@ -2,10 +2,10 @@ msgid "NAME"
 msgstr "SwanShellDX"
 
 msgid "NAME_COPYRIGHT"
-msgstr "(c) 2026 Adrian \"asie\" Siekierka"
+msgstr "by mariovirgili, Gio-74, made with Claude"
 
 msgid "NAME_COPYRIGHT_INFO"
-msgstr "License GPLv3+: GNU GPL version 3 or later\n<https://gnu.org/licenses/gpl.html>\nThis is free software: you are free to change and redistribute it.\nThere is NO WARRANTY, to the extent permitted by law."
+msgstr "Based on swanshell (c) 2026 asie\nLicense GPLv3+: GNU GPL version 3 or later\n<https://gnu.org/licenses/gpl.html>\nThis is free software: you are free to change and redistribute it.\nThere is NO WARRANTY, to the extent permitted by law."
 
 
 msgid "LANG_EN"
