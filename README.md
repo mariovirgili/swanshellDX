@@ -126,6 +126,14 @@ The START menu and the Help page with the keys of the selected file's plugin:
 <img src="docs/images/menu-help.png" alt="Help for the Game Boy plugin" width="336">
 </p>
 
+The VGM player: the track's text, its position and time; Start chooses
+next, shuffle or repeat, or makes the track the menu music:
+
+<p>
+<img src="docs/images/menu-vgm.png" alt="The VGM player" width="336">
+<img src="docs/images/menu-vgm-mode.png" alt="The VGM player's Start menu" width="336">
+</p>
+
 Theme: wallpapers and icon sets from the card, with a preview:
 
 <p>
