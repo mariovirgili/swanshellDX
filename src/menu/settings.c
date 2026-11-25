@@ -42,6 +42,9 @@ void settings_reset(void) {
     settings.menu_music_volume = SETTING_MENU_MUSIC_VOLUME_DEFAULT;
     settings.save_backups = SETTING_SAVE_BACKUPS_3;
     settings.save_flags = SETTING_SAVE_ASK_BACKUP | SETTING_SAVE_MANAGE;
+    // SwanShellDX: START + Y1 back to the menu and the fast SRAM on
+    // unless turned off
+    settings.prog.flags = SETTING_PROG_FLAG_KEYPAD_RESET | SETTING_PROG_FLAG_SRAM_OVERCLOCK;
 }
 
 static int16_t settings_load_category(FIL *fp, const setting_category_t __far *cat, const char *key, const char *value) {
