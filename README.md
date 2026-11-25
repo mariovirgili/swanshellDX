@@ -216,7 +216,7 @@ Then:
   SwanShellDX is built on swanshell, and its translations come from
   swanshell's [Weblate](https://weblate.asie.pl/projects/49bitcat/swanshell/).
 - **nileswan**: the cartridge, its firmware, libnile and nileswan-medem, by
-  [49bitcat](https://49bitcat.com/) (asie and the nileswan team). The reset
+  [49bitcat](https://49bitcat.com/). The reset
   code that the START+Y1 patches put in games follows libnile's
   `nile_soft_reset`.
 - **AthenaOS** (the BIOS files) and **uxnws** (`PLUG_UXN.BIN`): asie.
