@@ -3710,7 +3710,8 @@ static void menu_draw(uint8_t page, uint8_t sel) {
         menu_text(4, 2, "GGSWAN - GAME GEAR");
 #endif
         char pb[10] = "PATCH ";
-        uint8_t v = GGSWAN_PATCH, k = 6;
+        uint16_t v = GGSWAN_PATCH;
+        uint8_t k = 6;
         if (v >= 100) pb[k++] = '0' + v / 100;
         if (v >= 10) pb[k++] = '0' + (v / 10) % 10;
         pb[k++] = '0' + v % 10;
@@ -4262,7 +4263,8 @@ int main(void) {
     {
         // the patch number, top right
         char pb[12] = "PATCH ";
-        uint8_t v = GGSWAN_PATCH, n = 6;
+        uint16_t v = GGSWAN_PATCH;
+        uint8_t n = 6;
         if (v >= 100) pb[n++] = '0' + v / 100;
         if (v >= 10) pb[n++] = '0' + (v / 10) % 10;
         pb[n++] = '0' + v % 10;
