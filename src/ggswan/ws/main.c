@@ -3546,6 +3546,11 @@ enum { MI_NONE, MI_PAGE_VIDEO, MI_PAGE_AUDIO, MI_PAGE_STATES, MI_PAGE_OPTIONS, M
 // plugin (OPTIONS; below, cfg_*)
 static uint8_t cfg_game;
 static void cfg_defaults(void);
+// the game's frames in the last whole second before the menu opened (the
+// main loop counts them with or without the profiler): the VIDEO page
+// shows it, so the FPS can be read with the profiler off (smsswan: the
+// profiler takes screen 2 from the background's priority)
+static uint8_t last_fps;
 
 static uint16_t menu_blank;
 static void menu_text(uint8_t row, uint8_t col, const char __far *t) {
@@ -3751,6 +3756,16 @@ static void menu_draw(uint8_t page, uint8_t sel) {
         menu_text(12, 2, "IN FRONT OF ALL THE TILES");
     }
 #endif
+    if (page == MP_VIDEO) {
+        char t[4], *p = t;
+        uint8_t v = last_fps;
+        if (v >= 100) *p++ = '0' + v / 100;
+        if (v >= 10) *p++ = '0' + (v / 10) % 10;
+        *p++ = '0' + v % 10;
+        *p = 0;
+        menu_text(14, 3, "GAME FPS");
+        menu_text(14, 22, t);
+    }
     menu_text(16, 2, page == MP_MAIN ? "A: OPEN  B: CLOSE" : "A: CHANGE  B: BACK");
 }
 
@@ -4513,6 +4528,7 @@ int main(void) {
         // frames per second, in the left border (the WS shows 75.47 Hz)
         if (vblanks >= 75) {
             vblanks -= 75;
+            last_fps = frames;
 #ifdef ST_STATES
             if (st_note && !--st_note && !stats_hide) put_text(3, 0, "    ");
 #endif
