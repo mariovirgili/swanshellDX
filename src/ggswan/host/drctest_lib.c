@@ -79,3 +79,4 @@ int t_translate(uint16_t z80_addr, uint16_t state_addr, uint16_t exit_off,
     drc_env_t env = { z80_addr, state_addr, exit_off, helper_off, ram_delta, 0, 0, 0, 0 };
     return drc_translate(&env, pc, out, out_off, out_max, res);
 }
+void gg_status_read_at(unsigned short pc) { (void) pc; }

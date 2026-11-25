@@ -5127,6 +5127,230 @@ static int emit_row(int i, uint16_t off) {
     return 1;
 }
 
+/*
+ * Consecutive LD A,(rr) / OUT (BEh),A / INC rr steps (with optional
+ * PUSH rr2 / POP rr2 delay pairs in between): Sonic GG's compressed tile
+ * loader (04C0, 048E, 04B9, ~23% of the frame) writes 4-byte tile rows
+ * this way, taking ~420 cycles per row via 4 separate vram_fast + seg_hl
+ * / seg_si + 3 PUSH/POP delays.
+ *
+ * Returns how many instructions from ins[i] form a run of k >= 3 bytes
+ * (0: none), filling *out_k (bytes, 3..8), *out_src (x86 16-bit reg:
+ * X_BX/X_CX/X_DX), *out_push_reg (0xFF if none, else X_CX/X_DX/X_BX of
+ * the last PUSH/POP pair), *out_push_delta (how much src advanced after
+ * that last PUSH if push_reg == src, else 0), and *out_np (count of
+ * PUSH/POP pairs, for exact Z80 cycle accounting).
+ */
+static int vcopy_at(int i, int n, uint8_t *out_k, uint8_t *out_src,
+                    uint8_t *out_push_reg, uint8_t *out_push_delta, uint8_t *out_np) {
+    if (FLAT || env->no_fast || !env->vdp_addr || !env->cls_off || i + 9 > n)
+        return 0;
+    const ins_t *I = &ins[i];
+    if (I->pre || I->dyn || I->trace || I->step || I->term)
+        return 0;
+    uint8_t ld_op = I->op, inc_op, src_reg;
+    if (ld_op == 0x7E) { inc_op = 0x23; src_reg = X_BX; }        // HL
+    else if (ld_op == 0x0A) { inc_op = 0x03; src_reg = X_CX; }   // BC
+    else if (ld_op == 0x1A) { inc_op = 0x13; src_reg = X_DX; }   // DE
+    else return 0;
+
+    int j = i;
+    uint8_t k = 0, np = 0, push_reg = 0xFF, last_push_step = 0;
+    while (k < 8 && j + 3 <= n) {
+        const ins_t *a = &ins[j], *b = &ins[j + 1], *c = &ins[j + 2];
+        if (a->pre || a->op != ld_op || a->dyn || a->trace || a->step || a->term)
+            break;
+        if (b->pre || b->op != 0xD3 || (b->nn & 0xC1) != 0x80
+            || b->dyn || b->trace || b->step || b->term)
+            break;
+        if (c->pre || c->op != inc_op || c->dyn || c->trace || c->step || c->term)
+            break;
+        j += 3;
+        k++;
+        // Optional PUSH rr2 / POP rr2 delay pair (BC, DE, or HL)
+        if (j + 2 <= n) {
+            const ins_t *p = &ins[j], *q = &ins[j + 1];
+            if (!p->pre && !q->pre && !p->dyn && !q->dyn && !p->trace && !q->trace
+                && !p->step && !q->step && !p->term && !q->term
+                && ((p->op == 0xC5 && q->op == 0xC1)
+                    || (p->op == 0xD5 && q->op == 0xD1)
+                    || (p->op == 0xE5 && q->op == 0xE1))) {
+                push_reg = r16x[(p->op >> 4) & 3];
+                last_push_step = k;   // src has been incremented k times here
+                np++;
+                j += 2;
+            }
+        }
+    }
+    if (k < 3)
+        return 0;
+    *out_k = k;
+    *out_src = src_reg;
+    *out_push_reg = push_reg;
+    *out_push_delta = (push_reg == src_reg) ? (uint8_t) (k - last_push_step) : 0;
+    *out_np = np;
+    return j - i;
+}
+
+static int emit_vcopy(int i, int span, uint8_t k, uint8_t src_reg,
+                      uint8_t push_reg, uint8_t push_delta, uint8_t np) {
+    // None of LD A,(rr), OUT (BE),A, INC rr, PUSH/POP rr2 alters Z80 flags:
+    // materialize into AH if any flag is live after the run, then keep AH untouched.
+    clobber(live_out[i + span - 1]);
+    hl_es = 0;
+
+    uint8_t *f[6];
+    uint8_t nf = 0;
+    // 1. Not CRAM
+    B(0x80); B(0x3E); W(VA(code)); B(3);                 // cmp byte [code], 3
+    f[nf++] = jcc8(0x74);                                // je fail
+    // 2. Source [src .. src + k - 1] stays inside one 8 KiB slice
+    B(0x89); B(0xC6 | (src_reg << 3));                   // mov si, src
+    B(0x81); B(0xE6); W(0x1FFF);                         // and si, 1FFFh
+    B(0x81); B(0xFE); W((uint16_t) (0x2000 - k));        // cmp si, 2000h - k
+    f[nf++] = jcc8(0x77);                                // ja fail
+    // 3. If PUSH/POP present, ensure [src .. src + k - 1] does not overlap
+    //    [SP - 2 .. SP - 1] modulo 8 KiB (covers the E000-FFFF work RAM mirror)
+    if (push_reg != 0xFF) {
+        B(0x8D); B(0x76); B(0xFF);                       // lea si, [bp - 1]
+        B(0x29); B(0xC6 | (src_reg << 3));               // sub si, src
+        B(0x81); B(0xE6); W(0x1FFF);                     // and si, 1FFFh
+        B(0x83); B(0xFE); B(k);                          // cmp si, k
+        f[nf++] = jcc8(0x76);                            // jbe fail
+    }
+    // 4. VRAM address and page classes of first and last byte (AL is dead: overwritten by LD A,(rr))
+    B(0x8B); B(0x36); W(VA(addr));                       // mov si, [addr]
+    B(0x81); B(0xE6); W(0x3FFF);                         // and si, 3FFFh
+    B(0x89); B(0xF7);                                    // mov di, si
+    B(0xC1); B(0xEF); B(8);                              // shr di, 8
+    B(0x8A); B(0x85); W(SA(vram_class));                 // mov al, [di + class]
+    B(0x8D); B(0x7C); B((uint8_t) (k - 1));              // lea di, [si + k - 1]
+    B(0xC1); B(0xEF); B(8);                              // shr di, 8
+    B(0x0A); B(0x85); W(SA(vram_class));                 // or al, [di + class]
+    B(0xA8); B(0x13);                                    // test al, 13h (wrap, NT, SAT)
+    f[nf++] = jcc8(0x75);                                // jnz fail
+    // 5. Deferred log (bit 3 set) vs plain VRAM (class == 0)
+    B(0xA8); B(0x08);                                    // test al, 8
+    uint8_t *plain = jcc8(0x74);                         // jz plain_vram
+    // Deferred: try appending to open log entry (log_next)
+    B(0x8B); B(0x3E); W(SA(log_top));                    // mov di, [log_top]
+    B(0x3B); B(0x36); W(SA(log_next));                   // cmp si, [log_next]
+    uint8_t *new1 = jcc8(0x75);                          // jne new_entry
+    B(0x8B); B(0x36); W(SA(log_last));                   // mov si, [log_last]
+    B(0x80); B(0x7C); B(0x02); B((uint8_t) (254 - k));   // cmp byte [si + 2], 254 - k
+    uint8_t *new2 = jcc8(0x77);                          // ja new_entry
+    B(0x83); B(0xC7); B(k);                              // add di, k
+    B(0x3B); B(0x3E); W(SA(log_end));                    // cmp di, [log_end]
+    f[nf++] = jcc8(0x77);                                // ja fail (log full -> fallback)
+    B(0x89); B(0x3E); W(SA(log_top));                    // mov [log_top], di
+    B(0x83); B(0xEF); B(k);                              // sub di, k (DI = dst in log)
+    B(0x80); B(0x44); B(0x02); B(k);                     // add byte [si + 2], k
+    B(0x83); B(0x06); W(SA(log_next)); B(k);             // add word [log_next], k
+    uint8_t *copy1 = jcc8(0xEB);                         // jmp copy_bytes
+
+    // Mid-point trampoline to fallback (reachable by short jumps both forward and backward)
+    for (uint8_t m = 0; m < nf; m++) land8(f[m]);
+    uint8_t *fail_tramp = o;
+    B(0xE9); W(0);                                       // jmp fallback
+    uint8_t *to_fallback = o - 2;
+
+    // New log entry
+    land8(new1); land8(new2);
+    B(0x8B); B(0x36); W(VA(addr));                       // mov si, [addr]
+    B(0x81); B(0xE6); W(0x3FFF);                         // and si, 3FFFh
+    B(0x83); B(0xC7); B((uint8_t) (k + 3));              // add di, k + 3
+    B(0x3B); B(0x3E); W(SA(log_end));                    // cmp di, [log_end]
+    B(0x77); B((uint8_t) (fail_tramp - (o + 1)));        // ja fail_tramp (backwards)
+    B(0x89); B(0x3E); W(SA(log_top));                    // mov [log_top], di
+    B(0x83); B(0xEF); B((uint8_t) (k + 3));              // sub di, k + 3
+    B(0x89); B(0x3E); W(SA(log_last));                   // mov [log_last], di
+    B(0x89); B(0x35);                                    // mov [di], si (VRAM addr)
+    B(0xC6); B(0x45); B(0x02); B(k);                     // mov byte [di + 2], k
+    B(0x83); B(0xC7); B(0x03);                           // add di, 3 (DI = dst in log)
+    B(0x83); B(0xC6); B(k);                              // add si, k
+    B(0x89); B(0x36); W(SA(log_next));                   // mov [log_next], si
+    uint8_t *copy2 = jcc8(0xEB);                         // jmp copy_bytes
+
+    // Plain VRAM (not deferred)
+    land8(plain);
+    B(0x8D); B(0xBC); W(env->vram_addr);                 // lea di, [si + vram]
+
+    // Copy k bytes from ES:[src] to DS:[di], advance src += k, set AL = last byte
+    land8(copy1); land8(copy2);
+    if (src_reg != X_BX) { B(0x87); B(0xC3 | (src_reg << 3)); }   // xchg bx, src
+    B(0x89); B(0xDE);                                    // mov si, bx
+    B(0xC1); B(0xC6); B(4);                              // rol si, 4
+    B(0x83); B(0xE6); B(14);                             // and si, 14
+    B(0x8E); B(0x84); W(SA(segtab));                     // mov es, [si + segtab]
+    for (uint8_t m = 0; m + 1 < k; m += 2) {
+        if (m == 0) {
+            B(0x26); B(0x8B); B(0x37);                   // mov si, es:[bx]
+            B(0x89); B(0x35);                            // mov [di], si
+        } else {
+            B(0x26); B(0x8B); B(0x77); B(m);             // mov si, es:[bx + m]
+            B(0x89); B(0x75); B(m);                      // mov [di + m], si
+        }
+    }
+    if (k & 1) {
+        B(0x26); B(0x8A); B(0x47); B((uint8_t) (k - 1)); // mov al, es:[bx + k - 1]
+        B(0x88); B(0x45); B((uint8_t) (k - 1));          // mov [di + k - 1], al
+    } else {
+        B(0x26); B(0x8A); B(0x47); B((uint8_t) (k - 1)); // mov al, es:[bx + k - 1]
+    }
+    B(0x83); B(0xC3); B(k);                              // add bx, k
+    if (src_reg != X_BX) { B(0x87); B(0xC3 | (src_reg << 3)); }   // xchg bx, src
+    // Update VDP addr, read_buffer, latch_full
+    B(0x8B); B(0x36); W(VA(addr));                       // mov si, [addr]
+    B(0x83); B(0xC6); B(k);                              // add si, k
+    B(0x81); B(0xE6); W(0x3FFF);                         // and si, 3FFFh
+    B(0x89); B(0x36); W(VA(addr));                       // mov [addr], si
+    B(0xA2); W(VA(read_buffer));                         // mov [read_buffer], al
+    B(0xC6); B(0x06); W(VA(latch_full)); B(0);           // mov byte [latch_full], 0
+    // Observable stack write of the last PUSH rr2 / POP rr2 delay pair
+    if (push_reg != 0xFF) {
+        uint16_t sp_disp = (uint16_t) (env->ram_delta - 2);
+        if (push_delta == 0) {
+            B(0x89); B(0x86 | (push_reg << 3)); W(sp_disp);       // mov [bp + ram - 2], rr2
+        } else if (push_reg == X_BX) {
+            B(0x8D); B(0x77); B((uint8_t) (0u - push_delta));     // lea si, [bx - delta]
+            B(0x89); B(0xB6); W(sp_disp);                         // mov [bp + ram - 2], si
+        } else {
+            B(0x89); B(0xC6 | (push_reg << 3));                   // mov si, rr2
+            B(0x83); B(0xEE); B(push_delta);                      // sub si, delta
+            B(0x89); B(0xB6); W(sp_disp);                         // mov [bp + ram - 2], si
+        }
+    }
+    B(0xE9); W(0);                                       // jmp done
+    uint8_t *to_done = o - 2;
+
+    // Fallback: emit the original instructions (inline cold paths to avoid
+    // blowing the block's rel8 cold tail on a never-taken fallback)
+    {
+        uint16_t r_ = (uint16_t) (o - (to_fallback + 2));
+        to_fallback[0] = (uint8_t) r_;
+        to_fallback[1] = (uint8_t) (r_ >> 8);
+    }
+    uint8_t saved_cold = cold_off;
+    uint16_t cyc0 = cyc;
+    cold_off = 1;
+    fkind = K_AH; cf_valid = 0; hl_es = 0;
+    for (int j = i; j < i + span; j++)
+        if (!emit(j)) {
+            cold_off = saved_cold;
+            return 0;
+        }
+    clobber(live_out[i + span - 1]);
+    cold_off = saved_cold;
+    {
+        uint16_t r_ = (uint16_t) (o - (to_done + 2));
+        to_done[0] = (uint8_t) r_;
+        to_done[1] = (uint8_t) (r_ >> 8);
+    }
+    fkind = K_AH; cf_valid = 0; hl_es = 0;
+    cyc = (uint16_t) (cyc0 + k * 24 + np * 21);
+    return 1;
+}
+
 int drc_translate(const drc_env_t *e, uint16_t pc, uint8_t *out,
                   uint16_t out_off, uint16_t out_max, drc_result_t *res) {
     env = e;
@@ -5433,6 +5657,16 @@ retry_gen:
                         return 0;
                     i += 5 * g - 1;
                     I += 5 * g - 1;
+                    continue;
+                }
+            } else if (I->pre == 0 && (I->op == 0x7E || I->op == 0x0A || I->op == 0x1A)) {
+                uint8_t vk, vsrc, vpr, vpd, vnp;
+                int vspan = vcopy_at(i, n, &vk, &vsrc, &vpr, &vpd, &vnp);
+                if (vspan) {
+                    if (!emit_vcopy(i, vspan, vk, vsrc, vpr, vpd, vnp))
+                        return 0;
+                    i += vspan - 1;
+                    I += vspan - 1;
                     continue;
                 }
             }
