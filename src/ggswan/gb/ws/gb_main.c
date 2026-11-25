@@ -1161,6 +1161,10 @@ int main(void) {
     }
     if (!rom_path[0]) fail("NO PATH", 0);
     text_title(rom_path);
+    // The card at the fast SPI clock: swanshell starts the plugin with the
+    // cartridge clock (slow: about 40 KB/s, 6.5 s for a 256 KB ROM).
+    // disk_initialize keeps the clock it finds once the card is set up.
+    outportw(IO_NILE_SPI_CNT, NILE_SPI_CLOCK_FAST | NILE_SPI_DEV_NONE);
     int16_t result = f_mount(&fs, "", 1);
     if (result != FR_OK) fail("MOUNT", result);
     load_rom();
