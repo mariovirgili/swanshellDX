@@ -160,8 +160,6 @@ typedef struct {
     uint8_t buf[256];
 } patch_reader_t;
 
-static patch_reader_t reader;
-
 static bool reader_fill(patch_reader_t *r) {
     unsigned int br;
     if (f_read(&r->fp, r->buf, sizeof(r->buf), &br) != FR_OK || br == 0) {
@@ -345,8 +343,10 @@ static int16_t apply_bps(patch_reader_t *r, const bps_header_t *hdr, uint32_t so
 
 /* === Launch === */
 
-static char rom_path[FF_LFN_BUF + 8];
-static char save_path[FF_LFN_BUF + 8];
+// The reader and the two paths live in launch_patched_rom's frame, not in
+// static memory: static data is taken from the stack's room (one area of
+// IRAM), and the deepest paths (gunzip in the VGM player) need all of it.
+#define PATCH_PATH_SIZE (FF_LFN_BUF + 8)
 
 // Last '.' in a near string (strrchr() returns a far pointer here).
 static char *last_dot(char *s) {
@@ -363,9 +363,9 @@ static bool file_exists(const char *path) {
 }
 
 // "Game.bps" -> "Game.wsc" / "Game.ws" / "Game.pc2"; "Game.wsc.bps" -> "Game.wsc"
-static bool find_rom_for_patch(const char *patch_path) {
-    strncpy(rom_path, patch_path, sizeof(rom_path) - 5);
-    rom_path[sizeof(rom_path) - 5] = 0;
+static bool find_rom_for_patch(const char *patch_path, char *rom_path) {
+    strncpy(rom_path, patch_path, PATCH_PATH_SIZE - 5);
+    rom_path[PATCH_PATH_SIZE - 5] = 0;
     char *dot = last_dot(rom_path);
     if (dot == NULL)
         return false;
@@ -400,8 +400,11 @@ int16_t launch_patched_rom(const char *patch_path) {
     launch_rom_metadata_t file_meta, meta;
     uint32_t rom_size = 0, size = 0;
     int16_t result;
+    patch_reader_t reader;
+    char rom_path[PATCH_PATH_SIZE];
+    char save_path[PATCH_PATH_SIZE];
 
-    if (!find_rom_for_patch(patch_path))
+    if (!find_rom_for_patch(patch_path, rom_path))
         return FR_NO_FILE;
 
     // Validates the original ROM; also gives its type (WS/WSC/PCv2/Freya)
@@ -420,8 +423,8 @@ int16_t launch_patched_rom(const char *patch_path) {
     uint32_t max_size = (uint32_t) asset_heap_get_free_first_banks() << 16;
     // rom_path holds a copy of patch_path's directory/name; reuse save_path
     // as scratch to look at the patch extension without strrchr()
-    strncpy(save_path, patch_path, sizeof(save_path) - 1);
-    save_path[sizeof(save_path) - 1] = 0;
+    strncpy(save_path, patch_path, PATCH_PATH_SIZE - 1);
+    save_path[PATCH_PATH_SIZE - 1] = 0;
     const char *patch_ext = last_dot(save_path);
     bool is_bps = patch_ext != NULL && !strcasecmp(patch_ext, s_file_ext_bps);
 
@@ -481,7 +484,7 @@ int16_t launch_patched_rom(const char *patch_path) {
     // Saves go next to the patch: "Game.bps" -> "Game.bps.ram"
     // (launch_restore_save_data() replaces the last extension)
     size_t len = strlen(patch_path);
-    if (len + 3 > sizeof(save_path))
+    if (len + 3 > PATCH_PATH_SIZE)
         return ERR_FILE_TOO_LARGE;
     memcpy(save_path, patch_path, len);
     save_path[len] = '.';

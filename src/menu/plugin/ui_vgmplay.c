@@ -166,7 +166,14 @@ static void draw_track_status(uint16_t elapsed, uint16_t length) {
     ui_draw_titlebar_right(buf);
 }
 
+// Commands run back to back while playback is behind; after this many the
+// handler returns anyway, so that the keys are still read (a track whose
+// PCM data needs more time than there is would otherwise never leave the
+// interrupt: the music then plays slower).
+#define VGM_MAX_CATCH_UP 16
+
 void  __attribute__((interrupt, assume_ss_data)) vgm_interrupt_handler(void) {
+    uint8_t catch_up = 0;
     while (true) {
         outportw(WS_TIMER_HBL_RELOAD_PORT, 65535);
         uint16_t result = vgm_play(vgm_state);
@@ -176,8 +183,10 @@ void  __attribute__((interrupt, assume_ss_data)) vgm_interrupt_handler(void) {
             outportb(WS_TIMER_CTRL_PORT, 0);
         } else if (result > (ticks_elapsed + 1)) {
             outportw(WS_TIMER_HBL_RELOAD_PORT, result - ticks_elapsed);
-        } else {
+        } else if (++catch_up < VGM_MAX_CATCH_UP) {
             continue;
+        } else {
+            outportw(WS_TIMER_HBL_RELOAD_PORT, 2);
         }
 
         ws_int_ack(WS_INT_ACK_HBL_TIMER);
