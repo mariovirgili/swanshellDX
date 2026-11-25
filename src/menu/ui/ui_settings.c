@@ -149,6 +149,9 @@ reload_menu:
 void ui_settings(const setting_category_t __far* root_category) {
     ui_settings_config_t config = {{0}, root_category};
     bool reinit_ui = true;
+    // Only write the settings file back to the card if an entry was
+    // actually used (adapted from upstream swanshell cc29715)
+    bool settings_may_changed = false;
     char info_str[25];
 
     uint16_t offset_category_stack[4];
@@ -205,6 +208,10 @@ reload_menu:
 
         if (keys_pressed & WS_KEY_A) {
             bool reload_required = false;
+
+            if (s->type != SETTING_TYPE_CATEGORY || s->on_change) {
+                settings_may_changed = true;
+            }
 
             if (s->type == SETTING_TYPE_CATEGORY) {
                 config.category = s->category.value;
@@ -274,5 +281,7 @@ reload_menu:
         }
     }
 
-    ui_dialog_error_check(settings_save(), NULL, 0);
+    if (settings_may_changed) {
+        ui_dialog_error_check(settings_save(), NULL, 0);
+    }
 }

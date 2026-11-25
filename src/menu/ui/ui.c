@@ -44,6 +44,11 @@ ws_display_tile_t bitmap_tiles[512];
 #define bitmap_screen1 ((uint16_t ws_iram*) 0x3800)
 
 #ifdef CONFIG_ENABLE_WALLPAPER
+// 0 - not checked, 2 - checked, not found; 1 - checked, found
+// (reset by ui_init(): the image viewer and the music players reuse the
+// palettes, so the wallpaper must be loaded again afterwards - same fix as
+// upstream swanshell b32ce2b)
+static uint8_t wallpaper_status;
 static bool thumb_active = false; // the thumbnail popup is shown
 static bool thumb_saved = false;  // the wallpaper under it is in the scratch bank
 #endif
@@ -184,6 +189,7 @@ void ui_init(void) {
 #ifdef CONFIG_ENABLE_WALLPAPER
     thumb_active = false; // (ui_hide() turned the window off)
     thumb_saved = false;
+    wallpaper_status = 0;
 #endif
     icons_visible = 0;
 
@@ -242,9 +248,6 @@ void ui_hide(void) {
 }
 
 #ifdef CONFIG_ENABLE_WALLPAPER
-// 0 - not checked, 2 - checked, not found; 1 - checked, found
-static uint8_t wallpaper_status = 0;
-
 bool ui_has_wallpaper(void) {
     return wallpaper_status == 1;
 }
