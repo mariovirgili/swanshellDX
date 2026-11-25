@@ -1,0 +1,66 @@
+name: Release
+
+# A tag such as v1.0-p257 (or v1.0-p257-pre for a pre-release) builds
+# SwanShellDX from this tree and publishes a GitHub release with:
+#   SwanShellDX-<tag>.zip         the contents of dist/, for the card's root
+#   SwanShellDX-extras-<tag>.zip  START+Y1 patches, icon sets, wallpapers
+on:
+  push:
+    tags: [ 'v*' ]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and release
+    runs-on: ubuntu-latest
+    container: cbrzeszczot/wonderful:wswan-latest
+    steps:
+      - name: Install additional dependencies
+        run: apt-get update && apt-get install -y build-essential git zip pipx python3 python3-pil && pipx install uv && wf-pacman -Syu --noconfirm && wf-pacman -Su --noconfirm wf-tools wf-superfamiconv wf-zx0-salvador
+
+      - name: Clone project
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Fetch missing submodules
+        run: git config --global --add safe.directory `pwd` && git submodule update --init --recursive
+
+      - name: Configure PATH
+        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Build
+        run: make dist
+
+      - name: Package
+        run: |
+          set -e
+          TAG="${GITHUB_REF_NAME}"
+          mkdir -p out
+          (cd dist && zip -r -9 "../out/SwanShellDX-${TAG}.zip" .)
+          # extras: the START+Y1 patch database, the icon sets, the wallpapers
+          mkdir -p extras/NILESWAN/PATCHES extras/NILESWAN/ICONS extras/NILESWAN/WALLPAPERS
+          git clone --depth 1 https://github.com/mariovirgili/SwanShell_RebootPatcher.git rp
+          git clone --depth 1 https://github.com/mariovirgili/SwanShell_IconEditor.git ie
+          cp rp/patches/* extras/NILESWAN/PATCHES/
+          for f in ie/ICONS/*.ICN; do
+            n=$(basename "$f")
+            [ "$n" = "ORIGINALI.ICN" ] && n=ORIGINAL.ICN
+            cp "$f" "extras/NILESWAN/ICONS/$n"
+          done
+          cp misc/wallpapers/* extras/NILESWAN/WALLPAPERS/
+          (cd extras && zip -r -9 "../out/SwanShellDX-extras-${TAG}.zip" .)
+          sed "s/@TAG@/${TAG}/g" .github/release-notes.md > out/notes.md
+          ls -la out
+
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          name: SwanShellDX ${{ github.ref_name }}
+          body_path: out/notes.md
+          prerelease: ${{ contains(github.ref_name, '-pre') }}
+          files: |
+            out/SwanShellDX-${{ github.ref_name }}.zip
+            out/SwanShellDX-extras-${{ github.ref_name }}.zip

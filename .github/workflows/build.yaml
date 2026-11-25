@@ -2,7 +2,7 @@ name: Build
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, SwanShellDX ]
   pull_request:
 
 jobs:
