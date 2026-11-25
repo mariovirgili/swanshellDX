@@ -61,6 +61,7 @@ static const char __far s_help_gg_1[] =
     "START + Y1 (Y up), a second: back to the menu";
 static const char __far s_help_gg_2[] =
     "Game Gear: more keys\n\n"
+    "START + Y3 (Y down): the menu (video, sound, states, options)\n"
     "Y4 (Y left) held, then START: the numbers in the borders, off and on\n"
     "Y2 + Y4 (Y right + Y left): pause; Y3 (Y down) then runs one frame\n\n"
     "Held when the game starts:\n"
@@ -83,8 +84,8 @@ static const char __far s_help_sms_1[] =
     "START + Y1 (Y up), a second: back to the menu";
 static const char __far s_help_sms_2[] =
     "Master System: more keys\n\n"
-    "START + Y3 (Y down): the whole picture, squeezed, on and off\n"
-    "START + Y4 (Y left): the numbers, on and off\n"
+    "START + Y3 (Y down): the menu (video, sound, states, options)\n"
+    "START + Y4 (Y left): the numbers, on and off (the sprites then in front of everything)\n"
     "Y2 + Y4 (Y right + Y left): pause; Y3 (Y down) then runs one frame\n\n"
     "Y1 (Y up) held when the game starts: diagnostics";
 
@@ -100,7 +101,7 @@ static const char __far s_help_sg_1[] =
 static const char __far s_help_sg_2[] =
     "SG-1000: more keys\n\n"
     "START + Y2 (Y right): four sprites to a line, as the SG-1000, on and off\n"
-    "START + Y3 (Y down): the whole picture, squeezed, on and off\n"
+    "START + Y3 (Y down): the menu (video, sound, states, options)\n"
     "START + Y4 (Y left): the numbers, on and off\n"
     "Y2 + Y4 (Y right + Y left): pause; Y3 (Y down) then runs one frame";
 
@@ -111,7 +112,7 @@ static const char __far s_help_sf_1[] =
     "Y1, Y2, Y3, Y4: move the view over the picture\n\n"
     "START + Y1 (Y up), a second: back to the menu\n"
     "START + Y2 (Y right): four sprites to a line, on and off\n"
-    "START + Y3 (Y down): the whole picture, squeezed\n"
+    "START + Y3 (Y down): the menu (video, sound, options)\n"
     "START + Y4 (Y left): the numbers, on and off";
 static const char __far s_help_sf_2[] =
     "SF-7000: disks\n\n"
@@ -129,6 +130,7 @@ static const char __far s_help_gb_1[] =
     "START + A, half a second: keep the state\n"
     "START + B, half a second: bring it back\n"
     "START + Y1 (Y up), a second: back to the menu\n"
+    "START + Y3 (Y down): the plugin's menu\n"
     "START + Y4 (Y left): the numbers, on and off";
 static const char __far s_help_gb_2[] =
     "Game Boy: saves\n\n"

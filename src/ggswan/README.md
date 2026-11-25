@@ -6,10 +6,9 @@ emulated by a dynamic recompiler (Z80 to V30MZ code), with the original
 interpreter kept for the parts that need it. The Game Gear video memory is
 mapped onto the WonderSwan's own tile and screen hardware.
 
-Status: fairly stable (patch 193). Tested mostly in the nileswan-medem
-emulator and with the host test tools; since 2026-11-16 the five plugins
-also run on a WonderSwan (a SwanCrystal with a nileswan): see "On the
-console" below.
+Status: fairly stable (patch 256). Tested in the nileswan-medem emulator,
+with the host test tools and, since 2026-11-16, on a WonderSwan (a
+SwanCrystal with a nileswan): see "On the console" below.
 
 ## Installation and use
 
@@ -20,9 +19,12 @@ console" below.
 3. Choose a `.gg` file in the SwanShellDX menu: the menu loads the
    plugin, which loads the game (up to 1 MiB) and starts it.
 
-The start screen shows a few lines (SD card, banks, CPU mode) for about a
-second, then the game starts. The number at the top right of the screen
-(`P` and a number) is the plugin's patch number.
+The start screen shows a few lines: the game's name and size, the card,
+the ROM's banks, the CPU mode, and the start-up times in milliseconds
+(`SD` the card's mount, `ROM` the ROM's read, `INIT` the rest). It stays
+while a key is held (hold one at the launch to read it); otherwise the
+game starts at once. `PATCH` and a number at the top right is the
+plugin's patch number.
 
 ## Controls
 
@@ -68,7 +70,28 @@ of the recompiler is behind a problem.
 | START + A, held half a second | **The state kept** (patch 187): the game as it is at that moment, in memory and in a file next to the ROM (`.st0`); the sound stops for the second or two the file takes. `SAVE` in the left border when the numbers are shown |
 | START + B, held half a second | **The state brought back** (`LOAD`; `NONE` when none has been kept), also after the console has been off. What was translated is translated again: a pause of a moment |
 | START + Y1 (Y up), held for a second | **Back to the menu** (the cartridge RAM is then saved: see below). |
+| START + Y3 (Y down) | **The on-screen menu** (see below): the game stops while it is open. |
 | Y4 (Y left) held, then START | **The numbers in the borders**, off and on (patch 151). (Y4 first: START alone is the game's Start button.) |
+
+## The on-screen menu (START + Y3 (Y down))
+
+In ggswan, smsswan, sgswan and sfswan (gbswan has its own, below). X1 (X
+up) and X3 (X down) choose a line, A opens a page, A, X2 (X right) or X4
+(X left) change a value, B goes back and closes the menu (START + Y3
+closes it too). The game stops while the menu is open.
+
+| Page | Lines |
+|---|---|
+| VIDEO | FRAMESKIP (OFF, AUTO, 1, 2, 3, 5); STRETCH (smsswan, sgswan, sfswan: the whole picture squeezed into the 144 lines); PROFILER (OFF, FPS, ON: the numbers); SPRITE LIMIT (sgswan, sfswan: four sprites to a line, as the chip); GAME FPS, the game's frames in the last second before the menu opened (patch 254) |
+| AUDIO | VOLUME (0-8), SOUND (on, off) |
+| STATES | SAVE, LOAD (not in sfswan) |
+| OPTIONS | SETTINGS FOR: ALL GAMES or THIS GAME; RESET TO DEFAULTS |
+| ABOUT | The plugin and its patch number |
+
+The settings are saved when the menu closes, if something changed: for
+all games in `/NILESWAN/PLUG_GG.CFG` (`PLUG_SMS.CFG`, `PLUG_SG.CFG`,
+`PLUG_SF.CFG`), or for one game in a `.cfg` file next to its ROM. At the
+start a game's own file is used if there is one, else the plugin's.
 
 ## Saves
 
@@ -147,7 +170,8 @@ interrupts a second).
 
 - The Game Gear view is 160x144; the WonderSwan screen is 224x144, so the
   game is centered with borders on both sides.
-- Background priority only with Y1 (Y up) at the start (see above).
+- Background priority only with Y1 (Y up) at the start (see above);
+  smsswan has it always, except while the numbers are shown.
 - Some games run below full speed in their heaviest parts.
 - Requires a WonderSwan Color (or SwanCrystal) for the color modes and
   the sound DMA.
@@ -186,6 +210,7 @@ the keys do.
 | START + B, held half a second | **The state brought back** (`LOAD`; `NONE` when none has been kept). A pause of a moment follows, and others as the game goes on: what was translated is translated again |
 | START + Y1 (Y up), held for a second | Back to the menu |
 | START + Y4 (Y left) | The numbers in the left border, on and off |
+| START + Y3 (Y down) | The on-screen menu (patch 229): VIDEO (FRAMESKIP, PROFILER), AUDIO, STATES, OPTIONS (settings for all games, `/NILESWAN/PLUG_GB.CFG`, or for this game), ABOUT |
 
 The state is kept in the cartridge's PSRAM and, since patch 182, in a
 file next to the ROM with `.st0` for its extension, written when the
@@ -220,8 +245,8 @@ the picture while playing. The background priority is always on.
 | START + A, held half a second | **The state kept** (patch 187): the game as it is at that moment, in memory and in a file next to the ROM (`.st0`); the sound stops for the second or two the file takes. `SAVE` over the side of the picture when the numbers are shown |
 | START + B, held half a second | **The state brought back** (`LOAD`; `NONE` when none has been kept), also after the console has been off. What was translated is translated again: a pause of a moment |
 | START + Y1 (Y up), held for a second | Back to the menu |
-| START + Y4 (Y left) | **The numbers** (FPS, the recompiler's, the profile) over the sides of the picture, on and off (patch 151). They use screen 2, as the background's priority does: with the numbers on, no priority (as with Y1 (Y up) held at the start) |
-| START + Y3 (Y down) | **Whole picture**, on and off (an experiment): the 192 lines squeezed into the 144 of the screen, one line in four left out. It takes about a quarter of the CPU, small text loses lines, and sprites keep their height (the pieces of a tall figure overlap). Sideways the view is still 224 columns. |
+| START + Y4 (Y left) | **The numbers** (FPS, the recompiler's, the profile) over the sides of the picture, on and off (patch 151). They use screen 2, as the background's priority does: with the numbers on (also PROFILER FPS in the menu) every sprite is in front of the background (Micro Machines' boat over the bridge). To read the FPS with the priority on, see GAME FPS in the menu's VIDEO page |
+| START + Y3 (Y down) | **The on-screen menu** (above). The **whole picture** (an experiment, VIDEO > STRETCH): the 192 lines squeezed into the 144 of the screen, one line in four left out. It takes about a quarter of the CPU, small text loses lines, and sprites keep their height (the pieces of a tall figure overlap). Sideways the view is still 224 columns. |
 | Y1 (Y up) held at the start | **Diagnostics** over the sides of the picture (the same numbers as in the Game Gear's borders) instead of the background priority |
 
 Mappers: Sega's, and Codemasters' (found from the cartridge header).
@@ -262,8 +287,8 @@ playing, as smsswan's.
 | START + B, held half a second | **The state brought back** |
 | START + Y1 (Y up), held for a second | Back to the menu |
 | START + Y4 (Y left) | **The numbers** over the sides of the picture, on and off (patch 151; as Y1 (Y up) held at the start) |
-| START + Y3 (Y down) | **Whole picture**, on and off (patch 150), as smsswan's: the 192 lines squeezed into the 144 of the screen, one line in four left out; sprites keep their height (the pieces of a tall figure overlap by a quarter). The view still moves sideways. A screen of more different characters than there are tiles for (558) shows some of them empty |
-| START + Y2 (Y right) | **Four sprites to a line**, on and off (off at the start; it was START + Y3 (Y down) until patch 147). The SG-1000 draws four sprites on a line and leaves the others out, which is the flicker of its games; the WonderSwan can draw them all, and does. On: as the SG-1000 |
+| START + Y3 (Y down) | **The on-screen menu** (above). The **whole picture** is its VIDEO > STRETCH (patch 150), as smsswan's: the 192 lines squeezed into the 144 of the screen, one line in four left out; sprites keep their height (the pieces of a tall figure overlap by a quarter). The view still moves sideways. A screen of more different characters than there are tiles for (558) shows some of them empty |
+| START + Y2 (Y right) | **Four sprites to a line**, on and off (off at the start; also the menu's VIDEO > SPRITE LIMIT; it was START + Y3 (Y down) until patch 147). The SG-1000 draws four sprites on a line and leaves the others out, which is the flicker of its games; the WonderSwan can draw them all, and does. On: as the SG-1000 |
 | Y1 (Y up) held at the start | **Diagnostics** over the sides of the picture (FPS and the recompiler's numbers; on the right, with Y4 (Y left) held too: K the tiles drawn in the last second, M the background tiles in use) |
 
 There: Graphics I and II, multicolor, sprites of 8x8 and 16x16 pixels,
@@ -299,7 +324,7 @@ from it too, and `BOOT` is typed for it.
 | Y1 (Y up), Y3 (Y down), Y4 (Y left), Y2 (Y right) | Move the view over the picture, as sgswan's |
 | START + Y1 (Y up), held for a second | Back to the menu |
 | START + Y4 (Y left) | **The numbers** over the sides of the picture, on and off (patch 151; as Y1 (Y up) held at the start) |
-| START + Y3 (Y down) | The whole picture squeezed, on and off, as sgswan's (not in text mode: Disk BASIC's screen stays a view) |
+| START + Y3 (Y down) | The on-screen menu; the whole picture squeezed is its VIDEO > STRETCH, as sgswan's (not in text mode: Disk BASIC's screen stays a view) |
 | START + Y2 (Y right) | Four sprites to a line, on and off, as sgswan's |
 | B held at the start | Start from the system disk |
 
@@ -564,3 +589,87 @@ before the game, START for the next) and with ggswan's X3 (X down):
 | 191 | gbswan, the cartridge's RAM taken for open. After 190 Gio asked whether to go on this way at all; the answer was to measure every game there is here (two of twelve at full speed, five between 83% and 93%) and to try something larger, traces - but the profile for that showed first where Super Mario Land 2's time is: it keeps its variables in the cartridge's RAM, and every access there was `cmp byte [drc_ram_ok], 1` / `jne` / `mov es, [drc_ram_seg]` / the access / `jmp` over the other way, some 14 cycles for three; with the tests around an access through a pointer, half the translated code's time. Now a block is translated taking that RAM for what it is at the time, plain and enabled (`cart_sure`): no test and, for a known address, no other way; and ES is loaded once for accesses in a row (`es_ram`). The first time `gbf_plat_ram` finds the RAM otherwise, everything translated is forgotten and nothing is taken for sure again (`drc_cart_unsure`): a program that closes its RAM after every use pays one flush and runs as before. Console count, a Game Boy frame: Super Mario Land 2 55,044 -> 46,981 (-14.6%), under the 51,430 of full speed; the others as they were (ZAS 70,533, Donkey Kong Land 89,446, X 99,314, Race Drivin' 119,825: none of them goes to that RAM that way); the memory at each scene's end the same, 24 tests of 24. The forgetting itself is gone through by Mooneye's `mbc1/bits_ramg` and `mbc1/ram_64kb` (one each, and they pass); no game here closes its RAM while it runs. Not run on the console. |
 | 192 | gbswan, an exit to an address found as the program runs (RET, JP (HL)) remembers where it went first. The larger attempt Gio agreed to after 190, measured before written: in Castlevania II the jumps between blocks that traces would remove are 4% of a frame, and `s_lookup`, which finds the block a RET goes to, 12.3% - 182 times a frame at 42 cycles on the console; and four exits in five go where that same exit went the first time (`GBRUN_DYNSITE=1`: 82% in Castlevania II and in Super Mario Land 2). So the exit is now `cmp si, (that address)` / `jne` / `jmp far (its block)`, some 12 cycles, with the tables for any other address; from a block in the first ROM area the second area's bank is compared too. The address, the bank's key and the jump are written by the dispatcher the first time the exit is taken (`s_dyn_first`, `drc_dlink`); the Game Boy's time is counted exactly as before. Console count, a Game Boy frame: Castlevania II 61,878 -> 57,844 (-6.5%), Super Mario Land 2 46,981 -> 44,596 (-5.1%), Super Mario Land 35,158 -> 32,334 (-8.0%), X 99,314 -> 95,005 (-4.3%), R-Type 58,978 -> 57,304 (-2.8%), Yoshi 58,206 -> 56,566 (-2.8%), Donkey Kong Land 89,446 -> 87,005 (-2.7%), R-Type II 35,697 -> 34,785 (-2.6%), ZAS 70,533 -> 69,193 (-1.9%), Batman 61,357 -> 60,387 (-1.6%), Race Drivin' 119,825 -> 118,276 (-1.3%), Balloon Kid 69,281 -> 68,659 (-0.9%). The memory at each scene's end the same, 24 tests of 24. Not run on the console. |
 | 193 | gbswan, the sprites off the screen are no longer sorted. After 192 Gio asked what could still matter and proposed asking ChatGPT (reasoning High; the brief and its answer are in GB-IMPLEMENTATION.md). Its first proposal, the next block put right after the one that jumps to it, measured before anything was written: those jumps are 215 cycles of Castlevania II's 57,806, 0.4% - not done. (And a fault of mine found on the way: `gbrun.py`'s counts of how many times an instruction runs, the `xN` of `GBRUN_JMPS`, come out some nine times too many; the cycles are right. The estimates made from them - 190's above all - were wrong for that.) What the routines' profile showed instead: `gbv_sprites_asm` is 8.5% of that frame, and half of it the insertion sort's moves, 165 a frame - the game has four or five of its forty sprites on the screen and moves them round the OAM, and each one that came onto the screen was moved past all those that were not, which were sorted too, last. Now only the ones on the screen are sorted; the others are written to next frame's order as they come. The WonderSwan's sprite table is the same at every frame (`GBRUN_SPRHASH=1`: one checksum of all of them, equal for the two builds in three games). Console count, a Game Boy frame: Castlevania II 57,806 -> 54,689 (-5.4%), Super Mario Land 32,334 -> 31,288 (-3.2%), R-Type II 34,785 -> 33,844 (-2.7%), Super Mario Land 2 44,550 -> 43,609 (-2.1%), R-Type 57,304 -> 56,498 (-1.4%), Batman 60,387 -> 59,591 (-1.3%), Yoshi 56,566 -> 55,882 (-1.2%), Balloon Kid 68,659 -> 67,897 (-1.1%), ZAS 69,193 -> 68,626 (-0.8%), Donkey Kong Land 87,005 -> 86,522 (-0.6%), Race Drivin' 118,276 -> 117,951 (-0.3%), X 95,005 -> 94,870 (-0.1%). 24 tests of 24, the memory at each scene's end the same. Not run on the console. |
+
+### After patch 193
+
+One line per commit, oldest first (the subject of each; the commits
+say more). Some have no patch number in their subject.
+
+- menu: the thumbnail comes up and goes away faster
+- menu: the thumbnail after a quarter of a second
+- menu: the wallpaper under the thumbnail comes back from the PSRAM
+- menu: START + Y1 in a WonderSwan game goes back to the menu
+- menu: the START+Y1 choice is kept in the settings file
+- menu: START+Y1 only in Settings > System > Advanced
+- menu: the game's sound is silenced when the menu starts
+- bootstub: START+Y1 hook only in real padding; safer delay-loop check
+- bootstub: START+Y1 hook reached by a far call through the bank's segment
+- bootstub: flash kept awake whenever START+Y1 is on
+- menu: START+Y1 patches from /NILESWAN/PATCHES, recognised by the footer
+- menu: START+Y1 automatic patch moved from the bootstub to the menu, more forms
+- menu: START+Y1 second read reuses the hook already placed
+- menu: START+Y1 banked read without room calls a hook in a linear bank
+- ggswan/smsswan/sgswan: cartridge windows back after the card is used
+- menu: "Show save files" also hides the plugins' .sav and .st0
+- gbswan: sound frame faster (Gemini GB-1, fixed)
+- gbswan: s_wrt without dead code, DI kept on the quick paths (Gemini GB-4)
+- gbswan: line and cycle from a remembered line, wait for STAT on DI (Gemini GB-3)
+- gbswan: small cuts - ALU A,(HL) in the cartridge's RAM, one keypad scan, IME first (Gemini GB-6)
+- gbswan: flags built only when read (Gemini GB-5)
+- gbswan: a found exit jumps short when it can; ROM0 -> ROMX constant exits (Gemini GB-2)
+- gbswan: the cartridge's RAM through HL tested first when HL points there (WIP-194 finished)
+- ggswan: links within 127 bytes as "jg rel8", no needless relinking (Gemini Z-1)
+- ggswan: BIT b,r / BIT b,(HL) as one TEST when only Z is read after it (Gemini Z-3)
+- smsswan: Codemasters bank writes through the map routine (Gemini Z-4)
+- ggswan: RET / JP (HL) inline cache without [z80.pc] on a hit, slot 0 -> slot 1 too (Gemini Z-5)
+- sgswan: sprite collisions in 16 bits for magnification 1, no div in sg_line_entry (Gemini Z-6)
+- sgswan: sprite cache without thrashing, sg_dirty skips non-BG pages (Gemini Z-7)
+- sgswan: TMS9918A tile conversion in V30MZ assembly (Gemini Z-8)
+- sgswan: name table update in V30MZ assembly (Gemini Z-9)
+- ggswan: slow ways of write_byte, ix_ram, ix_write at the block's end; BIT b,(IX+d) for Z only (Gemini Z-10)
+- ggswan: P/V overflow set in the cold tail, no taken jump when there is no overflow
+- ggswan: rare paths in the cold tail (segment after INC HL, CRAM, full PSG queue, RMW outside work RAM), loops fall through (ChatGPT)
+- ggswan: SBC/ADC HL and ADD IX with lazy flags, H only when read, more rare paths in the cold tail (Gemini)
+- sgswan: dirty tiles of Graphics I/II in one V30MZ pass (Gemini G1, 4 fixes)
+- ggswan/smsswan: V counter wait loop through an emitted routine, not the C helper (Gemini G2)
+- ggswan: dispatcher hot path in V30MZ (quick re-entry, lookup, block setup and accounting) (Gemini G3)
+- ggswan: name table rows and the backdrop's tile count in V30MZ, no 32-bit multiply in event_step (Gemini G4)
+- ggswan: patch number 218 on the screen
+- ggswan: translation with fewer checks per instruction, emitted code unchanged (Gemini G5a, G5b)
+- ggswan/smsswan/sgswan/sfswan: on-screen menu, START + Y3 (first step: VIDEO, STATES, ABOUT)
+- ggswan/smsswan/sgswan/sfswan: menu fixes after the first console test (patch 221)
+- ggswan/smsswan: menu, the profiler switch moved screen 2 (patch 222)
+- ggswan/smsswan/sgswan/sfswan: menu VIDEO, frameskip (patch 223)
+- ggswan/smsswan/sgswan/sfswan: profiler, the frameskip under the FPS (patch 224)
+- ggswan/smsswan/sgswan/sfswan: menu AUDIO, volume and sound on/off (patch 225)
+- ggswan/smsswan/sgswan/sfswan: menu OPTIONS, settings saved per plugin or per game (patch 226)
+- ggswan/smsswan/sgswan/sfswan: menu PROFILER OFF / FPS / ON (patch 227)
+- plugins: start screen, the game's name and the size in KB (patch 228)
+- gbswan: the on-screen menu, START + Y3; start screen title lines together (patch 229)
+- gbswan: menu VIDEO frameskip; the backdrop back after the menu (patch 230)
+- menu: "Last directory" also puts the cursor on the last file opened (patch 231)
+- ggswan: event_step without divisions on the usual positions, next_event inline (Gemini G6a, patch 232)
+- ggswan: gg_run_frame reads z80.cycles directly, pos_from_left inline (Gemini G6b, patch 233)
+- ggswan: video_present, the diagnostics' timing only in diagnostic mode, no nested interrupt saves (Gemini G6c, patch 234)
+- ggswan: the keys read once a frame (Gemini G6d, adapted to the menu, patch 235)
+- ggswan/smsswan/sgswan/sfswan: the menu leaves the line interrupt on (patch 236)
+- ggswan/smsswan/sgswan/sfswan: menu, the front tiles' switch kept across a change (patch 237)
+- ggswan/smsswan/sgswan/sfswan: settings file, the cartridge windows back from the plugin's values (patch 238)
+- gbswan: settings file, the cartridge windows back from the Game Boy's banks (patch 239)
+- ggswan: event_step, a short path for the four usual events, the rest out of line (Gemini G7a, patch 240)
+- ggswan: gg_run_frame compact, the per-line test mode out of line; gg_line_event tests the position first (Gemini G7b, patch 241)
+- ggswan, gbswan: read the ROM straight into PSRAM; no fixed wait at start (patch 242)
+- ggswan: event_step fast paths for line IRQ on, mid-VBlank stops, GG present-to-VBL (Gemini G8a, patch 243)
+- ggswan, gbswan: back to the 8 KiB ROM loader through IRAM (patch 244)
+- ggswan: show the start-up times on the start screen (patch 245)
+- ggswan, gbswan: read the card at the fast SPI clock (patch 246)
+- Repository text in English only, before publishing (patch 247)
+- README: SwanShellDX, not swanshell's (patch 248)
+- README: screenshots of the menu, the plugins and the tools (patch 249)
+- Plugins: patch number at the top, scope option on one row (patch 250)
+- Menu: VGM player no longer runs out of stack; PCM-heavy tracks keep the keys (patch 251)
+- README: the VGM player (patch 252)
+- ggswan: vwait in O(1), also for AND A / OR A and JP cc (Gemini G10a, patch 253)
+- Plugins: the game's FPS on the menu's VIDEO page (patch 254)
+- .gitignore: the PC test libraries and local plugin copies (patch 255)
+- ggswan README and the plugins' help pages up to date (patch 256)
