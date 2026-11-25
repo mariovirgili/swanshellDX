@@ -485,40 +485,20 @@ static void load_rom(void) {
     uint32_t size = f_size(&fp);
     text_kb("SIZE", size);
 
-    // Straight into the PSRAM, through the RAM window in flash mode, 32 KiB
-    // per f_read: FatFs keeps its buffers in IRAM and only uses the IPC
-    // bank when the card is mounted, and libnile reads whole sectors to
-    // 1000:xxxx on PSRAM with LODSW (and GDMA in color mode), like
-    // swanshell's f_read_rom_banked. Past the end of the file: FFh.
-    // The header is copied to the internal RAM (6000h, the Game Boy's work
-    // RAM later) to be read.
+    // FatFs must run with the RAM window on SRAM (it uses the IPC bank):
+    // 8 KiB at a time into the internal RAM (6000h, the Game Boy's work
+    // RAM later), then into the PSRAM through the RAM window
     uint8_t *buf = (uint8_t*) 0x6000;
     uint32_t done = 0, total = 0x8000;
-    outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_ENABLE);
     while (done < total) {
-        outportw(WS_CART_EXTBANK_RAM_PORT, done >> 16);
-        uint16_t n = 0x8000;
-        void __far *dst = MK_FP(0x1000, (uint16_t) done);
+        unsigned int br = 0;
         if (done < size) {
-            unsigned int br = 0;
-            if (size - done < n)
-                n = size - done;
-            result = f_read(&fp, dst, n, &br);
-            if (result != FR_OK || br != n) {
-                outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_DISABLE);
-                outportw(WS_CART_EXTBANK_RAM_PORT, 0);
-                fail("READ", result != FR_OK ? (uint32_t) result : done + br);
-            }
-            if (n < 0x8000)
-                _fmemset(MK_FP(0x1000, (uint16_t) done + n), 0xFF, 0x8000 - n);
-        } else {
-            _fmemset(dst, 0xFF, n);
+            result = f_read(&fp, buf, 0x2000, &br);
+            if (result != FR_OK) fail("READ", result);
         }
+        if (br < 0x2000) memset(buf + br, 0xFF, 0x2000 - br);
         if (done == 0) {
             // the header: what cartridge it is
-            _fmemcpy(buf, dst, 0x150);
-            outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_DISABLE);
-            outportw(WS_CART_EXTBANK_RAM_PORT, 0);
             uint8_t err = gb_cart_header(buf, size);
             if (err == 1) fail("ROM SIZE", size);
             if (err == 2) fail("CARTRIDGE TYPE", buf[0x147]);
@@ -526,26 +506,22 @@ static void load_rom(void) {
             if (gb.rom_banks > ROM_MAX_BANKS) fail("ROM OVER 1 MB", size);
             if (gb.ram_banks > 4) fail("RAM OVER 32 KB", gb.ram_banks);
             total = (uint32_t) gb.rom_banks << 14;
-            if (total < 0x8000) total = 0x8000;
             text_hex("CARTRIDGE", buf[0x147]);
-            outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_ENABLE);
         }
-        done += 0x8000;
+        outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_ENABLE);
+        outportw(WS_CART_EXTBANK_RAM_PORT, done >> 16);
+        _fmemcpy(MK_FP(0x1000, (uint16_t) done), buf, 0x2000);
+        outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_DISABLE);
+        outportw(WS_CART_EXTBANK_RAM_PORT, 0);
+        done += 0x2000;
     }
     f_close(&fp);
 
-    // check: the last 8 KiB, seen through the RAM window, must be the same
-    // through ROM window 0 (the same PSRAM bank, not the SRAM)
-    outportw(WS_CART_EXTBANK_RAM_PORT, (done - 0x2000) >> 16);
+    // check: the last 8 KiB read must be seen through ROM window 0
     outportw(WS_CART_EXTBANK_ROM0_PORT, (done - 0x2000) >> 16);
     const uint8_t __far *chk = MK_FP(0x2000, (uint16_t) (done - 0x2000));
-    const uint8_t __far *ram = MK_FP(0x1000, (uint16_t) (done - 0x2000));
-    uint16_t i = 0;
-    while (i < 0x2000 && chk[i] == ram[i])
-        i++;
-    outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_DISABLE);
-    outportw(WS_CART_EXTBANK_RAM_PORT, 0);
-    if (i < 0x2000) fail("PSRAM MAP", done);
+    for (uint16_t i = 0; i < 0x2000; i++)
+        if (chk[i] != buf[i]) fail("PSRAM MAP", done);
 }
 
 /* ---- the keys ---- */
