@@ -274,12 +274,11 @@ static void vdp_mode_update(void);
 #endif
 
 static inline void update_irq(void) {
-    uint8_t irq = 0;
-    if ((gg.vdp.status & 0x80) && (gg.vdp.reg[1] & 0x20))
-        irq = 1;
-    else if (gg.vdp.line_pending && GG_LINE_IRQ)
-        irq = 1;
-    z80.irq = irq;
+    if (((gg.vdp.status & 0x80) && (gg.vdp.reg[1] & 0x20))
+            || (gg.vdp.line_pending && GG_LINE_IRQ))
+        z80.irq = 1;
+    else
+        z80.irq = 0;
 }
 
 static uint8_t vdp_read_data(void) {
@@ -883,84 +882,165 @@ static int32_t event_step(uint16_t pos) {
         return event_step_slow(pos);
     }
 
+    // Start of frame (st == 0, pos < 228): also handles GG_LINE_IRQ enabled
+    // (Case A: if line_counter > 0, no late line IRQ can fire on line 0)
+    if (st == 0) {
+        if (pos >= GG_CYCLES_PER_LINE)
+            return event_step_slow(pos);
+        uint8_t c = gg.vdp.line_counter;
+        if (c == 0) {
+            if (GG_LINE_IRQ)
+                return event_step_slow(pos);
+            gg.vdp.line_pending = 1;
+            c = gg.vdp.reg[10];
+        } else {
+            c--;
+        }
+        gg.vdp.line_counter = c;
+        gg.vdp.vscroll_frame = gg.vdp.reg[9];
+        gg.vdp.reg1_frame = gg.vdp.reg[1];
+        gg.vdp.vcounter = 0;
+        update_irq();
+        started = 1;
+        gg.vdp.line_pos = GG_CYCLES_PER_LINE;
+        target = present_cycles();
+        if (GG_LINE_IRQ) {
+            uint16_t u = (uint16_t) c + 1;
+            if (u < GG_PRESENT_LINE)
+                target = u * (uint16_t) GG_CYCLES_PER_LINE;
+        }
+        goto ret_want;
+    }
+
+    // Mid-VBlank stops (Case B: st > GG_VBL_LINE, pos < GG_FRAME_CYCLES):
+    // beyond active lines the counter only reloads and next event is GG_LINES
+    if (st > GG_VBL_LINE) {
+        uint16_t st_pos = gg.vdp.line_pos;
+        if (pos >= st_pos) {
+            uint16_t rem = pos - st_pos;
+            if (rem >= GG_CYCLES_PER_LINE) {
+                while (rem >= 8u * GG_CYCLES_PER_LINE) {
+                    rem -= 8u * GG_CYCLES_PER_LINE;
+                    st += 8;
+                    st_pos += 8u * GG_CYCLES_PER_LINE;
+                }
+                while (rem >= GG_CYCLES_PER_LINE) {
+                    rem -= GG_CYCLES_PER_LINE;
+                    st++;
+                    st_pos += GG_CYCLES_PER_LINE;
+                }
+            }
+            st++;
+            st_pos += GG_CYCLES_PER_LINE;
+            gg.vdp.line_counter = gg.vdp.reg[10];
+            gg.vdp.vcounter = st - 1;
+            update_irq();
+            started = st;
+            gg.vdp.line_pos = st_pos;
+        }
+        target = GG_FRAME_CYCLES;
+        goto ret_want;
+    }
+
 #ifndef GGSWAN_SG1000
-    // VBL line (GG / SMS: GG_VBL_LINE == GG_ACTIVE + 1 > GG_PRESENT_LINE)
-    if (st == GG_VBL_LINE) {
+    // VBL line (SMS: st == GG_VBL_LINE; GG Case C: GG_PRESENT_LINE < st <= GG_VBL_LINE)
+    if (st > GG_PRESENT_LINE) {
+#ifdef GGSWAN_SMS
         uint16_t st_pos = gg.vdp.line_pos;
         if ((uint16_t) (pos - st_pos) < GG_CYCLES_PER_LINE) {
             gg.vdp.line_counter = gg.vdp.reg[10];
             VBL_STATUS();
             gg_diag_vbl();
             gg.vdp.vcounter = st;
-            z80.irq = ((gg.vdp.reg[1] & 0x20) || (gg.vdp.line_pending && GG_LINE_IRQ)) ? 1 : 0;
+            if ((gg.vdp.reg[1] & 0x20) || (gg.vdp.line_pending && GG_LINE_IRQ))
+                z80.irq = 1;
+            else
+                z80.irq = 0;
             started = st + 1;
             gg.vdp.line_pos = st_pos + GG_CYCLES_PER_LINE;
             target = GG_FRAME_CYCLES;
             goto ret_want;
         }
+#else
+        if ((uint16_t) (pos - (uint16_t) (GG_VBL_LINE * (unsigned) GG_CYCLES_PER_LINE)) < GG_CYCLES_PER_LINE
+                && !gg.vdp.irq_debt) {
+            if (st < GG_VBL_LINE) {
+                uint16_t k = GG_VBL_LINE - st;
+                if (k > gg.vdp.line_counter) {
+                    if (GG_LINE_IRQ)
+                        return event_step_slow(pos);
+                    gg.vdp.line_pending = 1;
+                }
+            }
+            gg.vdp.line_counter = gg.vdp.reg[10];
+            VBL_STATUS();
+            gg_diag_vbl();
+            gg.vdp.vcounter = GG_VBL_LINE;
+            if ((gg.vdp.reg[1] & 0x20) || (gg.vdp.line_pending && GG_LINE_IRQ))
+                z80.irq = 1;
+            else
+                z80.irq = 0;
+            started = GG_VBL_LINE + 1;
+            gg.vdp.line_pos = (uint16_t) ((GG_VBL_LINE + 1u) * GG_CYCLES_PER_LINE);
+            target = GG_FRAME_CYCLES;
+            goto ret_want;
+        }
+#endif
+        return event_step_slow(pos);
     }
 #endif
 
-    // Common no-line-IRQ paths (start of frame and present line)
-    if (!GG_LINE_IRQ) {
-        if (st == 0) {
-            if (pos < GG_CYCLES_PER_LINE) {
-                gg.vdp.vscroll_frame = gg.vdp.reg[9];
-                gg.vdp.reg1_frame = gg.vdp.reg[1];
-                if (gg.vdp.line_counter == 0) {
-                    gg.vdp.line_pending = 1;
-                    gg.vdp.line_counter = gg.vdp.reg[10];
-                } else {
-                    gg.vdp.line_counter--;
-                }
-                gg.vdp.vcounter = 0;
-                z80.irq = ((gg.vdp.status & 0x80) && (gg.vdp.reg[1] & 0x20)) ? 1 : 0;
-                started = 1;
-                gg.vdp.line_pos = GG_CYCLES_PER_LINE;
-                target = present_cycles();
-                goto ret_want;
-            }
-        } else {
-            uint16_t pres = GG_PRESENT_LINE;
-            uint16_t ppos = present_cycles();
-            if (st <= pres && (uint16_t) (pos - ppos) < GG_CYCLES_PER_LINE
+    // Present line (1 <= st <= GG_PRESENT_LINE): also handles GG_LINE_IRQ
+    // enabled when k <= line_counter (so l1 = st + c >= pres + 1, at > pos)
+    {
+        uint16_t pres = GG_PRESENT_LINE;
+        uint16_t ppos = present_cycles();
+        if ((uint16_t) (pos - ppos) < GG_CYCLES_PER_LINE
 #if !defined(GGSWAN_SMS) && !defined(GGSWAN_SG1000)
-                    && !gg.vdp.irq_debt
+                && !gg.vdp.irq_debt
 #endif
-               ) {
-                uint16_t k = pres + 1 - st;
-                uint8_t c = gg.vdp.line_counter;
-                if (k <= c) {
-                    gg.vdp.line_counter = c - (uint8_t) k;
+           ) {
+            uint16_t k = pres + 1 - st;
+            uint8_t c = gg.vdp.line_counter;
+            if (k <= c) {
+                gg.vdp.line_counter = c - (uint8_t) k;
+            } else {
+                if (GG_LINE_IRQ)
+                    return event_step_slow(pos);
+                uint8_t r = gg.vdp.reg[10];
+                if (r == 0) {
+                    gg.vdp.line_pending = 1;
+                    gg.vdp.line_counter = 0;
                 } else {
-                    uint8_t r = gg.vdp.reg[10];
-                    if (r == 0) {
-                        gg.vdp.line_pending = 1;
-                        gg.vdp.line_counter = 0;
-                    } else {
-                        uint16_t rem = k - (uint16_t) c - 1;
-                        if (rem > r)
-                            return event_step_slow(pos);
-                        gg.vdp.line_pending = 1;
-                        gg.vdp.line_counter = r - (uint8_t) rem;
-                    }
+                    uint16_t rem = k - (uint16_t) c - 1;
+                    if (rem > r)
+                        return event_step_slow(pos);
+                    gg.vdp.line_pending = 1;
+                    gg.vdp.line_counter = r - (uint8_t) rem;
                 }
-#ifdef GGSWAN_SG1000
-                VBL_STATUS();
-                gg_diag_vbl();
-#endif
-                gg.vdp.vcounter = pres;
-                z80.irq = ((gg.vdp.status & 0x80) && (gg.vdp.reg[1] & 0x20)) ? 1 : 0;
-                gg_platform_frame_end();
-                started = pres + 1;
-                gg.vdp.line_pos = ppos + GG_CYCLES_PER_LINE;
-#ifdef GGSWAN_SG1000
-                target = GG_FRAME_CYCLES;
-#else
-                target = ppos + GG_VBL_DELTA_CYCLES;
-#endif
-                goto ret_want;
             }
+#ifdef GGSWAN_SG1000
+            VBL_STATUS();
+            gg_diag_vbl();
+#endif
+            gg.vdp.vcounter = pres;
+            update_irq();
+            gg_platform_frame_end();
+            started = pres + 1;
+            gg.vdp.line_pos = ppos + GG_CYCLES_PER_LINE;
+#ifdef GGSWAN_SG1000
+            target = GG_FRAME_CYCLES;
+#elif defined(GGSWAN_SMS)
+            target = ppos + GG_VBL_DELTA_CYCLES;
+#else
+            target = ppos + GG_VBL_DELTA_CYCLES;
+            if (GG_LINE_IRQ) {
+                uint16_t u = (uint16_t) (pres + 1) + gg.vdp.line_counter;
+                if (u < GG_VBL_LINE)
+                    target = u * (uint16_t) GG_CYCLES_PER_LINE;
+            }
+#endif
+            goto ret_want;
         }
     }
 
