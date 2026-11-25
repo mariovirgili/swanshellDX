@@ -254,6 +254,30 @@ static void text_title(const char *path) {
 }
 
 // a size in KB (rounded up), in decimal
+// Start-up timing: the VBlank timer counts the frames (75.47 a second)
+// down from FFFFh with no interrupt; read without stopping it.
+static uint16_t t_frames(void) {
+    return 0xFFFF - inportw(WS_TIMER_VBL_COUNTER_PORT);
+}
+
+// "label n" with n in milliseconds (13.25 ms a frame), added to t at n
+static uint8_t put_ms(char *t, uint8_t n, const char __far *label, uint16_t frames) {
+    while (*label)
+        t[n++] = *(label++);
+    t[n++] = ' ';
+    uint32_t ms = ((uint32_t) frames * 1325 + 50) / 100;
+    char d[8];
+    uint8_t k = 0;
+    do {
+        d[k++] = '0' + (uint8_t) (ms % 10);
+        ms /= 10;
+    } while (ms && k < 7);
+    while (k)
+        t[n++] = d[--k];
+    t[n++] = ' ';
+    return n;
+}
+
 static void text_kb(const char __far *label, uint32_t bytes) {
     char t[28];
     uint8_t n = 0;
@@ -4228,6 +4252,11 @@ int main(void) {
         text_corner(pb);
     }
     text_hex("MASK", inportw(IO_NILE_SEG_MASK));
+    // start-up timing (shown above the wait, hold A at the launch to read it)
+    outportb(WS_TIMER_CTRL_PORT, 0);
+    outportw(WS_TIMER_VBL_RELOAD_PORT, 0xFFFF);   // (also sets the counter)
+    outportb(WS_TIMER_CTRL_PORT, WS_TIMER_CTRL_VBL_REPEAT);
+    uint16_t t_sd, t_rom;
 
     // path of the .gg file, left by the menu in the IPC area
     outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_DISABLE);
@@ -4249,8 +4278,10 @@ int main(void) {
     if (result != FR_OK)
         fail("MOUNT", result);
     text_print("SD OK");
+    t_sd = t_frames();
 
     uint16_t banks = load_rom(rom_path);
+    t_rom = t_frames();
 #ifdef GGSWAN_SF7000
     {
         // A disk with no system on it ("SYS:" at its start) does not start:
@@ -4384,6 +4415,20 @@ int main(void) {
         } else {
             text_print("CPU: RECOMPILER");
         }
+    }
+
+    {
+        // milliseconds from the plugin's start: mounting the card, reading
+        // the ROM, the rest up to here
+        uint16_t t_end = t_frames();
+        outportb(WS_TIMER_CTRL_PORT, 0);
+        char t[48];
+        uint8_t n = put_ms(t, 0, "SD", t_sd);
+        n = put_ms(t, n, "ROM", t_rom - t_sd);
+        n = put_ms(t, n, "INIT", t_end - t_rom);
+        t[n++] = 'M'; t[n++] = 'S';
+        t[n < 28 ? n : 28] = 0;
+        text_print(t);
     }
 
     // no fixed wait: the text stays while a key is held (the keys that
