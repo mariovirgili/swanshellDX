@@ -198,12 +198,14 @@ static void text_print(const char __far *s) {
         text_y = 17;   // (the last row is overwritten)
 }
 
-// s at the bottom right of the text screen (the patch number at start)
+// s at the top right of the text screen (the patch number at start), on
+// row 0, which the other lines leave free (on the last row the start-up
+// times wrote over it)
 static void text_corner(const char __far *s) {
     uint8_t n = 0;
     while (s[n]) n++;
     uint8_t y = text_y;
-    text_y = 17;
+    text_y = 0;
     uint8_t x0 = (uint8_t) (27 - n), x = 1;
     // (text_print starts at column 1: pad with spaces)
     char buf[28];
@@ -3672,7 +3674,7 @@ static const char __far *menu_label(uint8_t item) {
     case MI_PAGE_VIDEO: return "VIDEO";
     case MI_PAGE_AUDIO: return "AUDIO";
     case MI_PAGE_OPTIONS: return "OPTIONS";
-    case MI_SCOPE: return "SAVE SETTINGS FOR";
+    case MI_SCOPE: return "SETTINGS FOR";
     case MI_DEFAULTS: return "RESET TO DEFAULTS";
     case MI_VOLUME: return "VOLUME";
     case MI_SOUND: return "SOUND";
@@ -3730,7 +3732,8 @@ static void menu_draw(uint8_t page, uint8_t sel) {
             char t[4] = { (char) ('0' + snd_vol), '/', '8', 0 };
             menu_text(row, 22, t);
         } else if (it[i] == MI_SCOPE) {
-            menu_text(row + 1, 4, cfg_game ? "THIS GAME" : "THE PLUGIN (ALL GAMES)");
+            // (on the same row: on the next one it touched the item below)
+            menu_text(row, 17, cfg_game ? "THIS GAME" : "ALL GAMES");
         } else if (it[i] == MI_PROFILER) {
             uint8_t l = prof_level();
             menu_text(row, 22, l == 0 ? "OFF" : l == 2 ? "FPS" : "ON");
@@ -4242,7 +4245,7 @@ int main(void) {
     text_print("GGSWAN 0.1 - GAME GEAR");
 #endif
     {
-        // the patch number, bottom right
+        // the patch number, top right
         char pb[12] = "PATCH ";
         uint8_t v = GGSWAN_PATCH, n = 6;
         if (v >= 100) pb[n++] = '0' + v / 100;

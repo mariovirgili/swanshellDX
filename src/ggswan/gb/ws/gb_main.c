@@ -819,7 +819,7 @@ static const char __far *menu_label(uint8_t item) {
     case MI_SOUND: return "SOUND";
     case MI_SAVE: return "SAVE";
     case MI_LOAD: return "LOAD";
-    case MI_SCOPE: return "SAVE SETTINGS FOR";
+    case MI_SCOPE: return "SETTINGS FOR";
     case MI_DEFAULTS: return "RESET TO DEFAULTS";
     }
     return "";
@@ -994,7 +994,8 @@ static void menu_draw(uint8_t page, uint8_t sel) {
             break;
         }
         case MI_SOUND: menu_put(row, 22, gb_snd_mute ? "OFF" : "ON"); break;
-        case MI_SCOPE: menu_put(row + 1, 4, cfg_game ? "THIS GAME" : "THE PLUGIN (ALL GAMES)"); break;
+        // (on the same row: on the next one it touched the item below)
+        case MI_SCOPE: menu_put(row, 17, cfg_game ? "THIS GAME" : "ALL GAMES"); break;
         }
     }
     menu_put(16, 2, page == MP_MAIN ? "A: OPEN  B: CLOSE" : "A: CHANGE  B: BACK");
