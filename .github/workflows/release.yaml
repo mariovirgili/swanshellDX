@@ -4,6 +4,7 @@ name: Release
 # SwanShellDX from this tree and publishes a GitHub release with:
 #   SwanShellDX-<tag>.zip         the contents of dist/, for the card's root
 #   SwanShellDX-extras-<tag>.zip  START+Y1 patches, icon sets, wallpapers
+# and in the notes the commits since the previous v* tag (@CHANGES@).
 on:
   push:
     tags: [ 'v*' ]
@@ -24,6 +25,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           submodules: recursive
+          fetch-depth: 0
 
       - name: Fetch missing submodules
         run: git config --global --add safe.directory `pwd` && git submodule update --init --recursive
@@ -52,7 +54,22 @@ jobs:
           done
           cp misc/wallpapers/* extras/NILESWAN/WALLPAPERS/
           (cd extras && zip -r -9 "../out/SwanShellDX-extras-${TAG}.zip" .)
-          sed "s/@TAG@/${TAG}/g" .github/release-notes.md > out/notes.md
+          # the changes since the previous tag: one line per commit, the
+          # upstream swanshell ones marked with their author
+          PREV=$(git describe --tags --abbrev=0 --match 'v*' "${TAG}^" 2>/dev/null || true)
+          if [ -n "$PREV" ]; then
+            {
+              echo "## Changes since ${PREV}"
+              echo
+              git log --no-merges --reverse --format='%an%x09%s' "${PREV}..${TAG}" |
+                awk -F '\t' '{ if ($1 == "Claude" || $1 ~ /mariovirgili|Gio/) print "- " $2; else print "- " $2 " (upstream swanshell, " $1 ")" }'
+              echo
+            } > out/changes.md
+          else
+            : > out/changes.md
+          fi
+          sed "s/@TAG@/${TAG}/g" .github/release-notes.md |
+            awk -v f=out/changes.md '$0 == "@CHANGES@" { while ((getline l < f) > 0) print l; next } 1' > out/notes.md
           ls -la out
 
       - name: Publish
