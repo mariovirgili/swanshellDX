@@ -3659,6 +3659,10 @@ __attribute__((noinline)) static void state_load(void) {
     drc_flush_request = 1;
     psg_dirty = 0xFF;
     psg_output();
+#ifdef GGSWAN_COLECO
+    sg_spr_dirty = 1;      // refresh WS sprite ports even right after a reboot
+    cv_kp_prev = 0xFFFF;   // no spurious key edge if saved with keypad open
+#endif
     st_req = 0;
     st_held = 2;
     st_wait = 1;
