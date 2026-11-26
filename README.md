@@ -4,7 +4,7 @@ SwanShellDX is an extended build of [swanshell](https://github.com/asiekierka/sw
 the file selector and launcher of the [nileswan](https://49bitcat.com/docs/nileswan/)
 flash cartridge for the WonderSwan, WonderSwan Color and SwanCrystal.
 
-It keeps everything swanshell does and adds emulator plugins for five other
+It keeps everything swanshell does and adds emulator plugins for six other
 systems, a way back to the menu from any game, game pictures, menu music and
 a number of menu features.
 
@@ -30,10 +30,11 @@ plugin is a file in `/NILESWAN` on the microSD card.
 | `PLUG_SG.BIN` (sgswan) | Sega SG-1000 | `.sg` |
 | `PLUG_SF.BIN` (sfswan) | Sega SC-3000 with the SF-7000 disk unit | `.sf` disk images |
 | `PLUG_GB.BIN` (gbswan) | Nintendo Game Boy | `.gb` (MBC1, MBC2, MBC3 with its clock, MBC5) |
+| `PLUG_CV.BIN` (cvswan) | ColecoVision | `.col` (up to 32 KiB; needs the BIOS, below) |
 
 How they work:
-- The Z80 plugins (Game Gear, Master System, SG-1000, SF-7000) and the Game
-  Boy plugin run the game's CPU through a dynamic recompiler: Z80 or Game Boy
+- The Z80 plugins (Game Gear, Master System, SG-1000, SF-7000, ColecoVision)
+  and the Game Boy plugin run the game's CPU through a dynamic recompiler: Z80 or Game Boy
   code is translated to V30MZ code as it runs.
 - The video chips are mapped onto the WonderSwan's own tiles, screens and
   sprites, and the sound onto its sound channels.
@@ -53,6 +54,7 @@ What they offer:
 <img src="docs/images/plugin-sms.png" alt="Master System: Castle of Illusion" width="224">
 <img src="docs/images/plugin-sg.png" alt="SG-1000: Bank Panic" width="224">
 <img src="docs/images/plugin-gb.png" alt="Game Boy: Batman - Return of the Joker" width="224">
+<img src="docs/images/plugin-cv.png" alt="ColecoVision: Donkey Kong" width="224">
 </p>
 
 The on-screen menu (START + Y3 (Y down)):
@@ -63,6 +65,12 @@ The on-screen menu (START + Y3 (Y down)):
 
 The SF-7000 plugin needs a disk with Disk BASIC on it, copied as
 `/NILESWAN/SF7000.SF` (not included).
+
+The ColecoVision plugin needs the ColecoVision BIOS (8 KiB), copied as
+`/NILESWAN/COLECO.ROM` (not included). Its keypad is on the screen:
+START + Y2 (Y right) opens it, X1-X4 choose a key, A presses it, B closes
+it. MegaCart (over 32 KiB) and Super Game Module games are not supported
+yet.
 
 The plugins and how they are made are described in
 [src/ggswan/README.md](src/ggswan/README.md) and the documents next to it.
@@ -205,7 +213,7 @@ Requirements, as for swanshell:
 Then:
 
     git submodule update --init --recursive
-    make          # the menu and the five plugins
+    make          # the menu and the six plugins
     make dist     # also the BIOS files, fonts and licences, in dist/
 
 `make plugin-ggswan` builds only the plugins.

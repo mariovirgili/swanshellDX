@@ -185,6 +185,8 @@ interrupts a second).
   reference renderer, cycle profiling in an x86 emulator).
 - `SG1000.md`: sgswan, the SG-1000 plugin being made from these sources
   (`-DGGSWAN_SG1000`): the plan, the memory map, what is done.
+- `ws/main.c` and `core/gg.c` under `GGSWAN_COLECO`: cvswan, the
+  ColecoVision plugin (below)
 - `SF7000.md`: the SC-3000 with the SF-7000 and its disks
   (`-DGGSWAN_SF7000`): the machine, which runs on the PC only so far, the
   built-in IPL, what the plugin still needs.
@@ -331,6 +333,45 @@ from it too, and `BOOT` is typed for it.
 Slow: about half the SF-7000's speed at Disk BASIC's prompt, less while
 it reads the disk. What a program writes to the disk is lost when the
 plugin is left.
+
+## cvswan: the ColecoVision plugin
+
+`PLUG_CV.BIN` is built from the same sources with `-DGGSWAN_SG1000
+-DGGSWAN_COLECO` (`make -f Makefile.ggswan CV=1`; the main build makes it
+too). Copy it to `/NILESWAN/PLUG_CV.BIN`: the menu starts it for `.col`
+files, cartridges of up to 32 KiB (patches 268-276).
+
+It needs the ColecoVision's BIOS: **its 8 KiB, copied as
+`/NILESWAN/COLECO.ROM`** (not included: it is not free to give away).
+Without it the start screen says `PUT /NILESWAN/COLECO.ROM` and the game
+does not start.
+
+The machine is the SG-1000's video chip (TMS9918A, as sgswan's: the
+256x192 picture, a 224x144 view of it that the Y buttons move, the whole
+picture squeezed in the menu's VIDEO > STRETCH), the SN76489 sound, the
+Z80 through the recompiler, 1 KiB of RAM repeated from 6000h, the
+cartridge from 8000h, and the video chip's interrupt as an NMI.
+
+| Keys | Function |
+|---|---|
+| X1-X4 | The joystick |
+| A, B | Left fire, right fire |
+| Y1 (Y up), Y3 (Y down), Y4 (Y left), Y2 (Y right) | Move the view over the picture, as sgswan's |
+| START + Y2 (Y right) | **The keypad** on the screen, bottom right (`1 2 3 / 4 5 6 / 7 8 9 / * 0 #`): X1-X4 choose a key, A presses it (held while A is), B or START + Y2 (Y right) closes it; the key used last stays chosen. Joystick and fires are not the game's while it is open |
+| START + Y3 (Y down) | The on-screen menu; sprites four to a line is its VIDEO > SPRITE LIMIT |
+| START + A, held half a second | The state kept, in memory and in a `.st0` file next to the ROM |
+| START + B, held half a second | The state brought back |
+| START + Y1 (Y up), held for a second | Back to the menu |
+| START + Y4 (Y left) | The numbers over the sides of the picture, on and off |
+| Y2 (Y right) + Y4 (Y left) together | Pause and resume, frame by frame with Y3 (Y down) |
+
+START alone does nothing: the ColecoVision has no Pause key. Games ask
+for a level with the keypad: Donkey Kong is START + Y2 (Y right), A (on
+`1`), B.
+
+Not done yet: MegaCart cartridges (over 32 KiB), the Super Game Module, a
+second controller, the Super Action controller. A free replacement for
+the BIOS, written from scratch, is planned.
 
 ## Changelog
 
@@ -673,3 +714,25 @@ say more). Some have no patch number in their subject.
 - Plugins: the game's FPS on the menu's VIDEO page (patch 254)
 - .gitignore: the PC test libraries and local plugin copies (patch 255)
 - ggswan README and the plugins' help pages up to date (patch 256)
+- GitHub: build on SwanShellDX, a release from a tag (patch 257)
+- GitHub release: action-gh-release v3, on Node.js 24 (patch 258)
+- Plugins: the patch number past 255 on the screen (patch 259)
+- ggswan: DEC r / JR NZ or JP NZ back to itself skips its turns (Gemini G10b, patch 260)
+- Help: START + Y3 on the first page of every plugin (patch 261)
+- Settings: START+Y1 back to menu and Force fast SRAM on by default (patch 262)
+- ggswan DRC: runs of LD A,(rr) / OUT (BEh),A / INC rr in one go (Gemini G10c, patch 263)
+- Menu: upstream swanshell 1.3.0pre1 fixes (patch 264)
+- Build: no compiler warnings left (patch 265)
+- ggswan DRC: constant VRAM fill loops in one go (Gemini G10d, patch 266)
+- ggswan DRC: exact wait loops that reload A and change it (Gemini G10e, patch 267)
+- cvswan: ColecoVision plugin, first step (CV1, patch 268)
+- cvswan: controllers, sound and the VDP's NMI (CV2, patch 269)
+- ggswan DRC: Sonic's VRAM loops and name table word pairs (Gemini G10f, patch 270)
+- cvswan: the recompiler for the ColecoVision (CV3, patch 271)
+- cvswan: the keypad on the screen, START + Y2 (CV4, patch 272)
+- ggswan DRC: CRAM bursts in Sonic GG's DJNZ loop and SMS OTIR (Gemini G10g, patch 273)
+- cvswan: savestates brought back after a reboot (CV5, patch 274)
+- ggswan DRC: Micro Machines' OTIR tile rows as one burst, word copies in the OUTI runs (Gemini G10h, patch 275)
+- sgswan/cvswan: the sprite collision flags worked out faster (CV7a, patch 276)
+- GitHub release: the changes since the previous release in its notes (patch 277)
+- README: the ColecoVision plugin (patch 278)
