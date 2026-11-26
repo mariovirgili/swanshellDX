@@ -247,6 +247,9 @@ void ui_hide(void) {
     outportw(WS_DISPLAY_CTRL_PORT, 0);
 }
 
+// a uint32_t that may alias other types (packed rows built byte by byte)
+typedef uint32_t __attribute__((may_alias)) ui_u32_alias_t;
+
 #ifdef CONFIG_ENABLE_WALLPAPER
 bool ui_has_wallpaper(void) {
     return wallpaper_status == 1;
@@ -331,7 +334,7 @@ static void load_native_data(bmp_header_t __far *bmp) {
                 uint8_t packed[4];
                 for (uint8_t k = 0; k < 4; k++)
                     packed[k] = ((src[k << 1] & 15) << 4) | (src[(k << 1) + 1] & 15);
-                dst[r] = wsx_planar_convert_4bpp_packed_row(*((uint32_t*) packed));
+                dst[r] = wsx_planar_convert_4bpp_packed_row(*((ui_u32_alias_t*) packed));
             }
             ws_screen_put_tile(bitmap_screen1, WS_SCREEN_ATTR_PALETTE(pal) | WS_SCREEN_ATTR_BANK(1) | tile, tx, ty);
         }
@@ -563,7 +566,7 @@ static void thumb_draw(uint8_t x0, uint8_t y0, uint8_t w, uint8_t h) {
                     else
                         packed[k >> 1] = nib << 4;
                 }
-                dst[r] = wsx_planar_convert_4bpp_packed_row(*((uint32_t*) packed));
+                dst[r] = wsx_planar_convert_4bpp_packed_row(*((ui_u32_alias_t*) packed));
             }
             ws_screen_put_tile(bitmap_screen1, WS_SCREEN_ATTR_PALETTE(THUMB_PALETTE) | WS_SCREEN_ATTR_BANK(1) | tile, x0 + ix, y0 + iy);
         }

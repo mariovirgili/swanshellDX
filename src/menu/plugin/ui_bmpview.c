@@ -32,7 +32,7 @@
 
 int bmp_load(const char *path) {
     FIL fp;
-    uint16_t br;
+    UINT br;
     uint8_t result = f_open(&fp, path, FA_OPEN_EXISTING | FA_READ);
     if (result != FR_OK) {
         return result;

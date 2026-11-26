@@ -34,6 +34,10 @@
 #include "util/math.h"
 #include "ww/ww.h"
 
+// ws_bank_with_flash() in launch_athena_romfile_add() trips a strict-aliasing
+// warning inside the toolchain macro
+#pragma GCC diagnostic ignored "-Wstrict-aliasing"
+
 #define DIR_SEGMENT 0x4000
 #define OS_SEGMENT 0xE000
 
@@ -249,11 +253,11 @@ int16_t launch_athena_restore_ram0(char *pathbuf) {
 
         while (flen) {
             uint16_t flen_to_write = MIN(buffer_size, flen);
-            memcpy(buffer, floc, flen_to_write);
+            memcpy(buffer, (const void __far*) floc, flen_to_write);
             result = f_write(&fp, buffer, flen_to_write, &bw);
             if (result != FR_OK) { f_close(&fp); return result; }
             flen -= flen_to_write;
-            floc = MK_FP(FP_SEG(floc) + (flen_to_write >> 4), FP_OFF(floc));
+            floc = MK_FP(FP_SEG((const void __far*) floc) + (flen_to_write >> 4), FP_OFF((const void __far*) floc));
         }
 
         outportw(WS_CART_EXTBANK_RAM_PORT, 3);

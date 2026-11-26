@@ -34,7 +34,7 @@ extern FATFS fs;
 
 int16_t launch_bfb(const char *path) {
     FIL fp;
-    uint32_t br;
+    UINT br;
     uint16_t header[2];
 
     menu_music_stop();

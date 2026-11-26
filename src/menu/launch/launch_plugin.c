@@ -29,7 +29,7 @@ int16_t launch_plugin_via_ipc(const char __far *plugin_path, const char *filenam
     int filepath_pos;
     filepath[sizeof(filepath) - 1] = 0;
 
-    int16_t result = f_getcwd(&filepath, sizeof(filepath));
+    int16_t result = f_getcwd(filepath, sizeof(filepath));
     if (result != FR_OK)
         return result;
     filepath_pos = strlen(filepath);
@@ -50,7 +50,7 @@ int16_t launch_plugin_via_ipc(const char __far *plugin_path, const char *filenam
     launch_rom_metadata_t meta;
     result = launch_get_rom_metadata(filepath, &meta);
     if (result == FR_OK) {
-        result = launch_set_bootstub_file_entry(filepath, &bootstub_data->prog);
+        result = launch_set_bootstub_file_entry(filepath, (bootstub_file_entry_t*) &bootstub_data->prog);
         if (result == FR_OK) {
             bootstub_data->prog_patches |= BOOTSTUB_PROG_PATCH_IPC_RESERVED;
             result = launch_rom_via_bootstub(&meta);

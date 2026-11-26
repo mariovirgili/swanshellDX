@@ -96,8 +96,8 @@ static void draw_rtc_timer(ws_cart_rtc_datetime_t *dt, int selected_value, bool 
     // draw arrows
     bitmap_rect_fill(&ui_bitmap, RTC_TIMER_TEXT_X, RTC_TIMER_TEXT_Y - 6, RTC_TIMER_WIDTH, 3, BITMAP_COLOR_4BPP(0));
     bitmap_rect_fill(&ui_bitmap, RTC_TIMER_TEXT_X, RTC_TIMER_TEXT_Y + 19, RTC_TIMER_WIDTH, 3, BITMAP_COLOR_4BPP(0));
-    bitmap_draw_glyph(&ui_bitmap, RTC_TIMER_TEXT_X + (RTC_TIMER_GLYPH_WIDTH * selected_x), RTC_TIMER_TEXT_Y - 6, 8, 3, 0, &arrow_up_glyph);
-    bitmap_draw_glyph(&ui_bitmap, RTC_TIMER_TEXT_X + (RTC_TIMER_GLYPH_WIDTH * selected_x), RTC_TIMER_TEXT_Y + 19, 8, 3, 0, &arrow_down_glyph);
+    bitmap_draw_glyph(&ui_bitmap, RTC_TIMER_TEXT_X + (RTC_TIMER_GLYPH_WIDTH * selected_x), RTC_TIMER_TEXT_Y - 6, 8, 3, 0, arrow_up_glyph);
+    bitmap_draw_glyph(&ui_bitmap, RTC_TIMER_TEXT_X + (RTC_TIMER_GLYPH_WIDTH * selected_x), RTC_TIMER_TEXT_Y + 19, 8, 3, 0, arrow_down_glyph);
 }
 
 static int16_t ui_rtc_clock_inner(void) {

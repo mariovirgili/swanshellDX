@@ -57,7 +57,7 @@ int16_t launch_router_file(char *path, const char *ext, uint16_t flags) {
                         && launch_keypad_patch(path, &meta) == FR_OK) {
                         result = launch_rom_via_bootstub(&meta);
                     } else {
-                        result = launch_set_bootstub_file_entry(path, &bootstub_data->prog);
+                        result = launch_set_bootstub_file_entry(path, (bootstub_file_entry_t*) &bootstub_data->prog);
                         if (result == FR_OK) {
                             result = launch_rom_via_bootstub(&meta);
                         }

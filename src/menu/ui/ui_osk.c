@@ -30,10 +30,10 @@
     \
     uint8_t osk_width = state->width * glyph_width; \
     uint8_t osk_height = (state->height + 1) * glyph_height + buffer_key_pad_height; \
-    uint8_t osk_kheight = (state->height) * glyph_height; \
-    uint8_t osk_x = ((screen_width - osk_width) >> 1) & ~7; \
+    __attribute__((unused)) uint8_t osk_kheight = (state->height) * glyph_height; \
+    __attribute__((unused)) uint8_t osk_x = ((screen_width - osk_width) >> 1) & ~7; \
     uint8_t osk_by = ((screen_height - osk_height) >> 1) & ~7; \
-    uint8_t osk_ky = osk_by + buffer_key_pad_height + glyph_height
+    __attribute__((unused)) uint8_t osk_ky = osk_by + buffer_key_pad_height + glyph_height
 
 static const char __far* get_osk_string(uint8_t tab) {
     switch (tab) {
@@ -276,7 +276,7 @@ static void osk_delete_char(ui_osk_state_t *state) {
     while (true) {
         spp = sp;
         sp = s;
-        if (!wsx_utf8_decode_next(&s)) break;
+        if (!wsx_utf8_decode_next((const char __far**) &s)) break;
     }
 
     if (spp != NULL) {

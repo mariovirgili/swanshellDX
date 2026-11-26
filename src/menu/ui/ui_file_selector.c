@@ -114,7 +114,7 @@ static void ui_file_selector_sort_entries(uint16_t file_count) {
     FILE_SELECTOR_MEMORY_BARRIER();
     for (int i = 0; i < file_count; i++)
         FILE_SELECTOR_INDEXES[i] = i;
-    ui_file_selector_qsort(file_count, compare_filenames, (void*) settings.file_sort);
+    ui_file_selector_qsort(file_count, compare_filenames, (void*) (uint16_t) settings.file_sort);
 }
 
 int16_t ui_file_selector_scan_directory(const char *path, filinfo_predicate_t predicate, uint16_t *count) {

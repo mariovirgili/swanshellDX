@@ -41,7 +41,7 @@
 #define PROGRESS_DIALOG_READ_SHIFT 5
 #define PROGRESS_DIALOG_WRITE_SHIFT 2
 
-static bool ww_is_bin_file(const FILINFO __far *fno, const char __far* ext) {
+__attribute__((unused)) static bool ww_is_bin_file(const FILINFO __far *fno, const char __far* ext) {
     if (fno->fattrib & AM_DIR)
         return false;
 

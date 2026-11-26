@@ -189,7 +189,7 @@ SHA1_Update(SHA1_CTX *context, const uint8_t __far* data, const size_t len)
     j = (context->count[0] >> 3) & 63;
     if ((context->count[0] += len << 3) < (len << 3))
         context->count[1]++;
-    context->count[1] += (len >> 29);
+    context->count[1] += ((uint32_t) len >> 29);
     if ((j + len) > 63) {
         memcpy(&context->buffer[j], data, (i = 64 - j));
         SHA1_Transform(context->state, context->buffer);

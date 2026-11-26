@@ -216,7 +216,7 @@ static uint8_t ic_link(uint16_t seg, uint16_t link, uint16_t pc, uint16_t target
     uint16_t ic = env.state_addr + offsetof(drc_state_t, ic);
     if (x[0] != 0xC6 || x[1] != 0x06 || x[2] != (uint8_t) ic || x[3] != (uint8_t) (ic >> 8))
         return 0;
-    uint8_t slot = x[4] - 1;
+    __attribute__((unused)) uint8_t slot = x[4] - 1;
 #ifdef GGSWAN_SF7000
     uint8_t lform = 0;
     uint8_t ok = 1;

@@ -344,7 +344,7 @@ static void settings_display_orientation_name(uint16_t value, char *buf, int buf
     strncpy(buf, lang_keys[settings_display_orientation_table[value]], buf_len);
 }
 
-static void settings_display_orientation_on_change(const struct setting *set) {
+static void settings_display_orientation_on_change(const struct setting __far *set) {
     if (settings.display_orientation > SETTING_DISPLAY_ORIENTATION_AUTO) {
         bitmap_set_screen_rotation(settings.display_orientation == SETTING_DISPLAY_ORIENTATION_VERTICAL);
     }
@@ -392,7 +392,7 @@ void settings_language_update(void) {
     lang_keys = settings_language_table[settings.language];
 }
 
-static void settings_language_on_change(const struct setting *set) {
+static void settings_language_on_change(const struct setting __far *set) {
     settings_language_update();
 }
 
@@ -492,7 +492,7 @@ static const setting_t __far setting_cart_mcu_spi_speed = {
     }
 };
 
-static void setting_cart_set_rtc_time_action(const struct setting *set) {
+static void setting_cart_set_rtc_time_action(const struct setting __far *set) {
     bitmap_set_screen_force_horizontal(true);
     int16_t result = ui_rtc_clock();
     bitmap_set_screen_force_horizontal(false);
@@ -503,13 +503,13 @@ static void setting_cart_set_rtc_time_action(const struct setting *set) {
 static const setting_t __far setting_cart_set_rtc_time = {
     NULL,
     LK_SETTINGS_CART_SET_RTC_TIME,
-    NULL,
+    0,
     SETTING_TYPE_ACTION,
     0,
     setting_cart_set_rtc_time_action
 };
 
-void setting_factory_reset_action(const struct setting *set) {
+void setting_factory_reset_action(const struct setting __far *set) {
     ui_popup_dialog_config_t dlg = {0};
 
     ui_layout_bars_pattern();
@@ -530,7 +530,7 @@ void setting_factory_reset_action(const struct setting *set) {
 static const setting_t __far setting_factory_reset = {
     NULL,
     LK_SETTINGS_FACTORY_RESET,
-    NULL,
+    0,
     SETTING_TYPE_ACTION,
     0,
     setting_factory_reset_action
@@ -655,7 +655,7 @@ static const setting_t __far setting_system = {
     .category = { &settings_system }
 };
 
-static void settings_theme_accent_color_on_change(const struct setting *set) {
+static void settings_theme_accent_color_on_change(const struct setting __far *set) {
     bool dark = settings.accent_color_high & SETTING_THEME_DARK_MODE;
     int shade = ui_rgb_to_shade(settings.accent_color);
     bool dark_titlebar_text = shade <= (dark ? 5 : 1);
@@ -666,7 +666,7 @@ static void settings_theme_accent_color_on_change(const struct setting *set) {
     outportb(WS_SCR_PAL_2_PORT + 1, shade | (dark_titlebar_text ? 0x70 : 0x00));
 }
 
-static void settings_theme_dark_mode_on_change(const struct setting *set) {
+static void settings_theme_dark_mode_on_change(const struct setting __far *set) {
     bool dark = settings.accent_color_high & SETTING_THEME_DARK_MODE;
     if (ws_system_is_color_active()) {
         if (!ui_has_wallpaper())
@@ -721,7 +721,7 @@ static const setting_t __far setting_txtview_font_size = {
     }
 };
 
-static void settings_theme_menu_music_on_change(const struct setting *set) {
+static void settings_theme_menu_music_on_change(const struct setting __far *set) {
     if (settings.file_flags & SETTING_FILE_MENU_MUSIC)
         menu_music_start();
     else
@@ -743,7 +743,7 @@ static const setting_t __far setting_theme_menu_music = {
     }
 };
 
-static void settings_theme_menu_music_volume_on_change(const struct setting *set) {
+static void settings_theme_menu_music_volume_on_change(const struct setting __far *set) {
     menu_music_apply_volume();
 }
 
@@ -767,7 +767,7 @@ static const setting_t __far setting_theme_menu_music_volume = {
 };
 
 #ifdef CONFIG_ENABLE_WALLPAPER
-static void setting_theme_wallpaper_action(const struct setting *set) {
+static void setting_theme_wallpaper_action(const struct setting __far *set) {
     ui_wallpaper_picker();
 }
 
@@ -781,7 +781,7 @@ static const setting_t __far setting_theme_wallpaper = {
 };
 #endif
 
-static void setting_theme_icons_action(const struct setting *set) {
+static void setting_theme_icons_action(const struct setting __far *set) {
     ui_icons_picker();
 }
 
@@ -912,7 +912,7 @@ static const setting_t __far setting_controls = {
     .category = { &settings_controls }
 };
 
-static void setting_about_action(const struct setting *set) {
+static void setting_about_action(const struct setting __far *set) {
     ui_about();
     ui_layout_bars();
 }
@@ -920,13 +920,13 @@ static void setting_about_action(const struct setting *set) {
 static const setting_t __far setting_about = {
     NULL,
     LK_SETTINGS_ABOUT,
-    NULL,
+    0,
     SETTING_TYPE_ACTION,
     SETTING_FLAG_ACTION_NO_ARROW,
     setting_about_action
 };
 
-static void setting_about_cartridge_action(const struct setting *set) {
+static void setting_about_cartridge_action(const struct setting __far *set) {
     ui_about_cartridge();
     ui_layout_bars();
 }
@@ -934,7 +934,7 @@ static void setting_about_cartridge_action(const struct setting *set) {
 static const setting_t __far setting_about_cartridge = {
     NULL,
     LK_SETTINGS_SYS_INFO_MY_CARTRIDGE,
-    NULL,
+    0,
     SETTING_TYPE_ACTION,
     SETTING_FLAG_ACTION_NO_ARROW,
     setting_about_cartridge_action
