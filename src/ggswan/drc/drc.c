@@ -3109,6 +3109,7 @@ static int idle_body(const ins_t *I) {
 }
 
 static int idle_rest(int n);
+static int idle_exact(int n);
 static int is_idle(int n, uint16_t pc, uint8_t ram) {
     const ins_t *L = &ins[n - 1];
     uint16_t target;
@@ -3149,7 +3150,52 @@ static int is_idle(int n, uint16_t pc, uint8_t ram) {
         idle_target = target;
         return 2;
     }
-    return idle_rest(n - 1);
+    if (idle_rest(n - 1))
+        return 1;
+    return !env->no_fast && idle_exact(n - 1) ? 4 : 0;
+}
+
+// Wait loop that reloads A from memory on every turn and then transforms only
+// A and flags without writing memory or modifying any other register (e.g.
+// Micro Machines 808E: LD A,(D6D3) / DEC A / JR NZ,808E). Every taken turn
+// produces the exact same A and flags as the first, so exact_idle_exit() can
+// skip all remaining turns in the current budget with exact cycle remainder.
+static int idle_exact(int n) {
+    uint8_t a_reloaded = 0;
+    for (int i = 0; i < n; i++) {
+        const ins_t *I = &ins[i];
+        uint8_t op = I->op;
+        if (I->step || I->dyn || I->trace)
+            return 0;
+        if (!I->pre && (op == 0x3A || op == 0x7E || op == 0x0A || op == 0x1A)) {
+            a_reloaded = 1;
+            continue;
+        }
+        if ((I->pre == 0xDD || I->pre == 0xFD) && !I->cb && op == 0x7E) {
+            a_reloaded = 1;
+            continue;
+        }
+        if (!a_reloaded) {
+            // Before A is reloaded: only NOP, EI, or loads into B/C/D/E
+            if (!I->pre && (op == 0x00 || op == 0xFB
+                            || op == 0x46 || op == 0x4E || op == 0x56 || op == 0x5E))
+                continue;
+            if ((I->pre == 0xDD || I->pre == 0xFD) && !I->cb
+                && (op == 0x46 || op == 0x4E || op == 0x56 || op == 0x5E))
+                continue;
+            return 0;
+        }
+        if (idle_body(I))
+            continue;
+        if (!I->pre && (op == 0x3C || op == 0x3D || op == 0x2F          // INC A, DEC A, CPL
+                        || op == 0xC6 || op == 0xD6 || op == 0xEE       // ADD/SUB/XOR n
+                        || (op >= 0x80 && op <= 0x87)                   // ADD A,r/(HL)
+                        || (op >= 0x90 && op <= 0x97)                   // SUB r/(HL)
+                        || (op >= 0xA8 && op <= 0xAF)))                 // XOR r/(HL)
+            continue;
+        return 0;
+    }
+    return a_reloaded;
 }
 
 // the first n instructions only read and test
@@ -3202,10 +3248,39 @@ static void idle_exit(uint16_t target, uint16_t extra) {
     jmp_near(env->exit_off);
 }
 
+// Exact-cycle wait loop exit: after the first taken turn, skips all remaining
+// turns in the current cycle budget while leaving [cycles] identical to running
+// the loop turn by turn: new_cycles = ((cycles - 1) % step) + 1 - step.
+static void exact_idle_exit(uint16_t target, uint16_t extra) {
+    uint16_t step = (uint16_t) (cyc + extra);
+    materialize();
+    sub_cycles(step);
+    uint8_t *done = jcc8(0x7E);                      // jle done (already <= 0)
+    B(0x50); B(0x52);                                // push ax; push dx
+    B(0xA1); W(SA(cycles));                          // mov ax, [cycles] (> 0)
+    B(0x48);                                         // dec ax (>= 0)
+    B(0x31); B(0xD2);                                // xor dx, dx
+    B(0xBE); W(step);                                // mov si, step
+    B(0xF7); B(0xF6);                                // div si (dx = (cycles - 1) % step)
+    B(0x42);                                         // inc dx
+    if (step < 128) { B(0x83); B(0xEA); B((uint8_t) step); }
+    else { B(0x81); B(0xEA); W(step); }              // sub dx, step
+    B(0x89); B(0x16); W(SA(cycles));                 // mov [cycles], dx
+    B(0x5A); B(0x58);                                // pop dx; pop ax
+    land8(done);
+    B(0xC7); B(0x06); W(ZA(pc)); W(target);
+    set_link(0);
+    jmp_near(env->exit_off);
+}
+
 // Taken branch to target: loop back inside the block when possible
 static void branch_to(uint16_t target, uint16_t extra) {
     if ((idle_block == 1 && target == block_pc) || (idle_block == 2 && target == idle_target)) {
         idle_exit(target, extra);
+        return;
+    }
+    if (idle_block == 4 && target == block_pc) {
+        exact_idle_exit(target, extra);
         return;
     }
     if (target == block_pc) {
