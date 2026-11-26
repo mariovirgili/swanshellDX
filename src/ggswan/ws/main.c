@@ -3094,6 +3094,72 @@ static uint16_t load_rom(const char *path) {
     // (a disk: 40 tracks of 16 sectors of 256 bytes)
     if (size != SF_DISK_SIZE)
         fail("DISK SIZE", size);
+#elif defined(GGSWAN_COLECO)
+    // ColecoVision (CV1): standard cartridge up to 32 KiB at bank 0 4000h-BFFFh,
+    // BIOS (8 KiB) at 0000h-1FFFh; C000h-FFFFh is reserved for TMS9918A VRAM
+    if (size > 0x8000)
+        fail("ROM SIZE", size);
+    {
+    uint8_t *buf = (uint8_t*) GG_RAM_ADDR;
+    for (uint16_t done = 0; done < 0x8000; done += 0x2000) {
+        unsigned int br = 0;
+        if (done < size) {
+            result = f_read(&fp, buf, 0x2000, &br);
+            if (result != FR_OK)
+                fail("READ", result);
+        }
+        if (br < 0x2000)
+            memset(buf + br, 0xFF, 0x2000 - br);
+        outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_ENABLE);
+        outportw(WS_CART_EXTBANK_RAM_PORT, LOAD_BANK);
+        _fmemcpy(MK_FP(0x1000, 0x4000 + done), buf, 0x2000);
+        outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_DISABLE);
+    }
+    f_close(&fp);
+    outportw(WS_CART_EXTBANK_ROM0_PORT, LOAD_BANK);
+    {
+        const uint8_t __far *chk = MK_FP(0x2000, 0xA000);
+        for (uint16_t i = 0; i < 0x2000; i++)
+            if (chk[i] != buf[i])
+                fail("PSRAM MAP", 0xA000);
+    }
+    // Load the 8 KiB ColecoVision BIOS from SD into bank 0 0000h-1FFFh
+    {
+        static const char bios_path[] = "/NILESWAN/COLECO.ROM";
+        result = f_open(&fp, bios_path, FA_READ | FA_OPEN_EXISTING);
+        if (result != FR_OK) {
+            text_step = 1;
+            text_print("BIOS NOT FOUND");
+            text_print("PUT /NILESWAN/COLECO.ROM");
+            text_print("ON THE SD CARD (8 KB)");
+            fail("BIOS", result);
+        }
+        uint32_t bsize = f_size(&fp);
+        if (bsize != 0x2000) {
+            f_close(&fp);
+            text_step = 1;
+            text_print("BAD /NILESWAN/COLECO.ROM");
+            text_print("EXPECTED 8192 BYTES");
+            fail("BIOS SIZE", bsize);
+        }
+        unsigned int br = 0;
+        result = f_read(&fp, buf, 0x2000, &br);
+        f_close(&fp);
+        if (result != FR_OK || br != 0x2000)
+            fail("BIOS READ", result);
+        outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_ENABLE);
+        outportw(WS_CART_EXTBANK_RAM_PORT, LOAD_BANK);
+        _fmemcpy(MK_FP(0x1000, 0x0000), buf, 0x2000);
+        _fmemset(MK_FP(0x1000, 0x2000), 0xFF, 0x2000);
+        outportb(WS_CART_BANK_FLASH_PORT, WS_CART_BANK_FLASH_DISABLE);
+        outportw(WS_CART_EXTBANK_ROM0_PORT, LOAD_BANK);
+        const uint8_t __far *chk = MK_FP(0x2000, 0x0000);
+        for (uint16_t i = 0; i < 0x2000; i++)
+            if (chk[i] != buf[i])
+                fail("BIOS MAP", i);
+    }
+    return (size + 0x3FFF) >> 14;
+    }
 #elif defined(GGSWAN_SG1000)
     // (no mapper: 48 KiB at most; the rest of the bank is the VRAM)
     if (size > 0xC000)
@@ -3296,6 +3362,8 @@ static uint8_t st_buf[ST_CHUNK];        // and sfswan's stack is 4 KiB: not ther
 #define ST_MAGIC (0x54530000ul | ((uint32_t) (GGSWAN_PATCH & 0xFF) << 8) | ST_KIND)
 #if defined(GGSWAN_SF7000)
 #define ST_KIND 'F'
+#elif defined(GGSWAN_COLECO)
+#define ST_KIND 'C'
 #elif defined(GGSWAN_SG1000)
 #define ST_KIND '1'
 #elif defined(GGSWAN_SMS)
@@ -3702,6 +3770,8 @@ static void menu_draw(uint8_t page, uint8_t sel) {
     if (page == MP_ABOUT) {
 #ifdef GGSWAN_SF7000
         menu_text(4, 2, "SFSWAN - SC-3000 + SF-7000");
+#elif defined(GGSWAN_COLECO)
+        menu_text(4, 2, "CVSWAN - COLECOVISION");
 #elif defined(GGSWAN_SG1000)
         menu_text(4, 2, "SGSWAN - SG-1000");
 #elif defined(GGSWAN_SMS)
@@ -3809,6 +3879,8 @@ struct cfg {
 _Static_assert(sizeof(struct cfg) == 16, "cfg: 16 bytes");
 #if defined(GGSWAN_SF7000)
 static char cfg_plugin_path[] = "/NILESWAN/PLUG_SF.CFG";
+#elif defined(GGSWAN_COLECO)
+static char cfg_plugin_path[] = "/NILESWAN/PLUG_CV.CFG";
 #elif defined(GGSWAN_SG1000)
 static char cfg_plugin_path[] = "/NILESWAN/PLUG_SG.CFG";
 #elif defined(GGSWAN_SMS)
@@ -4253,6 +4325,8 @@ int main(void) {
     text_init();
 #ifdef GGSWAN_SF7000
     text_print("SFSWAN 0.1 - SC-3000 + SF-7000");
+#elif defined(GGSWAN_COLECO)
+    text_print("CVSWAN 0.1 - COLECOVISION");
 #elif defined(GGSWAN_SG1000)
     text_print("SGSWAN 0.1 - SG-1000");
 #elif defined(GGSWAN_SMS)
@@ -4412,7 +4486,7 @@ int main(void) {
             text_print("PRESS A");
             while (!(ws_keypad_scan() & WS_KEY_A)) {}
         }
-#ifndef GGSWAN_SF_INTERP   // (sfswan, a test build: the interpreter only)
+#if !defined(GGSWAN_SF_INTERP) && !defined(GGSWAN_COLECO)
         gg_cpu_run = drc_z80_run;
         gg_cpu_left = drc_cycles_left;
 #endif
@@ -4421,6 +4495,9 @@ int main(void) {
         if (ws_keypad_scan() & WS_KEY_Y4)
             diag_mode = true;
 
+#ifdef GGSWAN_COLECO
+        text_print("CPU: INTERPRETER");
+#else
         if (ws_keypad_scan() & WS_KEY_Y3) {
             drc_rt_set_no_links(1);
             drc_check = 1;
@@ -4439,6 +4516,7 @@ int main(void) {
         } else {
             text_print("CPU: RECOMPILER");
         }
+#endif
     }
 
     {
@@ -4462,7 +4540,11 @@ int main(void) {
         while (inportb(WS_DISPLAY_LINE_PORT) == 144) {}
     }
 
+#ifdef GGSWAN_COLECO
+    memset(gg_ram, 0, 0x400);
+#else
     memset(gg_ram, 0, 0x2000);
+#endif
 #ifndef GGSWAN_SG1000
     drc_st.hs_last = 16;   // (rec_val[0] = 0: register value 16)
     rec_n = 1;

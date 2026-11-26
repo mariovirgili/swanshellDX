@@ -96,6 +96,11 @@ exit_no_launch:
             // to save)
             if (flags & LAUNCH_ROUTER_USE_SERIAL_OUT) return ERR_FILE_NOT_EXECUTABLE;
             return launch_plugin_via_ipc(s_path_plugin_sg, path);
+        } else if (!strcasecmp(ext, s_file_ext_col)) {
+            // ColecoVision ROM: cvswan, from ggswan's sources (no cartridge
+            // RAM to save)
+            if (flags & LAUNCH_ROUTER_USE_SERIAL_OUT) return ERR_FILE_NOT_EXECUTABLE;
+            return launch_plugin_via_ipc(s_path_plugin_cv, path);
         } else if (!strcasecmp(ext, s_file_ext_sf)) {
             // SF-7000 disk image (163,840 bytes): sfswan, from ggswan's
             // sources. A disk with no system on it is started from the

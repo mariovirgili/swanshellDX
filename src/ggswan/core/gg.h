@@ -25,6 +25,9 @@
 #if defined(GGSWAN_SMS) && defined(GGSWAN_SG1000)
 #error "GGSWAN_SMS and GGSWAN_SG1000: one machine a build"
 #endif
+#if defined(GGSWAN_COLECO) && (!defined(GGSWAN_SG1000) || defined(GGSWAN_SF7000))
+#error "GGSWAN_COLECO requires GGSWAN_SG1000 and excludes GGSWAN_SF7000"
+#endif
 /*
  * What differs with the machine, here and in gg.c:
  *   GG_VBL_LINE   the line whose start sets the frame interrupt flag

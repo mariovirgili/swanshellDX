@@ -8,6 +8,8 @@
 # dist/NILESWAN/PLUG_SG.BIN
 # SF=1: sfswan, the SC-3000 with the SF-7000's disks, with -DGGSWAN_SG1000
 # -DGGSWAN_SF7000; output: dist/NILESWAN/PLUG_SF.BIN
+# CV=1: cvswan, the ColecoVision plugin, with -DGGSWAN_SG1000 -DGGSWAN_COLECO;
+# output: dist/NILESWAN/PLUG_CV.BIN
 
 WONDERFUL_TOOLCHAIN ?= /opt/wonderful
 TARGET = wswan/medium
@@ -32,6 +34,10 @@ ROM		:= dist/NILESWAN/PLUG_SF.BIN
 ifeq ($(INTERP),1)
 DEFINES		+= -DGGSWAN_SF_INTERP
 endif
+else ifeq ($(CV),1)
+NAME		:= cvswan
+DEFINES		+= -DGGSWAN_SG1000 -DGGSWAN_COLECO
+ROM		:= dist/NILESWAN/PLUG_CV.BIN
 else ifeq ($(GB),1)
 # GB=1: gbswan, the Game Boy plugin: its own sources (src/ggswan/gb), none
 # of the others'; output: dist/NILESWAN/PLUG_GB.BIN

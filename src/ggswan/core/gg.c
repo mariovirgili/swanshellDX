@@ -57,7 +57,12 @@ static void map_slot(uint8_t slot) {
 }
 
 static void map_cart_ram(void) {
-#ifdef GGSWAN_SG1000
+#ifdef GGSWAN_COLECO
+    // ColecoVision: no cartridge RAM; slot 2 holds C000h-FFFFh of the ROM
+    map_slot(2);
+    cart_ram = 0;
+    return;
+#elif defined(GGSWAN_SG1000)
     /*
      * sgswan: no mapper register. The memory after a ROM of 32 KiB or
      * less, 8000h-BFFFh, is RAM: where the cartridges with their own have
@@ -118,6 +123,52 @@ void z80_write(uint16_t a, uint8_t v) {
     sf_ram[a] = v;
     if (sf_cmap && sf_cmap[a >> 4])
         gg_platform_code_write(a);
+}
+#elif defined(GGSWAN_COLECO)
+/*
+ * ColecoVision memory map (standard 32 KiB cartridge):
+ *   0000h-1FFFh  8 KiB BIOS (slot 0, first 8 KiB)
+ *   2000h-5FFFh  expansion area (open bus, reads FFh)
+ *   6000h-7FFFh  1 KiB work RAM, mirrored 8 times
+ *   8000h-BFFFh  cartridge ROM low 16 KiB (slot 1)
+ *   C000h-FFFFh  cartridge ROM high 16 KiB (slot 2)
+ */
+uint8_t z80_read(uint16_t a) {
+    if (a < 0x2000)
+        return gg_slot[0][a];
+    if (a < 0x6000)
+        return 0xFF;
+    if (a < 0x8000)
+        return gg_ram[a & 0x03FF];
+    if (a < 0xC000)
+        return gg_slot[1][a & 0x3FFF];
+    return gg_slot[2][a & 0x3FFF];
+}
+
+const uint8_t GGFAR *z80_read_span(uint16_t a, uint16_t *len) {
+    if (a < 0x2000) {
+        *len = 0x2000 - a;
+        return gg_slot[0] + a;
+    }
+    if (a < 0x6000) {
+        static const uint8_t ff = 0xFF;
+        *len = 1;
+        return &ff;
+    }
+    if (a < 0x8000) {
+        *len = 0x0400 - (a & 0x03FF);
+        return gg_ram + (a & 0x03FF);
+    }
+    *len = 0x4000 - (a & 0x3FFF);
+    if (a < 0xC000)
+        return gg_slot[1] + (a & 0x3FFF);
+    return gg_slot[2] + (a & 0x3FFF);
+}
+
+void z80_write(uint16_t a, uint8_t v) {
+    if ((a & 0xE000) == 0x6000)
+        gg_ram[a & 0x03FF] = v;
+    // writes outside 6000h-7FFFh (BIOS, expansion, ROM) are ignored
 }
 #else
 uint8_t z80_read(uint16_t a) {
@@ -274,11 +325,16 @@ static void vdp_mode_update(void);
 #endif
 
 static inline void update_irq(void) {
+#ifdef GGSWAN_COLECO
+    // ColecoVision: VDP drives /NMI (wired in CV2), not /INT
+    z80.irq = 0;
+#else
     if (((gg.vdp.status & 0x80) && (gg.vdp.reg[1] & 0x20))
             || (gg.vdp.line_pending && GG_LINE_IRQ))
         z80.irq = 1;
     else
         z80.irq = 0;
+#endif
 }
 
 static uint8_t vdp_read_data(void) {
@@ -479,6 +535,13 @@ static uint8_t vdp_vcounter(void) {
 /* === I/O ports === */
 
 uint8_t z80_in(uint8_t port) {
+#ifdef GGSWAN_COLECO
+    // ColecoVision (CV1): VDP on A0h-BFh (even: data, odd: status);
+    // controller ports E0h-FFh return FFh (idle) until CV2
+    if (port >= 0xA0 && port < 0xC0)
+        return (port & 1) ? vdp_read_status() : vdp_read_data();
+    return 0xFF;
+#endif
 #ifdef GGSWAN_SG1000
     // SG-1000: 80-BF the TMS9918A (even: data, odd: status); C0-FF the
     // joypads, 0 = pressed (even: joypad 1 in bits 0-5, joypad 2's up and
@@ -546,6 +609,17 @@ uint8_t z80_in(uint8_t port) {
 }
 
 void z80_out(uint8_t port, uint8_t v) {
+#ifdef GGSWAN_COLECO
+    // ColecoVision (CV1): VDP on A0h-BFh (even: data, odd: control);
+    // controller mode (80h-9Fh, C0h-DFh) and PSG (E0h-FFh) are added in CV2
+    if (port >= 0xA0 && port < 0xC0) {
+        if (port & 1)
+            vdp_write_control(v);
+        else
+            vdp_write_data(v);
+    }
+    return;
+#endif
     if (port < 0x40) {
 #ifdef GGSWAN_SMS
         // Master System: even ports are 3E (memory control: the cartridge
@@ -618,7 +692,7 @@ void gg_reset(void) {
         map_slot(s);
     map_cart_ram();
 #endif
-#if defined(GGSWAN_SG1000) && !defined(GGSWAN_SF7000)
+#if defined(GGSWAN_SG1000) && !defined(GGSWAN_SF7000) && !defined(GGSWAN_COLECO)
     {
         // 2000h-3FFFh of the ROM all FFh: RAM there (TwinBee, Bomberman
         // Special and the others made for the adapter have nothing else
@@ -1121,7 +1195,7 @@ static __attribute__((noinline)) uint16_t run_frame_every_line(void) {
 }
 
 void gg_run_frame(void) {
-#if defined(GGSWAN_SMS) || defined(GGSWAN_SG1000)
+#if defined(GGSWAN_SMS) || (defined(GGSWAN_SG1000) && !defined(GGSWAN_COLECO))
     // the Pause button (GG_KEY_START in gg.keys): a non-maskable interrupt
     // when it is pressed, here between two frames (the CPU state is all
     // in z80, also with the recompiler: nothing to stop inside a block)

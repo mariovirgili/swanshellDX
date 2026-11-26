@@ -70,7 +70,12 @@ void z80_reset(void) {
     z80.b = z80.c = z80.d = z80.e = z80.h = z80.l = 0;
     z80.a_ = z80.f_ = z80.b_ = z80.c_ = z80.d_ = z80.e_ = z80.h_ = z80.l_ = 0;
     z80.ixh = z80.ixl = z80.iyh = z80.iyl = 0xFF;
+#ifdef GGSWAN_COLECO
+    // ColecoVision work RAM is at 6000h-7FFFh (OS7 initializes SP to 73B9h)
+    z80.sp = 0x73B9;
+#else
     z80.sp = 0xDFF0;
+#endif
     z80.pc = 0;
     z80.i = 0; z80.r = 0;
     z80.iff1 = z80.iff2 = 0;

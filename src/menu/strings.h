@@ -53,6 +53,7 @@ DEFINE_STRING(s_file_ext_rom, ".rom");
 DEFINE_STRING(s_file_ext_gb, ".gb");
 DEFINE_STRING(s_file_ext_sf, ".sf");
 DEFINE_STRING(s_file_ext_sg, ".sg");
+DEFINE_STRING(s_file_ext_col, ".col");
 DEFINE_STRING(s_file_ext_sms, ".sms");
 DEFINE_STRING(s_file_ext_txt, ".txt");
 DEFINE_STRING(s_file_ext_vgm, ".vgm");
@@ -109,6 +110,7 @@ DEFINE_STRING(s_path_plugin_sms, "/NILESWAN/PLUG_SMS.BIN");
 DEFINE_STRING(s_path_plugin_sg, "/NILESWAN/PLUG_SG.BIN");
 DEFINE_STRING(s_path_plugin_gb, "/NILESWAN/PLUG_GB.BIN");
 DEFINE_STRING(s_path_plugin_sf, "/NILESWAN/PLUG_SF.BIN");
+DEFINE_STRING(s_path_plugin_cv, "/NILESWAN/PLUG_CV.BIN");
 
 DEFINE_STRING(s_error_unknown, "Error %d");
 

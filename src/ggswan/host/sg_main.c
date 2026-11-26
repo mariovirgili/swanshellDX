@@ -294,6 +294,34 @@ int main(int argc, char **argv) {
     printf("disk: %s, %s\n", argv[1], memcmp(disk, "SYS:", 4) ? "no system on it (it does not start)" : "a system disk");
     f = fopen(argv[1], "rb");
 #endif
+#ifdef GGSWAN_COLECO
+    // ColecoVision: 8 KiB BIOS from CV_BIOS at 0000h-1FFFh, cartridge ROM (up
+    // to 32 KiB) at 4000h-BFFFh (mapped to Z80 8000h-FFFFh via slots 1 and 2)
+    const char *bios_path = getenv("CV_BIOS");
+    if (!bios_path || !*bios_path) {
+        fprintf(stderr, "CV_BIOS: set to the 8192-byte ColecoVision BIOS ROM path\n");
+        fclose(f);
+        return 1;
+    }
+    FILE *bf = fopen(bios_path, "rb");
+    if (!bf) { perror(bios_path); fclose(f); return 1; }
+    memset(rom, 0xFF, sizeof(rom));
+    if (fread(rom, 1, 0x2000, bf) != 0x2000 || fgetc(bf) != EOF) {
+        fprintf(stderr, "%s: a ColecoVision BIOS ROM has 8192 bytes\n", bios_path);
+        fclose(bf);
+        fclose(f);
+        return 1;
+    }
+    fclose(bf);
+    rom_size = fread(rom + 0x4000, 1, 0x8000, f);
+    if (!rom_size || fgetc(f) != EOF) {
+        fprintf(stderr, "%s: a ColecoVision ROM has 1 to 32768 bytes (no MegaCart)\n", argv[1]);
+        fclose(f);
+        return 1;
+    }
+    fclose(f);
+    uint32_t alloc = (rom_size + 0x3FFF) & ~0x3FFFu;
+#else
     rom_size = fread(rom, 1, 0xC000, f);
     if (!SF_BUILD && (!rom_size || fgetc(f) != EOF)) {
         fprintf(stderr, "%s: an SG-1000 ROM has 1 to 49152 bytes (no mapper)\n", argv[1]);
@@ -304,6 +332,7 @@ int main(int argc, char **argv) {
     uint32_t alloc = (rom_size + 0x3FFF) & ~0x3FFFu;
     for (uint32_t a = rom_size; a < alloc; a++)
         rom[a] = 0xFF;
+#endif
 
     gg_every_line = 1;   // the reference renderer draws line by line
     gg_init(alloc / 0x4000);
@@ -378,7 +407,11 @@ int main(int argc, char **argv) {
     printf("registers:");
     for (int r = 0; r < 8; r++)
         printf(" %02X", gg.vdp.reg[r]);
+#ifdef GGSWAN_COLECO
+    printf("\nram 6000:");
+#else
     printf("\nram C000:");
+#endif
     for (int a = 0; a < 16; a++)
         printf(" %02X", ram_buf[a]);
     printf("\nsprite status: %u of %u frames unlike the reference\n", st_status_bad, st_frames);
