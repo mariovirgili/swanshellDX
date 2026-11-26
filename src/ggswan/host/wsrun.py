@@ -301,6 +301,7 @@ def retf(pop=0):
     uc.reg_write(UC_X86_REG_CS, cs); uc.reg_write(UC_X86_REG_IP, ip)
 rom_pos = [0]
 sys_disk = open(os.environ['WSRUN_SYS'], 'rb').read() if os.environ.get('WSRUN_SYS') else None
+cv_bios = open(os.environ['WSRUN_BIOS'], 'rb').read() if os.environ.get('WSRUN_BIOS') else None
 cur = [rom]
 STATE_F = os.environ.get('WSRUN_STATE')
 state_file = [bytearray(open(STATE_F, 'rb').read()) if STATE_F and os.path.exists(STATE_F) else None]
@@ -319,6 +320,12 @@ def sd(name):
                 uc.reg_write(UC_X86_REG_AX, 4); retf(); return   # FR_NO_FILE
             else:
                 cur[0] = bytes(state_file[0]); rom_pos[0] = 0
+            uc.reg_write(UC_X86_REG_AX, 0); retf(); return
+        if b'COLECO.ROM' in path.upper():
+            if not cv_bios:
+                uc.reg_write(UC_X86_REG_AX, 4); retf(); return   # FR_NO_FILE
+            cur[0] = cv_bios
+            uc.mem_write(ax + 0xA, len(cur[0]).to_bytes(4, 'little')); rom_pos[0] = 0
             uc.reg_write(UC_X86_REG_AX, 0); retf(); return
         cur[0] = sys_disk if (sys_disk and b'SF7000.SF' in path.upper()) else rom
         if b'SF7000.SF' in path.upper() and not sys_disk:

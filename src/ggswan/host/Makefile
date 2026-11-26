@@ -79,10 +79,13 @@ libdrcsys_sg.so: drcsys.c sg_ref.h ../ws/main.c ../ws/sg_video.inc ../ws/drc_rt.
 
 # cvswan (the ColecoVision plugin, -DGGSWAN_COLECO on top of -DGGSWAN_SG1000):
 # CV_BIOS=coleco.rom ./cvtest game.col 600 out
-cv: cvtest
+cv: cvtest libdrcsys_cv.so
 
 cvtest: sg_main.c sg_ref.h ../core/gg.c ../core/sg_vdp.c ../core/z80.c
 	$(CC) $(CFLAGS) -DGGSWAN_SG1000 -DGGSWAN_COLECO -o $@ $(filter %.c,$^)
+
+libdrcsys_cv.so: drcsys.c sg_ref.h ../ws/main.c ../ws/sg_video.inc ../ws/drc_rt.c ../drc/drc.c ../core/gg.c ../core/sg_vdp.c ../core/z80.c
+	$(CC) $(CFLAGS) -shared -fPIC -DGGSWAN_SG1000 -DGGSWAN_COLECO -DGGSWAN_HOST -DGGSWAN_HOST_VISIBLE= -I. -I../core -I../ws -o $@ $(filter %.c,$^)
 
 # sfswan (the SF-7000, -DGGSWAN_SF7000 on top of -DGGSWAN_SG1000): the
 # machine with its disk, the built-in IPL, keys typed from SF_TYPE
@@ -111,7 +114,7 @@ sgcheck: sgtest
 
 clean:
 	rm -f ggtest wssim libztest.so libdrctest.so libdrcgame.so libdrcsys.so *.ppm
-	rm -f ggtest_sms wssim_sms libdrcsys_sms.so sgtest wssim_sg libdrcsys_sg.so sgtest_*.sg cvtest sftest sf_unit sfcheck_last.ppm
+	rm -f ggtest_sms wssim_sms libdrcsys_sms.so sgtest wssim_sg libdrcsys_sg.so sgtest_*.sg cvtest libdrcsys_cv.so sftest sf_unit sfcheck_last.ppm
 
 .PHONY: all sms sg cv sgcheck sfcheck ztest drctest drcgame drcsys clean
 

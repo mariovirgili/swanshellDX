@@ -75,6 +75,70 @@ static inline uint16_t here(void) { return o_base + (uint16_t) (o - o_start); }
 #define ZA(field) ((uint16_t) (env->z80_addr + offsetof(z80_t, field)))
 #define SA(field) ((uint16_t) (env->state_addr + offsetof(drc_state_t, field)))
 #define VA(field) ((uint16_t) (env->vdp_addr + offsetof(gg_vdp_t, field)))
+#ifdef GGSWAN_COLECO
+static uint16_t c_ram_base, c_ram_win, c_ram_rwin, c_ram_mask, c_ram_iram, c_ram_end;
+static uint16_t c_segtab;
+static uint8_t c_ram_linear, c_segtab_1k, c_rom_wr_ignore;
+static uint8_t c_psg_lo, c_psg_hi, c_vdp_pmask, c_vdp_pval;
+
+static void env_cache(const drc_env_t *e) {
+    env = e;
+    c_ram_win = e->ram_win_size ? e->ram_win_size : 0x2000u;
+    c_ram_base = e->ram_win_size ? e->ram_base : 0xC000u;
+    c_ram_rwin = e->ram_read_win ? e->ram_read_win : 0x4000u;
+    c_ram_mask = e->ram_mask ? e->ram_mask : 0x1FFFu;
+    c_ram_iram = e->ram_win_size ? e->ram_iram : (uint16_t) (e->ram_delta + 0xC000);
+    c_ram_end = (uint16_t) (c_ram_base + c_ram_win);
+    c_ram_linear = (c_ram_mask == (uint16_t) (c_ram_win - 1));
+    c_segtab = e->segtab_addr ? e->segtab_addr : (uint16_t) (e->state_addr + offsetof(drc_state_t, segtab));
+    c_segtab_1k = e->segtab_1k;
+    c_rom_wr_ignore = e->rom_wr_ignore;
+    c_psg_lo = e->psg_hi ? e->psg_lo : 0x40u;
+    c_psg_hi = e->psg_hi ? e->psg_hi : 0x7Fu;
+    c_vdp_pmask = e->vdp_pmask ? e->vdp_pmask : 0xC0u;
+    c_vdp_pval = e->vdp_pmask ? e->vdp_pval : 0x80u;
+}
+
+#define ENV_RAM_BASE   c_ram_base
+#define ENV_RAM_WIN    c_ram_win
+#define ENV_RAM_RWIN   c_ram_rwin
+#define ENV_RAM_MASK   c_ram_mask
+#define ENV_RAM_IRAM   c_ram_iram
+#define ENV_RAM_END    c_ram_end
+#define RAM_LINEAR     c_ram_linear
+#define ENV_SEGTAB     c_segtab
+#define ENV_SEGTAB_1K  c_segtab_1k
+#define ENV_PSG_LO     c_psg_lo
+#define ENV_PSG_HI     c_psg_hi
+#define ENV_VDP_PMASK  c_vdp_pmask
+#define ENV_VDP_PVAL   c_vdp_pval
+#else
+/*
+ * GG, SMS, SG-1000, SF-7000: the memory map is fixed, so the parameters are
+ * constants and the compiler drops the ColecoVision paths (no cost while
+ * translating; the code emitted is the same as before the parameters)
+ */
+static inline void env_cache(const drc_env_t *e) { env = e; }
+#define ENV_RAM_BASE   0xC000u
+#define ENV_RAM_WIN    0x2000u
+#define ENV_RAM_RWIN   0x4000u
+#define ENV_RAM_MASK   0x1FFFu
+#define ENV_RAM_IRAM   ((uint16_t) (env->ram_delta + 0xC000))
+#define ENV_RAM_END    0xE000u
+#define RAM_LINEAR     1
+#define ENV_SEGTAB     SA(segtab)
+#define ENV_SEGTAB_1K  0
+#define ENV_PSG_LO     0x40u
+#define ENV_PSG_HI     0x7Fu
+#define ENV_VDP_PMASK  0xC0u
+#define ENV_VDP_PVAL   0x80u
+#define c_rom_wr_ignore 0
+#endif
+#ifdef GGSWAN_COLECO
+#define ROM_CODE_ADDR(a) ((a) < 0x2000u || (a) >= 0x8000u)
+#else
+#define ROM_CODE_ADDR(a) ((a) < 0xC000u)
+#endif
 /*
  * sfswan (env->flat): the SF-7000's memory is 64 KiB of RAM and nothing
  * else, one segment of the WonderSwan's (the RAM window on a PSRAM bank),
@@ -152,7 +216,7 @@ static const uint8_t r16x[4] = { X_CX, X_DX, X_BX, X_BP };
 
 // (the cold tail: see cold_emit_all)
 #define MAX_COLD 16
-enum { COLD_WRITE = 1, COLD_IX_LD, COLD_IX_ALU, COLD_IX_BIT, COLD_IX_WR, COLD_PV, COLD_SEG_HL, COLD_CRAM, COLD_PSG, COLD_STEP, COLD_HELPER, COLD_EI_EXIT };
+enum { COLD_WRITE = 1, COLD_IX_LD, COLD_IX_ALU, COLD_IX_BIT, COLD_IX_WR, COLD_PV, COLD_SEG_HL, COLD_CRAM, COLD_PSG, COLD_STEP, COLD_HELPER, COLD_EI_EXIT, COLD_SP_WR, COLD_SP_RD, COLD_SP_EX };
 typedef struct {
     uint8_t *jpos;       // rel8 byte of the JAE jump to this cold stub
     uint8_t *jpos2;      // (COLD_STEP: the second jump, or 0)
@@ -247,12 +311,16 @@ static uint16_t block_start_off;
 static uint16_t block_pc;
 
 // (the stack where the translated code can reach it: see sp_loaded_exit)
-#define SP_IN_RAM(v) (FLAT || (uint16_t) ((v) - 0xC002u) <= 0x1FFEu)
+#define SP_IN_RAM(v) (FLAT || (uint16_t) ((v) - (uint16_t) (ENV_RAM_BASE + 2u)) <= (uint16_t) (ENV_RAM_WIN - 2u))
 static uint8_t force_nolink;   // the next exit must return to the runtime
 // (a helper that changes the mapping makes the runtime end the block
 // without following links: see drc_rt.c)
 
 static int linkable(uint16_t target) {
+#ifdef GGSWAN_COLECO
+    if (force_nolink) return 0;
+    return ROM_CODE_ADDR(target);   // BIOS (0000h-1FFFh) and 32 KiB ROM (8000h-FFFFh)
+#endif
     if (FLAT) return !force_nolink;   // (one memory: an address is one block)
     // (blocks in work RAM check their bytes at entry: they can be linked)
     if (!force_nolink && env->ram_blocks && target >= 0xC000 && target < 0xDFC0) return 1;
@@ -262,6 +330,9 @@ static int linkable(uint16_t target) {
 
 // to another ROM slot: linked behind a check of the slot's bank
 static int guarded(uint16_t target) {
+#ifdef GGSWAN_COLECO
+    return 0;   // all ColecoVision ROM is fixed (until CV8 MegaCart)
+#endif
     if (FLAT) return 0;
     return !force_nolink && target < 0xC000 && (target >> 14) != 0
         && (target >> 14) != (block_pc >> 14) && env->ldi_off;
@@ -339,7 +410,11 @@ static void exit_reg(uint8_t reg16, uint16_t extra) {
          * optional slot 1 bank check) and recognizes these exits by the
          * MOV BYTE [ic] at X + 10 (after MOV [pc], reg).
          */
+#ifdef GGSWAN_COLECO
+        uint8_t lform = 0;   // BIOS returns straight to fixed ROM (no slot 1 bank check)
+#else
         uint8_t lform = !FLAT && (block_pc >> 14) == 0;
+#endif
         B(0x39); B(0xC0 | (reg16 << 3) | reg16);             // cmp reg, reg (later: cmp reg, target)
         B(0x90); B(0x90);
         uint8_t *d = jcc8(0x75);                             // jne D
@@ -375,6 +450,17 @@ static void exit_reg(uint8_t reg16, uint16_t extra) {
 
 /* === Memory === */
 
+static void emit_segtab_si(void) {
+    B(0xC1); B(0xC6); B(ENV_SEGTAB_1K ? 0x07 : 0x04);    // rol si, 7 / 4
+    B(0x83); B(0xE6); B(ENV_SEGTAB_1K ? 0x7E : 0x0E);    // and si, 7Eh / 0Eh
+    B(0x8E); B(0x84); W(ENV_SEGTAB);                     // mov es, [si + segtab]
+}
+static void emit_segtab_di(void) {
+    B(0xC1); B(0xC7); B(ENV_SEGTAB_1K ? 0x07 : 0x04);    // rol di, 7 / 4
+    B(0x83); B(0xE7); B(ENV_SEGTAB_1K ? 0x7E : 0x0E);    // and di, 7Eh / 0Eh
+    B(0x8E); B(0x85); W(ENV_SEGTAB);                     // mov es, [di + segtab]
+}
+
 // ES for the slot of BX (HL)
 static void seg_hl(uint8_t live) {
     if (FLAT) { hl_es = 1; return; }
@@ -383,7 +469,7 @@ static void seg_hl(uint8_t live) {
     if (hl_es == 2) {
         // after INC HL (LD E,(HL) / INC HL / LD D,(HL), everywhere): the
         // same slot unless HL has just entered the next 8 KiB
-        B(0xF7); B(0xC3); W(0x1FFF);     // test bx, 1FFFh
+        B(0xF7); B(0xC3); W(ENV_SEGTAB_1K ? 0x03FFu : 0x1FFFu);
         if (COLD_FREE()) {
             // the next 8 KiB (rare): the segment in the cold tail
             uint8_t *j = jcc8(0x74);     // jz cold
@@ -394,9 +480,7 @@ static void seg_hl(uint8_t live) {
         B(0x75); B(12);                  // jnz +12 (the same)
     }
     B(0x89); B(0xDE);                    // mov si, bx
-    B(0xC1); B(0xC6); B(0x04);           // rol si, 4
-    B(0x83); B(0xE6); B(0x0E);           // and si, 14
-    B(0x8E); B(0x84); W(SA(segtab));     // mov es, [si + segtab]
+    emit_segtab_si();
     hl_es = 1;
 }
 
@@ -406,9 +490,7 @@ static void seg_si(uint8_t live) {
     clobber(live);
     hl_es = 0;
     B(0x89); B(0xF7);                    // mov di, si
-    B(0xC1); B(0xC7); B(0x04);           // rol di, 4
-    B(0x83); B(0xE7); B(0x0E);           // and di, 14
-    B(0x8E); B(0x85); W(SA(segtab));     // mov es, [di + segtab]
+    emit_segtab_di();
 }
 
 // SI = IX + d or IY + d
@@ -462,6 +544,9 @@ static int step_cold(uint8_t *j1, uint8_t *j2, uint16_t pc) {
 
 static void ix_far(int8_t d);
 static const uint8_t alu_x86[8];
+static void emit_sp_wr_wrap(uint8_t reg16, uint16_t imm);
+static void emit_sp_rd_wrap(uint8_t reg16);
+static void emit_sp_ex_wrap(uint8_t reg16);
 
 static void cold_emit_all(void) {
     fkind = K_AH;
@@ -507,9 +592,7 @@ static void cold_emit_all(void) {
             break;
         case COLD_SEG_HL:
             B(0x89); B(0xDE);                              // mov si, bx
-            B(0xC1); B(0xC6); B(0x04);                     // rol si, 4
-            B(0x83); B(0xE6); B(0x0E);                     // and si, 14
-            B(0x8E); B(0x84); W(SA(segtab));               // mov es, [si + segtab]
+            emit_segtab_si();
             break;
         case COLD_CRAM:
             B(0x88); B(0x06 | (c->a << 3)); W(SA(val));    // mov [val], src
@@ -544,6 +627,15 @@ static void cold_emit_all(void) {
             B(0x26); B(0xF6); B(0x04); B(1 << c->a);       // test byte es:[si], mask
             B(0x07);                                       // pop es
             break;
+        case COLD_SP_WR:
+            emit_sp_wr_wrap(c->a, (uint16_t) (c->imm | ((uint16_t) c->b << 8)));
+            break;
+        case COLD_SP_RD:
+            emit_sp_rd_wrap(c->a);
+            break;
+        case COLD_SP_EX:
+            emit_sp_ex_wrap(c->a);
+            break;
         }
         jmp_near(c->resume_off);
     }
@@ -561,17 +653,26 @@ static void cold_emit_all(void) {
 static uint8_t *ix_ram(uint8_t pre, uint8_t live) {
     clobber(live);
     B(0x8B); B(0x36); W(pre == 0xDD ? ZA(ixl) : ZA(iyl));   // mov si, [ix]
-    B(0x8D); B(0xBC); W((uint16_t) (0u - 0xC080u));        // lea di, [si - C080h]
-    B(0x81); B(0xFF); W(0x1F00);                           // cmp di, 1F00h
+    B(0x8D); B(0xBC); W((uint16_t) (0u - (ENV_RAM_BASE + 0x80u)));
+    B(0x81); B(0xFF); W((uint16_t) (ENV_RAM_WIN - 0x100u));
     return jcc8(0x72);                                     // jb direct
 }
 
 static uint8_t *ix_ram_cold(uint8_t pre, uint8_t live) {
     clobber(live);
     B(0x8B); B(0x36); W(pre == 0xDD ? ZA(ixl) : ZA(iyl));   // mov si, [ix]
-    B(0x8D); B(0xBC); W((uint16_t) (0u - 0xC080u));        // lea di, [si - C080h]
-    B(0x81); B(0xFF); W(0x1F00);                           // cmp di, 1F00h
+    B(0x8D); B(0xBC); W((uint16_t) (0u - (ENV_RAM_BASE + 0x80u)));
+    B(0x81); B(0xFF); W((uint16_t) (ENV_RAM_WIN - 0x100u));
     return jcc8(0x73);                                     // jae cold
+}
+
+// !RAM_LINEAR: SI = IX/IY + d, DI = SI - ram_base; jumps on jcc_op after cmp di, ram_win
+static uint8_t *ix_ram_masked(uint8_t pre, int8_t d, uint8_t live, uint8_t jcc_op) {
+    clobber(live);
+    ix_addr(pre, d);
+    B(0x8D); B(0xBC); W((uint16_t) (0u - ENV_RAM_BASE));   // lea di, [si - ram_base]
+    B(0x81); B(0xFF); W(ENV_RAM_WIN);                      // cmp di, ram_win
+    return jcc8(jcc_op);
 }
 
 // the other case of a read: ES for SI + d, kept for HL (PUSH and POP)
@@ -579,9 +680,7 @@ static void ix_far(int8_t d) {
     B(0x06);                             // push es
     if (d) { B(0x8D); B(0x74); B((uint8_t) d); }   // lea si, [si + d]
     B(0x89); B(0xF7);                    // mov di, si
-    B(0xC1); B(0xC7); B(0x04);           // rol di, 4
-    B(0x83); B(0xE7); B(0x0E);           // and di, 14
-    B(0x8E); B(0x85); W(SA(segtab));     // mov es, [di + segtab]
+    emit_segtab_di();
 }
 
 // sfswan: a byte to the address in BX or SI (src: an 8-bit register, or
@@ -618,13 +717,14 @@ static uint8_t *mem_check(uint8_t reg, uint8_t **j2) {
         *j2 = 0;
         return jcc8(0x75);                              // jne slow
     }
+    uint16_t lo = ENV_RAM_BASE, hi = ENV_RAM_END;
     if (reg == X_SI) {
-        B(0x81); B(0xFE); W(0xC000); j1 = jcc8(0x72);   // cmp si, C000h; jb slow
-        B(0x81); B(0xFE); W(0xE000); *j2 = jcc8(0x73);  // cmp si, E000h; jae slow
+        B(0x81); B(0xFE); W(lo); j1 = jcc8(0x72);       // cmp si, ram_base; jb slow
+        B(0x81); B(0xFE); W(hi); *j2 = jcc8(0x73);      // cmp si, ram_end; jae slow
     } else {
         uint8_t m = reg == X_BX ? 0xFF : 0xFE;          // bh / dh
-        B(0x80); B(m); B(0xC0); j1 = jcc8(0x72);
-        B(0x80); B(m); B(0xE0); *j2 = jcc8(0x73);
+        B(0x80); B(m); B((uint8_t) (lo >> 8)); j1 = jcc8(0x72);
+        B(0x80); B(m); B((uint8_t) (hi >> 8)); *j2 = jcc8(0x73);
     }
     return j1;
 }
@@ -669,6 +769,32 @@ static void ix_write(uint8_t pre, int8_t d, uint8_t src, uint8_t imm, uint8_t li
         return;
     }
     uint8_t keep = hl_es == 1;
+    if (!RAM_LINEAR) {
+        uint16_t ir = ENV_RAM_IRAM;
+        if (!cold_off) {
+            uint8_t *j = ix_ram_masked(pre, d, live, 0x73);          // jae cold
+            B(0x81); B(0xE7); W(ENV_RAM_MASK);                       // and di, ram_mask
+            if (src == 0xFF) { B(0xC6); B(0x85); W(ir); B(imm); }
+            else { B(0x88); B(0x85 | (src << 3)); W(ir); }
+            cold_add(j, here(), COLD_IX_WR, src, keep, 0, imm);
+            hl_es = keep;
+            return;
+        }
+        uint8_t *f = ix_ram_masked(pre, d, live, 0x72);              // jb fast
+        if (src == 0xFF) { B(0xC6); B(0x06); W(SA(val)); B(imm); }
+        else { B(0x88); B(0x06 | (src << 3)); W(SA(val)); }
+        B(0x89); B(0x36); W(SA(arg));                                // mov [arg], si
+        helper(DRC_H_WRITE);
+        if (keep) seg_hl(0);
+        uint8_t *done = jcc8(0xEB);
+        land8(f);
+        B(0x81); B(0xE7); W(ENV_RAM_MASK);                           // and di, ram_mask
+        if (src == 0xFF) { B(0xC6); B(0x85); W(ir); B(imm); }
+        else { B(0x88); B(0x85 | (src << 3)); W(ir); }
+        land8(done);
+        hl_es = keep;
+        return;
+    }
     uint16_t disp = (uint16_t) (d + (int16_t) env->ram_delta);
     if (!cold_off) {
         uint8_t *j = ix_ram_cold(pre, live);
@@ -703,6 +829,7 @@ static void write_byte(uint8_t addr_reg, uint8_t src, uint8_t imm, uint8_t live)
         flat_write(addr_reg, src, imm);
         return;
     }
+    uint16_t neg_base = (uint16_t) (0u - ENV_RAM_BASE);
     if (!env->no_fast) {
         /*
          * Work RAM first, reached by the jump taken (3 cycles; falling
@@ -715,13 +842,14 @@ static void write_byte(uint8_t addr_reg, uint8_t src, uint8_t imm, uint8_t live)
          * better.)
          */
         uint8_t keep = hl_es;
-        uint16_t d = (uint16_t) (env->ram_delta + 0xC000);   // (IRAM of C000)
-        if (addr_reg == X_BX) { B(0x8D); B(0xB7); W(0x4000); }          // lea si, [bx + 4000h]
-        else { B(0x8D); B(0xBC); W(0x4000); }                           // lea di, [si + 4000h]
-        B(0x81); B(addr_reg == X_BX ? 0xFE : 0xFF); W(0x2000);          // cmp si / di, 2000h
+        uint16_t d = ENV_RAM_IRAM;
+        if (addr_reg == X_BX) { B(0x8D); B(0xB7); W(neg_base); }        // lea si, [bx - ram_base]
+        else { B(0x8D); B(0xBC); W(neg_base); }                         // lea di, [si - ram_base]
+        B(0x81); B(addr_reg == X_BX ? 0xFE : 0xFF); W(ENV_RAM_WIN);     // cmp si / di, ram_win
         if (!cold_off) {
             uint8_t *slow = jcc8(0x73);                                 // jae cold
             uint8_t m = addr_reg == X_BX ? 0x84 : 0x85;
+            if (!RAM_LINEAR) { B(0x81); B(addr_reg == X_BX ? 0xE6 : 0xE7); W(ENV_RAM_MASK); }
             if (src == 0xFF) { B(0xC6); B(m); W(d); B(imm); }
             else { B(0x88); B(m | (src << 3)); W(d); }
             cold_add(slow, here(), COLD_WRITE, addr_reg, src, (int8_t) keep, imm);
@@ -736,8 +864,9 @@ static void write_byte(uint8_t addr_reg, uint8_t src, uint8_t imm, uint8_t live)
         if (keep) seg_hl(0);
         uint8_t *done = jcc8(0xEB);
         land8(fast);
-        // [si + d] with SI = BX + 4000h, or [di + d] with DI = SI + 4000h
+        // [si + d] with SI = BX - ram_base, or [di + d] with DI = SI - ram_base
         uint8_t m = addr_reg == X_BX ? 0x84 : 0x85;
+        if (!RAM_LINEAR) { B(0x81); B(addr_reg == X_BX ? 0xE6 : 0xE7); W(ENV_RAM_MASK); }
         if (src == 0xFF) { B(0xC6); B(m); W(d); B(imm); }
         else { B(0x88); B(m | (src << 3)); W(d); }
         land8(done);
@@ -747,18 +876,26 @@ static void write_byte(uint8_t addr_reg, uint8_t src, uint8_t imm, uint8_t live)
     uint8_t rm = addr_reg == X_BX ? 7 : 4;   // [bx+d16] / [si+d16]
     uint8_t *j1, *j2, *j3;
     if (addr_reg == X_BX) {
-        // C000-DFFF + 4000h wraps to 0000-1FFF: one comparison
-        B(0x8D); B(0xB7); W(0x4000);                   // lea si, [bx + 4000h]
-        B(0x81); B(0xFE); W(0x2000); j1 = jcc8(0x73);  // cmp si, 2000h; jae slow
+        B(0x8D); B(0xB7); W(neg_base);                     // lea si, [bx - ram_base]
+        B(0x81); B(0xFE); W(ENV_RAM_WIN); j1 = jcc8(0x73); // cmp si, ram_win; jae slow
         j2 = 0;
-        uint16_t d = (uint16_t) (env->ram_delta + 0xC000);   // (IRAM of C000)
+        uint16_t d = ENV_RAM_IRAM;
+        if (!RAM_LINEAR) { B(0x81); B(0xE6); W(ENV_RAM_MASK); }
         if (src == 0xFF) { B(0xC6); B(0x84); W(d); B(imm); }
         else { B(0x88); B(0x84 | (src << 3)); W(d); }
-    } else {
-        B(0x81); B(0xFE); W(0xC000); j1 = jcc8(0x72);
-        B(0x81); B(0xFE); W(0xE000); j2 = jcc8(0x73);
+    } else if (RAM_LINEAR) {
+        B(0x81); B(0xFE); W(ENV_RAM_BASE); j1 = jcc8(0x72);
+        B(0x81); B(0xFE); W(ENV_RAM_END); j2 = jcc8(0x73);
         if (src == 0xFF) { B(0xC6); B(0x80 | rm); W(env->ram_delta); B(imm); }
         else { B(0x88); B(0x80 | (src << 3) | rm); W(env->ram_delta); }
+    } else {
+        B(0x8D); B(0xBC); W(neg_base);                     // lea di, [si - ram_base]
+        B(0x81); B(0xFF); W(ENV_RAM_WIN); j1 = jcc8(0x73); // cmp di, ram_win; jae slow
+        j2 = 0;
+        B(0x81); B(0xE7); W(ENV_RAM_MASK);                 // and di, ram_mask
+        uint16_t d = ENV_RAM_IRAM;
+        if (src == 0xFF) { B(0xC6); B(0x85); W(d); B(imm); }
+        else { B(0x88); B(0x85 | (src << 3)); W(d); }
     }
     j3 = jcc8(0xEB);
     land8(j1); if (j2) land8(j2);
@@ -805,13 +942,16 @@ static void write_const(uint16_t addr, uint8_t src, uint8_t live) {
         land8(done);
         return;
     }
-    if (addr >= 0xC000 && (addr < 0xE000 || env->codemasters)) {
-        uint16_t a = (addr & 0x1FFF) + 0xC000 + env->ram_delta;
+    if ((uint16_t) (addr - ENV_RAM_BASE) < ENV_RAM_WIN
+        || (env->codemasters && (uint16_t) (addr - ENV_RAM_BASE) < ENV_RAM_RWIN)) {
+        uint16_t a = (uint16_t) ((addr & ENV_RAM_MASK) + ENV_RAM_IRAM);
         if (src == X_AX) { B(0xA2); }
         else { B(0x88); B(0x06 | (src << 3)); }
         W(a);
         return;
     }
+    if (c_rom_wr_ignore)
+        return;   // writes outside work RAM (BIOS, expansion, ROM) are ignored
     clobber(live);
     uint8_t *same = 0;
     if (!env->codemasters && addr >= 0xFFFD && env->psg_queue) {
@@ -864,13 +1004,13 @@ static void read_const(uint16_t addr, uint8_t dst) {
         W(addr);
         return;
     }
-    if (addr >= 0xC000) {
-        uint16_t a = (addr & 0x1FFF) + 0xC000 + env->ram_delta;
+    if ((uint16_t) (addr - ENV_RAM_BASE) < ENV_RAM_RWIN) {
+        uint16_t a = (uint16_t) ((addr & ENV_RAM_MASK) + ENV_RAM_IRAM);
         if (dst == X_AX) { B(0xA0); } else { B(0x8A); B(0x06 | (dst << 3)); }
         W(a);
         return;
     }
-    B(0x8E); B(0x06); W(SA(segtab) + (addr >> 13) * 2);   // mov es, [segtab+n]
+    B(0x8E); B(0x06); W((uint16_t) (ENV_SEGTAB + (addr >> (ENV_SEGTAB_1K ? 10 : 13)) * 2));
     hl_es = 0;
     B(0x26);
     if (dst == X_AX) { B(0xA0); } else { B(0x8A); B(0x06 | (dst << 3)); }
@@ -882,11 +1022,19 @@ static void read_const16(uint16_t addr, uint8_t dst) {
         B(0x26); B(0x8B); B(0x06 | (dst << 3)); W(addr);
         return;
     }
-    if (addr >= 0xC000 && addr != 0xDFFF && addr != 0xFFFF) {
-        B(0x8B); B(0x06 | (dst << 3)); W((addr & 0x1FFF) + 0xC000 + env->ram_delta);
+    if ((uint16_t) (addr - ENV_RAM_BASE) < ENV_RAM_RWIN && (addr & ENV_RAM_MASK) < ENV_RAM_MASK) {
+        B(0x8B); B(0x06 | (dst << 3)); W((uint16_t) ((addr & ENV_RAM_MASK) + ENV_RAM_IRAM));
         return;
     }
-    B(0x8E); B(0x06); W(SA(segtab) + (addr >> 13) * 2);
+    if (ENV_SEGTAB_1K && (addr & 0x03FF) == 0x03FF) {
+        B(0x50);                                         // push ax
+        read_const(addr, 0);                             // mov al, [addr]
+        read_const((uint16_t) (addr + 1), 4);            // mov ah, [addr + 1]
+        B(0x89); B(0xC0 | dst);                          // mov dst, ax
+        B(0x58);                                         // pop ax
+        return;
+    }
+    B(0x8E); B(0x06); W((uint16_t) (ENV_SEGTAB + (addr >> (ENV_SEGTAB_1K ? 10 : 13)) * 2));
     hl_es = 0;
     B(0x26); B(0x8B); B(0x06 | (dst << 3)); W(addr);
 }
@@ -1016,7 +1164,7 @@ static void vram_fast(uint8_t src, uint8_t **slow1, uint8_t inl) {
  * the name table routine or sprites_dirty = 1. Keeps SI and the registers.
  */
 uint16_t drc_emit_cls_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) {
-    env = e;
+    env_cache(e);
     o = o_start = out; o_base = out_off;
     B(0xF6); B(0x85); W(SA(vram_class)); B(8);       // test byte [di + class], 8
     uint8_t *deferred = jcc8(0x75);                  // jnz deferred
@@ -1139,7 +1287,7 @@ uint16_t drc_emit_cls_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) {
  * routine). Uses SI, DI, ES.
  */
 uint16_t drc_emit_ntw_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, uint16_t *entry_a) {
-    env = e;
+    env_cache(e);
     o = o_start = out; o_base = out_off;
     uint8_t *f[5]; uint8_t nf = 0;
     // (fail first, the jumps to it go backwards; the entry at + DRC_NTW_ENTRY)
@@ -1264,7 +1412,7 @@ uint16_t drc_emit_ntw_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
  * instructions as usual). Uses SI, DI, ES.
  */
 uint16_t drc_emit_trow_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) {
-    env = e;
+    env_cache(e);
     o = o_start = out; o_base = out_off;
     uint8_t *fail = o;
     B(0xF9);                                         // fail: stc
@@ -1363,7 +1511,7 @@ uint16_t drc_emit_trow_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) 
 #define OUTI_SHORT 4   // runs up to this long: a byte loop instead of REP MOVSB
 
 uint16_t drc_emit_run_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, uint8_t dec, uint16_t *one) {
-    env = e;
+    env_cache(e);
     o = o_start = out; o_base = out_off;
     uint8_t inc = dec ? 0xFF : 0x01;
     B(0x56);                                         // push si (address)
@@ -1874,7 +2022,7 @@ uint16_t drc_emit_run_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
  * undefined: the block calls it only where the next OUTI sets them all.
  */
 uint16_t drc_emit_pairs_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) {
-    env = e;
+    env_cache(e);
     o = o_start = out; o_base = out_off;
     // (fail first, so that the jumps to it go backwards; the entry is at
     // + DRC_PAIRS_ENTRY)
@@ -2070,7 +2218,7 @@ static uint16_t flat_ldi_stub(uint8_t dec) {
 }
 
 uint16_t drc_emit_ldi_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, uint8_t dec) {
-    env = e;
+    env_cache(e);
     o = o_start = out; o_base = out_off;
     if (FLAT)
         return flat_ldi_stub(dec);
@@ -2078,28 +2226,42 @@ uint16_t drc_emit_ldi_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
     B(0x57);                                         // push di (k)
     B(0x50);                                         // push ax
     B(0x89); B(0xDE);                                // mov si, bx
-    B(0xC1); B(0xC6); B(0x04);                       // rol si, 4
-    B(0x83); B(0xE6); B(0x0E);                       // and si, 14
-    B(0x8E); B(0x84); W(SA(segtab));                 // mov es, [si + segtab]
+    emit_segtab_si();
     uint8_t *to_fast = 0;
     if (!dec && !env->no_fast) {
         B(0xE9); W(0); to_fast = o - 2;              // jmp FAST (at the end)
     }
+    uint16_t src_mask = ENV_SEGTAB_1K ? 0x03FFu : 0x1FFFu;
     uint8_t *loop = o;
-    B(0x80); B(0xFE); B(0xC0); uint8_t *s0 = jcc8(0x72);   // cmp dh, C0h; jb slow
-    B(0x80); B(0xFE); B(0xE0); uint8_t *s1 = jcc8(0x73);   // cmp dh, E0h; jae slow
+    B(0x80); B(0xFE); B((uint8_t) (ENV_RAM_BASE >> 8)); uint8_t *s0 = jcc8(0x72);
+    B(0x80); B(0xFE); B((uint8_t) (ENV_RAM_END >> 8)); uint8_t *s1 = jcc8(0x73);
     B(0x26); B(0x8A); B(0x27);                       // mov ah, es:[bx]
     B(0x89); B(0xD6);                                // mov si, dx
-    B(0x88); B(0xA4); W(env->ram_delta);             // mov [si + ram], ah
-    B(0x8D); B(0x5F); B(dec ? 0xFF : 0x01);          // lea bx, [bx +- 1]
-    B(dec ? 0x4A : 0x42);                            // dec/inc dx
-    B(0x49);                                         // dec cx
-    B(0xF7); B(0xC3); W(0x1FFF);                     // test bx, 1FFFh
+    if (!RAM_LINEAR) {
+        B(0x81); B(0xE6); W(ENV_RAM_MASK);           // and si, ram_mask
+        B(0x88); B(0xA4); W(ENV_RAM_IRAM);           // mov [si + ram_iram], ah
+    } else {
+        B(0x88); B(0xA4); W(env->ram_delta);         // mov [si + ram], ah
+    }
+    if (ENV_SEGTAB_1K && dec) {
+        B(0x4A);                                     // dec dx
+        B(0x49);                                     // dec cx
+        B(0xF7); B(0xC3); W(src_mask);               // test bx, 03FFh (before dec)
+        B(0x8D); B(0x5F); B(0xFF);                   // lea bx, [bx - 1] (keeps ZF)
+    } else if (ENV_SEGTAB_1K) {
+        B(0x43);                                     // inc bx
+        B(0x42);                                     // inc dx
+        B(0x49);                                     // dec cx
+        B(0xF7); B(0xC3); W(src_mask);               // test bx, 03FFh
+    } else {
+        B(0x8D); B(0x5F); B(dec ? 0xFF : 0x01);      // lea bx, [bx +- 1]
+        B(dec ? 0x4A : 0x42);                        // dec/inc dx
+        B(0x49);                                     // dec cx
+        B(0xF7); B(0xC3); W(0x1FFF);                 // test bx, 1FFFh
+    }
     uint8_t *noseg = jcc8(0x75);                     // jnz: same ES
     B(0x89); B(0xDE);                                // mov si, bx
-    B(0xC1); B(0xC6); B(0x04);                       // rol si, 4
-    B(0x83); B(0xE6); B(0x0E);                       // and si, 14
-    B(0x8E); B(0x84); W(SA(segtab));                 // mov es, [si + segtab]
+    emit_segtab_si();
     land8(noseg);
     B(0x4F);                                         // dec di
     {
@@ -2143,24 +2305,30 @@ uint16_t drc_emit_ldi_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
         uint16_t rel = (uint16_t) (fast_at - (uint16_t) (to_fast + 2 - o_start));
         to_fast[0] = (uint8_t) rel;
         to_fast[1] = (uint8_t) (rel >> 8);
-        B(0x80); B(0xFE); B(0xC0);                   // cmp dh, C0h
+        B(0x80); B(0xFE); B((uint8_t) (ENV_RAM_BASE >> 8));
         uint8_t *n1 = jcc8(0x72);                    // jb loop (not work RAM)
-        B(0x80); B(0xFE); B(0xE0);                   // cmp dh, E0h
+        B(0x80); B(0xFE); B((uint8_t) (ENV_RAM_END >> 8));
         uint8_t *n0 = jcc8(0x73);                    // jae loop (mirror, mapper:
                                                      // DE + k could also wrap)
         B(0x89); B(0xD6);                            // mov si, dx
+        if (!RAM_LINEAR) { B(0x81); B(0xE6); W(ENV_RAM_MASK); }
         B(0x01); B(0xFE);                            // add si, di
-        B(0x81); B(0xFE); W(0xE000);                 // cmp si, E000h
+        B(0x81); B(0xFE); W(RAM_LINEAR ? ENV_RAM_END : (uint16_t) (ENV_RAM_MASK + 1u));
         uint8_t *n2 = jcc8(0x77);                    // ja loop (leaves it)
         B(0x89); B(0xDE);                            // mov si, bx
-        B(0x81); B(0xE6); W(0x1FFF);                 // and si, 1FFFh
+        B(0x81); B(0xE6); W(src_mask);               // and si, 1FFFh / 03FFh
         B(0x01); B(0xFE);                            // add si, di
-        B(0x81); B(0xFE); W(0x2000);                 // cmp si, 2000h
+        B(0x81); B(0xFE); W((uint16_t) (src_mask + 1u));
         uint8_t *n3 = jcc8(0x77);                    // ja loop (next page)
         B(0x51);                                     // push cx
         B(0x89); B(0xF9);                            // mov cx, di (k)
         B(0x89); B(0xD7);                            // mov di, dx
-        B(0x81); B(0xC7); W(env->ram_delta);         // add di, ram
+        if (!RAM_LINEAR) {
+            B(0x81); B(0xE7); W(ENV_RAM_MASK);       // and di, ram_mask
+            B(0x81); B(0xC7); W(ENV_RAM_IRAM);       // add di, ram_iram
+        } else {
+            B(0x81); B(0xC7); W(env->ram_delta);     // add di, ram
+        }
         B(0x89); B(0xDE);                            // mov si, bx
         B(0x1E); B(0x06); B(0x1F); B(0x07);          // push ds; push es; pop ds; pop es
         B(0xFC);                                     // cld (forwards, whatever came before)
@@ -2194,7 +2362,7 @@ uint16_t drc_emit_ldi_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
  * Sailor Moon S's loading screens read it ~100 times a frame.
  */
 uint16_t drc_emit_vcnt_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) {
-    env = e;
+    env_cache(e);
     o = o_start = out; o_base = out_off;
     B(0x80); B(0x3E); W(SA(fl_off)); B(0);           // cmp byte [fl_off], 0
     uint8_t *c1 = jcc8(0x75);                        // jne C
@@ -2245,7 +2413,7 @@ uint16_t drc_emit_vcnt_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) 
  * Keeps AX, BX, CX, DX, BP, DS, ES; uses SI, DI and x86 flags.
  */
 uint16_t drc_emit_vwait_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) {
-    env = e;
+    env_cache(e);
     o = o_start = out; o_base = out_off;
 #ifdef GGSWAN_HOST
 #define VW_JBACK(op, dst) do { int16_t r_ = (int16_t) ((dst) - (o + 2)); \
@@ -2443,7 +2611,7 @@ static void sg_addr_next(void) {
     B(0x89); B(0x36); W(VS(addr));                   // mov [addr], si
 }
 uint16_t drc_emit_sg_stubs(const drc_env_t *e, uint8_t *out, uint16_t out_off, uint16_t *at) {
-    env = e;
+    env_cache(e);
     o = o_start = out; o_base = out_off;
     // the data port, out: always VRAM
     at[0] = here();
@@ -2538,7 +2706,7 @@ uint16_t drc_emit_sg_stubs(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
 #endif
 
 uint16_t drc_emit_ctl_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off) {
-    env = e;
+    env_cache(e);
     o = o_start = out; o_base = out_off;
     B(0x80); B(0x3E); W(VA(latch_full)); B(0);       // cmp byte [latch_full], 0
     uint8_t *second = jcc8(0x75);                    // jne second
@@ -2793,7 +2961,9 @@ static void decode(uint16_t pc, ins_t *I) {
             I->fwrite = FALL & ~FC; I->fread = FC; return;
         case 0x43: case 0x53: case 0x73:                            // LD (nn),rr
             I->nn = rd(pc + 2) | (rd(pc + 3) << 8); I->len = 4;
-            if (!FLAT && (I->nn < 0xC000 || I->nn >= 0xDFFF)) I->step = 1;
+            if (!FLAT && !((uint16_t) (I->nn - ENV_RAM_BASE) < ENV_RAM_WIN
+                           && (I->nn & ENV_RAM_MASK) < ENV_RAM_MASK))
+                I->step = 1;
             return;
         case 0x4B: case 0x5B: case 0x7B:                            // LD rr,(nn)
             I->nn = rd(pc + 2) | (rd(pc + 3) << 8); I->len = 4;
@@ -2894,7 +3064,9 @@ static void decode(uint16_t pc, ins_t *I) {
         switch (op2) {
         case 0x21: case 0x22: case 0x2A:                              // LD IX,nn / (nn)
             I->nn = rd(pc + 2) | (rd(pc + 3) << 8); I->len = 4;
-            if (!FLAT && op2 == 0x22 && (I->nn < 0xC000 || I->nn >= 0xDFFF)) I->step = 1;
+            if (!FLAT && op2 == 0x22 && !((uint16_t) (I->nn - ENV_RAM_BASE) < ENV_RAM_WIN
+                                          && (I->nn & ENV_RAM_MASK) < ENV_RAM_MASK))
+                I->step = 1;
             return;
         case 0x23: case 0x2B: case 0xE1: case 0xE5: case 0xF9: case 0xE3:
             if (op2 == 0xF9) I->term = T_END_AFTER;                   // LD SP,IX (sp_loaded_exit)
@@ -2973,7 +3145,7 @@ static void decode(uint16_t pc, ins_t *I) {
             if (y >= 4) { I->nn = rd(pc + 1) | (rd(pc + 2) << 8); I->len = 3;
                           if (y == 4 || y == 6) {
                               // LD (nn),HL / LD (nn),A: a mapper write ends the block
-                              if (!env->codemasters && I->nn >= 0xFFFC - (y == 4)) I->term = T_END_AFTER;
+                              if (!env->codemasters && !c_rom_wr_ignore && I->nn >= 0xFFFC - (y == 4)) I->term = T_END_AFTER;
 #ifdef GGSWAN_SMS
                               // (the Codemasters mapper's: 0000h, 4000h, 8000h)
                               if (env->codemasters && !(I->nn & 0x3FFF) && I->nn < 0xC000) I->term = T_END_AFTER;
@@ -3119,7 +3291,7 @@ static int is_idle(int n, uint16_t pc, uint8_t ram) {
         // JR Z,out / JR back (Batman Returns, a quarter of its time): the
         // block ends at the JR Z, its "not taken" exit is the wait
         uint16_t next = L->pc + ((L->op & 0xC7) == 0xC2 ? 3 : 2);
-        if (!ram && (next >> 14) == (pc >> 14) && next < 0xC000
+        if (!ram && (next >> 14) == (pc >> 14) && ROM_CODE_ADDR(next)
                 && ((rd(next) == 0x18 && (uint16_t) (next + 2 + (int8_t) rd(next + 1)) == pc)
                     || (rd(next) == 0xC3 && (rd(next + 1) | (rd(next + 2) << 8)) == pc))
                 && idle_rest(n - 1)) {
@@ -3138,7 +3310,7 @@ static int is_idle(int n, uint16_t pc, uint8_t ram) {
         // body here starting with DI, Super Tennis' (Agassi) wait for its
         // frame interrupt: DI / LD A,(nn) / CP n / JR NZ,x ... x: EI / JP
         // (three quarters of its time)
-        if (ram || (target >> 14) != (pc >> 14) || target >= 0xC000
+        if (ram || (target >> 14) != (pc >> 14) || !ROM_CODE_ADDR(target)
                 || ins[0].pre || ins[0].op != 0xF3 || rd(target) != 0xFB)
             return 0;
         uint8_t j = rd(target + 1);
@@ -3315,8 +3487,8 @@ static void sp_loaded_exit(uint16_t next, uint8_t bad) {
     }
     if (!bad) {
         materialize();
-        B(0x8D); B(0xB6); W((uint16_t) (0u - 0xC002u));   // lea si, [bp - C002h]
-        B(0x81); B(0xFE); W(0x1FFE);                      // cmp si, 1FFEh
+        B(0x8D); B(0xB6); W((uint16_t) (0u - (ENV_RAM_BASE + 2u)));
+        B(0x81); B(0xFE); W((uint16_t) (ENV_RAM_WIN - 2u));
         uint8_t *out = jcc8(0x77);                        // ja out
         exit_const(next, 0);
         land8(out);
@@ -3325,9 +3497,126 @@ static void sp_loaded_exit(uint16_t next, uint8_t bad) {
     exit_const(next, 0);
 }
 
+static void emit_sp_wr_wrap(uint8_t reg16, uint16_t imm) {
+    uint16_t a_lo = (uint16_t) (ENV_RAM_IRAM + ENV_RAM_MASK), a_hi = ENV_RAM_IRAM;
+    if (reg16 == 0xFF) {
+        B(0xC6); B(0x06); W(a_lo); B((uint8_t) imm);
+        B(0xC6); B(0x06); W(a_hi); B((uint8_t) (imm >> 8));
+    } else if (reg16 == X_SI) {
+        B(0x50); B(0x89); B(0xF0);                         // push ax; mov ax, si
+        B(0xA2); W(a_lo);                                  // mov [a_lo], al
+        B(0x88); B(0x26); W(a_hi);                         // mov [a_hi], ah
+        B(0x58);                                           // pop ax
+    } else {
+        B(0x88); B(0x06 | (reg16 << 3)); W(a_lo);          // mov [a_lo], r_lo
+        B(0x88); B(0x06 | ((reg16 + 4) << 3)); W(a_hi);    // mov [a_hi], r_hi
+    }
+}
+
+static void emit_sp_rd_wrap(uint8_t reg16) {
+    uint16_t a_lo = (uint16_t) (ENV_RAM_IRAM + ENV_RAM_MASK), a_hi = ENV_RAM_IRAM;
+    if (reg16 == X_SI) {
+        B(0x50);                                           // push ax
+        B(0xA0); W(a_lo);                                  // mov al, [a_lo]
+        B(0x8A); B(0x26); W(a_hi);                         // mov ah, [a_hi]
+        B(0x89); B(0xC6);                                  // mov si, ax
+        B(0x58);                                           // pop ax
+    } else {
+        B(0x8A); B(0x06 | (reg16 << 3)); W(a_lo);          // mov r_lo, [a_lo]
+        B(0x8A); B(0x06 | ((reg16 + 4) << 3)); W(a_hi);    // mov r_hi, [a_hi]
+    }
+}
+
+static void emit_sp_ex_wrap(uint8_t reg16) {
+    uint16_t a_lo = (uint16_t) (ENV_RAM_IRAM + ENV_RAM_MASK), a_hi = ENV_RAM_IRAM;
+    if (reg16 == X_SI) {
+        B(0x50); B(0x89); B(0xF0);                         // push ax; mov ax, si
+        B(0x86); B(0x06); W(a_lo);                         // xchg al, [a_lo]
+        B(0x86); B(0x26); W(a_hi);                         // xchg ah, [a_hi]
+        B(0x89); B(0xC6); B(0x58);                         // mov si, ax; pop ax
+    } else {
+        B(0x86); B(0x06 | (reg16 << 3)); W(a_lo);          // xchg r_lo, [a_lo]
+        B(0x86); B(0x06 | ((reg16 + 4) << 3)); W(a_hi);    // xchg r_hi, [a_hi]
+    }
+}
+
+// Stack word accesses at [bp]. When !RAM_LINEAR, masks BP with ram_mask and
+// splits the 03FFh boundary write/read across ram_iram+ram_mask and ram_iram
+// so the byte after RAM (open bus at 8400h) is never touched. Callers must
+// preserve live x86 flags (clobber/materialize) before calling when !RAM_LINEAR.
+static void stack_write(uint8_t reg16, uint16_t imm) {
+    if (RAM_LINEAR) {
+        FLAT_ES();
+        if (reg16 == 0xFF) { B(0xC7); B(0x86); W(env->ram_delta); W(imm); }
+        else { B(0x89); B(0x86 | (reg16 << 3)); W(env->ram_delta); }
+        return;
+    }
+    B(0x89); B(0xEF);                                      // mov di, bp
+    B(0x81); B(0xE7); W(ENV_RAM_MASK);                     // and di, ram_mask
+    B(0x81); B(0xFF); W(ENV_RAM_MASK);                     // cmp di, ram_mask
+    if (COLD_FREE()) {
+        uint8_t *j = jcc8(0x74);                           // je cold
+        if (reg16 == 0xFF) { B(0xC7); B(0x85); W(ENV_RAM_IRAM); W(imm); }
+        else { B(0x89); B(0x85 | (reg16 << 3)); W(ENV_RAM_IRAM); }
+        cold_add(j, here(), COLD_SP_WR, reg16, (uint8_t) (imm >> 8), 0, (uint8_t) imm);
+        return;
+    }
+    uint8_t *wrap = jcc8(0x74);
+    if (reg16 == 0xFF) { B(0xC7); B(0x85); W(ENV_RAM_IRAM); W(imm); }
+    else { B(0x89); B(0x85 | (reg16 << 3)); W(ENV_RAM_IRAM); }
+    uint8_t *done = jcc8(0xEB);
+    land8(wrap);
+    emit_sp_wr_wrap(reg16, imm);
+    land8(done);
+}
+
+static void stack_read(uint8_t reg16) {
+    if (RAM_LINEAR) {
+        FLAT_ES(); B(0x8B); B(0x86 | (reg16 << 3)); W(env->ram_delta);
+        return;
+    }
+    B(0x89); B(0xEF);                                      // mov di, bp
+    B(0x81); B(0xE7); W(ENV_RAM_MASK);                     // and di, ram_mask
+    B(0x81); B(0xFF); W(ENV_RAM_MASK);                     // cmp di, ram_mask
+    if (COLD_FREE()) {
+        uint8_t *j = jcc8(0x74);                           // je cold
+        B(0x8B); B(0x85 | (reg16 << 3)); W(ENV_RAM_IRAM);
+        cold_add(j, here(), COLD_SP_RD, reg16, 0, 0, 0);
+        return;
+    }
+    uint8_t *wrap = jcc8(0x74);
+    B(0x8B); B(0x85 | (reg16 << 3)); W(ENV_RAM_IRAM);
+    uint8_t *done = jcc8(0xEB);
+    land8(wrap);
+    emit_sp_rd_wrap(reg16);
+    land8(done);
+}
+
+static void stack_xchg(uint8_t reg16) {
+    if (RAM_LINEAR) {
+        FLAT_ES(); B(0x87); B(0x86 | (reg16 << 3)); W(env->ram_delta);
+        return;
+    }
+    B(0x89); B(0xEF);                                      // mov di, bp
+    B(0x81); B(0xE7); W(ENV_RAM_MASK);                     // and di, ram_mask
+    B(0x81); B(0xFF); W(ENV_RAM_MASK);                     // cmp di, ram_mask
+    if (COLD_FREE()) {
+        uint8_t *j = jcc8(0x74);                           // je cold
+        B(0x87); B(0x85 | (reg16 << 3)); W(ENV_RAM_IRAM);
+        cold_add(j, here(), COLD_SP_EX, reg16, 0, 0, 0);
+        return;
+    }
+    uint8_t *wrap = jcc8(0x74);
+    B(0x87); B(0x85 | (reg16 << 3)); W(ENV_RAM_IRAM);
+    uint8_t *done = jcc8(0xEB);
+    land8(wrap);
+    emit_sp_ex_wrap(reg16);
+    land8(done);
+}
+
 static void push_imm(uint16_t value) {
     B(0x8D); B(0x6E); B(0xFE);                                  // lea bp, [bp-2]
-    FLAT_ES(); B(0xC7); B(0x86); W(env->ram_delta); W(value);              // mov word [bp+d], imm
+    stack_write(0xFF, value);
 }
 
 // After a call to the OUTI/OUTD run routine (CF = 1: the rest to the
@@ -3395,13 +3684,13 @@ static int sg_block_io(int i) {
         B(0xBF); W(I->count);                            // mov di, k
     }
     B(0x89); B(0xCE);                                    // mov si, cx
-    B(0x81); B(0xE6); W(0x00C1);                         // and si, C1h
-    B(0x81); B(0xFE); W(0x0080);                         // cmp si, 80h (the data port)
+    B(0x81); B(0xE6); W((uint16_t) (ENV_VDP_PMASK | 1)); // and si, C1h / E1h
+    B(0x81); B(0xFE); W(ENV_VDP_PVAL);                   // cmp si, 80h / A0h (the data port)
     slow0 = jcc8(0x75);                                  // jne slow
     if (in) {
-        // the bytes' place: all of them in C000h-DFFFh
-        B(0x8D); B(0xB7); W(0x4000);                     // lea si, [bx + 4000h] (HL - C000h)
-        B(0x81); B(0xFE); W(0x2000);                     // cmp si, 2000h
+        // the bytes' place: all of them in work RAM
+        B(0x8D); B(0xB7); W((uint16_t) (0u - ENV_RAM_BASE));
+        B(0x81); B(0xFE); W(ENV_RAM_WIN);
         slow1 = jcc8(0x73);                              // jae slow
         if (down) {
             B(0x46);                                     // inc si
@@ -3409,7 +3698,7 @@ static int sg_block_io(int i) {
             slow2 = jcc8(0x72);                          // jb slow (below C000h)
         } else {
             B(0x01); B(0xFE);                            // add si, di
-            B(0x81); B(0xFE); W(0x2000);                 // cmp si, 2000h
+            B(0x81); B(0xFE); W(ENV_RAM_WIN);
             slow2 = jcc8(0x77);                          // ja slow (past DFFFh)
         }
     }
@@ -3420,12 +3709,16 @@ static int sg_block_io(int i) {
     uint8_t *loop = o;
     if (in) {
         call_near(env->sg_in_off);
-        FLAT_ES(); B(0x88); B(0x87); W(env->ram_delta);             // mov [bx + ram], al
+        if (!RAM_LINEAR) {
+            B(0x89); B(0xDE);                            // mov si, bx
+            B(0x81); B(0xE6); W(ENV_RAM_MASK);           // and si, ram_mask
+            B(0x88); B(0x84); W(ENV_RAM_IRAM);           // mov [si + ram_iram], al
+        } else {
+            FLAT_ES(); B(0x88); B(0x87); W(env->ram_delta);
+        }
     } else {
         B(0x89); B(0xDE);                                // mov si, bx
-        B(0xC1); B(0xC6); B(0x04);                       // rol si, 4
-        B(0x83); B(0xE6); B(0x0E);                       // and si, 14
-        B(0x8E); B(0x84); W(SA(segtab));                 // mov es, [si + segtab]
+        emit_segtab_si();
         B(0x26); B(0x8A); B(0x07);                       // mov al, es:[bx]
         call_near(env->sg_out_off);
     }
@@ -3447,6 +3740,15 @@ static int sg_block_io(int i) {
         uint8_t *done = jcc8(0xEB);                      // jmp done
         land8(slow0);
         if (slow1) { land8(slow1); land8(slow2); }
+#ifdef GGSWAN_COLECO
+        // ColecoVision: step through the interpreter so an NMI raised by a
+        // VDP control write aborts the block at the exact instruction
+        B(0xC7); B(0x06); W(SA(rec_pad)); W(cyc);
+        B(0xC6); B(0x06); W(SA(val)); B(I->count);
+        B(0xC7); B(0x06); W(SA(arg)); W(I->pc);
+        helper(DRC_H_STEP);
+        B(0x81); B(0x06); W(SA(cycles)); W(16 * I->count);   // add word [cycles], 16 k
+#else
         // (the helper counts their cycles: not twice). Out, to another
         // port (the control port, the PSG): in C as the Game Gear's runs,
         // not as a step of the interpreter, which leaves the interrupt
@@ -3459,6 +3761,7 @@ static int sg_block_io(int i) {
         } else {
             helper(down ? DRC_H_OUTD_RUN : DRC_H_OUTI_RUN);
         }
+#endif
         land8(done);
         cyc += 16 * I->count;
         return 1;
@@ -3474,6 +3777,7 @@ static int sg_block_io(int i) {
     exit_const(I->pc + 2, 0);
     land8(slow0);
     if (slow1) { land8(slow1); land8(slow2); }
+#ifndef GGSWAN_COLECO
     if (!in) {
         // OTIR to another port (The Castle sets the registers this way):
         // this turn's bytes in C (see above), then as the other way
@@ -3496,7 +3800,11 @@ static int sg_block_io(int i) {
         exit_const(I->pc + 2, 0);
         return 1;
     }
+#endif
     // INIR: all of it by the interpreter (it repeats the instruction itself)
+#ifdef GGSWAN_COLECO
+    B(0xC7); B(0x06); W(SA(rec_pad)); W(cyc);
+#endif
     B(0xC7); B(0x06); W(SA(arg)); W(I->pc);
     B(0xC6); B(0x06); W(SA(val)); B(1);
     helper(DRC_H_STEP);
@@ -3538,13 +3846,14 @@ static int emit1(int i) {
             return 1;
         }
         if (I->trace == 2) {   // CALL nn, routine inline: push the return address
+            if (!RAM_LINEAR) clobber(live);
             push_imm(next);
             cyc += 17;
             return 1;
         }
         // I->trace == 3: its RET: go on inline if it returns to the CALL
         materialize();
-        FLAT_ES(); B(0x8B); B(0xB6); W(env->ram_delta);       // mov si, [bp+d]
+        stack_read(X_SI);
         B(0x8D); B(0x6E); B(0x02);                 // lea bp, [bp+2]
         B(0x81); B(0xFE); W(I->nn);                // cmp si, return address
         uint8_t *same = jcc8(0x74);                // je: inline
@@ -3559,6 +3868,9 @@ static int emit1(int i) {
         materialize();
         B(0xC7); B(0x06); W(SA(arg)); W(I->pc);
         B(0xC6); B(0x06); W(SA(val)); B(I->count);   // instructions
+#ifdef GGSWAN_COLECO
+        B(0xC7); B(0x06); W(SA(rec_pad)); W(cyc);
+#endif
         helper(DRC_H_STEP);
         fkind = K_AH;
         if (I->dyn == 2) {
@@ -3663,7 +3975,13 @@ static int emit1(int i) {
         // (HL): RAM directly, anything else with the interpreter
         materialize();
         uint8_t *j2, *j1 = mem_check(X_BX, &j2);
-        FLAT_ES(); B(0x80); B(0x87 | (set ? 0x08 : 0x20)); W(env->ram_delta); B(imm);
+        if (!RAM_LINEAR) {
+            B(0x89); B(0xDE);
+            B(0x81); B(0xE6); W(ENV_RAM_MASK);
+        }
+        uint8_t rrm = RAM_LINEAR ? 0x87 : 0x84;
+        uint16_t rdisp = RAM_LINEAR ? (uint16_t) env->ram_delta : ENV_RAM_IRAM;
+        FLAT_ES(); B(0x80); B(rrm | (set ? 0x08 : 0x20)); W(rdisp); B(imm);
         B(0x83); B(0x2E); W(SA(cycles)); B(15);
         if (!step_cold(j1, j2, I->pc)) {
             uint8_t *j3 = jcc8(0xEB);
@@ -3686,11 +4004,12 @@ static int emit1(int i) {
         switch (op) {
         case 0x45: case 0x4D: case 0x55: case 0x5D:
         case 0x65: case 0x6D: case 0x75: case 0x7D:   // RETN, RETI: IFF1 = IFF2, return
+            if (!RAM_LINEAR) materialize();
             B(0x50);                                  // push ax
             B(0xA0); W(ZA(iff2));                     // mov al, [iff2]
             B(0xA2); W(ZA(iff1));                     // mov [iff1], al
             B(0x58);                                  // pop ax
-            FLAT_ES(); B(0x8B); B(0xB6); W(env->ram_delta);      // mov si, [bp + d]
+            stack_read(X_SI);
             B(0x8D); B(0x6E); B(0x02);                // lea bp, [bp + 2]
             cyc += 14;
             // back to the runtime: an interrupt may be pending now
@@ -3708,24 +4027,30 @@ static int emit1(int i) {
             // the new A, H = N = 0, C kept; in AH.
             materialize();
             uint8_t *j2, *j1 = mem_check(X_BX, &j2);
+            if (!RAM_LINEAR) {
+                B(0x89); B(0xDE);                     // mov si, bx
+                B(0x81); B(0xE6); W(ENV_RAM_MASK);    // and si, ram_mask
+            }
+            uint8_t rrm = RAM_LINEAR ? 0x07 : 0x04;
+            uint16_t rdisp = RAM_LINEAR ? (uint16_t) env->ram_delta : ENV_RAM_IRAM;
             B(0x89); B(0xC7);                         // mov di, ax (F, A)
             if (op == 0x67) {
                 // AX = 0 : A low : (HL), rotated right: AL = A low : (HL) high
                 // (the new (HL)), AH high nibble = (HL) low (the new A low)
                 B(0x88); B(0xC4);                     // mov ah, al
                 B(0x80); B(0xE4); B(0x0F);            // and ah, 0Fh
-                FLAT_ES(); B(0x8A); B(0x87); W(env->ram_delta);  // mov al, [bx + ram]
+                FLAT_ES(); B(0x8A); B(0x80 | rrm); W(rdisp);     // mov al, [bx/si + ram]
                 B(0xC1); B(0xC8); B(0x04);            // ror ax, 4
-                FLAT_ES(); B(0x88); B(0x87); W(env->ram_delta);  // mov [bx + ram], al
+                FLAT_ES(); B(0x88); B(0x80 | rrm); W(rdisp);     // mov [bx/si + ram], al
                 B(0x88); B(0xE0);                     // mov al, ah
                 B(0xC0); B(0xE8); B(0x04);            // shr al, 4
             } else {
                 // AX = (HL) : A low : 0, rotated left: AH = (HL) low : A low
                 // (the new (HL)), AL low nibble = (HL) high (the new A low)
-                FLAT_ES(); B(0x8A); B(0xA7); W(env->ram_delta);  // mov ah, [bx + ram]
+                FLAT_ES(); B(0x8A); B(0xA0 | rrm); W(rdisp);     // mov ah, [bx/si + ram]
                 B(0xC0); B(0xE0); B(0x04);            // shl al, 4
                 B(0xC1); B(0xC0); B(0x04);            // rol ax, 4
-                FLAT_ES(); B(0x88); B(0xA7); W(env->ram_delta);  // mov [bx + ram], ah
+                FLAT_ES(); B(0x88); B(0xA0 | rrm); W(rdisp);     // mov [bx/si + ram], ah
                 B(0x24); B(0x0F);                     // and al, 0Fh
             }
             if (!(live_out[i] & FALL)) {
@@ -3861,22 +4186,26 @@ static int emit1(int i) {
             fkind = K_SUB; cf_valid = 1; cyc += 8;
             return 1;
         case 0x41: case 0x49: case 0x51: case 0x59: case 0x61: case 0x69: case 0x79: {   // OUT (C),r
+#ifdef GGSWAN_COLECO
+            materialize();   // VDP control write may abort the block on NMI
+#else
             clobber(live);
+#endif
             uint8_t src = r8x[(op >> 3) & 7];
             uint8_t *s0 = 0, *s1 = 0, *s2 = 0, *done = 0, *done2 = 0;
 #ifdef GGSWAN_SG1000
             if (env->sg_out_off) {
-                // the TMS9918A's ports (80h-BFh: even data, odd control)
+                // the TMS9918A's ports (SG: 80h-BFh, CV: A0h-BFh)
                 B(0x89); B(0xCE);                        // mov si, cx
-                B(0x81); B(0xE6); W(0x00C1);             // and si, C1h
-                B(0x81); B(0xFE); W(0x0080);             // cmp si, 80h
+                B(0x81); B(0xE6); W((uint16_t) (ENV_VDP_PMASK | 1));
+                B(0x81); B(0xFE); W(ENV_VDP_PVAL);
                 s0 = jcc8(0x75);
                 if (src) { B(0x50); B(0x88); B(0xC0 | (src << 3)); }   // push ax; mov al, r
                 call_near(env->sg_out_off);
                 if (src) B(0x58);                        // pop ax
                 done = jcc8(0xEB);
                 land8(s0);
-                B(0x81); B(0xFE); W(0x0081);             // cmp si, 81h
+                B(0x81); B(0xFE); W((uint16_t) (ENV_VDP_PVAL | 1));
                 s2 = jcc8(0x75);
                 if (src) { B(0x50); B(0x88); B(0xC0 | (src << 3)); }   // push ax; mov al, r
                 call_near(env->sg_ctl_off);
@@ -3907,6 +4236,10 @@ static int emit1(int i) {
             }
             B(0x88); B(0x06 | (src << 3)); W(SA(val));
             B(0x88); B(0x0E); W(SA(arg));
+#ifdef GGSWAN_COLECO
+            B(0xC7); B(0x06); W(ZA(pc)); W(next);        // for immediate NMI exit (CV3c)
+            B(0xC7); B(0x06); W(SA(rec_pad)); W((uint16_t) (cyc + 12));
+#endif
             helper(DRC_H_OUT);
             if (done) land8(done);
             if (done2) land8(done2);
@@ -3972,14 +4305,16 @@ static int emit1(int i) {
                 seg_hl(0);
                 uint8_t *s1, *s0 = mem_check(X_DX, &s1);
                 B(0x89); B(0xD6);                            // mov si, dx
+                if (!RAM_LINEAR) { B(0x81); B(0xE6); W(ENV_RAM_MASK); }
+                uint16_t rdisp = RAM_LINEAR ? (uint16_t) env->ram_delta : ENV_RAM_IRAM;
                 if (after) {
                     B(0x50);                                 // push ax
                     B(0x26); B(0x8A); B(0x07);               // mov al, es:[bx]
-                    FLAT_ES(); B(0x88); B(0x84); W(env->ram_delta);     // mov [si + ram], al
+                    FLAT_ES(); B(0x88); B(0x84); W(rdisp);   // mov [si + ram], al
                     B(0x58);                                 // pop ax
                 } else {
                     B(0x26); B(0x8A); B(0x27);               // mov ah, es:[bx]
-                    FLAT_ES(); B(0x88); B(0xA4); W(env->ram_delta);     // mov [si + ram], ah
+                    FLAT_ES(); B(0x88); B(0xA4); W(rdisp);   // mov [si + ram], ah
                 }
                 B(op == 0xA0 ? 0x43 : 0x4B);                 // inc / dec bx
                 B(op == 0xA0 ? 0x42 : 0x4A);                 // inc / dec dx
@@ -4135,8 +4470,9 @@ static int emit1(int i) {
                 cyc += 20;
                 return 1;
             }
-            if (I->nn >= 0xC000 && I->nn < 0xDFFF) {
-                B(0x89); B(0x06 | (xr << 3)); W(I->nn + env->ram_delta);
+            if ((uint16_t) (I->nn - ENV_RAM_BASE) < ENV_RAM_WIN
+                && (I->nn & ENV_RAM_MASK) < ENV_RAM_MASK) {
+                B(0x89); B(0x06 | (xr << 3)); W((uint16_t) ((I->nn & ENV_RAM_MASK) + ENV_RAM_IRAM));
                 cyc += 20;
                 return 1;
             }
@@ -4170,6 +4506,21 @@ static int emit1(int i) {
                     ix_addr(I->pre, I->d);
                     seg_si(0);
                     B(0x26); B(0xF6); B(0x04); B(1 << b);
+                } else if (!RAM_LINEAR && !cold_off) {
+                    uint8_t *j = ix_ram_masked(I->pre, I->d, 0, 0x73);
+                    B(0x81); B(0xE7); W(ENV_RAM_MASK);
+                    B(0xF6); B(0x85); W(ENV_RAM_IRAM); B(1 << b);
+                    cold_add(j, here(), COLD_IX_BIT, b, 0, 0, 0);
+                } else if (!RAM_LINEAR) {
+                    uint8_t *f = ix_ram_masked(I->pre, I->d, 0, 0x72);
+                    ix_far(0);
+                    B(0x26); B(0xF6); B(0x04); B(1 << b);
+                    B(0x07);
+                    uint8_t *done = jcc8(0xEB);
+                    land8(f);
+                    B(0x81); B(0xE7); W(ENV_RAM_MASK);
+                    B(0xF6); B(0x85); W(ENV_RAM_IRAM); B(1 << b);
+                    land8(done);
                 } else if (!cold_off) {
                     uint8_t *j = ix_ram_cold(I->pre, 0);
                     B(0xF6); B(0x84); W((uint16_t) (I->d + (int16_t) env->ram_delta)); B(1 << b);
@@ -4205,7 +4556,9 @@ static int emit1(int i) {
             materialize();
             ix_addr(I->pre, I->d);
             uint8_t *j2, *j1 = mem_check(X_SI, &j2);
-            FLAT_ES(); B(0x80); B(0x84 | (set ? 0x08 : 0x20)); W(env->ram_delta); B(imm);
+            if (!RAM_LINEAR) { B(0x81); B(0xE6); W(ENV_RAM_MASK); }
+            uint16_t rdisp = RAM_LINEAR ? (uint16_t) env->ram_delta : ENV_RAM_IRAM;
+            FLAT_ES(); B(0x80); B(0x84 | (set ? 0x08 : 0x20)); W(rdisp); B(imm);
             B(0x83); B(0x2E); W(SA(cycles)); B(23);
             if (!step_cold(j1, j2, I->pc)) {
                 uint8_t *j3 = jcc8(0xEB);
@@ -4228,9 +4581,10 @@ static int emit1(int i) {
                 cyc += 20;
                 return 1;
             }
-            if (I->nn >= 0xC000 && I->nn < 0xDFFF) {
+            if ((uint16_t) (I->nn - ENV_RAM_BASE) < ENV_RAM_WIN
+                && (I->nn & ENV_RAM_MASK) < ENV_RAM_MASK) {
                 B(0x8B); B(0x36); W(ixa);
-                B(0x89); B(0x36); W(I->nn + env->ram_delta);
+                B(0x89); B(0x36); W((uint16_t) ((I->nn & ENV_RAM_MASK) + ENV_RAM_IRAM));
                 cyc += 20;
                 return 1;
             }
@@ -4241,20 +4595,23 @@ static int emit1(int i) {
             cyc += 10;
             return 1;
         case 0xE5:   // PUSH IX
+            if (!RAM_LINEAR) clobber(live);
             B(0x8B); B(0x36); W(ixa);
             B(0x8D); B(0x6E); B(0xFE);
-            FLAT_ES(); B(0x89); B(0xB6); W(env->ram_delta);
+            stack_write(X_SI, 0);
             cyc += 15;
             return 1;
         case 0xE1:   // POP IX
-            FLAT_ES(); B(0x8B); B(0xB6); W(env->ram_delta);
+            if (!RAM_LINEAR) clobber(live);
+            stack_read(X_SI);
             B(0x8D); B(0x6E); B(0x02);
             B(0x89); B(0x36); W(ixa);
             cyc += 14;
             return 1;
         case 0xE3:   // EX (SP),IX
+            if (!RAM_LINEAR) clobber(live);
             B(0x8B); B(0x36); W(ixa);
-            FLAT_ES(); B(0x87); B(0xB6); W(env->ram_delta);
+            stack_xchg(X_SI);
             B(0x89); B(0x36); W(ixa);
             cyc += 23;
             return 1;
@@ -4303,8 +4660,10 @@ static int emit1(int i) {
             materialize();
             ix_addr(I->pre, I->d);
             uint8_t *j2, *j1 = mem_check(X_SI, &j2);
+            if (!RAM_LINEAR) { B(0x81); B(0xE6); W(ENV_RAM_MASK); }
             B(0x9E);                                              // sahf
-            FLAT_ES(); B(0xFE); B(0x84 | (dec ? 0x08 : 0)); W(env->ram_delta);   // inc/dec byte [si+d]
+            uint16_t rdisp = RAM_LINEAR ? (uint16_t) env->ram_delta : ENV_RAM_IRAM;
+            FLAT_ES(); B(0xFE); B(0x84 | (dec ? 0x08 : 0)); W(rdisp);   // inc/dec byte [si+d]
             fkind = dec ? K_DEC : K_INC; cf_valid = 1;
             materialize();
             B(0x83); B(0x2E); W(SA(cycles)); B(23);
@@ -4343,6 +4702,21 @@ static int emit1(int i) {
                 ix_addr(I->pre, I->d);
                 seg_si(live);
                 B(0x26); B(0x8A); B(0x04 | (dst << 3));
+            } else if (!RAM_LINEAR && !cold_off) {
+                uint8_t *j = ix_ram_masked(I->pre, I->d, live, 0x73);
+                B(0x81); B(0xE7); W(ENV_RAM_MASK);
+                B(0x8A); B(0x85 | (dst << 3)); W(ENV_RAM_IRAM);
+                cold_add(j, here(), COLD_IX_LD, dst, 0, 0, 0);
+            } else if (!RAM_LINEAR) {
+                uint8_t *f = ix_ram_masked(I->pre, I->d, live, 0x72);
+                ix_far(0);
+                B(0x26); B(0x8A); B(0x04 | (dst << 3));
+                B(0x07);
+                uint8_t *done = jcc8(0xEB);
+                land8(f);
+                B(0x81); B(0xE7); W(ENV_RAM_MASK);
+                B(0x8A); B(0x85 | (dst << 3)); W(ENV_RAM_IRAM);
+                land8(done);
             } else if (!cold_off) {
                 uint8_t *j = ix_ram_cold(I->pre, live);
                 B(0x8A); B(0x84 | (dst << 3)); W((uint16_t) (I->d + (int16_t) env->ram_delta));
@@ -4389,6 +4763,24 @@ static int emit1(int i) {
                 seg_si(live);
                 if (y == 1 || y == 3) need_cf();
                 B(0x26); B(alu_x86[y] + 2); B(0x04);
+            } else if (!RAM_LINEAR && !cold_off) {
+                uint8_t *j = ix_ram_masked(I->pre, I->d, live, 0x73);
+                B(0x81); B(0xE7); W(ENV_RAM_MASK);
+                if (y == 1 || y == 3) need_cf();
+                B(alu_x86[y] + 2); B(0x85); W(ENV_RAM_IRAM);
+                cold_add(j, here(), COLD_IX_ALU, y, 0, 0, 0);
+            } else if (!RAM_LINEAR) {
+                uint8_t *f = ix_ram_masked(I->pre, I->d, live, 0x72);
+                ix_far(0);
+                if (y == 1 || y == 3) need_cf();
+                B(0x26); B(alu_x86[y] + 2); B(0x04);
+                B(0x07);
+                uint8_t *done = jcc8(0xEB);
+                land8(f);
+                B(0x81); B(0xE7); W(ENV_RAM_MASK);
+                if (y == 1 || y == 3) need_cf();
+                B(alu_x86[y] + 2); B(0x85); W(ENV_RAM_IRAM);
+                land8(done);
             } else if (!cold_off) {
                 uint8_t *j = ix_ram_cold(I->pre, live);
                 if (y == 1 || y == 3) need_cf();
@@ -4563,11 +4955,12 @@ unprefixed:;
             case 4:   // LD (nn),HL
                 if (FLAT) {
                     flat_write16(I->nn, X_BX, live);
-                } else if (I->nn >= 0xC000 && I->nn < 0xDFFF) {
-                    B(0x89); B(0x1E); W(I->nn + env->ram_delta);
+                } else if ((uint16_t) (I->nn - ENV_RAM_BASE) < ENV_RAM_WIN
+                           && (I->nn & ENV_RAM_MASK) < ENV_RAM_MASK) {
+                    B(0x89); B(0x1E); W((uint16_t) ((I->nn & ENV_RAM_MASK) + ENV_RAM_IRAM));
                 } else {
                     write_const(I->nn, X_BX, live);
-                    write_const(I->nn + 1, 7, live);
+                    write_const((uint16_t) (I->nn + 1), 7, live);
                 }
                 cyc += 16;
                 if (I->term == T_END_AFTER) {
@@ -4621,8 +5014,14 @@ unprefixed:;
                 // (HL): RAM directly, anything else with the interpreter
                 materialize();
                 uint8_t *j2, *j1 = mem_check(X_BX, &j2);
+                if (!RAM_LINEAR) {
+                    B(0x89); B(0xDE);
+                    B(0x81); B(0xE6); W(ENV_RAM_MASK);
+                }
                 B(0x9E);                                              // sahf
-                FLAT_ES(); B(0xFE); B(0x87 | (dec ? 0x08 : 0)); W(env->ram_delta);
+                uint8_t rrm = RAM_LINEAR ? 0x87 : 0x84;
+                uint16_t rdisp = RAM_LINEAR ? (uint16_t) env->ram_delta : ENV_RAM_IRAM;
+                FLAT_ES(); B(0xFE); B(rrm | (dec ? 0x08 : 0)); W(rdisp);
                 fkind = dec ? K_DEC : K_INC; cf_valid = 1;
                 materialize();
                 B(0x83); B(0x2E); W(SA(cycles)); B(11);
@@ -4704,14 +5103,16 @@ unprefixed:;
             exit_const(next, 5);
             land8(j);
             fkind = save_kind;
-            FLAT_ES(); B(0x8B); B(0xB6); W(env->ram_delta);   // mov si, [bp+d]
+            if (!RAM_LINEAR) materialize();
+            stack_read(X_SI);
             B(0x8D); B(0x6E); B(0x02);
             exit_reg(X_SI, 11);
             return 1;
         }
         case 1:
             if (y == 1) {   // RET
-                FLAT_ES(); B(0x8B); B(0xB6); W(env->ram_delta);
+                if (!RAM_LINEAR) materialize();
+                stack_read(X_SI);
                 B(0x8D); B(0x6E); B(0x02);
                 exit_reg(X_SI, 10);
                 return 1;
@@ -4729,12 +5130,13 @@ unprefixed:;
             if (y == 7) { B(0x89); B(0xDD); cyc += 6; sp_loaded_exit(next, 0); return 1; }   // LD SP,HL
             // POP
             if (y == 6) {
-                FLAT_ES(); B(0x8B); B(0x86); W(env->ram_delta);   // mov ax, [bp+d]
+                stack_read(X_AX);
                 B(0x86); B(0xC4);                      // xchg al, ah
                 fkind = K_AH;
             } else {
+                if (!RAM_LINEAR) clobber(live);
                 uint8_t xr = r16x[y >> 1];
-                FLAT_ES(); B(0x8B); B(0x86 | (xr << 3)); W(env->ram_delta);
+                stack_read(xr);
                 if (xr == X_BX) hl_es = 0;
             }
             B(0x8D); B(0x6E); B(0x02);
@@ -4772,8 +5174,15 @@ unprefixed:;
                     cyc += 11;   // (ports 00-3F but 06: nothing to do, see z80_out)
                     return 1;
                 }
+#ifdef GGSWAN_COLECO
+                if ((I->nn & (ENV_VDP_PMASK | 1)) == (ENV_VDP_PVAL | 1))
+                    materialize();   // VDP control write may abort the block on NMI
+                else
+                    clobber(live);
+#else
                 clobber(live);
-                if (env->psg_queue && I->nn >= 0x40 && I->nn < 0x80) {
+#endif
+                if (env->psg_queue && I->nn >= ENV_PSG_LO && I->nn <= ENV_PSG_HI) {
                     // PSG: queued (main.c writes the queue at the end of the
                     // frame, or here when full): Sailor Moon S plays samples
                     // with hundreds of volume writes a frame, each a helper
@@ -4798,13 +5207,13 @@ unprefixed:;
                 }
                 uint8_t *s1 = 0, *done = 0;
 #ifdef GGSWAN_SG1000
-                if (env->sg_out_off && (I->nn & 0xC1) == 0x80) {
+                if (env->sg_out_off && (I->nn & (ENV_VDP_PMASK | 1)) == ENV_VDP_PVAL) {
                     call_near(env->sg_out_off);           // TMS9918A data port
                     hl_es = 0;
                     cyc += 11;
                     return 1;
                 }
-                if (env->sg_ctl_off && (I->nn & 0xC1) == 0x81) {
+                if (env->sg_ctl_off && (I->nn & (ENV_VDP_PMASK | 1)) == (ENV_VDP_PVAL | 1)) {
                     call_near(env->sg_ctl_off);           // TMS9918A control port
                     hl_es = 0;
                     done = jcc8(0x73);                    // jnc done
@@ -4827,6 +5236,13 @@ unprefixed:;
                 }
                 B(0xA2); W(SA(val));
                 B(0xC7); B(0x06); W(SA(arg)); W(I->nn);
+#ifdef GGSWAN_COLECO
+                // VDP control register write may raise NMI immediately (CV3c)
+                if ((I->nn & (ENV_VDP_PMASK | 1)) == (ENV_VDP_PVAL | 1)) {
+                    B(0xC7); B(0x06); W(ZA(pc)); W(next);
+                    B(0xC7); B(0x06); W(SA(rec_pad)); W((uint16_t) (cyc + 11));
+                }
+#endif
                 helper(DRC_H_OUT);
                 if (done) land8(done);
                 cyc += 11;
@@ -4888,7 +5304,7 @@ unprefixed:;
                 }
                 clobber(live);
 #ifdef GGSWAN_SG1000
-                if (env->sg_in_off && (I->nn & 0xC0) == 0x80) {
+                if (env->sg_in_off && (I->nn & ENV_VDP_PMASK) == ENV_VDP_PVAL) {
                     // the TMS9918A's data port, or its status
                     call_near((I->nn & 1) ? env->sg_st_off : env->sg_in_off);
                     hl_es = 0;
@@ -4977,7 +5393,8 @@ unprefixed:;
                 return 1;
             }
             case 4:   // EX (SP),HL
-                FLAT_ES(); B(0x87); B(0x9E); W(env->ram_delta);
+                if (!RAM_LINEAR) clobber(live);
+                stack_xchg(X_BX);
                 hl_es = 0;
                 cyc += 19;
                 return 1;
@@ -4994,25 +5411,28 @@ unprefixed:;
             exit_const(next, 10);
             land8(j);
             fkind = save_kind;
+            if (!RAM_LINEAR) materialize();
             push_imm(next);
             exit_const(I->nn, 17);
             return 1;
         }
         case 5:
             if (y == 1) {   // CALL nn
+                if (!RAM_LINEAR) materialize();
                 push_imm(next);
                 exit_const(I->nn, 17);
                 return 1;
             }
             // PUSH
+            if (y != 6 && !RAM_LINEAR) clobber(live);
             B(0x8D); B(0x6E); B(0xFE);
             if (y == 6) {
                 materialize();
                 B(0x86); B(0xC4);                          // xchg al, ah
-                FLAT_ES(); B(0x89); B(0x86); W(env->ram_delta);
+                stack_write(X_AX, 0);
                 B(0x86); B(0xC4);
             } else {
-                FLAT_ES(); B(0x89); B(0x86 | (r16x[y >> 1] << 3)); W(env->ram_delta);
+                stack_write(r16x[y >> 1], 0);
             }
             cyc += 11;
             return 1;
@@ -5023,6 +5443,7 @@ unprefixed:;
             cyc += 7;
             return 1;
         case 7:   // RST
+            if (!RAM_LINEAR) materialize();
             push_imm(next);
             exit_const(y << 3, 11);
             return 1;
@@ -5999,13 +6420,19 @@ static void emit_vfill(void) {
 
 int drc_translate(const drc_env_t *e, uint16_t pc, uint8_t *out,
                   uint16_t out_off, uint16_t out_max, drc_result_t *res) {
-    env = e;
+    env_cache(e);
     rd_len = 0;   // (the mapping may have changed since the last block)
     // code in work RAM (C000-DFFF): short blocks that check their own bytes
     // when entered (see ram_check)
     // (sfswan: all of it is RAM, and none of it is "a block in RAM": no
     // check of its bytes at the start, the writes are looked at instead)
+#ifdef GGSWAN_COLECO
+    // ColecoVision: BIOS (0000h-1FFFh) and ROM (8000h-FFFFh) only
+    if (!ROM_CODE_ADDR(pc)) return 0;
+    uint8_t ram = 0;
+#else
     uint8_t ram = pc >= 0xC000 && !FLAT;
+#endif
     uint8_t long_run = 0;   // a block in RAM of OUTIs only, longer than RAM_BLOCK_MAX
     if (ram && (!env->ram_blocks || pc >= 0xDFC0)) return 0;
     // decode
@@ -6026,7 +6453,11 @@ int drc_translate(const drc_env_t *e, uint16_t pc, uint8_t *out,
     ins_t *K = ins;
     while (n < max_n) {
         // stay inside the block's 16 KiB slot (or slot 0, through a jump)
+#ifdef GGSWAN_COLECO
+        if (n && (!ROM_CODE_ADDR(p) || (((p ^ pc) & 0xC000) && !(p < 0x2000 && ins[n - 1].trace)))) break;
+#else
         if (n && ((p ^ pc) & 0xC000) && !(p < 0x4000 && !ram)) break;
+#endif
         if (ram && p - pc > RAM_BLOCK_MAX - 4) break;
         // a long block stops where one already translated starts, and links
         // to it: Shinobi uploads tiles with an unrolled OUTI / OUTI / DEC L
@@ -6116,7 +6547,11 @@ int drc_translate(const drc_env_t *e, uint16_t pc, uint8_t *out,
                 // JP nn / JR e: go on at the target, unless it leaves slot 0 and
                 // the block's slot, or is already in the block (a loop)
                 uint16_t t = K->op == 0xC3 ? K->nn : (uint16_t) (K->pc + 2 + (int8_t) K->nn);
+#ifdef GGSWAN_COLECO
+                int seen = !ROM_CODE_ADDR(t) || (((t ^ pc) & 0xC000) && t >= 0x2000);
+#else
                 int seen = t >= 0xC000 || ((t ^ pc) & 0xC000 && t >= 0x4000);
+#endif
                 if (!seen) {
                     for (const ins_t *S = ins; S <= K; S++)
                         if (S->pc == t) { seen = 1; break; }
@@ -6129,15 +6564,24 @@ int drc_translate(const drc_env_t *e, uint16_t pc, uint8_t *out,
                     continue;
                 }
             }
+#ifdef GGSWAN_COLECO
+            if (!env->no_inline && K->op == 0xCD && !inlined && n + CALL_INLINE_MAX + 2 < max_n
+                && ROM_CODE_ADDR(K->nn) && !(((K->nn ^ pc) & 0xC000) && K->nn >= 0x2000)) {
+#else
             if (!env->no_inline && K->op == 0xCD && !inlined && n + CALL_INLINE_MAX + 2 < max_n
                 && !(((K->nn ^ pc) & 0xC000) && K->nn >= 0x4000) && K->nn < 0xC000) {
+#endif
                 // CALL nn to a short routine (no jumps out of it, ends with RET):
                 // its instructions follow inline (once per block)
                 uint16_t q = K->nn;
                 ins_t *C = K + 1;
                 int k, ok = 0;
                 for (k = 0; k <= CALL_INLINE_MAX; k++, C++) {
+#ifdef GGSWAN_COLECO
+                    if (!ROM_CODE_ADDR(q) || (((q ^ pc) & 0xC000) && q >= 0x2000)) break;
+#else
                     if (((q ^ pc) & 0xC000) && q >= 0x4000) break;
+#endif
                     decode(q, C);
                     C->dyn = 0;
                     C->trace = 0;

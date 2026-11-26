@@ -4503,7 +4503,7 @@ int main(void) {
             text_print("PRESS A");
             while (!(ws_keypad_scan() & WS_KEY_A)) {}
         }
-#if !defined(GGSWAN_SF_INTERP) && !defined(GGSWAN_COLECO)
+#ifndef GGSWAN_SF_INTERP   // (sfswan, a test build: the interpreter only)
         gg_cpu_run = drc_z80_run;
         gg_cpu_left = drc_cycles_left;
 #endif
@@ -4512,9 +4512,6 @@ int main(void) {
         if (ws_keypad_scan() & WS_KEY_Y4)
             diag_mode = true;
 
-#ifdef GGSWAN_COLECO
-        text_print("CPU: INTERPRETER");
-#else
         if (ws_keypad_scan() & WS_KEY_Y3) {
             drc_rt_set_no_links(1);
             drc_check = 1;
@@ -4533,7 +4530,6 @@ int main(void) {
         } else {
             text_print("CPU: RECOMPILER");
         }
-#endif
     }
 
     {

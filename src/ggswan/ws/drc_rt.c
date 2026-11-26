@@ -221,6 +221,10 @@ static uint8_t ic_link(uint16_t seg, uint16_t link, uint16_t pc, uint16_t target
     uint8_t lform = 0;
     uint8_t ok = 1;
     (void) bank;
+#elif defined(GGSWAN_COLECO)
+    uint8_t lform = 0;
+    uint8_t ok = (pc < 0x2000 || pc >= 0x8000);
+    (void) bank;
 #else
     uint8_t lform = (slot == 0);
     uint8_t ok = lform ? (pc < 0x8000) : (pc < 0xC000 && ((pc >> 14) == 0 || (pc >> 14) == slot));
@@ -234,7 +238,7 @@ static uint8_t ic_link(uint16_t seg, uint16_t link, uint16_t pc, uint16_t target
     uint8_t __far *dst = MK_FP(0x1000, cmp_off);
     for (uint8_t i = 0; i < 4; i++)
         dst[i] = cmp[i];
-#ifndef GGSWAN_SF7000
+#if !defined(GGSWAN_SF7000) && !defined(GGSWAN_COLECO)
     if (lform && ok && pc >= 0x4000) {
         // check slot 1's bank before following the link (D is at link + 23,
         // jne ends at link - 8 -> rel8 = 31)
@@ -503,6 +507,16 @@ static uint16_t put_dyn(uint8_t *stub, uint8_t bank_index) {
 #ifdef GGSWAN_SF7000
     // (sfswan: any address, one key)
     (void) keys; (void) miss;
+    PB(0x30); PB(0xDB);                              // xor bl, bl
+#elif defined(GGSWAN_COLECO)
+    // ColecoVision: BIOS (0000h-1FFFh) and 32 KiB ROM (8000h-FFFFh) use key 0;
+    // expansion (2000h-5FFFh) and RAM (6000h-7FFFh) miss to the interpreter
+    (void) keys;
+    PB(0x3D); PW(0x2000);                            // cmp ax, 2000h
+    PB(0x72); uint8_t *cv_ok = p++;                  // jb ok (BIOS)
+    PB(0x3D); PW(0x8000);                            // cmp ax, 8000h
+    PB(0x72); PREL(miss);                            // jb MISS (2000h-7FFFh)
+    *cv_ok = (uint8_t) (p - cv_ok - 1);
     PB(0x30); PB(0xDB);                              // xor bl, bl
 #else
     PB(0x3D); PW(0xC000);                            // cmp ax, C000h
@@ -990,6 +1004,48 @@ void drc_rt_init(uint16_t bank) {
     env.known_start = known_start;
     drc_st.table_seg = DRC_TABLE_SEG;
     env.ram_delta = 0x8000 - 0xC000;   // Game Gear RAM at IRAM 8000h
+    env.ram_base = 0xC000;
+    env.ram_win_size = 0x2000;
+    env.ram_read_win = 0x4000;
+    env.ram_mask = 0x1FFF;
+    env.ram_iram = 0x8000;
+    env.segtab_addr = env.state_addr + offsetof(drc_state_t, segtab);
+    env.segtab_1k = 0;
+    env.rom_wr_ignore = 0;
+    env.psg_lo = 0x40;
+    env.psg_hi = 0x7F;
+    env.vdp_pmask = 0xC0;
+    env.vdp_pval = 0x80;
+#ifdef GGSWAN_COLECO
+    // ColecoVision: 1 KiB RAM mirrored across 6000h-7FFFh (IRAM 8000h-83FFh),
+    // 1 KiB open bus FFh at 8400h-87FFh, 64x1 KiB segtab at 8800h-887Fh
+    env.ram_delta = 0x8000 - 0x6000;
+    env.ram_base = 0x6000;
+    env.ram_win_size = 0x2000;
+    env.ram_read_win = 0x2000;
+    env.ram_mask = 0x03FF;
+    env.ram_iram = 0x8000;
+    env.segtab_addr = 0x8800;
+    env.segtab_1k = 1;
+    env.rom_wr_ignore = 1;
+    env.pad_in = 0;
+    env.psg_lo = 0xE0;
+    env.psg_hi = 0xFF;
+    env.vdp_pmask = 0xE0;
+    env.vdp_pval = 0xA0;
+    memset(IRAM(0x8400), 0xFF, 0x0400);
+    {
+        uint16_t *st = (uint16_t*) IRAM(0x8800);
+        for (uint8_t p = 0; p < 8; p++)
+            st[p] = 0x2000;                                                // 0000h-1FFFh BIOS (ROM0)
+        for (uint8_t p = 8; p < 24; p++)
+            st[p] = (uint16_t) ((0x8400u - ((uint16_t) p << 10)) >> 4);    // 2000h-5FFFh open bus
+        for (uint8_t p = 24; p < 32; p++)
+            st[p] = (uint16_t) ((0x8000u - ((uint16_t) p << 10)) >> 4);    // 6000h-7FFFh 1 KiB RAM
+        for (uint8_t p = 32; p < 64; p++)
+            st[p] = 0x1C00;                                                // 8000h-FFFFh ROM (ROM0 + 4000h)
+    }
+#endif
 #ifdef GGSWAN_SF7000
     // sfswan: the memory is one segment, the RAM window (drc.c: FLAT)
     env.flat = 1;
@@ -1046,7 +1102,7 @@ void drc_rt_init(uint16_t bank) {
             *p++ = 0x8B; *p++ = 0x16; *p++ = z + 4; *p++ = (z + 4) >> 8;         // mov dx, [e]
             *p++ = 0x8B; *p++ = 0x1E; *p++ = z + 6; *p++ = (z + 6) >> 8;         // mov bx, [l]
             *p++ = 0x8B; *p++ = 0x2E; *p++ = sp; *p++ = sp >> 8;                 // mov bp, [sp]
-#ifdef GGSWAN_SF7000
+#if defined(GGSWAN_SF7000) || defined(GGSWAN_COLECO)
             {
                 // sfswan: the helper found code written (drc_st.pad2): not
                 // back into the block, which may be what was written, but
@@ -1200,6 +1256,9 @@ void drc_rt_init(uint16_t bank) {
     env.ntw_off = 0;
     env.ntwa_off = 0;
     env.trow_off = 0;
+#ifdef GGSWAN_COLECO
+    env.ram_blocks = 0;   // work RAM (6000h-7FFFh) stays interpreted
+#endif
     // (GGSWAN_SG_NOSTUBS: a build for the tests, every port by the helper)
 #ifndef GGSWAN_SG_NOSTUBS
     if (!drc_no_fast)
@@ -1229,7 +1288,7 @@ void drc_rt_set_no_links(uint8_t on) {
 }
 
 static inline uint8_t bank_key(uint16_t pc) {
-#ifdef GGSWAN_SF7000
+#if defined(GGSWAN_SF7000) || defined(GGSWAN_COLECO)
     (void) pc;
     return 0;   // (one memory)
 #else
@@ -1441,6 +1500,12 @@ static void drc_helper_body(void) {
         if ((uint8_t) drc_st.arg >= 0xE0)
             sf_port_a_plan(remapped ? 0 : drc_st.cycles);
 #endif
+#ifdef GGSWAN_COLECO
+        if (z80_nmi_pending && drc_st.op == DRC_H_OUT) {
+            drc_st.cycles -= (int16_t) (drc_st.rec_pad[0] | (drc_st.rec_pad[1] << 8));
+            drc_st.pad2 = 1;
+        }
+#endif
         if (z80_break || drc_flush_request)
             drc_st.fl_off = 1;
         if (!remapped && (z80_break || SF_FLUSH)) {
@@ -1465,6 +1530,12 @@ static void drc_helper_body(void) {
         drc_st.pad2 = 1;
     if (drc_st.op == DRC_H_STEP || drc_st.op == DRC_H_OUTI_RUN || drc_st.op == DRC_H_OUTD_RUN)
         sf_port_a_plan(remapped ? 0 : drc_st.cycles);
+#endif
+#ifdef GGSWAN_COLECO
+    if (z80_nmi_pending && drc_st.op == DRC_H_STEP) {
+        drc_st.cycles -= (int16_t) (drc_st.rec_pad[0] | (drc_st.rec_pad[1] << 8));
+        drc_st.pad2 = 1;
+    }
 #endif
     if (!remapped && (z80_break || SF_FLUSH || m1 != gg.mapper[1]
                       || (!safe && (m0 != gg.mapper[0] || m2 != gg.mapper[2] || m3 != gg.mapper[3])))) {
@@ -1528,10 +1599,23 @@ static void drc_helper_op(void) {
 #ifdef GGSWAN_HOST
         host_step(drc_st.arg);
 #endif
+#ifdef GGSWAN_COLECO
+        uint8_t nmi = z80_nmi_pending;
+        z80_nmi_pending = 0;
+        while (n--) {
+            uint16_t p = z80.pc;
+            do { z80_step(); } while (z80.pc == p && !z80_nmi_pending);
+            if (z80_nmi_pending)
+                break;
+        }
+        if (nmi)
+            z80_nmi_pending = 1;
+#else
         while (n--) {
             uint16_t p = z80.pc;
             do { z80_step(); } while (z80.pc == p);   // (repeating ones)
         }
+#endif
         z80.irq = irq;
         drc_st.cycles -= (int16_t) (before - z80.cycles);
         z80.cycles = block_left;
@@ -1633,13 +1717,21 @@ void drc_rt_bench(uint16_t *out) {
 uint8_t drc_check;
 static z80_t check_z;
 static gg_vdp_t check_vdp;   // (the VDP ports are partly handled natively)
+#ifdef GGSWAN_COLECO
+static uint8_t check_nmi;
+#endif
 
 #define CHECK_SEG (DRC_TABLE_SEG + 0x1000)   // PSRAM bank code_bank + DRC_CODE_BANKS + 1
+#ifdef GGSWAN_COLECO
+#define CHECK_RAM_SIZE 0x0400u
+#else
+#define CHECK_RAM_SIZE 0x2000u
+#endif
 
 static uint16_t ram_sum(void) {
     const uint8_t *p = (const uint8_t*) IRAM(0x8000);
     uint16_t s = 0;
-    for (uint16_t i = 0; i < 0x2000; i++)
+    for (uint16_t i = 0; i < CHECK_RAM_SIZE; i++)
         s = (uint16_t) ((s << 1) | (s >> 15)) + p[i];
     return s;
 }
@@ -1647,7 +1739,10 @@ static uint16_t ram_sum(void) {
 static void check_begin(void) {
     check_z = z80;
     check_vdp = gg.vdp;
-    psram_write(DRC_CODE_BANKS + 1, 0, (const uint8_t*) IRAM(0x8000), 0x2000);
+#ifdef GGSWAN_COLECO
+    check_nmi = z80_nmi_pending;
+#endif
+    psram_write(DRC_CODE_BANKS + 1, 0, (const uint8_t*) IRAM(0x8000), CHECK_RAM_SIZE);
 }
 
 // after a block: run the interpreter from the saved state and compare
@@ -1660,10 +1755,14 @@ static void check_end(uint16_t pc, int16_t used) {
     gg.vdp = check_vdp;
     const uint8_t __far *src = MK_FP(CHECK_SEG, 0);
     uint8_t *dst = (uint8_t*) IRAM(0x8000);
-    for (uint16_t i = 0; i < 0x2000; i++)
+    for (uint16_t i = 0; i < CHECK_RAM_SIZE; i++)
         dst[i] = src[i];
     uint8_t irq = z80.irq;
     z80.irq = 0;
+#ifdef GGSWAN_COLECO
+    uint8_t nmi = z80_nmi_pending;
+    z80_nmi_pending = 0;
+#endif
     int16_t c = 0;
     uint16_t steps = 0;
     while (1) {
@@ -1679,6 +1778,9 @@ static void check_end(uint16_t pc, int16_t used) {
             break;
     }
     z80.irq = irq;
+#ifdef GGSWAN_COLECO
+    z80_nmi_pending = nmi;
+#endif
     uint16_t sum_r = ram_sum();
     // (a wait loop ends the run at once: the interpreter spins until the
     // cycles run out, a few more)
@@ -1711,6 +1813,10 @@ static void check_end(uint16_t pc, int16_t used) {
 #define SP_OK(sp) 1
 #define STACK_OK(sp) 1
 #define PUSH_PC(sp) do { sf_ram[sp] = (uint8_t) z80.pc; sf_ram[(uint16_t) ((sp) + 1)] = z80.pc >> 8; } while (0)
+#elif defined(GGSWAN_COLECO)
+#define SP_OK(sp) ((uint16_t) ((sp) - 0x6002u) <= 0x1FFEu)
+#define STACK_OK(sp) ((sp) >= 0x6000 && (sp) < 0x8000)
+#define PUSH_PC(sp) do { gg_ram[(sp) & 0x03FF] = (uint8_t) z80.pc; gg_ram[((sp) + 1) & 0x03FF] = z80.pc >> 8; } while (0)
 #else
 #define SP_OK(sp) ((uint16_t) ((sp) - 0xC002u) <= 0x1FFEu)
 #define STACK_OK(sp) ((sp) >= 0xC000 && (sp) < 0xDFFF)
@@ -1757,13 +1863,21 @@ static __attribute__((noinline)) uint8_t drc_fast_reentry_l0_asm(void) {
         "orb %c[rem], %%al\n\t"
         "orb %c[z_eip], %%al\n\t"
         "orb %c[z_hlt], %%al\n\t"
+#ifdef GGSWAN_COLECO
+        "orb %c[nmi], %%al\n\t"
+#endif
         "jnz 8f\n\t"
         "cmpb $0, %c[mpend]\n\t"
         "jne 7f\n\t"
         "cmpb $0, %c[z_irq]\n\t"
         "jnz 10f\n\t"
     "1:\n\t"
-#ifndef GGSWAN_SF7000
+#ifdef GGSWAN_COLECO
+        "movw %c[z_sp], %%ax\n\t"
+        "subw $0x6002, %%ax\n\t"
+        "cmpw $0x1FFE, %%ax\n\t"
+        "ja 8f\n\t"
+#elif !defined(GGSWAN_SF7000)
         "movw %c[z_sp], %%ax\n\t"
         "subw $0xC002, %%ax\n\t"
         "cmpw $0x1FFE, %%ax\n\t"
@@ -1775,6 +1889,13 @@ static __attribute__((noinline)) uint8_t drc_fast_reentry_l0_asm(void) {
     "3:\n\t"
         "movw %c[z_pc], %%ax\n\t"
 #ifdef GGSWAN_SF7000
+        "xorb %%dl, %%dl\n\t"
+#elif defined(GGSWAN_COLECO)
+        "cmpw $0x2000, %%ax\n\t"
+        "jb 4f\n\t"
+        "cmpw $0x8000, %%ax\n\t"
+        "jb 8f\n\t"
+    "4:\n\t"
         "xorb %%dl, %%dl\n\t"
 #else
         "cmpw $0x8000, %%ax\n\t"
@@ -1825,7 +1946,7 @@ static __attribute__((noinline)) uint8_t drc_fast_reentry_l0_asm(void) {
     "13:\n\t"
         "popw %%es\n\t"
         "jmp 8b\n\t"
-#ifndef GGSWAN_SF7000
+#if !defined(GGSWAN_SF7000) && !defined(GGSWAN_COLECO)
     "12:\n\t"
         "cmpw $0xC000, %%ax\n\t"
         "jae 8b\n\t"
@@ -1851,7 +1972,10 @@ static __attribute__((noinline)) uint8_t drc_fast_reentry_l0_asm(void) {
           [no_links] "i" (&drc_no_links),
           [cseg] "i" (&drc_st.cur_seg),
           [z_pc] "i" (&z80.pc),
-#ifndef GGSWAN_SF7000
+#ifdef GGSWAN_COLECO
+          [nmi] "i" (&z80_nmi_pending),
+          [z_sp] "i" (&z80.sp),
+#elif !defined(GGSWAN_SF7000)
           [z_sp] "i" (&z80.sp),
           [keys] "i" (drc_st.keys),
 #endif
@@ -1874,11 +1998,19 @@ static __attribute__((noinline)) uint16_t drc_lookup_asm(void) {
 #ifdef GGSWAN_SF7000
         "orb %c[sf_rom], %%al\n\t"
 #endif
+#ifdef GGSWAN_COLECO
+        "orb %c[nmi], %%al\n\t"
+#endif
         "jnz 8f\n\t"
         "cmpb $0, %c[z_irq]\n\t"
         "jnz 9f\n\t"
     "1:\n\t"
-#ifndef GGSWAN_SF7000
+#ifdef GGSWAN_COLECO
+        "movw %c[z_sp], %%ax\n\t"
+        "subw $0x6002, %%ax\n\t"
+        "cmpw $0x1FFE, %%ax\n\t"
+        "ja 8f\n\t"
+#elif !defined(GGSWAN_SF7000)
         "movw %c[z_sp], %%ax\n\t"
         "subw $0xC002, %%ax\n\t"
         "cmpw $0x1FFE, %%ax\n\t"
@@ -1890,6 +2022,13 @@ static __attribute__((noinline)) uint16_t drc_lookup_asm(void) {
     "2:\n\t"
         "movw %c[z_pc], %%ax\n\t"
 #ifdef GGSWAN_SF7000
+        "xorb %%dl, %%dl\n\t"
+#elif defined(GGSWAN_COLECO)
+        "cmpw $0x2000, %%ax\n\t"
+        "jb 4f\n\t"
+        "cmpw $0x8000, %%ax\n\t"
+        "jb 8f\n\t"
+    "4:\n\t"
         "xorb %%dl, %%dl\n\t"
 #else
         "cmpw $0x8000, %%ax\n\t"
@@ -1925,7 +2064,7 @@ static __attribute__((noinline)) uint16_t drc_lookup_asm(void) {
         "jmp 99f\n\t"
     "29:\n\t"
         "jmp 20f\n\t"
-#ifndef GGSWAN_SF7000
+#if !defined(GGSWAN_SF7000) && !defined(GGSWAN_COLECO)
     "19:\n\t"
         "jmp 12f\n\t"
 #endif
@@ -1959,7 +2098,7 @@ static __attribute__((noinline)) uint16_t drc_lookup_asm(void) {
         "movw %%cx, %c[f38]+2\n\t"
         "movb %%dl, %c[f38_b]\n\t"
         "jmp 6b\n\t"
-#ifndef GGSWAN_SF7000
+#if !defined(GGSWAN_SF7000) && !defined(GGSWAN_COLECO)
     "12:\n\t"
         "cmpw $0xC000, %%ax\n\t"
         "jae 13f\n\t"
@@ -2040,6 +2179,9 @@ static __attribute__((noinline)) uint16_t drc_lookup_asm(void) {
           [f38_b] "i" (&fast38_bank)
 #ifdef GGSWAN_SF7000
           , [sf_rom] "i" (&sf.rom_on)
+#elif defined(GGSWAN_COLECO)
+          , [nmi] "i" (&z80_nmi_pending),
+          [z_sp] "i" (&z80.sp)
 #else
           , [z_sp] "i" (&z80.sp),
           [keys] "i" (drc_st.keys)
@@ -2204,10 +2346,16 @@ uint8_t drc_fast_reentry(void) {
     }
     if (drc_st.cycles > 0 && !drc_st.reason && !link && !drc_no_fast && !drc_check
         && !z80_break && !drc_flush_request && !drc_st.ram_fail && !remapped
-        && !z80.ei_pending && !z80.halted && !(z80.irq && z80.iff1) && SP_OK(z80.sp)) {
+        && !z80.ei_pending && !z80.halted && !(z80.irq && z80.iff1) && SP_OK(z80.sp)
+#ifdef GGSWAN_COLECO
+        && !z80_nmi_pending
+#endif
+       ) {
         uint16_t pc = z80.pc;
 #ifdef GGSWAN_SF7000
         {
+#elif defined(GGSWAN_COLECO)
+        if (pc < 0x2000 || pc >= 0x8000) {
 #else
         if (pc < 0x8000 || (pc < 0xC000 && !(drc_st.keys[0] & 0x08))) {
 #endif
@@ -2346,6 +2494,16 @@ int32_t drc_z80_run(int32_t cycles) {
 #endif
         pc = z80.pc;
         if (drc_flush_request) { drc_flush_request = 0; flush(); }
+#ifdef GGSWAN_COLECO
+        if (z80_nmi_pending) {
+            pending_link = 0;
+            z80_nmi_pending = 0;
+            z80_nmi();
+            drc_stat_irq++;
+            drc_diag_irq_line = gg_current_line();
+            continue;
+        }
+#endif
         if (z80.halted) {
             pending_link = 0;
             if (z80.irq && z80.iff1) { drc_stat_irq++; drc_diag_irq_line = gg_current_line(); interp_one(); continue; }
@@ -2384,6 +2542,11 @@ int32_t drc_z80_run(int32_t cycles) {
         // the interpreter (short: its long parts are the plugin's)
         uint8_t ram_code = 0;
         if (sf.rom_on) {
+#elif defined(GGSWAN_COLECO)
+        // ColecoVision: BIOS (0000h-1FFFh) and ROM (8000h-FFFFh) are
+        // translated; expansion (2000h-5FFFh) and RAM (6000h-7FFFh) are not
+        uint8_t ram_code = 0;
+        if ((pc >= 0x2000 && pc < 0x8000) || !SP_OK(z80.sp)) {
 #else
         uint8_t ram_code = pc >= 0xC000 && pc < 0xDFC0;
         if ((pc >= 0xC000 && !ram_code) || (pc >= 0x8000 && pc < 0xC000 && (drc_st.keys[0] & 0x08))

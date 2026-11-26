@@ -104,7 +104,11 @@ void host_translated(uint16_t pc, uint16_t len, uint16_t n) {
         static uint16_t cur = 1;
         extern uint32_t drc_stat_flushes;
         if (drc_stat_flushes != last_flush_seen) { last_flush_seen = drc_stat_flushes; cur++; }
+#ifdef GGSWAN_COLECO
+        uint8_t bk = 0;
+#else
         uint8_t bk = gg.mapper[1 + (pc >> 14)] & 63;
+#endif
         if (gen[bk][pc] == cur) {
             retr_same++;
             if (retr_same < 4) {
@@ -112,14 +116,18 @@ void host_translated(uint16_t pc, uint16_t len, uint16_t n) {
                 printf("  retranslated %04X bank %d (len %d)\n", pc, bk, len);
             }
         }
-        if (!gen[bk][pc]) { FILE *kf = fopen("/tmp/claude-0/keys.txt", "a"); fprintf(kf, "%d %d\n", pc, gg.mapper[1 + (pc >> 14)]); fclose(kf); }
+        if (!gen[bk][pc]) { FILE *kf = fopen("/tmp/claude-0/keys.txt", "a"); if (kf) { fprintf(kf, "%d %d\n", pc, bk); fclose(kf); } }
         gen[bk][pc] = cur;
     }
     tr_bytes += len; tr_instr += n; tr_count++;
     // (the block list for wsprof.py, which profiles the WS build's translator)
-    if (getenv("GGSWAN_BLK")) printf("BLK %04X %u %u %u\n", pc, gg.mapper[1 + (pc >> 14)], len, n);
-    static uint8_t seen[64][8192];
+#ifdef GGSWAN_COLECO
+    uint8_t bk = 0;
+#else
     uint8_t bk = gg.mapper[1 + (pc >> 14)] & 63;
+#endif
+    if (getenv("GGSWAN_BLK")) printf("BLK %04X %u %u %u\n", pc, bk, len, n);
+    static uint8_t seen[64][8192];
     if (!(seen[bk][pc >> 3] & (1 << (pc & 7)))) { seen[bk][pc >> 3] |= 1 << (pc & 7); tr_unique++; tr_unique_bytes += len; }
     uint8_t op = z80_read(pc);
     if (op == 0xED) op = z80_read(pc + 1);   // (ED ops counted as their second byte)
@@ -272,6 +280,29 @@ int sys_init(const char *path, int use_drc, int every_line) {
     fclose(f);
     if (n != SF_DISK_SIZE) return 0;
     uint16_t banks = 1;
+#elif defined(GGSWAN_COLECO)
+    // ColecoVision: 8 KiB BIOS from CV_BIOS at psram[0..1FFFh], cartridge ROM
+    // (up to 32 KiB) at psram[4000h..BFFFh]
+    const char *bios_path = getenv("CV_BIOS");
+    if (!bios_path || !*bios_path) {
+        fprintf(stderr, "CV_BIOS: set to the 8192-byte ColecoVision BIOS ROM path\n");
+        fclose(f);
+        return 0;
+    }
+    FILE *bf = fopen(bios_path, "rb");
+    if (!bf) { perror(bios_path); fclose(f); return 0; }
+    memset(psram, 0xFF, 65536);
+    if (fread(psram, 1, 0x2000, bf) != 0x2000 || fgetc(bf) != EOF) {
+        fprintf(stderr, "%s: a ColecoVision BIOS ROM has 8192 bytes\n", bios_path);
+        fclose(bf);
+        fclose(f);
+        return 0;
+    }
+    fclose(bf);
+    size_t n = fread(psram + 0x4000, 1, 0x8000, f);
+    fclose(f);
+    if (!n) return 0;
+    uint16_t banks = (n + 0x3FFF) >> 14;
 #else
 #ifdef GGSWAN_SG1000
     memset(psram, 0xFF, 65536);   // (as the plugin loads it)
@@ -322,7 +353,11 @@ void sys_frame(int keys) {
         }
     }
 #endif
-    gg.keys = keys;
+    gg.keys = keys & 0xFF;
+#ifdef GGSWAN_COLECO
+    // drcsys.py encodes keypad keys as 0x1000 | (key << 8)
+    gg.cv_keypad = (keys & 0x1000) ? (uint8_t) ((keys >> 8) & 0x0F) : 0xFF;
+#endif
     gg_run_frame();   // (video_present at line 168)
     gg_platform_vram_sync();   // (to compare the VRAM: what the frame wrote after it)
     if (getenv("GGSWAN_LATE_COMMIT")) gg_platform_vram_sync();   // (to compare the VRAM)
@@ -352,6 +387,9 @@ int sys_enter_es(void) { return 0; }
 #ifdef GGSWAN_SF7000
 uint8_t *sys_ram(void) { return sf_ram; }
 int sys_ram_size(void) { return 0x10000; }
+#elif defined(GGSWAN_COLECO)
+uint8_t *sys_ram(void) { return gg_ram; }
+int sys_ram_size(void) { return 0x0400; }
 #else
 uint8_t *sys_ram(void) { return gg_ram; }
 int sys_ram_size(void) { return 0x2000; }

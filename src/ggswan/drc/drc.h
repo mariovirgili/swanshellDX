@@ -96,6 +96,10 @@ typedef struct {
     uint8_t rec_pad[46];  // (the lists were here, 24 entries each: now at
                           // the end; the offsets after them, which the PC
                           // tools know, stay where they were)
+                          // (cvswan: rec_pad[0..1], the block's cycles up to
+                          // a VDP control write or a step, taken off when an
+                          // NMI ends the block there; not the helper's
+                          // resume, which the HELPER routine overwrites)
     uint16_t nt_flags[8]; // name table routine: WS bits for the Game Gear
                           // entry bits 9-11 (h flip, v flip, palette)
     uint8_t vram_class[65]; // main.c: for each 256-byte VRAM page, bit 0:
@@ -231,6 +235,20 @@ typedef struct {
     // moves it; sf_vbank FFFFh: no banks, the read segment is written)
     uint16_t sf_vseg, sf_vbank, sf_rbank;
 #endif
+    // Memory map and port parameters (0 = GG/SMS/SG defaults: RAM C000h-DFFFh,
+    // 8 KiB linear, read window C000h-FFFFh, segtab[8] at state.segtab,
+    // PSG 40h-7Fh, TMS9918A 80h-BFh)
+    uint16_t ram_base;      // 0 -> 0xC000; CV: 0x6000
+    uint16_t ram_win_size;  // 0 -> 0x2000; CV: 0x2000
+    uint16_t ram_read_win;  // 0 -> 0x4000; CV: 0x2000
+    uint16_t ram_mask;      // 0 -> 0x1FFF; CV: 0x03FF
+    uint16_t ram_iram;      // IRAM address of gg_ram[0] (0x8000)
+    uint16_t segtab_addr;   // 0 -> state.segtab; CV: 0x8800 (cv_segtab[64])
+    uint8_t segtab_1k;      // 0: 8x8 KiB (rol 4, 0Eh); 1: 64x1 KiB (rol 7, 7Eh)
+    uint8_t rom_wr_ignore;  // 1: constant writes outside work RAM ignored (CV)
+    uint8_t psg_lo, psg_hi; // 0 -> 0x40..0x7F; CV: 0xE0..0xFF
+    uint8_t vdp_pmask;      // 0 -> 0xC0; CV: 0xE0
+    uint8_t vdp_pval;       // 0 -> 0x80; CV: 0xA0
 } drc_env_t;
 
 #define DRC_OUTD_DELTA 0xD30   // (after the other routines: OUTI's has the room up to LDI's)

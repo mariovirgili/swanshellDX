@@ -18,7 +18,17 @@ EVERY = int(sys.argv[6]) if len(sys.argv) > 6 else 60
 CHECK = "--check" in sys.argv
 PCS = "--pcs" in sys.argv
 TRACE_AT = int(sys.argv[sys.argv.index("--trace") + 1]) if "--trace" in sys.argv else None
-keys = dict((int(k.split(':')[0]), int(k.split(':')[1], 16)) for k in KEYS.split(',')) if KEYS else {}
+def parse_key(v):
+    if v == '-':
+        return 0
+    if len(v) >= 2 and v[0] in 'KkYy':
+        c = v[1]
+        if '0' <= c <= '9': return 0x1000 | ((ord(c) - ord('0')) << 8)
+        if c == '*': return 0x1A00
+        if c == '#': return 0x1B00
+        return 0
+    return int(v, 16)
+keys = dict((int(k.split(':')[0]), parse_key(k.split(':')[1])) for k in KEYS.split(',')) if KEYS else {}
 
 def load(path):
     lib = ctypes.CDLL(path)   # (two different copies: see main)
@@ -193,7 +203,7 @@ def main():
             rb = drc.ram()
             if ra != rb:
                 d = [i for i in range(len(ra)) if ra[i] != rb[i]]
-                base = 0xC000 if len(ra) == 0x2000 else 0
+                base = 0xC000 if len(ra) == 0x2000 else 0x6000 if len(ra) == 0x400 else 0
                 print("frame %d: RAM differs at %d bytes, first %04X (%02X/%02X): %s" % (fr + 1, len(d), base + d[0], ra[d[0]], rb[d[0]],
                       ' '.join('%04X' % (base + x) for x in d[:12])))
                 break
@@ -253,6 +263,6 @@ def main():
     sys.stdout.flush(); drc.sys_hs_report()
     sys.stdout.flush(); drc.sys_ram_report()
     sys.stdout.flush()
-    open(PREFIX + '_ram.bin', 'wb').write(ctypes.string_at(drc.sys_iram() + 0x8000, 0x2000))
+    open(PREFIX + '_ram.bin', 'wb').write(drc.ram())
 
 main()
