@@ -155,6 +155,10 @@ typedef struct {
     uint8_t io_ctrl;        // smsswan: port 3Fh (I/O control: TH/TR direction and level)
     uint8_t codemasters;    // smsswan: the Codemasters mapper (banks written at 0000h, 4000h, 8000h)
     uint8_t coll_used;      // the game looks at the sprite collision flag (gg_status_read_at)
+#ifdef GGSWAN_COLECO
+    uint8_t cv_ctrl_mode;   // 0: keypad (80h-9Fh), 1: joystick (C0h-DFh)
+    uint8_t cv_keypad;      // 0-9, 10 '*', 11 '#', FFh none
+#endif
 } gg_t;
 
 extern gg_t gg;

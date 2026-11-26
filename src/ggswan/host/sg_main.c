@@ -346,8 +346,25 @@ int main(int argc, char **argv) {
             int kf = atoi(k);
             const char *col = strchr(k, ':');
             if (!col) break;
-            if (kf == fr)
+            if (kf == fr) {
+#ifdef GGSWAN_COLECO
+                const char *v = col + 1;
+                if (*v == '-') {
+                    gg.keys = 0;
+                    gg.cv_keypad = 0xFF;
+                } else if (*v == 'K' || *v == 'k' || *v == 'Y' || *v == 'y') {
+                    char c = v[1];
+                    if (c >= '0' && c <= '9') gg.cv_keypad = (uint8_t) (c - '0');
+                    else if (c == '*') gg.cv_keypad = 10;
+                    else if (c == '#') gg.cv_keypad = 11;
+                    else gg.cv_keypad = 0xFF;
+                } else {
+                    gg.keys = strtol(v, NULL, 16);
+                }
+#else
                 gg.keys = strtol(col + 1, NULL, 16);
+#endif
+            }
             const char *comma = strchr(col, ',');
             if (!comma) break;
             k = comma + 1;

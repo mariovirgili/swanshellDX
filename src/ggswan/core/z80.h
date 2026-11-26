@@ -50,6 +50,10 @@ void z80_step(void);
 extern volatile uint8_t z80_break;
 /// Non-maskable interrupt.
 void z80_nmi(void);
+#ifdef GGSWAN_COLECO
+/// Non-maskable interrupt pending (rising edge from the VDP)
+extern uint8_t z80_nmi_pending;
+#endif
 
 // Provided by the machine:
 uint8_t z80_read(uint16_t addr);

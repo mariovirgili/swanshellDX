@@ -306,7 +306,20 @@ static void vdp_mode_update(void);
 
 // the start of the vertical blank: the frame interrupt flag, and what the
 // sprites of the frame did
-#ifdef GGSWAN_SG1000
+#ifdef GGSWAN_COLECO
+// ColecoVision: VDP drives /NMI on the rising edge of (status bit 7 && R1 bit 5)
+#define VBL_STATUS() do { \
+        uint8_t prev_ = gg.vdp.status; \
+        uint8_t s_ = SPRITE_STATUS(); \
+        if (prev_ & 0x40) \
+            s_ &= 0x20; \
+        gg.vdp.status = prev_ | 0x80 | s_; \
+        if (!(prev_ & 0x80) && (gg.vdp.reg[1] & 0x20)) { \
+            z80_nmi_pending = 1; \
+            z80_break = 1; \
+        } \
+    } while (0)
+#elif defined(GGSWAN_SG1000)
 // (the fifth sprite's number stays the first one found until the status
 // is read; the overlap flag adds up)
 #define VBL_STATUS() do { \
@@ -449,6 +462,14 @@ static void vdp_write_control(uint8_t v) {
             // at line 0 and at the end, on in between; see video_present)
             if (r == 1 && (gg.vdp.latch & 0x40) && gg_current_line() < GG_PRESENT_LINE)
                 gg.vdp.reg1_frame |= 0x40;
+#ifdef GGSWAN_COLECO
+            // Rising edge on IE (R1 bit 5) while VBlank flag is already set
+            if (r == 1 && !(old & 0x20) && (gg.vdp.latch & 0x20)
+                    && (gg.vdp.status & 0x80)) {
+                z80_nmi_pending = 1;
+                z80_break = 1;
+            }
+#endif
             update_irq();
             // interrupt settings changed: plan the timing again (the same
             // value again changes nothing)
@@ -536,10 +557,36 @@ static uint8_t vdp_vcounter(void) {
 
 uint8_t z80_in(uint8_t port) {
 #ifdef GGSWAN_COLECO
-    // ColecoVision (CV1): VDP on A0h-BFh (even: data, odd: status);
-    // controller ports E0h-FFh return FFh (idle) until CV2
+    // ColecoVision: A0h-BFh VDP (even: data, odd: status); E0h-FFh
+    // controllers (A1 = 0: controller 1, e.g. FCh; A1 = 1: controller 2,
+    // e.g. FFh, unmapped -> idle FFh)
     if (port >= 0xA0 && port < 0xC0)
         return (port & 1) ? vdp_read_status() : vdp_read_data();
+    if (port >= 0xE0) {
+        if (port & 2)
+            return 0xFF;
+        if (gg.cv_ctrl_mode) {
+            // Joystick mode (C0h-DFh): active-low U/R/D/L in bits 0-3,
+            // left fire (GG_KEY_1) in bit 6
+            uint8_t v = 0xFF;
+            if (gg.keys & GG_KEY_UP)    v &= ~0x01;
+            if (gg.keys & GG_KEY_RIGHT) v &= ~0x02;
+            if (gg.keys & GG_KEY_DOWN)  v &= ~0x04;
+            if (gg.keys & GG_KEY_LEFT)  v &= ~0x08;
+            if (gg.keys & GG_KEY_1)     v &= ~0x40;
+            return v;
+        }
+        // Keypad mode (80h-9Fh): 4-bit diode-matrix code in bits 0-3,
+        // right fire (GG_KEY_2) in bit 6
+        static const uint8_t kp_code[13] = {
+            0x0A, 0x0D, 0x07, 0x0C, 0x02, 0x03, 0x0E, 0x05, 0x01, 0x0B,
+            0x09, 0x06, 0x0F
+        };
+        uint8_t v = 0xF0 | kp_code[gg.cv_keypad <= 11 ? gg.cv_keypad : 12];
+        if (gg.keys & GG_KEY_2)
+            v &= ~0x40;
+        return v;
+    }
     return 0xFF;
 #endif
 #ifdef GGSWAN_SG1000
@@ -610,14 +657,26 @@ uint8_t z80_in(uint8_t port) {
 
 void z80_out(uint8_t port, uint8_t v) {
 #ifdef GGSWAN_COLECO
-    // ColecoVision (CV1): VDP on A0h-BFh (even: data, odd: control);
-    // controller mode (80h-9Fh, C0h-DFh) and PSG (E0h-FFh) are added in CV2
-    if (port >= 0xA0 && port < 0xC0) {
+    // ColecoVision: 80h-9Fh keypad mode, A0h-BFh VDP (even: data,
+    // odd: control), C0h-DFh joystick mode, E0h-FFh SN76489 PSG
+    if (port < 0x80)
+        return;
+    if (port < 0xA0) {
+        gg.cv_ctrl_mode = 0;
+        return;
+    }
+    if (port < 0xC0) {
         if (port & 1)
             vdp_write_control(v);
         else
             vdp_write_data(v);
+        return;
     }
+    if (port < 0xE0) {
+        gg.cv_ctrl_mode = 1;
+        return;
+    }
+    gg_platform_psg(v);
     return;
 #endif
     if (port < 0x40) {
@@ -726,6 +785,10 @@ void gg_reset(void) {
     }
 #endif
     gg.io_ctrl = 0xFF;   // (all inputs)
+#ifdef GGSWAN_COLECO
+    gg.cv_ctrl_mode = 1;
+    gg.cv_keypad = 0xFF;
+#endif
     z80_reset();
 }
 

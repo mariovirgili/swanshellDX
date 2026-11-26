@@ -9,6 +9,9 @@
 #include "z80.h"
 
 z80_t z80;
+#ifdef GGSWAN_COLECO
+uint8_t z80_nmi_pending;
+#endif
 #ifdef Z80_COUNT
 uint32_t z80_count;
 #endif
@@ -83,6 +86,9 @@ void z80_reset(void) {
     z80.halted = 0;
     z80.ei_pending = 0;
     z80.irq = 0;
+#ifdef GGSWAN_COLECO
+    z80_nmi_pending = 0;
+#endif
     z80.cycles = 0;
 }
 
@@ -737,6 +743,13 @@ void z80_nmi(void) {
 
 // one instruction, or taking an interrupt; subtracts its cycles
 static inline void step(void) {
+#ifdef GGSWAN_COLECO
+    if (z80_nmi_pending) {
+        z80_nmi_pending = 0;
+        z80_nmi();
+        return;
+    }
+#endif
     if (z80.irq && z80.iff1 && !z80.ei_pending) {
         take_irq();
         return;

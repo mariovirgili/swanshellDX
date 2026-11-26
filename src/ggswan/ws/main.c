@@ -2852,7 +2852,17 @@ static void read_keys(uint16_t k) {
         }
     }
 #endif
-#if defined(GGSWAN_SG1000) && !defined(GGSWAN_HOST)
+#if defined(GGSWAN_COLECO) && !defined(GGSWAN_HOST)
+    // cvswan (provisional until CV4): Y1-Y4 without START act as keypad 1-4
+    gg.cv_keypad = 0xFF;
+    if (!(k & WS_KEY_START) && !step_paused
+            && (k & (WS_KEY_Y2 | WS_KEY_Y4)) != (WS_KEY_Y2 | WS_KEY_Y4)) {
+        if (k & WS_KEY_Y1) gg.cv_keypad = 1;
+        else if (k & WS_KEY_Y2) gg.cv_keypad = 2;
+        else if (k & WS_KEY_Y3) gg.cv_keypad = 3;
+        else if (k & WS_KEY_Y4) gg.cv_keypad = 4;
+    }
+#elif defined(GGSWAN_SG1000) && !defined(GGSWAN_HOST)
     // sgswan: the Y buttons move the 224x144 view over the 256x192
     // picture, as smsswan's
     if (!(k & WS_KEY_START) && !step_paused
@@ -2894,8 +2904,13 @@ static void read_keys(uint16_t k) {
     if (k & WS_KEY_X3) g |= GG_KEY_DOWN;
     if (k & WS_KEY_X4) g |= GG_KEY_LEFT;
     if (k & WS_KEY_X2) g |= GG_KEY_RIGHT;
+#ifdef GGSWAN_COLECO
+    if (k & WS_KEY_A) g |= GG_KEY_1;   // left fire
+    if (k & WS_KEY_B) g |= GG_KEY_2;   // right fire
+#else
     if (k & WS_KEY_B) g |= GG_KEY_1;
     if (k & WS_KEY_A) g |= GG_KEY_2;
+#endif
 #if defined(GGSWAN_SF7000) && !defined(GGSWAN_HOST)
     // sfswan: START shows and hides the keyboard, when it is let go
     // (unless a Y button was held with it: START + Y1 (Y up) is the way
@@ -2975,7 +2990,9 @@ static void read_keys(uint16_t k) {
             if (st_used) start_y1 = 1;
             st_used = 0;
 #endif
+#ifndef GGSWAN_COLECO
             if (start_held && !start_y1) g |= GG_KEY_START;
+#endif
             start_held = 0;
         }
     }
