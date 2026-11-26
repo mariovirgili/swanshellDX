@@ -31,7 +31,7 @@
 /*
  * Help (Gio's request, 2026-11-16): the entry after Settings in the START
  * menu. What it shows goes by the file selected: the keys of the plugin
- * that runs it (.gg, .sms, .sg, .sf, .gb), or the menu's own. The texts
+ * that runs it (.gg, .sms, .sg, .sf, .col, .gb), or the menu's own. The texts
  * are here, in English, a page a string (as many lines as fit the screen
  * in either layout: twelve short ones).
  */
@@ -49,7 +49,7 @@ static const char __far s_help_menu_2[] =
     "SwanShellDX: more\n\n"
     "Y1 (Y up) held when the menu starts: the last game played again.\n"
     "Saves: a game's save is written to its .sav file when the menu starts again.\n"
-    "Help on a .gg, .sms, .sg, .sf or .gb file: that plugin's keys.";
+    "Help on a .gg, .sms, .sg, .sf, .col or .gb file: that plugin's keys.";
 
 static const char __far s_help_gg_1[] =
     "Game Gear (ggswan)\n\n"
@@ -139,6 +139,24 @@ static const char __far s_help_gb_2[] =
     "and only by the same version of the plugin.\n"
     "Game Boy Color games are not run yet.";
 
+static const char __far s_help_cv_1[] =
+    "ColecoVision (cvswan)\n\n"
+    "X pad: the joystick\n"
+    "A: left fire   B: right fire\n"
+    "Y1, Y2, Y3, Y4: move the view over the picture\n\n"
+    "START + Y2 (Y right): the keypad on the screen\n"
+    "START + A, half a second: keep the state\n"
+    "START + B, half a second: bring it back\n"
+    "START + Y1 (Y up), a second: back to the menu\n"
+    "START + Y3 (Y down): the menu (video, sound, states, options)";
+static const char __far s_help_cv_2[] =
+    "ColecoVision: keypad and BIOS\n\n"
+    "With the keypad open: X pad selects a key, A holds it down, "
+    "B or START + Y2 closes it.\n\n"
+    "START + Y4 (Y left): the numbers, on and off\n"
+    "Y2 + Y4 (Y right + Y left): pause; Y3 (Y down) then runs one frame\n\n"
+    "BIOS: /NILESWAN/COLECO.ROM (8 KB)";
+
 #define HELP_MAX_PAGES 3
 typedef struct {
     const char __far *ext;
@@ -151,6 +169,7 @@ static const help_topic_t __far help_topics[] = {
     { s_file_ext_sg, { s_help_sg_1, s_help_sg_2, NULL } },
     { s_file_ext_sf, { s_help_sf_1, s_help_sf_2, NULL } },
     { s_file_ext_gb, { s_help_gb_1, s_help_gb_2, NULL } },
+    { s_file_ext_col, { s_help_cv_1, s_help_cv_2, NULL } },
     { NULL, { s_help_menu_1, s_help_menu_2, NULL } },
 };
 

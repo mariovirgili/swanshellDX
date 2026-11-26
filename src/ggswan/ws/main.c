@@ -2764,6 +2764,84 @@ static uint8_t kb_frame(uint16_t k) {
         kb_draw();
     return 0;
 }
+#elif defined(GGSWAN_COLECO) && !defined(GGSWAN_HOST)
+/* === cvswan: the keypad on the screen === */
+
+/*
+ * START + Y2 (Y right) shows and hides it, in the bottom-right corner on
+ * screen 2: 4 rows of 3 keys (1 2 3 / 4 5 6 / 7 8 9 / * 0 #), using the
+ * plugin's own font tiles (with * and # in place of _ and ! in font.inc).
+ * While open: X1-X4 move the selection, A holds the selected key down, B
+ * (or START + Y2) closes it, and joystick/fires do not reach the game.
+ * The last selected key stays highlighted when reopened.
+ */
+#define CV_KP_PAL_SEL 15
+#define CV_KP_PAL_GAP 13
+#define CV_KP_ROW0    14
+#define CV_KP_COL0    21
+static const char __far cv_kp_chars[] = "123456789*0#";
+static const uint8_t __far cv_kp_vals[12] = {
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0, 11
+};
+static uint8_t cv_kp_open, cv_kp_row, cv_kp_col, cv_kp_b_wait;
+static uint16_t cv_kp_prev;
+
+static uint16_t cv_kp_tile(char ch, uint8_t pal) {
+    uint8_t g = 0;
+    for (uint8_t i = 0; font_chars[i]; i++)
+        if (font_chars[i] == ch) { g = i; break; }
+    return TILE_ENTRY(FONT_TILE + g) | PAL_ENTRY(pal);
+}
+
+static void cv_kp_draw(void) {
+    uint16_t gap = TILE_ENTRY(FONT_TILE) | PAL_ENTRY(CV_KP_PAL_GAP);
+    for (uint8_t r = 0; r < 4; r++) {
+        uint16_t *m = map2 + (CV_KP_ROW0 + r) * 32 + CV_KP_COL0;
+        for (uint8_t x = 0; x < 7; x++)
+            m[x] = gap;
+        for (uint8_t c = 0; c < 3; c++) {
+            uint8_t pal = (r == cv_kp_row && c == cv_kp_col) ? CV_KP_PAL_SEL : FONT_PALETTE;
+            m[1 + c * 2] = cv_kp_tile(cv_kp_chars[r * 3 + c], pal);
+        }
+    }
+}
+
+static void cv_kp_show(uint8_t on) {
+    cv_kp_open = on;
+    if (!on) {
+        for (uint8_t r = 0; r < 4; r++)
+            for (uint8_t x = 0; x < 7; x++)
+                map2[(CV_KP_ROW0 + r) * 32 + CV_KP_COL0 + x] = WS_PRIO_BLANK;
+        gg.cv_keypad = 0xFF;
+        return;
+    }
+    cv_kp_prev = 0xFFFF;
+    WS_DISPLAY_COLOR_MEM(FONT_PALETTE)[1] = 0xFFF;
+    WS_DISPLAY_COLOR_MEM(FONT_PALETTE)[2] = 0x000;
+    WS_DISPLAY_COLOR_MEM(CV_KP_PAL_SEL)[1] = 0x000;
+    WS_DISPLAY_COLOR_MEM(CV_KP_PAL_SEL)[2] = 0xFE0;
+    WS_DISPLAY_COLOR_MEM(CV_KP_PAL_GAP)[1] = 0x000;
+    WS_DISPLAY_COLOR_MEM(CV_KP_PAL_GAP)[2] = 0x000;
+    cv_kp_draw();
+}
+
+static void cv_kp_frame(uint16_t k) {
+    uint16_t pressed = k & ~cv_kp_prev;
+    cv_kp_prev = k;
+    if (pressed & WS_KEY_B) {
+        cv_kp_b_wait = 1;
+        cv_kp_show(0);
+        return;
+    }
+    uint8_t moved = 0;
+    if (pressed & WS_KEY_X2) { cv_kp_col = cv_kp_col < 2 ? cv_kp_col + 1 : 0; moved = 1; }
+    if (pressed & WS_KEY_X4) { cv_kp_col = cv_kp_col ? cv_kp_col - 1 : 2; moved = 1; }
+    if (pressed & WS_KEY_X1) { cv_kp_row = cv_kp_row ? cv_kp_row - 1 : 3; moved = 1; }
+    if (pressed & WS_KEY_X3) { cv_kp_row = cv_kp_row < 3 ? cv_kp_row + 1 : 0; moved = 1; }
+    if (moved)
+        cv_kp_draw();
+    gg.cv_keypad = (k & WS_KEY_A) ? cv_kp_vals[cv_kp_row * 3 + cv_kp_col] : 0xFF;
+}
 #endif
 
 #if (defined(GGSWAN_SMS) || defined(GGSWAN_SG1000)) && !defined(GGSWAN_HOST)
@@ -2791,6 +2869,9 @@ static __attribute__((unused)) void stats_toggle(void) {
 #ifdef GGSWAN_SF7000
     if (kb_open)
         kb_draw();
+#elif defined(GGSWAN_COLECO)
+    if (cv_kp_open)
+        cv_kp_draw();
 #endif
 #elif defined(GGSWAN_SMS)
     prio_wanted ^= 1;
@@ -2852,20 +2933,13 @@ static void read_keys(uint16_t k) {
         }
     }
 #endif
-#if defined(GGSWAN_COLECO) && !defined(GGSWAN_HOST)
-    // cvswan (provisional until CV4): Y1-Y4 without START act as keypad 1-4
-    gg.cv_keypad = 0xFF;
-    if (!(k & WS_KEY_START) && !step_paused
-            && (k & (WS_KEY_Y2 | WS_KEY_Y4)) != (WS_KEY_Y2 | WS_KEY_Y4)) {
-        if (k & WS_KEY_Y1) gg.cv_keypad = 1;
-        else if (k & WS_KEY_Y2) gg.cv_keypad = 2;
-        else if (k & WS_KEY_Y3) gg.cv_keypad = 3;
-        else if (k & WS_KEY_Y4) gg.cv_keypad = 4;
-    }
-#elif defined(GGSWAN_SG1000) && !defined(GGSWAN_HOST)
+#if defined(GGSWAN_SG1000) && !defined(GGSWAN_HOST)
     // sgswan: the Y buttons move the 224x144 view over the 256x192
     // picture, as smsswan's
     if (!(k & WS_KEY_START) && !step_paused
+#ifdef GGSWAN_COLECO
+            && !cv_kp_open
+#endif
             && (k & (WS_KEY_Y2 | WS_KEY_Y4)) != (WS_KEY_Y2 | WS_KEY_Y4)) {
         if ((k & WS_KEY_Y1) && gg_view_y >= 2) gg_view_y -= 2;
         if ((k & WS_KEY_Y3) && gg_view_y <= GG_VIEW_Y_MAX - 2) gg_view_y += 2;
@@ -3010,8 +3084,12 @@ static void read_keys(uint16_t k) {
             // whole picture squeezed, which is smsswan's only so far)
             if (k & WS_KEY_Y2) {
                 if (!start_y3) {
+#if defined(GGSWAN_COLECO) && !defined(GGSWAN_HOST)
+                    cv_kp_show(!cv_kp_open);
+#elif !defined(GGSWAN_COLECO)
                     sg_limit ^= 1;
                     sg_spr_dirty = 2;
+#endif
                 }
                 start_y3 = 1;
                 start_y1 = 1;   // (no Pause for the game)
@@ -3082,6 +3160,18 @@ static void read_keys(uint16_t k) {
 #else
             if (k & WS_KEY_START) g |= GG_KEY_START;
 #endif
+        }
+    }
+#endif
+#if defined(GGSWAN_COLECO) && !defined(GGSWAN_HOST)
+    if (cv_kp_open) {
+        cv_kp_frame(k);
+        g = 0;
+    } else {
+        gg.cv_keypad = 0xFF;
+        if (cv_kp_b_wait) {
+            if (k & WS_KEY_B) g &= ~GG_KEY_2;
+            else cv_kp_b_wait = 0;
         }
     }
 #endif
@@ -3871,6 +3961,9 @@ static void menu_screen2_back(void) {
 #ifdef GGSWAN_SF7000
     if (kb_open)
         kb_show(1);   // (its glyphs back too)
+#elif defined(GGSWAN_COLECO)
+    if (cv_kp_open)
+        cv_kp_show(1);
 #endif
 #else
     screen2_mode(drc_st.prio_on);
@@ -4637,6 +4730,10 @@ int main(void) {
             if (!diag_mode)
                 show_profile();
             }
+#ifdef GGSWAN_COLECO
+            if (cv_kp_open)
+                cv_kp_draw();
+#endif
             frames = 0;
         }
     }
