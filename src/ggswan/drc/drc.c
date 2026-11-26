@@ -1601,10 +1601,61 @@ uint16_t drc_emit_run_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
         uint8_t *cram = 0;
         uint8_t *not_cram = jcc8(0x75);              // jne (VRAM)
 #ifdef GGSWAN_SMS
-        if (0) {   // (the Master System's CRAM, one byte a color: the loop)
+        if (!dec) {
+            /*
+             * Master System CRAM (one byte a color, --BBGGRR, mapped to WS
+             * color via WS_CRAM_TABLE at E600h): avoids calling STUB_CRAM
+             * once per byte through the slow loop (Castle of Illusion).
+             */
+            B(0x52);                                 // push dx
+            B(0x89); B(0xDA);                        // mov dx, bx
+            B(0x81); B(0xE2); W(0x1FFF);             // and dx, 1FFFh
+            B(0x01); B(0xFA);                        // add dx, di
+            B(0x81); B(0xFA); W(0x2000);             // cmp dx, 2000h
+            uint8_t *cr_ok = jcc8(0x76);             // jbe ok
+            B(0x5A);                                 // pop dx
+            B(0xE9); W((uint16_t) (loop - (o + 2))); // jmp loop
+            land8(cr_ok);
+            B(0x89); B(0xFA);                        // mov dx, di (k)
+            B(0x28); B(0xD5);                        // sub ch, dl (B -= k)
+            B(0x50);                                 // push ax (A)
+            B(0x51);                                 // push cx (BC)
+            B(0x89); B(0xF9);                        // mov cx, di (k)
+            B(0x8B); B(0x16); W(VA(addr));           // mov dx, [addr]
+            uint8_t *cr_loop = o;
+            B(0x26); B(0x8A); B(0x07);               // mov al, es:[bx]
+            B(0x43);                                 // inc bx
+            B(0x88); B(0xC4);                        // mov ah, al (keep raw byte)
+            B(0x24); B(0x3F);                        // and al, 3Fh
+            B(0x89); B(0xD6);                        // mov si, dx
+            B(0x83); B(0xE6); B(0x1F);               // and si, 1Fh
+            B(0x88); B(0x84); W(VA(cram));           // mov [si + cram], al
+            B(0xD1); B(0xE6);                        // shl si, 1
+            B(0x89); B(0xC7);                        // mov di, ax
+            B(0x81); B(0xE7); W(0x003F);             // and di, 3Fh
+            B(0xD1); B(0xE7);                        // shl di, 1
+            B(0x8B); B(0xBD); W(0xE600);             // mov di, [di + WS_CRAM_TABLE]
+            B(0x89); B(0xBC); W(SA(pal));            // mov [si + pal], di
+            B(0x42);                                 // inc dx
+            B(0x49);                                 // dec cx
+            B(0x75); B((uint8_t) (cr_loop - (o + 1)));   // jnz loop
+            B(0x88); B(0x26); W(VA(read_buffer));    // mov [read_buffer], ah
+            B(0x81); B(0xE2); W(0x3FFF);             // and dx, 3FFFh
+            B(0x89); B(0x16); W(VA(addr));           // mov [addr], dx
+            B(0xC6); B(0x06); W(VA(latch_full)); B(0);   // mov byte [latch_full], 0
+            B(0xC6); B(0x06); W(SA(pal_dirty)); B(1);    // mov byte [pal_dirty], 1
+            B(0x59);                                 // pop cx (BC)
+            B(0x58);                                 // pop ax (A)
+            B(0x8A); B(0x26); W(VA(read_buffer));    // mov ah, [read_buffer] (last byte)
+            B(0x5A);                                 // pop dx (DE)
+            B(0x83); B(0xC4); B(0x04);               // add sp, 4
+            B(0xF8);                                 // clc
+            B(0xC3);                                 // ret
+        } else {
+            cram = jcc8(0xEB);                       // (OUTD: the loop)
+        }
 #else
         if (!dec) {
-#endif
             /*
              * CRAM (palette uploads, ~60 bytes a frame in Super Monaco GP):
              * the bytes here instead of one CRAM routine call each through
@@ -1675,6 +1726,7 @@ uint16_t drc_emit_run_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
         } else {
             cram = jcc8(0xEB);                       // (OUTD: the loop)
         }
+#endif
         land8(not_cram);
         B(0x52);                                     // push dx
         B(0x8B); B(0x36); W(VA(addr));               // mov si, [addr]
@@ -5807,12 +5859,20 @@ static void emit_vdjnz(int n) {
         return;
     }
     uint8_t max_k = bpt == 2 ? 127 : 254;
+#if !defined(GGSWAN_SMS) && !defined(GGSWAN_SG1000)
+    // Game Gear CRAM burst (Sonic GG 05E5: 2 bytes/turn = 1 color/turn)
+    uint8_t cram_burst = (kind == 1 && env->cram_off != 0);
+#else
+    uint8_t cram_burst = 0;
+#endif
 
     // Fast checks before push ax (zero stack traffic on early bail)
     uint8_t *e[6];
     uint8_t ne = 0;
-    B(0x80); B(0x3E); W(VA(code)); B(3);                 // cmp byte [code], 3
-    e[ne++] = jcc8(0x74);                                // je early_done
+    if (!cram_burst) {
+        B(0x80); B(0x3E); W(VA(code)); B(3);             // cmp byte [code], 3
+        e[ne++] = jcc8(0x74);                            // je early_done
+    }
     B(0x8B); B(0x3E); W(SA(cycles));                     // mov di, [cycles]
     B(0x83); B(0xFF); B(step);                           // cmp di, step
     e[ne++] = jcc8(0x7E);                                // jle early_done
@@ -5860,9 +5920,22 @@ static void emit_vdjnz(int n) {
     B(0x50);                                             // push ax (preserve Z80 F in AH!)
     uint8_t *d[5];
     uint8_t nd = 0;
-    // VRAM address & class of current 256-byte page (AX = va)
+    // VRAM/CRAM address (AX = va)
     B(0xA1); W(VA(addr));                                // mov ax, [addr]
     B(0x25); W(0x3FFF);                                  // and ax, 3FFFh
+#if !defined(GGSWAN_SMS) && !defined(GGSWAN_SG1000)
+    uint8_t *to_cram = 0;
+    if (cram_burst) {
+        B(0x80); B(0x3E); W(VA(code)); B(3);             // cmp byte [code], 3
+        uint8_t *is_vram = jcc8(0x75);                   // jne is_vram
+        B(0xA8); B(0x01);                                // test al, 1 (must be even)
+        d[nd++] = jcc8(0x75);                            // jnz done_pop
+        B(0xE9); W(0);                                   // jmp do_cram
+        to_cram = o - 2;
+        land8(is_vram);
+    }
+#endif
+    // VRAM class of current 256-byte page
     B(0x89); B(0xC7);                                    // mov di, ax
     B(0xC1); B(0xEF); B(8);                              // shr di, 8
     B(0xF6); B(0x85); W(SA(vram_class)); B(0x11);        // test byte [di + class], 11h (NT/wrap)
@@ -5994,6 +6067,79 @@ static void emit_vdjnz(int n) {
         B(0x75); B((uint8_t) (lp - (o + 1)));            // jnz L
     }
     B(0x59);                                             // pop cx (restore BC)
+#if !defined(GGSWAN_SMS) && !defined(GGSWAN_SG1000)
+    uint8_t *vram_to_pop = 0;
+    if (to_cram) {
+        B(0xE9); W(0);                                   // jmp done_pop
+        vram_to_pop = o - 2;
+        uint16_t rc = (uint16_t) (o - (to_cram + 2));
+        to_cram[0] = (uint8_t) rc;
+        to_cram[1] = (uint8_t) (rc >> 8);
+        // do_cram: AX = even va, SI = k (2..127), BX = HL (2*k bytes in slice)
+        // Cycle budget cap: fast path without DIV when k * 61 < cycles
+        B(0x50);                                         // push ax (va)
+        B(0x6B); B(0xFE); B(61);                         // imul di, si, 61
+        B(0xA1); W(SA(cycles));                          // mov ax, [cycles]
+        B(0x39); B(0xF8);                                // cmp ax, di
+        uint8_t *cr_cyc_ok = jcc8(0x7F);                 // jg cr_cyc_ok
+        B(0x48);                                         // dec ax (cycles - 1 >= 61)
+        B(0x52);                                         // push dx
+        B(0x31); B(0xD2);                                // xor dx, dx
+        B(0xBE); W(61);                                  // mov si, 61
+        B(0xF7); B(0xF6);                                // div si (AX = k_max >= 1)
+        B(0x89); B(0xC6);                                // mov si, ax
+        B(0x6B); B(0xFE); B(61);                         // imul di, si, 61
+        B(0x5A);                                         // pop dx
+        land8(cr_cyc_ok);
+        B(0x58);                                         // pop ax (va)
+        // Commit cycles, B (CH -= k), VDP addr, latch_full, pal_dirty
+        B(0x29); B(0x3E); W(SA(cycles));                 // sub [cycles], di
+        B(0x50);                                         // push ax (va)
+        B(0x89); B(0xF0);                                // mov ax, si
+        B(0x28); B(0xC5);                                // sub ch, al (B -= k)
+        B(0x58);                                         // pop ax (va)
+        B(0x89); B(0xF7);                                // mov di, si
+        B(0xD1); B(0xE7);                                // shl di, 1 (2 * k)
+        B(0x01); B(0xC7);                                // add di, ax
+        B(0x81); B(0xE7); W(0x3FFF);                     // and di, 3FFFh
+        B(0x89); B(0x3E); W(VA(addr));                   // mov [addr], di
+        B(0xC6); B(0x06); W(VA(latch_full)); B(0);       // mov byte [latch_full], 0
+        B(0xC6); B(0x06); W(SA(pal_dirty)); B(1);        // mov byte [pal_dirty], 1
+        // Convert k 12-bit GG colors from ES:[BX] into vdp.cram and drc_st.pal
+        B(0x89); B(0xC7);                                // mov di, ax (va)
+        B(0x83); B(0xE7); B(0x3E);                       // and di, 3Eh
+        B(0x56);                                         // push si (k)
+        B(0x89); B(0xDE);                                // mov si, bx
+        B(0xC1); B(0xC6); B(4);                          // rol si, 4
+        B(0x83); B(0xE6); B(14);                         // and si, 14
+        B(0x8E); B(0x84); W(SA(segtab));                 // mov es, [si + segtab]
+        B(0x5E);                                         // pop si (k)
+        B(0x51);                                         // push cx (save BC)
+        B(0x89); B(0xF1);                                // mov cx, si (k)
+        uint8_t *clp = o;
+        B(0x26); B(0x8B); B(0x07);                       // clp: mov ax, es:[bx]
+        B(0x80); B(0xE4); B(0x0F);                       // and ah, 0Fh
+        B(0x89); B(0x85); W(VA(cram));                   // mov [di + cram], ax
+        B(0x86); B(0xC4);                                // xchg al, ah
+        B(0x89); B(0xC6);                                // mov si, ax
+        B(0x25); W(0x0F0F);                              // and ax, 0F0Fh
+        B(0x81); B(0xE6); W(0xF000);                     // and si, F000h
+        B(0xC1); B(0xEE); B(8);                          // shr si, 8
+        B(0x09); B(0xF0);                                // or ax, si
+        B(0x89); B(0x85); W(SA(pal));                    // mov [di + pal], ax
+        B(0x83); B(0xC3); B(2);                          // add bx, 2
+        B(0x83); B(0xC7); B(2);                          // add di, 2
+        B(0x83); B(0xE7); B(0x3E);                       // and di, 3Eh
+        B(0x49);                                         // dec cx
+        B(0x75); B((uint8_t) (clp - (o + 1)));           // jnz clp
+        B(0x59);                                         // pop cx (restore BC)
+    }
+    if (vram_to_pop) {
+        uint16_t rv = (uint16_t) (o - (vram_to_pop + 2));
+        vram_to_pop[0] = (uint8_t) rv;
+        vram_to_pop[1] = (uint8_t) (rv >> 8);
+    }
+#endif
     {
         uint16_t r_ = (uint16_t) (o - (to_done_pop + 2));
         to_done_pop[0] = (uint8_t) r_;
