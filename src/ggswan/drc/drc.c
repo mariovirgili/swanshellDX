@@ -1939,7 +1939,9 @@ uint16_t drc_emit_run_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
         B(0x89); B(0xDE);                            // mov si, bx
         B(0x1E); B(0x06); B(0x1F); B(0x07);          // push ds; push es; pop ds; pop es
         B(0xFC);                                     // cld (forwards, whatever came before)
-        B(0xF3); B(0xA4);                            // rep movsb
+        B(0xD1); B(0xE9);                            // shr cx, 1
+        B(0xF3); B(0xA5);                            // rep movsw
+        B(0x73); B(0x01); B(0xA4);                   // jnc +1; movsb
         B(0x06); B(0x1F);                            // push es; pop ds (DS, ES: data)
         B(0x59);                                     // pop cx
         B(0x5A);                                     // pop dx
@@ -1960,7 +1962,9 @@ uint16_t drc_emit_run_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
             B(0x89); B(0xDE);                                // mov si, bx
             B(0x1E); B(0x06); B(0x1F); B(0x07);              // push ds; push es; pop ds; pop es
             B(0xFC);                                         // cld
-            B(0xF3); B(0xA4);                                // rep movsb
+            B(0xD1); B(0xE9);                                // shr cx, 1
+            B(0xF3); B(0xA5);                                // rep movsw
+            B(0x73); B(0x01); B(0xA4);                       // jnc +1; movsb
             B(0x06); B(0x1F);                                // push es; pop ds (DS, ES: data)
             B(0x8A); B(0x65); B(0xFF);                       // mov ah, [di - 1] (last byte)
             B(0x88); B(0x26); W(VA(read_buffer));            // mov [read_buffer], ah
@@ -1983,7 +1987,9 @@ uint16_t drc_emit_run_stub(const drc_env_t *e, uint8_t *out, uint16_t out_off, u
             B(0x89); B(0xDE);                                // mov si, bx
             B(0x1E); B(0x06); B(0x1F); B(0x07);              // push ds; push es; pop ds; pop es
             B(0xFC);                                         // cld
-            B(0xF3); B(0xA4);                                // rep movsb
+            B(0xD1); B(0xE9);                                // shr cx, 1
+            B(0xF3); B(0xA5);                                // rep movsw
+            B(0x73); B(0x01); B(0xA4);                       // jnc +1; movsb
             B(0x06); B(0x1F);                                // push es; pop ds (DS, ES: data)
             B(0x89); B(0xF3);                                // mov bx, si (HL + k)
             B(0x8A); B(0x65); B(0xFF);                       // mov ah, [di - 1] (last byte)
@@ -6564,6 +6570,255 @@ static void emit_vfill(void) {
     B(0x8A); B(0x26); W(SA(arg));                        // done: mov ah, [arg]
 }
 
+/*
+ * 3-plane OTIR + 4th constant-byte tile-row upload loop:
+ *   (LD B,3 / LD C,BEh | LD BC,03BEh) / OTIR /
+ *   (XOR A | LD A,n) / OUT (BEh),A / DEC DE / (LD A,D / OR E | LD A,E / OR D) / (JR|JP) NZ,start
+ * (Micro Machines D974 + D97A: ~18% of the frame including STUB_OUTI and STUB_CLS).
+ * Matches when decoding the OTIR header block; checks that the trailing 6
+ * instructions fit in the same slot (and within RAM_BLOCK_MAX if in work RAM,
+ * extending ram_check to cover all bytes). At block entry, skips k full turns
+ * into VRAM or a single deferred log entry, then falls through to execute the
+ * final turn normally (exact B, C, F, read_buffer, and interrupt timing).
+ */
+static uint8_t otir_trow_match(int n, uint16_t pc, uint16_t p, uint8_t ram,
+                               uint8_t *out_fill, uint8_t *out_step, uint16_t *out_end) {
+    if (FLAT || env->no_fast || !env->vdp_addr || !env->cls_off)
+        return 0;
+    if (n == 3) {
+        if (ins[0].pre || ins[1].pre || ins[2].pre != 0xED || ins[2].op != 0xB3 || ins[2].len != 2)
+            return 0;
+        if (ins[0].step || ins[1].step || ins[2].step || ins[0].dyn || ins[1].dyn || ins[2].dyn)
+            return 0;
+        if (ins[0].op == 0x06 && ins[0].nn == 3 && ins[1].op == 0x0E && (ins[1].nn & 0xC1) == 0x80)
+            ;   // LD B,3 / LD C,BEh
+        else if (ins[0].op == 0x0E && (ins[0].nn & 0xC1) == 0x80 && ins[1].op == 0x06 && ins[1].nn == 3)
+            ;   // LD C,BEh / LD B,3
+        else
+            return 0;
+    } else if (n == 2) {
+        if (ins[0].pre || ins[0].op != 0x01 || ins[0].step || ins[0].dyn)
+            return 0;
+        if (((ins[0].nn >> 8) != 3) || ((ins[0].nn & 0xC1) != 0x80))
+            return 0;
+        if (ins[1].pre != 0xED || ins[1].op != 0xB3 || ins[1].len != 2 || ins[1].step || ins[1].dyn)
+            return 0;
+    } else {
+        return 0;
+    }
+    // Peek the 6 trailing instructions starting at p (same 16 KiB slot, and within RAM_BLOCK_MAX if RAM)
+    if (((p ^ pc) & 0xC000) || (ram && p >= 0xDFC0))
+        return 0;
+    uint16_t q = p;
+    uint8_t op0 = rd(q);
+    uint8_t fill, t_fill;
+    if (op0 == 0xAF) { fill = 0; t_fill = 4; q += 1; }
+    else if (op0 == 0x3E) { fill = rd(q + 1); t_fill = 7; q += 2; }
+    else return 0;
+    if (rd(q) != 0xD3 || (rd(q + 1) & 0xC1) != 0x80)
+        return 0;
+    q += 2;
+    if (rd(q) != 0x1B)   // DEC DE
+        return 0;
+    q += 1;
+    uint8_t ld_a = rd(q), or_r = rd(q + 1);
+    if (!((ld_a == 0x7A && or_r == 0xB3) || (ld_a == 0x7B && or_r == 0xB2)))
+        return 0;
+    q += 2;
+    uint8_t br = rd(q);
+    uint8_t t_br;
+    if (br == 0x20) {
+        if ((uint16_t) (q + 2 + (int8_t) rd(q + 1)) != pc)
+            return 0;
+        t_br = 12;
+        q += 2;
+    } else if (br == 0xC2) {
+        if ((uint16_t) (rd(q + 1) | (rd(q + 2) << 8)) != pc)
+            return 0;
+        t_br = 10;
+        q += 3;
+    } else {
+        return 0;
+    }
+    if ((((q - 1) ^ pc) & 0xC000) || (ram && (uint16_t) (q - pc) > RAM_BLOCK_MAX))
+        return 0;
+    *out_fill = fill;
+    *out_step = (uint8_t) ((n == 3 ? 14 : 10) + 58 + t_fill + 11 + 6 + 4 + 4 + t_br);
+    *out_end = q;
+    return 1;
+}
+
+static void emit_otir_trow(uint8_t fill, uint8_t step) {
+    // Fast checks before push ax (preserves AX on early bailout)
+    uint8_t *e[5];
+    uint8_t ne = 0;
+    B(0x80); B(0x3E); W(VA(code)); B(3);                 // cmp byte [code], 3
+    e[ne++] = jcc8(0x74);                                // je early_done
+    B(0x8B); B(0x3E); W(SA(cycles));                     // mov di, [cycles]
+    B(0x83); B(0xFF); B(step);                           // cmp di, step
+    e[ne++] = jcc8(0x7E);                                // jle early_done
+    B(0x89); B(0xD6);                                    // mov si, dx (DE)
+    B(0x4E);                                             // dec si (M = (uint16_t)(DE - 1))
+    B(0x83); B(0xFE); B(2);                              // cmp si, 2
+    e[ne++] = jcc8(0x72);                                // jb early_done
+    B(0x83); B(0xFE); B(63);                             // cmp si, 63 (4*63 = 252 <= 254)
+    B(0x76); B(3); B(0xBE); W(63);                       // jbe +3; mov si, 63
+    // Cap k so [BX .. BX + 3*k - 1] stays inside current 8 KiB slice (zero DIV)
+    B(0x89); B(0xDF);                                    // mov di, bx
+    B(0x81); B(0xE7); W(0x1FFF);                         // and di, 1FFFh
+    B(0xF7); B(0xDF);                                    // neg di
+    B(0x81); B(0xC7); W(0x2000);                         // add di, 2000h (slice_rem)
+    B(0x81); B(0xFF); W(189);                            // cmp di, 189 (3 * 63)
+    uint8_t *sl_ok = jcc8(0x73);                         // jae sl_ok
+    B(0xC1); B(0xEF); B(2);                              // shr di, 2 (<= slice_rem / 3)
+    B(0x39); B(0xFE);                                    // cmp si, di
+    B(0x76); B(2); B(0x89); B(0xFE);                     // jbe +2; mov si, di
+    B(0x83); B(0xFE); B(2);                              // cmp si, 2
+    e[ne++] = jcc8(0x72);                                // jb early_done
+    land8(sl_ok);
+    uint8_t *enter_body = jcc8(0xEB);                    // jmp enter_body
+
+    // Mid-point early trampoline (no ax pushed yet)
+    for (uint8_t m = 0; m < ne; m++) land8(e[m]);
+    B(0xE9); W(0);                                       // jmp done_nopop
+    uint8_t *to_done_nopop = o - 2;
+
+    land8(enter_body);
+    B(0x50);                                             // push ax (preserve AL and Z80 F in AH)
+    uint8_t *d[4];
+    uint8_t nd = 0;
+    // VRAM address & class of current 256-byte page (AX = va)
+    B(0xA1); W(VA(addr));                                // mov ax, [addr]
+    B(0x25); W(0x3FFF);                                  // and ax, 3FFFh
+    B(0x89); B(0xC7);                                    // mov di, ax
+    B(0xC1); B(0xEF); B(8);                              // shr di, 8
+    B(0xF6); B(0x85); W(SA(vram_class)); B(0x11);        // test byte [di + class], 11h (NT/wrap)
+    d[nd++] = jcc8(0x75);                                // jnz done_pop
+    B(0xF6); B(0x85); W(SA(vram_class)); B(0x08);        // test byte [di + class], 8 (deferred)
+    uint8_t *live_ok = jcc8(0x74);                       // jz live_ok
+    B(0xF6); B(0x85); W(SA(vram_class)); B(0x02);        // test byte [di + class], 2 (SAT+defer?)
+    d[nd++] = jcc8(0x75);                                // jnz done_pop
+    // Deferred: cap SI to (log_end - log_top - 3) / 4 (need >= 11 bytes for k >= 2)
+    B(0x8B); B(0x3E); W(SA(log_end));                    // mov di, [log_end]
+    B(0x2B); B(0x3E); W(SA(log_top));                    // sub di, [log_top]
+    B(0x83); B(0xFF); B(11);                             // cmp di, 11
+    d[nd++] = jcc8(0x72);                                // jb done_pop
+    B(0x83); B(0xEF); B(3);                              // sub di, 3
+    B(0xC1); B(0xEF); B(2);                              // shr di, 2
+    B(0x39); B(0xFE);                                    // cmp si, di
+    B(0x76); B(2); B(0x89); B(0xFE);                     // jbe +2; mov si, di
+    land8(live_ok);
+    // Cap SI to page_rem / 4 so all 4*k bytes stay inside this 256-byte VRAM page
+    B(0x89); B(0xC7);                                    // mov di, ax
+    B(0xF7); B(0xD7);                                    // not di
+    B(0x81); B(0xE7); W(0x00FF);                         // and di, 00FFh
+    B(0x47);                                             // inc di (256 - lo)
+    B(0xC1); B(0xEF); B(2);                              // shr di, 2
+    B(0x39); B(0xFE);                                    // cmp si, di
+    B(0x76); B(2); B(0x89); B(0xFE);                     // jbe +2; mov si, di
+    B(0x83); B(0xFE); B(2);                              // cmp si, 2
+    d[nd++] = jcc8(0x72);                                // jb done_pop
+    uint8_t *cont = jcc8(0xEB);                          // jmp cont
+
+    // Mid-point trampoline to done_pop (ax IS pushed)
+    for (uint8_t m = 0; m < nd; m++) land8(d[m]);
+    B(0xE9); W(0);                                       // jmp done_pop
+    uint8_t *to_done_pop = o - 2;
+
+    land8(cont);
+    // Cycle budget cap: fast path without DIV when k * step < cycles
+    B(0x50);                                             // push ax (va)
+    B(0x6B); B(0xFE); B(step);                           // imul di, si, step (<= 63 * 116 = 7308)
+    B(0xA1); W(SA(cycles));                              // mov ax, [cycles]
+    B(0x39); B(0xF8);                                    // cmp ax, di
+    uint8_t *cyc_ok = jcc8(0x7F);                        // jg cyc_ok
+    B(0x48);                                             // dec ax (cycles - 1 >= step)
+    B(0x52);                                             // push dx
+    B(0x31); B(0xD2);                                    // xor dx, dx
+    B(0xBE); W(step);                                    // mov si, step
+    B(0xF7); B(0xF6);                                    // div si (AX = k_max >= 1)
+    B(0x89); B(0xC6);                                    // mov si, ax (k = k_max)
+    B(0x6B); B(0xFE); B(step);                           // imul di, si, step
+    B(0x5A);                                             // pop dx
+    land8(cyc_ok);
+    B(0x58);                                             // pop ax (va)
+
+    // Commit cycles, DE (DX -= k), VDP addr, latch_full
+    B(0x29); B(0x3E); W(SA(cycles));                     // sub [cycles], di
+    B(0x29); B(0xF2);                                    // sub dx, si (DE -= k)
+    B(0x89); B(0xF7);                                    // mov di, si
+    B(0xC1); B(0xE7); B(2);                              // shl di, 2 (bytes = 4 * k)
+    B(0x01); B(0xC7);                                    // add di, ax
+    B(0x81); B(0xE7); W(0x3FFF);                         // and di, 3FFFh
+    B(0x89); B(0x3E); W(VA(addr));                       // mov [addr], di
+    B(0xC6); B(0x06); W(VA(latch_full)); B(0);           // mov byte [latch_full], 0
+
+    // Destination DI in IRAM (deferred log entry vs live VRAM/SAT)
+    B(0x89); B(0xC7);                                    // mov di, ax
+    B(0xC1); B(0xEF); B(8);                              // shr di, 8
+    B(0xF6); B(0x85); W(SA(vram_class)); B(0x08);        // test byte [di + class], 8
+    uint8_t *live_dst = jcc8(0x74);                      // jz live_dst
+    B(0x8B); B(0x3E); W(SA(log_top));                    // mov di, [log_top]
+    B(0x89); B(0x3E); W(SA(log_last));                   // mov [log_last], di
+    B(0x89); B(0x05);                                    // mov [di], ax (va)
+    B(0x56);                                             // push si (k)
+    B(0xC1); B(0xE6); B(2);                              // shl si, 2 (bytes = 4 * k)
+    B(0x01); B(0xF0);                                    // add ax, si (va + 4*k)
+    B(0xA3); W(SA(log_next));                            // mov [log_next], ax
+    B(0x89); B(0xF0);                                    // mov ax, si
+    B(0x88); B(0x45); B(0x02);                           // mov [di + 2], al (length)
+    B(0x83); B(0xC7); B(3);                              // add di, 3
+    B(0x01); B(0xF8);                                    // add ax, di (new log_top)
+    B(0xA3); W(SA(log_top));                             // mov [log_top], ax
+    B(0x5E);                                             // pop si (k)
+    uint8_t *do_copy = jcc8(0xEB);                       // jmp do_copy
+    land8(live_dst);
+    B(0xF6); B(0x85); W(SA(vram_class)); B(0x02);        // test byte [di + class], 2 (SAT)
+    uint8_t *not_sat = jcc8(0x74);                       // jz not_sat
+    B(0xC6); B(0x06); W(SA(sprites_dirty)); B(1);        // sprites_dirty = 1
+    land8(not_sat);
+    B(0x89); B(0xC7);                                    // mov di, ax (va)
+    B(0x81); B(0xC7); W(env->vram_addr);                 // add di, vram_addr
+
+    // Copy k rows: 3 bytes from ES:[BX] + 1 constant fill byte to DS:[DI]
+    land8(do_copy);
+    B(0x56);                                             // push si (k)
+    B(0x89); B(0xDE);                                    // mov si, bx
+    B(0xC1); B(0xC6); B(4);                              // rol si, 4
+    B(0x83); B(0xE6); B(14);                             // and si, 14
+    B(0x8E); B(0x84); W(SA(segtab));                     // mov es, [si + segtab]
+    B(0x5E);                                             // pop si (k)
+    B(0x51);                                             // push cx (save BC)
+    B(0x89); B(0xF1);                                    // mov cx, si (k)
+    uint8_t *lp = o;
+    B(0x26); B(0x8B); B(0x07);                           // lp: mov ax, es:[bx]
+    B(0x89); B(0x05);                                    // mov [di], ax
+    B(0x26); B(0x8A); B(0x47); B(2);                     // mov al, es:[bx + 2]
+    B(0x88); B(0x45); B(2);                              // mov [di + 2], al
+    B(0xC6); B(0x45); B(3); B(fill);                     // mov byte [di + 3], fill
+    B(0x83); B(0xC3); B(3);                              // add bx, 3
+    B(0x83); B(0xC7); B(4);                              // add di, 4
+    B(0x49);                                             // dec cx
+    B(0x75); B((uint8_t) (lp - (o + 1)));                // jnz lp
+    B(0x59);                                             // pop cx (restore BC)
+    // Burst ran k >= 1 turns: restore AH, set AL = D | E (exact A after turn k)
+    B(0x58);                                             // pop ax
+    B(0x88); B(0xF0);                                    // mov al, dh
+    B(0x08); B(0xD0);                                    // or al, dl
+    B(0xEB); B(0x01);                                    // jmp done_nopop
+    {
+        uint16_t r_ = (uint16_t) (o - (to_done_pop + 2));
+        to_done_pop[0] = (uint8_t) r_;
+        to_done_pop[1] = (uint8_t) (r_ >> 8);
+    }
+    B(0x58);                                             // done_pop: pop ax (restore AL & Z80 F)
+    {
+        uint16_t r_ = (uint16_t) (o - (to_done_nopop + 2));
+        to_done_nopop[0] = (uint8_t) r_;
+        to_done_nopop[1] = (uint8_t) (r_ >> 8);
+    }
+}
+
 int drc_translate(const drc_env_t *e, uint16_t pc, uint8_t *out,
                   uint16_t out_off, uint16_t out_max, drc_result_t *res) {
     env_cache(e);
@@ -6765,6 +7020,11 @@ int drc_translate(const drc_env_t *e, uint16_t pc, uint8_t *out,
         if (ins[i].step) live = FALL;
     }
 
+    uint8_t otir_trow = 0, otir_fill = 0, otir_step = 0;
+    uint16_t check_end = end;
+    if ((n == 2 || n == 3) && ins[n - 1].pre == 0xED && ins[n - 1].op == 0xB3 && ins[n - 1].len == 2)
+        otir_trow = otir_trow_match(n, pc, end, ram, &otir_fill, &otir_step, &check_end);
+
     // generate
     idle_block = is_idle(n, pc, ram);
     cold_off = env->no_fast;
@@ -6774,7 +7034,7 @@ retry_gen:
     fkind = K_AH; cf_valid = 0; hl_es = 0; cyc = 0;
     force_nolink = 0;
     cold_n = 0; cold_fail = 0; cold_emitting = 0;
-    if (ram) ram_check(pc, end);
+    if (ram) ram_check(pc, check_end);
     if (long_run) {
         // the blocks of 12 OUTIs this one replaces would each have ended the
         // run when the cycles ran out: so only when the cycles of all the
@@ -6884,6 +7144,8 @@ retry_gen:
     if ((n == 4 || n == 7 || n == 8) && !ins[0].pre && ins[0].op == 0x7E
         && !ins[1].pre && ins[1].op == 0xD3 && !ins[n - 1].pre && ins[n - 1].op == 0x10)
         emit_vdjnz(n);
+    if (otir_trow)
+        emit_otir_trow(otir_fill, otir_step);
     {
         const ins_t *I = ins;
         for (i = 0; i < n; i++, I++) {
